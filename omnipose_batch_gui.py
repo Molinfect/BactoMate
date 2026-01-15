@@ -4840,7 +4840,6 @@ def main():
     
     # Install custom exception handler for PyQt6 to prevent abort() on exceptions in slots
     # PyQt6 calls abort() by default when exceptions occur in slots, which crashes the app
-    import sys
     original_excepthook = sys.excepthook
     def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
         """Custom exception handler that prevents PyQt6 from aborting"""
