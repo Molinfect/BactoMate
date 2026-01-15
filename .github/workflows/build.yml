@@ -1,0 +1,110 @@
+name: Build BactiMate Executables
+
+on:
+  workflow_dispatch:  # Manual trigger
+    inputs:
+      build_windows:
+        description: 'Build Windows executable'
+        required: false
+        default: 'true'
+        type: boolean
+      build_macos:
+        description: 'Build macOS application'
+        required: false
+        default: 'true'
+        type: boolean
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  release:
+    types: [created]
+
+jobs:
+  build-windows:
+    name: Build Windows Executable
+    runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_windows == 'true' || github.event.inputs.build_windows == '') || github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+      
+      - name: Build Windows executable
+        run: |
+          pyinstaller BactiMate.spec
+      
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: BactiMate-Windows
+          path: dist/BactiMate.exe
+          retention-days: 30
+      
+      - name: Upload Windows executable (release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/BactiMate.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    name: Build macOS Application
+    runs-on: macos-latest
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_macos == 'true' || github.event.inputs.build_macos == '') || github.event_name != 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+      
+      - name: Create icons
+        run: |
+          chmod +x create_icons.sh
+          ./create_icons.sh || echo "Icons already exist or creation failed"
+      
+      - name: Build macOS application
+        run: |
+          chmod +x build_macos.sh
+          ./build_macos.sh
+      
+      - name: Create DMG
+        run: |
+          chmod +x create_dmg.sh
+          ./create_dmg.sh
+      
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: BactiMate-macOS
+          path: dist/BactiMate.dmg
+          retention-days: 30
+      
+      - name: Upload macOS DMG (release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/BactiMate.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

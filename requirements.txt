@@ -1,0 +1,39 @@
+# Core Omnipose dependencies
+omnipose>=1.0.6
+cellpose-omni>=0.6.0
+
+# Image processing
+numpy>=1.21.0
+scipy>=1.7.0
+scikit-image>=0.18.0
+tifffile>=2021.7.2
+
+# Microscopy file support (for converting ND2, LIF, CZI to TIFF)
+nd2>=0.7.0
+aicsimageio>=4.0.0  # Unified interface for ND2, LIF, CZI
+readlif>=0.6.4  # Alternative LIF reader
+czifile>=2019.7.2  # Alternative CZI reader (optional, aicsimageio preferred)
+
+# GUI framework
+# Pin to 5.15.10 for macOS compatibility (newer versions can have cocoa plugin issues)
+PyQt5==5.15.10
+
+# Data analysis and export
+pandas>=1.3.0
+openpyxl>=3.0.0
+
+# Visualization (for ND2 preview and plots)
+matplotlib>=3.4.0
+
+# Utilities
+tqdm>=4.62.0
+natsort>=8.0.0
+
+# PyTorch (for Omnipose models)
+# Note: Install appropriate version for your system (CPU or GPU)
+# For CPU: torch>=1.9.0
+# For GPU (CUDA): torch>=1.9.0+cu111 (adjust CUDA version as needed)
+torch>=1.9.0
+
+# Cell tracking
+# TODO: Add Python 3.9 compatible tracking solution

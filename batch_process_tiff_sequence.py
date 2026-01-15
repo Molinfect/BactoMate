@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""
+Batch process multipage TIFF sequences with Omnipose.
+
+This script:
+1. Splits multipage TIFF into individual frames
+2. Runs Omnipose segmentation on each frame
+3. Concatenates masks back into a sequence
+4. Optionally overlays masks with original images
+5. Saves results
+
+Usage:
+    python batch_process_tiff_sequence.py input.tif [options]
+"""
+
+import argparse
+import os
+import sys
+import numpy as np
+import tifffile
+from pathlib import Path
+from tqdm import tqdm
+import tempfile
+import shutil
+
+try:
+    from cellpose_omni import models
+    from cellpose_omni.io import imread
+except ImportError:
+    print("ERROR: cellpose_omni not found. Make sure you're in the Omnipose environment.")
+    print("Activate with: source venv/bin/activate")
+    sys.exit(1)
+
+
+def split_multipage_tiff(input_path, output_dir=None, prefix="frame"):
+    """
+    Split a multipage TIFF into individual frames.
+    
+    Parameters:
+    -----------
+    input_path : str
+        Path to input multipage TIFF
+    output_dir : str, optional
+        Directory to save individual frames. If None, uses temp directory.
+    prefix : str
+        Prefix for output frame filenames
+        
+    Returns:
+    --------
+    frame_paths : list
+        List of paths to individual frame files
+    temp_dir : str or None
+        Temporary directory created (if any), for cleanup
+    """
+    print(f"Loading multipage TIFF: {input_path}")
+    images = tifffile.imread(input_path)
+    
+    # Handle different input formats
+    if images.ndim == 2:
+        # Single 2D image
+        images = images[np.newaxis, ...]
+    elif images.ndim == 3:
+        # Could be (T, Y, X) or (Y, X, C)
+        if images.shape[-1] < 10:  # Likely channels last
+            images = images.transpose(2, 0, 1)  # (C, Y, X)
+            images = images[np.newaxis, ...]  # (1, C, Y, X)
+        # Otherwise assume (T, Y, X) or (T, C, Y, X)
+    elif images.ndim == 4:
+        # Could be (T, C, Y, X) or (C, T, Y, X) or (T, Y, X, C)
+        if images.shape[-1] < 10:  # Channels last
+            images = images.transpose(0, 3, 1, 2)  # (T, C, Y, X)
+        elif images.shape[0] < 10:  # Channels first
+            images = images.transpose(1, 0, 2, 3)  # (T, C, Y, X)
+    
+    num_frames = images.shape[0]
+    print(f"Found {num_frames} frames")
+    
+    # Create output directory
+    temp_dir = None
+    if output_dir is None:
+        temp_dir = tempfile.mkdtemp(prefix="omnipose_frames_")
+        output_dir = temp_dir
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+    
+    frame_paths = []
+    print("Saving individual frames...")
+    for i in tqdm(range(num_frames), desc="Splitting frames"):
+        frame = images[i]
+        frame_path = os.path.join(output_dir, f"{prefix}_{i:04d}.tif")
+        tifffile.imwrite(frame_path, frame)
+        frame_paths.append(frame_path)
+    
+    return frame_paths, temp_dir, images.shape
+
+
+def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', 
+                                  diameter=0, channels=[0, 0], 
+                                  use_gpu=True, batch_size=8,
+                                  flow_threshold=0.4, mask_threshold=0.0,
+                                  omni=True, cluster=False, verbose=False):
+    """
+    Process individual frames with Omnipose.
+    
+    Parameters:
+    -----------
+    frame_paths : list
+        List of paths to frame images
+    model_type : str
+        Omnipose model type (e.g., 'cyto2_omni', 'bact_omni', 'nuclei')
+    diameter : float
+        Cell diameter (0 for auto-detection)
+    channels : list
+        [channel1, channel2] for segmentation
+    use_gpu : bool
+        Use GPU if available
+    batch_size : int
+        Batch size for processing
+    flow_threshold : float
+        Flow error threshold
+    mask_threshold : float
+        Mask threshold
+    omni : bool
+        Use Omnipose mask reconstruction
+    cluster : bool
+        Use DBSCAN clustering
+    verbose : bool
+        Verbose output
+        
+    Returns:
+    --------
+    masks : list
+        List of mask arrays
+    """
+    print(f"\nInitializing Omnipose model: {model_type}")
+    
+    # Workaround for cellpose_omni bug: Cellpose doesn't pass model_type to CellposeModel
+    # Delete model file to force architecture detection when model is re-downloaded
+    from cellpose_omni.models import model_path
+    import os
+    model_file = model_path(model_type, 0, True)
+    if os.path.exists(model_file):
+        print(f"Removing existing model file to ensure correct architecture...")
+        os.remove(model_file)
+    
+    try:
+        model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
+        
+        # Verify architecture is correct (for C2_BD models: nchan=2, nclasses=4)
+        if hasattr(model.cp, 'nchan') and hasattr(model.cp, 'nclasses'):
+            expected_nchan = 2 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 1
+            expected_nclasses = 4 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 3
+            if model.cp.nchan != expected_nchan or model.cp.nclasses != expected_nclasses:
+                print(f"WARNING: Architecture mismatch detected!")
+                print(f"  Expected: nchan={expected_nchan}, nclasses={expected_nclasses}")
+                print(f"  Got: nchan={model.cp.nchan}, nclasses={model.cp.nclasses}")
+                print(f"  This may cause errors. Trying to fix...")
+                # Try to fix by recreating with correct parameters
+                raise RuntimeError("Architecture mismatch - need to recreate model")
+    except RuntimeError as e:
+        if "Architecture mismatch" in str(e):
+            # Recreate model by deleting and trying again
+            if os.path.exists(model_file):
+                os.remove(model_file)
+            model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
+    except RuntimeError as e:
+        if "size mismatch" in str(e) and ("downsample" in str(e) or "output" in str(e)):
+            print("\n" + "="*60)
+            print("ERROR: Model architecture mismatch detected!")
+            print("="*60)
+            print("\nThe model checkpoint expects a different architecture than initialized.")
+            print("This usually happens when the model cache is corrupted or incompatible.")
+            print("\nSOLUTION: Delete the model cache and let it re-download:")
+            # Generate correct model filename (keep full model name, add torch_0)
+            model_filename = model_type + 'torch_0'
+            print(f"  rm ~/.cellpose/models/{model_filename}")
+            print("\nOr run the fix script:")
+            print("  ./clear_models.sh")
+            print("\nThen try again. The model will be re-downloaded with correct architecture.")
+            print("\nAlternatively, try a different model:")
+            print("  --model cyto_omni  (instead of cyto2_omni)")
+            print("="*60)
+            raise RuntimeError(f"Model initialization failed: {e}") from e
+        else:
+            raise
+    
+    masks = []
+    print(f"Processing {len(frame_paths)} frames...")
+    
+    # Load first frame to determine image properties
+    first_image = imread(frame_paths[0])
+    
+    for frame_path in tqdm(frame_paths, desc="Segmenting frames"):
+        try:
+            # Load frame
+            image = imread(frame_path)
+            
+            # Ensure image is properly formatted (Omnipose handles channel reshaping internally)
+            # But we need to make sure it's in the right format
+            if image.ndim == 2:
+                # 2D grayscale - Omnipose will add second channel automatically
+                pass
+            elif image.ndim == 3:
+                # Could be (Y, X, C) or (C, Y, X)
+                if image.shape[0] < 10:  # Channels first
+                    image = image.transpose(1, 2, 0)  # (Y, X, C)
+            
+            # Run segmentation
+            # model.eval() returns (masks, flows, styles) or sometimes more values
+            result = model.eval(
+                image,
+                channels=channels,
+                diameter=diameter,
+                flow_threshold=flow_threshold,
+                mask_threshold=mask_threshold,
+                omni=omni,
+                cluster=cluster,
+                net_avg=False,  # Faster, omni models don't support net_avg anyway
+                resample=True,
+                verbose=verbose
+            )
+            
+            # Handle different return formats
+            if isinstance(result, tuple):
+                mask = result[0]  # First element is always the mask
+            else:
+                mask = result
+            
+            masks.append(mask)
+            
+        except Exception as e:
+            print(f"\nERROR processing {frame_path}: {e}")
+            # Create empty mask with same shape as image
+            if len(masks) > 0:
+                empty_mask = np.zeros_like(masks[0])
+            else:
+                image = imread(frame_path)
+                empty_mask = np.zeros(image.shape[:2], dtype=np.uint16)
+            masks.append(empty_mask)
+    
+    return masks
+
+
+def concatenate_masks(masks, output_path):
+    """
+    Concatenate individual masks into a single multipage TIFF.
+    
+    Parameters:
+    -----------
+    masks : list
+        List of mask arrays
+    output_path : str
+        Path to save concatenated masks
+    """
+    print(f"\nConcatenating {len(masks)} masks...")
+    masks_array = np.stack(masks, axis=0)
+    print(f"Mask sequence shape: {masks_array.shape}")
+    
+    print(f"Saving to: {output_path}")
+    tifffile.imwrite(output_path, masks_array.astype(np.uint16))
+    print("✓ Masks saved")
+
+
+def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gist_ncar'):
+    """
+    Create overlay of masks on original images.
+    
+    Parameters:
+    -----------
+    images : array
+        Original image sequence (T, C, Y, X) or (T, Y, X)
+    masks : list
+        List of mask arrays
+    output_path : str
+        Path to save overlay
+    alpha : float
+        Transparency of overlay (0-1)
+    colormap : str
+        Colormap name for masks
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap
+    except ImportError:
+        print("WARNING: matplotlib not available, skipping overlay creation")
+        return
+    
+    print(f"\nCreating overlay visualization...")
+    
+    # Normalize images to 0-255
+    if images.ndim == 4:
+        # (T, C, Y, X) - take first channel or convert to grayscale
+        if images.shape[1] == 1:
+            images = images[:, 0, :, :]  # (T, Y, X)
+        else:
+            # Convert to grayscale
+            images = images[:, 0, :, :]  # Take first channel
+    
+    # Normalize images
+    images_norm = []
+    for img in images:
+        img_min, img_max = img.min(), img.max()
+        if img_max > img_min:
+            img_norm = ((img - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+        else:
+            img_norm = img.astype(np.uint8)
+        images_norm.append(img_norm)
+    images_norm = np.stack(images_norm)
+    
+    # Create colored masks
+    masks_array = np.stack(masks, axis=0)
+    num_cells = masks_array.max()
+    
+    # Generate colormap
+    cmap = plt.get_cmap(colormap)
+    colors = cmap(np.linspace(0, 1, max(num_cells + 1, 1000)))[:num_cells + 1]
+    colors[0] = [0, 0, 0, 0]  # Background transparent
+    
+    # Create overlay
+    overlays = []
+    # Ensure we don't go out of bounds
+    num_frames = min(len(images_norm), len(masks_array))
+    for i in tqdm(range(num_frames), desc="Creating overlays"):
+        img = images_norm[i]
+        mask = masks_array[i]
+        
+        # Convert grayscale to RGB
+        img_rgb = np.stack([img, img, img], axis=-1)
+        
+        # Colorize mask
+        mask_rgb = colors[mask][:, :, :3] * 255
+        
+        # Blend
+        overlay = (img_rgb * (1 - alpha) + mask_rgb * alpha).astype(np.uint8)
+        overlays.append(overlay)
+    
+    overlay_array = np.stack(overlays, axis=0)
+    print(f"Saving overlay to: {output_path}")
+    tifffile.imwrite(output_path, overlay_array)
+    print("✓ Overlay saved")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Batch process multipage TIFF sequences with Omnipose',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage with auto-diameter
+  python batch_process_tiff_sequence.py input.tif
+  
+  # Specify diameter and model
+  python batch_process_tiff_sequence.py input.tif --diameter 30 --model cyto2_omni
+  
+  # Process with specific channels
+  python batch_process_tiff_sequence.py input.tif --channels 0 0 --diameter 25
+  
+  # Save intermediate frames (for debugging)
+  python batch_process_tiff_sequence.py input.tif --save-frames frames_dir/
+        """
+    )
+    
+    parser.add_argument('input', type=str, help='Input multipage TIFF file')
+    parser.add_argument('--output', '-o', type=str, default=None,
+                       help='Output directory (default: same as input)')
+    parser.add_argument('--model', type=str, default='cyto2_omni',
+                       choices=['cyto2_omni', 'cyto_omni', 'bact_omni', 'bact_phase_omni', 
+                               'bact_fluor_omni', 'worm_omni', 'nuclei', 'cyto2', 'cyto'],
+                       help='Omnipose model type (default: cyto2_omni)')
+    parser.add_argument('--diameter', type=float, default=0,
+                       help='Cell diameter in pixels (0 for auto-detection, default: 0)')
+    parser.add_argument('--channels', type=int, nargs=2, default=[0, 0],
+                       metavar=('CHAN1', 'CHAN2'),
+                       help='Channels for segmentation: [main_channel, nuclear_channel] (default: 0 0)')
+    parser.add_argument('--flow-threshold', type=float, default=0.4,
+                       help='Flow error threshold (default: 0.4)')
+    parser.add_argument('--mask-threshold', type=float, default=0.0,
+                       help='Mask threshold (default: 0.0)')
+    parser.add_argument('--no-omni', action='store_true',
+                       help='Disable Omnipose mask reconstruction')
+    parser.add_argument('--cluster', action='store_true',
+                       help='Use DBSCAN clustering (helps with thin cells)')
+    parser.add_argument('--no-gpu', action='store_true',
+                       help='Disable GPU (use CPU)')
+    parser.add_argument('--batch-size', type=int, default=8,
+                       help='Batch size for processing (default: 8)')
+    parser.add_argument('--save-frames', type=str, default=None,
+                       help='Save individual frames to this directory (for debugging)')
+    parser.add_argument('--no-overlay', action='store_true',
+                       help='Skip creating overlay visualization')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Verbose output')
+    
+    args = parser.parse_args()
+    
+    # Check input file
+    if not os.path.isfile(args.input):
+        print(f"ERROR: Input file not found: {args.input}")
+        sys.exit(1)
+    
+    # Setup output directory
+    if args.output is None:
+        input_dir = os.path.dirname(os.path.abspath(args.input))
+        input_basename = Path(args.input).stem
+        output_dir = os.path.join(input_dir, f"{input_basename}_omnipose")
+    else:
+        output_dir = args.output
+    
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+    
+    # Step 1: Split multipage TIFF
+    frame_dir = args.save_frames if args.save_frames else None
+    frame_paths, temp_dir, image_shape = split_multipage_tiff(
+        args.input, 
+        output_dir=frame_dir,
+        prefix="frame"
+    )
+    
+    try:
+        # Step 2: Process frames with Omnipose
+        masks = process_frames_with_omnipose(
+            frame_paths,
+            model_type=args.model,
+            diameter=args.diameter,
+            channels=args.channels,
+            use_gpu=not args.no_gpu,
+            batch_size=args.batch_size,
+            flow_threshold=args.flow_threshold,
+            mask_threshold=args.mask_threshold,
+            omni=not args.no_omni,
+            cluster=args.cluster,
+            verbose=args.verbose
+        )
+        
+        # Step 3: Concatenate masks
+        masks_output = os.path.join(output_dir, f"{Path(args.input).stem}_masks.tif")
+        concatenate_masks(masks, masks_output)
+        
+        # Step 4: Create overlay (optional)
+        if not args.no_overlay:
+            # Reload original images for overlay
+            images = tifffile.imread(args.input)
+            # Handle different formats
+            if images.ndim == 3:
+                if images.shape[-1] < 10:
+                    images = images.transpose(2, 0, 1)[np.newaxis, ...]
+                else:
+                    images = images[:, np.newaxis, :, :]
+            elif images.ndim == 4:
+                if images.shape[-1] < 10:
+                    images = images.transpose(0, 3, 1, 2)
+                elif images.shape[0] < 10:
+                    images = images.transpose(1, 0, 2, 3)
+            
+            overlay_output = os.path.join(output_dir, f"{Path(args.input).stem}_overlay.tif")
+            overlay_masks_on_images(images, masks, overlay_output)
+        
+        print(f"\n{'='*60}")
+        print("✓ Processing complete!")
+        print(f"  Masks saved to: {masks_output}")
+        if not args.no_overlay:
+            print(f"  Overlay saved to: {overlay_output}")
+        print(f"{'='*60}")
+        
+    finally:
+        # Cleanup temporary directory
+        if temp_dir and os.path.exists(temp_dir):
+            print(f"\nCleaning up temporary files...")
+            shutil.rmtree(temp_dir)
+
+
+if __name__ == "__main__":
+    main()
