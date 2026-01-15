@@ -53,9 +53,12 @@ echo ""
 
 python3 -m nuitka \
     --standalone \
-    --onefile \
     --macos-create-app-bundle \
     --macos-app-icon=BactiMate.icns \
+    --macos-app-name=BactiMate \
+    --macos-app-version=1.0.0 \
+    --macos-app-protected-resource=NSMicrophoneUsageDescription="BactiMate needs microphone access" \
+    --macos-app-protected-resource=NSCameraUsageDescription="BactiMate needs camera access" \
     --output-dir=dist \
     --output-filename=BactiMate \
     --follow-imports \
@@ -71,11 +74,6 @@ python3 -m nuitka \
     --include-package-data=cellpose_omni \
     --include-package-data=PyQt5 \
     --enable-plugin=pyqt5 \
-    --macos-app-protected-resource=NSMicrophoneUsageDescription="BactiMate needs microphone access" \
-    --macos-app-protected-resource=NSCameraUsageDescription="BactiMate needs camera access" \
-    --macos-app-version=1.0.0 \
-    --macos-app-name=BactiMate \
-    --macos-bundle-identifier=com.bactimate.app \
     --nofollow-import-to=tkinter \
     --nofollow-import-to=matplotlib.tests \
     --nofollow-import-to=numpy.tests \
