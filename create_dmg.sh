@@ -18,7 +18,7 @@ echo ""
 # Check if app exists
 if [ ! -d "$APP_PATH" ]; then
     echo "ERROR: ${APP_PATH} not found!"
-    echo "Please run ./build_macos.sh first"
+    echo "Please run ./build_nuitka_macos.sh first"
     exit 1
 fi
 
