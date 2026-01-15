@@ -417,7 +417,7 @@ def create_info_icon(info_text, parent_widget=None):
         "text-decoration: underline;"
         "}"
     )
-    info_label.setCursor(Qt.PointingHandCursor)
+    info_label.setCursor(Qt.CursorShape.PointingHandCursor)
     
     def show_info(event):
         # Toggle tooltip - if already showing, hide it; otherwise show it
