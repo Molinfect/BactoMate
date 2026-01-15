@@ -2207,7 +2207,22 @@ class ProcessingTab(QWidget):
             "background-color: #34495E;"
             "}"
         )
-        preview_btn.clicked.connect(self.preview_segmentation)
+        # Wrap preview_segmentation to catch all exceptions and prevent PyQt6 abort()
+        def safe_preview_segmentation():
+            try:
+                self.preview_segmentation()
+            except BaseException as e:
+                # PyQt6 calls abort() on unhandled exceptions in slots
+                # This wrapper catches ALL exceptions to prevent crashes
+                import traceback
+                error_msg = f"Error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+                try:
+                    QMessageBox.critical(self, "Preview Error", error_msg)
+                except:
+                    # If showing dialog fails, at least print to console
+                    print(f"CRITICAL ERROR: {error_msg}", file=sys.stderr)
+                # Don't re-raise - PyQt6 will abort if we do
+        preview_btn.clicked.connect(safe_preview_segmentation)
         scroll_layout.addWidget(preview_btn)
         
         # Process button
@@ -2294,6 +2309,8 @@ class ProcessingTab(QWidget):
     
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
+        # Note: This method is called from safe_preview_segmentation() wrapper
+        # which catches all exceptions to prevent PyQt6 from aborting
         if not self.file_path.text():
             QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
             return
@@ -3514,6 +3531,17 @@ class ProcessingTab(QWidget):
             import traceback
             error_msg = f"Unexpected error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             QMessageBox.critical(self, "Preview Error", error_msg)
+            # Don't re-raise - PyQt6 will abort if we do
+        except BaseException as e:
+            # Final catch-all for any exceptions that slip through
+            # This prevents PyQt6 from calling abort()
+            import traceback
+            error_msg = f"Critical error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            try:
+                QMessageBox.critical(self, "Preview Error", error_msg)
+            except:
+                # If even showing the error dialog fails, at least print to console
+                print(f"CRITICAL ERROR in preview_segmentation: {error_msg}", file=sys.stderr)
             # Don't re-raise - PyQt6 will abort if we do
     
     def process_file_or_folder(self):
@@ -4809,6 +4837,19 @@ def main():
                 abs_plugins_dir = os.path.dirname(abs_plugins_dir)
             os.environ['QT_PLUGIN_PATH'] = abs_plugins_dir
             QCoreApplication.setLibraryPaths([abs_plugins_dir])
+    
+    # Install custom exception handler for PyQt6 to prevent abort() on exceptions in slots
+    # PyQt6 calls abort() by default when exceptions occur in slots, which crashes the app
+    import sys
+    original_excepthook = sys.excepthook
+    def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
+        """Custom exception handler that prevents PyQt6 from aborting"""
+        # Print the exception to stderr
+        import traceback
+        traceback.print_exception(exc_type, exc_value, exc_traceback)
+        # Don't call abort() - let the exception propagate or be handled
+        # This prevents PyQt6's default behavior of calling abort()
+    sys.excepthook = pyqt6_exception_handler
     
     try:
         app = QApplication(sys.argv)
