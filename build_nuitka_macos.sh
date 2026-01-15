@@ -140,13 +140,13 @@ if [ -f "dist/BactiMate.app/Contents/MacOS/BactiMate" ]; then
     chmod +x "dist/BactiMate.app/Contents/MacOS/BactiMate"
 fi
 
-# Remove invalid code signatures from all libraries to prevent macOS from killing the app
-# This is necessary because some bundled libraries may have invalid signatures
+# Apply ad-hoc signatures to all libraries and executables
+# macOS requires either valid signatures or ad-hoc signatures (not invalid/removed ones)
+# Ad-hoc signing is less strict and works for local distribution
 if [ -d "dist/BactiMate.app" ]; then
-    echo "Removing invalid code signatures from bundled libraries..."
-    find "dist/BactiMate.app/Contents/MacOS" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --remove-signature {} \; 2>/dev/null || true
-    # Also remove signature from main executable if it has one
-    codesign --remove-signature "dist/BactiMate.app/Contents/MacOS/BactiMate" 2>/dev/null || true
+    echo "Applying ad-hoc code signatures to bundled libraries and executables..."
+    find "dist/BactiMate.app/Contents/MacOS" -type f \( -name "*.dylib" -o -name "*.so" -o -name "BactiMate" -o -name "Python" \) -exec codesign --force --deep --sign - {} \; 2>/dev/null || true
+    echo "Code signatures applied."
 fi
 
 # Check if .app was created
