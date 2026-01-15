@@ -15,11 +15,42 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
     exit 1
 fi
 
+# Check Python version - Nuitka requires CPython (not Apple Python)
+PYTHON_CMD="python3"
+if command -v /opt/homebrew/bin/python3.11 &> /dev/null; then
+    # Prefer Homebrew Python 3.11 if available
+    PYTHON_CMD="/opt/homebrew/bin/python3.11"
+    echo "Using Homebrew Python 3.11 for Nuitka build"
+elif command -v /usr/local/bin/python3 &> /dev/null; then
+    # Try /usr/local/bin/python3 (Homebrew on Intel Mac)
+    PYTHON_CMD="/usr/local/bin/python3"
+    echo "Using /usr/local/bin/python3 for Nuitka build"
+else
+    # Check if current Python is Apple Python
+    if python3 -c "import sys; sys.exit(0 if 'CommandLineTools' in sys.executable or 'Apple' in sys.version else 1)" 2>/dev/null; then
+        echo "ERROR: Apple Python detected. Nuitka requires CPython from python.org or Homebrew."
+        echo "Please install Python from: https://www.python.org/downloads/macos/"
+        echo "Or install via Homebrew: brew install python@3.11"
+        exit 1
+    fi
+fi
+
 # Check if we're in a venv
 if [[ -z "$VIRTUAL_ENV" ]]; then
     echo "WARNING: Not in a virtual environment. Activating venv..."
     if [ -d "venv" ]; then
         source venv/bin/activate
+        # Verify venv Python is not Apple Python
+        if python3 -c "import sys; sys.exit(0 if 'CommandLineTools' in sys.executable or 'Apple' in sys.version else 1)" 2>/dev/null; then
+            echo "WARNING: venv uses Apple Python. Creating new venv with $PYTHON_CMD..."
+            mv venv venv_backup_$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+            $PYTHON_CMD -m venv venv
+            source venv/bin/activate
+            echo "Installing requirements in new venv..."
+            pip install --upgrade pip
+            pip install -r requirements.txt
+            python3 apply_all_patches.py
+        fi
     else
         echo "ERROR: No venv found. Please run setup first."
         exit 1
