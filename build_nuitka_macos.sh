@@ -92,6 +92,7 @@ python3 -m nuitka \
     --macos-app-icon=BactiMate.icns \
     --macos-app-name=BactiMate \
     --macos-app-version=1.0.0 \
+    --macos-disable-code-signing \
     --macos-app-protected-resource=NSMicrophoneUsageDescription:"BactiMate needs microphone access" \
     --macos-app-protected-resource=NSCameraUsageDescription:"BactiMate needs camera access" \
     --output-dir=dist \
@@ -125,6 +126,12 @@ if [ $BUILD_EXIT_CODE -ne 0 ]; then
     echo ""
     echo "ERROR: Nuitka build failed!"
     exit 1
+fi
+
+# Rename app if it was created with wrong name (Nuitka sometimes uses source filename)
+if [ -d "dist/omnipose_batch_gui.app" ] && [ ! -d "dist/BactiMate.app" ]; then
+    echo "Renaming app bundle to BactiMate.app..."
+    mv "dist/omnipose_batch_gui.app" "dist/BactiMate.app"
 fi
 
 # Check if .app was created
