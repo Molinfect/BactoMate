@@ -81,6 +81,9 @@ mkdir -p dist
 echo ""
 echo "Building with Nuitka (this may take a while)..."
 echo ""
+echo "NOTE: QML warnings about Qt Quick 3D files are safe to ignore -"
+echo "      we use PyQt5 widgets, not QML, so these files aren't needed."
+echo ""
 
 python3 -m nuitka \
     --standalone \
@@ -111,9 +114,14 @@ python3 -m nuitka \
     --nofollow-import-to=numpy.tests \
     --nofollow-import-to=scipy.tests \
     --nofollow-import-to=pandas.tests \
-    omnipose_batch_gui.py
+    --nofollow-import-to=PyQt5.QtQml \
+    --nofollow-import-to=PyQt5.QtQuick \
+    --nofollow-import-to=PyQt5.QtQuick3D \
+    omnipose_batch_gui.py 2>&1 | grep -v "WARNING: pyqt5: Including QML file" | tee /tmp/nuitka_build.log
 
-if [ $? -ne 0 ]; then
+BUILD_EXIT_CODE=${PIPESTATUS[0]}
+
+if [ $BUILD_EXIT_CODE -ne 0 ]; then
     echo ""
     echo "ERROR: Nuitka build failed!"
     exit 1
