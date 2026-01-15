@@ -150,8 +150,9 @@ if [ -d "dist/BactiMate.app" ]; then
     echo "Applying ad-hoc code signatures to bundled libraries and executables..."
     find "dist/BactiMate.app/Contents/MacOS" -type f \( -name "*.dylib" -o -name "*.so" -o -name "BactiMate" -o -name "Python" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
     
-    echo "Signing app bundle..."
-    codesign --force --deep --sign - dist/BactiMate.app 2>/dev/null || true
+    # Try to sign app bundle (may fail due to extended attributes, but individual files are signed)
+    # The app should work with just the individual file signatures
+    codesign --force --sign - dist/BactiMate.app 2>/dev/null || echo "Note: App bundle signing skipped (individual files are signed)"
     
     echo "Code signatures applied."
 fi
