@@ -2298,12 +2298,12 @@ class ProcessingTab(QWidget):
             if not self.file_path.text():
                 QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
                 return
-        
-        if not Path(self.file_path.text()).exists():
-            QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
-            return
-        
-        is_folder = self._is_folder_mode()
+            
+            if not Path(self.file_path.text()).exists():
+                QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
+                return
+            
+            is_folder = self._is_folder_mode()
         if is_folder:
             # Folder mode: show file selection dialog first
             folder = Path(self.file_path.text())
