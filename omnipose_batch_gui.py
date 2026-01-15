@@ -4654,7 +4654,7 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap(str(logo_path))
             # Scale logo to fit title bar (max height 50px, maintain aspect ratio)
             if pixmap.height() > 100:
-                pixmap = pixmap.scaledToHeight(100, Qt.SmoothTransformation)
+                pixmap = pixmap.scaledToHeight(100, Qt.TransformationMode.SmoothTransformation)
             logo_label.setPixmap(pixmap)
         else:
             logo_label.setText("BactiMate")
