@@ -4828,6 +4828,7 @@ class MainWindow(QMainWindow):
 def main():
     # Qt plugin paths should already be set by launch_gui.sh or module-level code
     # Set library paths programmatically as well (Qt reads this)
+    global sys  # Needed because we assign to sys.excepthook later
     if sys.platform == 'darwin':
         plugins_dir = os.environ.get('QT_PLUGIN_PATH')
         if plugins_dir:
