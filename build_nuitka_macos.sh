@@ -144,8 +144,15 @@ fi
 # macOS requires either valid signatures or ad-hoc signatures (not invalid/removed ones)
 # Ad-hoc signing is less strict and works for local distribution
 if [ -d "dist/BactiMate.app" ]; then
+    echo "Removing extended attributes that can interfere with signing..."
+    xattr -cr dist/BactiMate.app 2>/dev/null || true
+    
     echo "Applying ad-hoc code signatures to bundled libraries and executables..."
-    find "dist/BactiMate.app/Contents/MacOS" -type f \( -name "*.dylib" -o -name "*.so" -o -name "BactiMate" -o -name "Python" \) -exec codesign --force --deep --sign - {} \; 2>/dev/null || true
+    find "dist/BactiMate.app/Contents/MacOS" -type f \( -name "*.dylib" -o -name "*.so" -o -name "BactiMate" -o -name "Python" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+    
+    echo "Signing app bundle..."
+    codesign --force --deep --sign - dist/BactiMate.app 2>/dev/null || true
+    
     echo "Code signatures applied."
 fi
 
