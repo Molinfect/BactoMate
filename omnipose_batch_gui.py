@@ -2294,7 +2294,8 @@ class ProcessingTab(QWidget):
     
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
-        if not self.file_path.text():
+        try:
+            if not self.file_path.text():
             QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
             return
         
@@ -3426,6 +3427,11 @@ class ProcessingTab(QWidget):
             
             # Display first frame (will use cache if available)
             update_display(0, show_progress=True)
+        except Exception as e:
+            # PyQt6 is strict about exceptions in slots - catch and show error dialog
+            import traceback
+            error_msg = f"Error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            QMessageBox.critical(self, "Preview Error", error_msg)
             
             # Show cache info in status
             def update_cache_status():
