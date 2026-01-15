@@ -85,6 +85,30 @@ echo "NOTE: QML warnings about Qt Quick 3D files are safe to ignore -"
 echo "      we use PyQt5 widgets, not QML, so these files aren't needed."
 echo ""
 
+# Start progress monitor in background to show build progress
+(
+    echo "Starting build progress monitor..." >&2
+    while true; do
+        sleep 10
+        # Check if build directory exists and show size
+        if [ -d "dist/omnipose_batch_gui.build" ]; then
+            size=$(du -sh dist/omnipose_batch_gui.build 2>/dev/null | cut -f1)
+            file_count=$(find dist/omnipose_batch_gui.build -type f 2>/dev/null | wc -l | tr -d ' ')
+            echo "[Progress] Build directory: $size ($file_count files)" >&2
+        fi
+        # Check if app bundle is being created
+        if [ -d "dist/BactiMate.app" ] || [ -d "dist/omnipose_batch_gui.app" ]; then
+            echo "[Progress] App bundle detected!" >&2
+        fi
+        # Check if Nuitka process is still running (by checking if build script is active)
+        if ! pgrep -f "nuitka.*omnipose_batch_gui" > /dev/null 2>&1; then
+            echo "[Progress] Build process completed" >&2
+            break
+        fi
+    done
+) &
+MONITOR_PID=$!
+
 python3 -m nuitka \
     --standalone \
     --static-libpython=no \
@@ -120,6 +144,13 @@ python3 -m nuitka \
     omnipose_batch_gui.py 2>&1 | grep -v "WARNING: pyqt5: Including QML file" | tee /tmp/nuitka_build.log
 
 BUILD_EXIT_CODE=${PIPESTATUS[0]}
+
+# Stop progress monitor
+if [ -n "$MONITOR_PID" ]; then
+    kill $MONITOR_PID 2>/dev/null || true
+    wait $MONITOR_PID 2>/dev/null || true
+    echo ""  # Add blank line after monitor output
+fi
 
 if [ $BUILD_EXIT_CODE -ne 0 ]; then
     echo ""
