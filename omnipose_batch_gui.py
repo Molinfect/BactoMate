@@ -19,9 +19,8 @@ import warnings
 # This is harmless - omnipose uses pkg_resources which is deprecated in newer setuptools
 warnings.filterwarnings('ignore', category=UserWarning, message='.*pkg_resources.*')
 
-# CRITICAL: Patch pbr.version.VersionInfo early to prevent versioning errors in PyInstaller bundles
-# This is a backup in case the runtime hook (pyi_rth_pbr.py) doesn't run early enough
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+# CRITICAL: Patch pbr.version.VersionInfo early to prevent versioning errors in frozen builds
+if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
     try:
         import pbr.version
         # Check if already patched (by runtime hook) - if calling it works, it's patched
@@ -54,7 +53,7 @@ if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         # pbr not available or patching failed, continue anyway
         pass
 
-# CRITICAL: Patch omnipose.core.get_masks to handle bd=None in PyInstaller builds
+# CRITICAL: Patch omnipose.core.get_masks to handle bd=None in frozen builds
 # This must be done early, before any omnipose imports, to catch all code paths
 def _patch_omnipose_get_masks():
         """Patch omnipose.core.get_masks to handle None boundary field"""
@@ -68,7 +67,7 @@ def _patch_omnipose_get_masks():
                 
                 def get_masks_safe(*args, **kwargs):
                     """
-                    Patched get_masks that handles bd=None in PyInstaller builds.
+                    Patched get_masks that handles bd=None in frozen builds.
                     The boundary field (bd) can be None, causing "None > -1" errors.
                     This patch provides a fallback array.
                     """
@@ -132,9 +131,9 @@ def _patch_omnipose_get_masks():
             # omnipose not available yet or patching failed - will retry later
             pass
 
-# Try to patch immediately if in frozen build (PyInstaller or Nuitka)
-# PyInstaller uses _MEIPASS, Nuitka uses __compiled__ or sys.frozen
-is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS') or hasattr(sys, '__compiled__')
+# Try to patch immediately if in frozen build (Nuitka)
+# Nuitka uses __compiled__ or sys.frozen
+is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
 if is_frozen:
     _patch_omnipose_get_masks()
     
@@ -153,19 +152,13 @@ if is_frozen:
 
 # CRITICAL: Set Qt paths BEFORE any Qt imports (PyQt5 or matplotlib Qt backend)
 # This prevents conflicts with system Qt (Homebrew/conda) installations
-# Also handles PyInstaller frozen executables
+# Also handles Nuitka frozen executables
 
-# Check if running as compiled executable (PyInstaller or Nuitka)
+# Check if running as compiled executable (Nuitka)
 if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
-    # Running as compiled executable
-    if hasattr(sys, '_MEIPASS'):
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    elif hasattr(sys, '__compiled__'):
-        # Nuitka: use directory containing the executable
-        base_path = os.path.dirname(sys.executable)
-    else:
-        base_path = os.path.dirname(sys.executable)
+    # Running as compiled executable (Nuitka)
+    # Nuitka: use directory containing the executable
+    base_path = os.path.dirname(sys.executable)
 else:
     # Running as script
     base_path = os.path.dirname(os.path.abspath(__file__))
@@ -175,7 +168,7 @@ abs_plugin_path = None
 abs_lib_dir = None
 
 if sys.platform in ['darwin', 'win32']:
-    # For compiled bundles (PyInstaller or Nuitka), plugins are in the bundle
+    # For compiled bundles (Nuitka), plugins are in the bundle
     if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
         # In compiled bundle, plugins are at PyQt5/Qt5/plugins relative to base_path
         plugin_candidate = os.path.join(base_path, 'PyQt5', 'Qt5', 'plugins')
@@ -2447,7 +2440,7 @@ class ProcessingTab(QWidget):
             from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
             
             # CRITICAL: Patch omnipose.core.OMNI_MODELS before cellpose_omni imports it
-            # This fixes "cannot import name 'OMNI_MODELS' from 'omnipose.core'" error in PyInstaller bundles
+            # This fixes "cannot import name 'OMNI_MODELS' from 'omnipose.core'" error in frozen builds
             # Also ensure get_masks patch is applied
             try:
                 import omnipose.core
@@ -2637,7 +2630,7 @@ class ProcessingTab(QWidget):
                         )
                         
                         # CRITICAL: Patch omnipose.core.get_masks to handle bd=None
-                        # In PyInstaller builds, the boundary field (bd) can be None if model files
+                        # In frozen builds, the boundary field (bd) can be None if model files
                         # aren't found, causing "None > -1" errors. This patch provides a fallback.
                         try:
                             import omnipose.core as oc
@@ -2655,7 +2648,7 @@ class ProcessingTab(QWidget):
                                 
                                 def get_masks_safe(*args, **kwargs):
                                     """
-                                    Patched get_masks that handles bd=None in PyInstaller builds.
+                                    Patched get_masks that handles bd=None in frozen builds.
                                     The boundary field (bd) can be None, causing "None > -1" errors.
                                     This patch provides a fallback array.
                                     """
@@ -2929,7 +2922,7 @@ class ProcessingTab(QWidget):
             
             def get_current_parameters():
                 """Get current parameters from main window (works because dialog is non-modal)"""
-                # CRITICAL: In PyInstaller builds, diameter=0 (auto-detect) causes None comparison errors
+                # CRITICAL: In frozen builds, diameter=0 (auto-detect) causes None comparison errors
                 # in omnipose/core.py. Use a default diameter instead of 0.
                 import sys
                 is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
@@ -2937,8 +2930,8 @@ class ProcessingTab(QWidget):
                 diameter_value = self.diameter.value()
                 model_type = self.model_combo.currentText()
                 
-                # If diameter is 0 and we're in a PyInstaller build, use a model-specific default
-                if diameter_value == 0 and is_pyinstaller:
+                # If diameter is 0 and we're in a frozen build, use a model-specific default
+                if diameter_value == 0 and is_frozen:
                     # Default diameters based on model type (common values for bacteria)
                     default_diameters = {
                         'bact_phase_omni': 30.0,
@@ -3085,14 +3078,14 @@ class ProcessingTab(QWidget):
                     is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
                     
                     if is_frozen:
-                        # In PyInstaller builds, wrap the call to handle the omnipose bug
+                        # In frozen builds, wrap the call to handle the omnipose bug
                         max_retries = 3
                         for attempt in range(max_retries):
                             try:
                                 mask, flows, styles, diams = preview_dialog.model.eval(
                                     frame,
                                     channels=[0, 0],
-                                    diameter=diameter if diameter > 0 else 30.0,  # Never use 0 in PyInstaller
+                                    diameter=diameter if diameter > 0 else 30.0,  # Never use 0 in frozen builds
                                     flow_threshold=flow_threshold,
                                     mask_threshold=0.0,
                                     cellprob_threshold=0.0,
@@ -3117,7 +3110,7 @@ class ProcessingTab(QWidget):
                                     # Different TypeError, raise immediately
                                     raise
                     else:
-                        # Not PyInstaller, use normal call
+                        # Not frozen build, use normal call
                         mask, flows, styles, diams = preview_dialog.model.eval(
                             frame,
                             channels=[0, 0],
@@ -3138,9 +3131,9 @@ class ProcessingTab(QWidget):
                 except RecursionError as e:
                     # Handle recursion errors (e.g., from broken runtime hooks)
                     import traceback
-                    error_details = f"Recursion error detected (likely from a broken runtime hook):\n{str(e)}\n\n"
-                    error_details += f"This may be caused by a bug in a PyInstaller runtime hook.\n"
-                    error_details += f"Try rebuilding the application or check runtime hooks.\n\n"
+                    error_details = f"Recursion error detected:\n{str(e)}\n\n"
+                    error_details += f"This may be caused by a bug in the frozen build.\n"
+                    error_details += f"Try rebuilding the application.\n\n"
                     error_details += f"Parameters:\n  diameter: {diameter} (type: {type(diameter)})\n  flow_threshold: {flow_threshold} (type: {type(flow_threshold)})\n\n"
                     error_details += f"Traceback:\n{traceback.format_exc()}"
                     QMessageBox.critical(preview_dialog, "Segmentation Error - Recursion", 
@@ -3148,14 +3141,14 @@ class ProcessingTab(QWidget):
                     return None
                 except TypeError as e:
                     # Handle the specific "'>' not supported between instances of 'NoneType' and 'int'" error
-                    # This is a known bug in omnipose when running in PyInstaller bundles
+                    # This is a known bug in omnipose when running in frozen builds
                     if "'>' not supported between instances of 'NoneType'" in str(e) or "'<' not supported between instances of 'NoneType'" in str(e):
                         import sys
                         is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
                         
-                        # This error occurs in frozen builds (PyInstaller/Nuitka) due to a bug in omnipose/core.py
+                        # This error occurs in frozen builds (Nuitka) due to a bug in omnipose/core.py
                         # Try different diameter values as workaround
-                        retry_diameters = [30.0, 25.0, 35.0, 20.0, 40.0] if is_pyinstaller else []
+                        retry_diameters = [30.0, 25.0, 35.0, 20.0, 40.0] if is_frozen else []
                         
                         if retry_diameters:
                             for retry_diameter in retry_diameters:
@@ -3164,7 +3157,7 @@ class ProcessingTab(QWidget):
                                 
                                 try:
                                     QMessageBox.warning(preview_dialog, "Omnipose Bug Workaround", 
-                                                      f"Encountered a known bug in omnipose (PyInstaller compatibility issue).\n"
+                                                      f"Encountered a known bug in omnipose (frozen build compatibility issue).\n"
                                                       f"Retrying with diameter={retry_diameter} pixels...")
                                     mask, flows, styles, diams = preview_dialog.model.eval(
                                         frame,
@@ -3191,7 +3184,7 @@ class ProcessingTab(QWidget):
                                     if retry_diameter == retry_diameters[-1]:
                                         # Last attempt failed, show error
                                         import traceback
-                                        error_details = f"Known omnipose bug in PyInstaller builds.\n\n"
+                                        error_details = f"Known omnipose bug in frozen builds.\n\n"
                                         error_details += f"Original error: {str(e)}\n\n"
                                         error_details += f"Tried diameters: {[diameter] + retry_diameters}\n"
                                         error_details += f"All attempts failed. Last error: {str(e2)}\n\n"
@@ -3202,7 +3195,7 @@ class ProcessingTab(QWidget):
                                         return None
                                     continue
                         else:
-                            # Not a PyInstaller build, or no retry diameters
+                            # Not a frozen build, or no retry diameters
                             import traceback
                             error_details = f"TypeError in omnipose: {str(e)}\n\n"
                             error_details += f"This may be a bug in omnipose. Please try setting a specific diameter value.\n\n"
@@ -3466,7 +3459,7 @@ class ProcessingTab(QWidget):
             if 'torch.testing' in error_msg:
                 QMessageBox.warning(self, "Preview Unavailable", 
                                   "Preview requires torch.testing module.\n\n"
-                                  "This is a known issue with PyInstaller builds.\n"
+                                  "This is a known issue with frozen builds.\n"
                                   "The preview feature may not work in the packaged application.\n\n"
                                   "Try running from source: python omnipose_batch_gui.py")
             else:
@@ -3480,7 +3473,7 @@ class ProcessingTab(QWidget):
             if 'RpcBackendOptions' in error_msg or 'generic_type' in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "PyTorch initialization error detected.\n\n"
-                                  "This is a known issue with PyInstaller and PyTorch.\n"
+                                  "This is a known issue with frozen builds and PyTorch.\n"
                                   "The preview feature may not work in the packaged application.\n\n"
                                   "Try:\n"
                                   "1. Restart the application\n"
@@ -3490,7 +3483,7 @@ class ProcessingTab(QWidget):
             elif 'Versioning for this project requires' in error_msg or 'pbr.version.VersionInfo' in error_msg or 'mgen' in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "Package versioning error detected.\n\n"
-                                  "This is a known issue with PyInstaller and the mgen package.\n"
+                                  "This is a known issue with frozen builds and the mgen package.\n"
                                   "The preview feature may not work in the packaged application.\n\n"
                                   "Try:\n"
                                   "1. Restart the application\n"

@@ -371,19 +371,23 @@ python analyze_cell_areas.py input_masks.tif --pixel-size 0.108 --max-area 50 --
 
 ## Building Executables
 
-BactiMate can be packaged into standalone executables for Windows (.exe) and macOS (.dmg) using PyInstaller.
+BactiMate can be packaged into standalone executables for Windows (.exe) and macOS (.app/.dmg) using Nuitka.
 
 ### Prerequisites
 
-1. **Install PyInstaller:**
+1. **Install Nuitka:**
    ```bash
-   pip install pyinstaller
+   pip install nuitka
    ```
 
 2. **For macOS DMG creation (optional):**
    ```bash
    brew install create-dmg
    ```
+
+3. **Python Requirements:**
+   - macOS: Use CPython from python.org or Homebrew (not Apple's system Python)
+   - Windows: Standard Python installation
 
 ### macOS Build
 
@@ -392,23 +396,18 @@ BactiMate can be packaged into standalone executables for Windows (.exe) and mac
 ./create_icons.sh
 
 # 2. Build the app
-./build_macos.sh
+./build_nuitka_macos.sh
 
-# 3. Create DMG
+# 3. Create DMG (optional)
 ./create_dmg.sh
 ```
 
-**Output:** `dist/BactiMate.app` and `dist/BactiMate.dmg`
+**Output:** `dist/BactiMate.app` and optionally `dist/BactiMate.dmg`
 
 ### Windows Build
 
 ```cmd
-build_windows.bat
-```
-
-Or manually:
-```cmd
-pyinstaller BactiMate.spec
+build_nuitka_windows.bat
 ```
 
 **Output:** `dist\BactiMate.exe`
@@ -516,7 +515,8 @@ python check_tiff_format.py input.tif output.tif
 - `setup_fresh_env.sh` - Setup fresh virtual environment
 - `repair_pyqt5.sh` - Repair PyQt5 installation
 - `clear_models.sh` - Clear corrupted model cache
-- `build_macos.sh` - Build macOS application bundle
+- `build_nuitka_macos.sh` - Build macOS application bundle with Nuitka
+- `build_nuitka_windows.bat` - Build Windows executable with Nuitka
 - `create_dmg.sh` - Create macOS DMG file
 - `create_icons.sh` - Create application icons
 
