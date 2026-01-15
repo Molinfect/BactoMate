@@ -280,11 +280,11 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QTabWidget, QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox,
         QGroupBox, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QTextEdit,
-        QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QShortcut, QRadioButton, QListWidget, QSizePolicy
+        QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QRadioButton, QListWidget, QSizePolicy
     )
     
     from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize
-    from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence, QCursor
+    from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence, QShortcut, QCursor
 except ImportError as e:
     print(f"ERROR: Failed to import PyQt6: {e}", file=sys.stderr)
     print("This usually means PyQt6 is not installed or there's a Qt plugin issue.", file=sys.stderr)
