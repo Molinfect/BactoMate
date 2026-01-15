@@ -92,8 +92,6 @@ python3 -m nuitka \
     --macos-app-icon=BactiMate.icns \
     --macos-app-name=BactiMate \
     --macos-app-version=1.0.0 \
-    --macos-disable-code-signing \
-    --macos-remove-signature \
     --macos-app-protected-resource=NSMicrophoneUsageDescription:"BactiMate needs microphone access" \
     --macos-app-protected-resource=NSCameraUsageDescription:"BactiMate needs camera access" \
     --output-dir=dist \
