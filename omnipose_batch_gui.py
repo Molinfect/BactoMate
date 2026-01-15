@@ -4828,7 +4828,6 @@ class MainWindow(QMainWindow):
 def main():
     # Qt plugin paths should already be set by launch_gui.sh or module-level code
     # Set library paths programmatically as well (Qt reads this)
-    global sys  # Needed because we assign to sys.excepthook later
     if sys.platform == 'darwin':
         plugins_dir = os.environ.get('QT_PLUGIN_PATH')
         if plugins_dir:
@@ -4841,7 +4840,9 @@ def main():
     
     # Install custom exception handler for PyQt6 to prevent abort() on exceptions in slots
     # PyQt6 calls abort() by default when exceptions occur in slots, which crashes the app
-    original_excepthook = sys.excepthook
+    # Note: We use the module-level sys, not a local variable
+    import sys as _sys_module
+    original_excepthook = _sys_module.excepthook
     def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
         """Custom exception handler that prevents PyQt6 from aborting"""
         # Print the exception to stderr
@@ -4849,7 +4850,7 @@ def main():
         traceback.print_exception(exc_type, exc_value, exc_traceback)
         # Don't call abort() - let the exception propagate or be handled
         # This prevents PyQt6's default behavior of calling abort()
-    sys.excepthook = pyqt6_exception_handler
+    _sys_module.excepthook = pyqt6_exception_handler
     
     try:
         app = QApplication(sys.argv)
