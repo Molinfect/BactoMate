@@ -145,6 +145,12 @@ fi
 # Ad-hoc signing is less strict and works for local distribution
 if [ -d "dist/BactiMate.app" ]; then
     echo "Removing extended attributes that can interfere with signing..."
+    # Use ditto to copy files which removes extended attributes, then sign
+    TEMP_DIR=$(mktemp -d)
+    ditto "dist/BactiMate.app/Contents/MacOS/BactiMate" "$TEMP_DIR/BactiMate" 2>/dev/null || cp "dist/BactiMate.app/Contents/MacOS/BactiMate" "$TEMP_DIR/BactiMate"
+    mv "$TEMP_DIR/BactiMate" "dist/BactiMate.app/Contents/MacOS/BactiMate"
+    rm -rf "$TEMP_DIR"
+    
     xattr -cr dist/BactiMate.app 2>/dev/null || true
     
     echo "Applying ad-hoc code signatures to bundled libraries and executables..."
