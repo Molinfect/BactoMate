@@ -33,24 +33,28 @@ export QT_AUTO_SCREEN_SCALE_FACTOR=1
 
 # Set framework path for Qt libraries (needed for plugins to find Qt frameworks)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-QT_LIB_DIR="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/lib"
+
+# Detect Python version dynamically (works with 3.9, 3.10, 3.11, etc.)
+PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.9")
+
+QT_LIB_DIR="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/lib"
 if [ -d "$QT_LIB_DIR" ]; then
     export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$DYLD_FRAMEWORK_PATH"
     export QT_FRAMEWORK_PATH="$QT_LIB_DIR"
 fi
 
-# Find Qt platform plugins in venv - use absolute path
-VENV_QT_PLUGINS="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins"
+# Find Qt platform plugins in venv - use absolute path with detected Python version
+VENV_QT_PLUGINS="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/plugins"
 if [ -d "$VENV_QT_PLUGINS" ]; then
     export QT_PLUGIN_PATH="$VENV_QT_PLUGINS"
     # Also set QML2_IMPORT_PATH if needed
-    export QML2_IMPORT_PATH="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/qml"
+    export QML2_IMPORT_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/qml"
     # Verify the cocoa plugin exists
     if [ ! -f "$VENV_QT_PLUGINS/platforms/libqcocoa.dylib" ]; then
         echo "WARNING: Cocoa plugin not found. Running repair script..." >&2
         "$SCRIPT_DIR/repair_pyqt5.sh"
         # Re-export after potential repair
-        export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins"
+        export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/plugins"
     fi
 else
     echo "WARNING: Qt plugins directory not found. Running repair script..." >&2
@@ -82,8 +86,8 @@ if [ "$PYQT5_OK" = false ]; then
 fi
 
 # Ensure all environment variables are set before launching
-# Re-export to make absolutely sure they're set
-export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins"
+# Re-export to make absolutely sure they're set (using detected Python version)
+export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/plugins"
 if [ -d "$QT_LIB_DIR" ]; then
     # Remove any system Qt paths from DYLD_FRAMEWORK_PATH to avoid conflicts
     if [ -n "$DYLD_FRAMEWORK_PATH" ]; then
