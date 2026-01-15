@@ -3435,8 +3435,9 @@ class ProcessingTab(QWidget):
             
             # Show cache info in status
             def update_cache_status():
-                cache_size = len(preview_dialog.segmentation_cache)
-                if cache_size > 0:
+                try:
+                    cache_size = len(preview_dialog.segmentation_cache)
+                    if cache_size > 0:
                     status_label.setText(f"Ready (cached: {cache_size})")
                 else:
                     status_label.setText("Ready")
@@ -3514,6 +3515,12 @@ class ProcessingTab(QWidget):
                 QMessageBox.critical(self, "Preview Error", f"Could not preview segmentation:\n{error_msg}")
             import traceback
             traceback.print_exc()
+        except Exception as e:
+            # PyQt6 is strict about exceptions in slots - catch and show error dialog
+            # This outer try-except catches any exceptions not handled by inner handlers
+            import traceback
+            error_msg = f"Error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            QMessageBox.critical(self, "Preview Error", error_msg)
     
     def process_file_or_folder(self):
         if not self.file_path.text():
