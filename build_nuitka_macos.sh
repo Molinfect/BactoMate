@@ -134,6 +134,11 @@ if [ -d "dist/omnipose_batch_gui.app" ] && [ ! -d "dist/BactiMate.app" ]; then
     mv "dist/omnipose_batch_gui.app" "dist/BactiMate.app"
 fi
 
+# Ensure executable has proper permissions (Nuitka sometimes creates files without execute bit)
+if [ -f "dist/BactiMate.app/Contents/MacOS/BactiMate" ]; then
+    chmod +x "dist/BactiMate.app/Contents/MacOS/BactiMate"
+fi
+
 # Check if .app was created
 if [ -d "dist/BactiMate.app" ]; then
     echo ""
