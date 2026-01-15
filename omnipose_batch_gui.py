@@ -2294,16 +2294,15 @@ class ProcessingTab(QWidget):
     
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
-        try:
-            if not self.file_path.text():
-                QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
-                return
-            
-            if not Path(self.file_path.text()).exists():
-                QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
-                return
-            
-            is_folder = self._is_folder_mode()
+        if not self.file_path.text():
+            QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
+            return
+        
+        if not Path(self.file_path.text()).exists():
+            QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
+            return
+        
+        is_folder = self._is_folder_mode()
         if is_folder:
             # Folder mode: show file selection dialog first
             folder = Path(self.file_path.text())
@@ -3514,12 +3513,13 @@ class ProcessingTab(QWidget):
                 QMessageBox.critical(self, "Preview Error", f"Could not preview segmentation:\n{error_msg}")
             import traceback
             traceback.print_exc()
-        except Exception as e:
-            # PyQt6 is strict about exceptions in slots - catch and show error dialog
+        except BaseException as e:
+            # PyQt6 is strict about exceptions in slots - catch ALL exceptions (including SystemExit, KeyboardInterrupt)
             # This outer try-except catches any exceptions not handled by inner handlers
             import traceback
-            error_msg = f"Error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            error_msg = f"Unexpected error in preview segmentation:\n{str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             QMessageBox.critical(self, "Preview Error", error_msg)
+            # Don't re-raise - PyQt6 will abort if we do
     
     def process_file_or_folder(self):
         if not self.file_path.text():
