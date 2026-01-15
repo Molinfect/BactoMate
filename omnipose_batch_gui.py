@@ -516,7 +516,7 @@ class ND2ConversionTab(QWidget):
         file_font.setPointSize(11)
         self.file_path.setFont(file_font)
         # Fix size to minimum - prevent expansion
-        size_policy = QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.file_path.setSizePolicy(size_policy)
         file_btn = QPushButton("Browse File...")
         file_btn.setFixedWidth(120)  # Fixed width for buttons
@@ -666,7 +666,7 @@ class ND2ConversionTab(QWidget):
         output_font.setPointSize(11)
         self.output_dir.setFont(output_font)
         # Fix size to minimum - prevent expansion
-        size_policy = QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.output_dir.setSizePolicy(size_policy)
         output_btn = QPushButton("Browse...")
         output_btn.setFixedWidth(120)  # Fixed width for buttons
@@ -692,7 +692,7 @@ class ND2ConversionTab(QWidget):
         metadata_font.setPointSize(13)  # Increased font size for better readability
         self.metadata_text.setFont(metadata_font)
         # Prevent vertical expansion - only allow horizontal
-        size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.metadata_text.setSizePolicy(size_policy)
         metadata_layout.addWidget(self.metadata_text)
         
@@ -1995,7 +1995,7 @@ class ProcessingTab(QWidget):
         file_font.setPointSize(11)
         self.file_path.setFont(file_font)
         # Fix size to minimum - prevent expansion
-        size_policy = QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.file_path.setSizePolicy(size_policy)
         file_btn = QPushButton("Browse File...")
         file_btn.setFixedWidth(120)  # Fixed width for buttons
@@ -3616,7 +3616,7 @@ class AnalyzeMasksTab(QWidget):
         file_font.setPointSize(11)
         self.file_path.setFont(file_font)
         # Fix size to minimum - prevent expansion
-        size_policy = QSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.file_path.setSizePolicy(size_policy)
         file_btn = QPushButton("Browse File...")
         file_btn.setFixedWidth(120)  # Fixed width for buttons
@@ -4718,7 +4718,7 @@ class MainWindow(QMainWindow):
         self.log_text.setMinimumHeight(100)  # Increased for better visibility
         self.log_text.setMaximumHeight(150)  # Prevent excessive expansion
         # Prevent vertical expansion
-        log_size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        log_size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.log_text.setSizePolicy(log_size_policy)
         log_layout.addWidget(self.log_text)
         log_group.setLayout(log_layout)
