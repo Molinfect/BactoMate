@@ -2296,8 +2296,8 @@ class ProcessingTab(QWidget):
         """Preview segmentation on a single frame or file from folder"""
         try:
             if not self.file_path.text():
-            QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
-            return
+                QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
+                return
         
         if not Path(self.file_path.text()).exists():
             QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
@@ -3435,9 +3435,8 @@ class ProcessingTab(QWidget):
             
             # Show cache info in status
             def update_cache_status():
-                try:
-                    cache_size = len(preview_dialog.segmentation_cache)
-                    if cache_size > 0:
+                cache_size = len(preview_dialog.segmentation_cache)
+                if cache_size > 0:
                     status_label.setText(f"Ready (cached: {cache_size})")
                 else:
                     status_label.setText("Ready")
