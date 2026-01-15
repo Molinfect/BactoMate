@@ -60,13 +60,13 @@ else
     echo "WARNING: requirements.txt not found!"
 fi
 
-# Step 6: Verify PyQt5 installation
+# Step 6: Verify PyQt6 installation
 echo ""
-echo "Verifying PyQt5 installation..."
-python3 -c "import PyQt5; print('✓ PyQt5 imported successfully')" || {
-    echo "✗ PyQt5 import failed. Installing PyQt5..."
-    pip install "PyQt5==5.15.10"
-    python3 -c "import PyQt5; print('✓ PyQt5 installed and imported')"
+echo "Verifying PyQt6 installation..."
+python3 -c "import PyQt6; print('✓ PyQt6 imported successfully')" || {
+    echo "✗ PyQt6 import failed. Installing PyQt6..."
+    pip install "PyQt6>=6.6.0"
+    python3 -c "import PyQt6; print('✓ PyQt6 installed and imported')"
 }
 
 # Step 7: Check for cocoa plugin
@@ -87,16 +87,17 @@ else
     fi
 fi
 
-# Step 8: Test PyQt5
+# Step 8: Test PyQt6
 echo ""
-echo "Testing PyQt5 (this may take a moment)..."
+echo "Testing PyQt6 (this may take a moment)..."
+PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.9")
 TEST_OUTPUT=$(python3 -c "
 import sys, os
 script_dir = '$SCRIPT_DIR'
-os.environ['QT_PLUGIN_PATH'] = script_dir + '/venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins'
-from PyQt5.QtCore import QCoreApplication
+os.environ['QT_PLUGIN_PATH'] = script_dir + '/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'
+from PyQt6.QtCore import QCoreApplication
 QCoreApplication.setLibraryPaths([os.environ['QT_PLUGIN_PATH']])
-from PyQt5.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication
 app = QApplication(sys.argv)
 print('SUCCESS')
 " 2>&1)
