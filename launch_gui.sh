@@ -37,57 +37,57 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Detect Python version dynamically (works with 3.9, 3.10, 3.11, etc.)
 PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.9")
 
-QT_LIB_DIR="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/lib"
+QT_LIB_DIR="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/lib"
 if [ -d "$QT_LIB_DIR" ]; then
     export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$DYLD_FRAMEWORK_PATH"
     export QT_FRAMEWORK_PATH="$QT_LIB_DIR"
 fi
 
 # Find Qt platform plugins in venv - use absolute path with detected Python version
-VENV_QT_PLUGINS="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/plugins"
+VENV_QT_PLUGINS="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
 if [ -d "$VENV_QT_PLUGINS" ]; then
     export QT_PLUGIN_PATH="$VENV_QT_PLUGINS"
     # Also set QML2_IMPORT_PATH if needed
-    export QML2_IMPORT_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/qml"
+    export QML2_IMPORT_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/qml"
     # Verify the cocoa plugin exists
     if [ ! -f "$VENV_QT_PLUGINS/platforms/libqcocoa.dylib" ]; then
         echo "WARNING: Cocoa plugin not found. Running repair script..." >&2
-        "$SCRIPT_DIR/repair_pyqt5.sh"
+        "$SCRIPT_DIR/repair_pyqt6.sh"
         # Re-export after potential repair
-        export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/plugins"
+        export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
     fi
 else
     echo "WARNING: Qt plugins directory not found. Running repair script..." >&2
-    "$SCRIPT_DIR/repair_pyqt5.sh"
+    "$SCRIPT_DIR/repair_pyqt6.sh"
     # Re-export after potential repair
-    export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins"
+    export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
 fi
 
-# Verify PyQt5 is installed and plugin exists
+# Verify PyQt6 is installed and plugin exists
 # Check both import and plugin file existence
-PYQT5_OK=false
-if python3 -c "import PyQt5" 2>/dev/null; then
+PYQT6_OK=false
+if python3 -c "import PyQt6" 2>/dev/null; then
     if [ -f "$VENV_QT_PLUGINS/platforms/libqcocoa.dylib" ]; then
-        PYQT5_OK=true
+        PYQT6_OK=true
     fi
 fi
 
-if [ "$PYQT5_OK" = false ]; then
-    echo "PyQt5 issue detected. Running automatic repair..." >&2
-    if "$SCRIPT_DIR/repair_pyqt5.sh" >/dev/null 2>&1; then
+if [ "$PYQT6_OK" = false ]; then
+    echo "PyQt6 issue detected. Running automatic repair..." >&2
+    if "$SCRIPT_DIR/repair_pyqt6.sh" >/dev/null 2>&1; then
         # Re-export after repair
-        export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins"
+        export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
         export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$DYLD_FRAMEWORK_PATH"
         echo "Repair completed successfully." >&2
     else
-        echo "Automatic repair failed. Please run: ./repair_pyqt5.sh manually" >&2
+        echo "Automatic repair failed. Please run: ./repair_pyqt6.sh manually" >&2
         exit 1
     fi
 fi
 
 # Ensure all environment variables are set before launching
 # Re-export to make absolutely sure they're set (using detected Python version)
-export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt5/Qt5/plugins"
+export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
 if [ -d "$QT_LIB_DIR" ]; then
     # Remove any system Qt paths from DYLD_FRAMEWORK_PATH to avoid conflicts
     if [ -n "$DYLD_FRAMEWORK_PATH" ]; then

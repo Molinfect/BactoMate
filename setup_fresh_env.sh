@@ -72,13 +72,14 @@ python3 -c "import PyQt5; print('✓ PyQt5 imported successfully')" || {
 # Step 7: Check for cocoa plugin
 echo ""
 echo "Checking for Qt cocoa plugin..."
-PLUGIN_PATH="venv/lib/python3.9/site-packages/PyQt5/Qt5/plugins/platforms/libqcocoa.dylib"
+PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.9")
+PLUGIN_PATH="venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
 if [ -f "$PLUGIN_PATH" ]; then
     echo "✓ Cocoa plugin found at: $PLUGIN_PATH"
 else
-    echo "✗ Cocoa plugin not found. Reinstalling PyQt5..."
-    pip uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip 2>/dev/null || true
-    pip install --no-cache-dir "PyQt5==5.15.10"
+    echo "✗ Cocoa plugin not found. Reinstalling PyQt6..."
+    pip uninstall -y PyQt6 PyQt6-Qt6 PyQt6-sip 2>/dev/null || true
+    pip install --no-cache-dir "PyQt6>=6.6.0"
     if [ -f "$PLUGIN_PATH" ]; then
         echo "✓ Cocoa plugin now found"
     else
@@ -101,14 +102,14 @@ print('SUCCESS')
 " 2>&1)
 
 if echo "$TEST_OUTPUT" | grep -q "SUCCESS"; then
-    echo "✓ PyQt5 test passed!"
+    echo "✓ PyQt6 test passed!"
 else
-    echo "✗ PyQt5 test failed:"
+    echo "✗ PyQt6 test failed:"
     echo "$TEST_OUTPUT" | head -5
     echo ""
     echo "Running repair script..."
-    if [ -f "repair_pyqt5.sh" ]; then
-        ./repair_pyqt5.sh
+    if [ -f "repair_pyqt6.sh" ]; then
+        ./repair_pyqt6.sh
     fi
 fi
 

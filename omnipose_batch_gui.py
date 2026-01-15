@@ -276,19 +276,19 @@ if abs_plugin_path:
 
 # Import PyQt5 - paths should already be set above
 try:
-    from PyQt5.QtWidgets import (
+    from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QTabWidget, QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox,
         QGroupBox, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QTextEdit,
-        QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QShortcut, QRadioButton, QListWidget, QDesktopWidget, QSizePolicy
+        QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QShortcut, QRadioButton, QListWidget, QSizePolicy
     )
     
-    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize
-    from PyQt5.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize
+    from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence, QCursor
 except ImportError as e:
-    print(f"ERROR: Failed to import PyQt5: {e}", file=sys.stderr)
-    print("This usually means PyQt5 is not installed or there's a Qt plugin issue.", file=sys.stderr)
-    print("Try running: ./repair_pyqt5.sh", file=sys.stderr)
+    print(f"ERROR: Failed to import PyQt6: {e}", file=sys.stderr)
+    print("This usually means PyQt6 is not installed or there's a Qt plugin issue.", file=sys.stderr)
+    print("Try running: ./repair_pyqt6.sh", file=sys.stderr)
     sys.exit(1)
 
 # Import our existing scripts - we'll call them via subprocess to handle argparse properly
@@ -343,12 +343,14 @@ class ClickableTooltip(QLabel):
         tooltip.setMaximumWidth(400)
         tooltip.adjustSize()
         
-        # Ensure tooltip stays on screen
-        screen_rect = QApplication.desktop().screenGeometry()
-        if tooltip_pos.x() + tooltip.width() > screen_rect.width():
-            tooltip_pos.setX(screen_rect.width() - tooltip.width() - 10)
-        if tooltip_pos.y() + tooltip.height() > screen_rect.height():
-            tooltip_pos.setY(icon_global_pos.y() - tooltip.height())
+        # Ensure tooltip stays on screen (PyQt6: use QScreen instead of QDesktopWidget)
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_rect = screen.geometry()
+            if tooltip_pos.x() + tooltip.width() > screen_rect.width():
+                tooltip_pos.setX(screen_rect.width() - tooltip.width() - 10)
+            if tooltip_pos.y() + tooltip.height() > screen_rect.height():
+                tooltip_pos.setY(icon_global_pos.y() - tooltip.height())
         
         tooltip.move(tooltip_pos)
         tooltip.show()
@@ -2394,7 +2396,7 @@ class ProcessingTab(QWidget):
             file_dialog.setLayout(layout)
             
             # Show dialog
-            if file_dialog.exec_() != QDialog.Accepted:
+            if file_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             
             # Get selected file
@@ -4092,7 +4094,7 @@ class AnalyzeMasksTab(QWidget):
             file_dialog.setLayout(layout)
             
             # Show dialog
-            if file_dialog.exec_() != QDialog.Accepted:
+            if file_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             
             # Get selected file
@@ -4736,13 +4738,17 @@ class MainWindow(QMainWindow):
         self.log_output("Select a tab and configure parameters to begin.\n\n")
     
     def _center_window(self):
-        """Center the window on the screen"""
+        """Center the window on the screen (PyQt6: use QScreen instead of QDesktopWidget)"""
         frame_geometry = self.frameGeometry()
-        desktop = QApplication.desktop()
-        screen = desktop.screenNumber(desktop.cursor().pos())
-        center_point = desktop.screenGeometry(screen).center()
-        frame_geometry.moveCenter(center_point)
-        self.move(frame_geometry.topLeft())
+        # Get screen at cursor position, or primary screen as fallback
+        cursor_pos = QCursor.pos()
+        screen = QApplication.screenAt(cursor_pos)
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen:
+            center_point = screen.geometry().center()
+            frame_geometry.moveCenter(center_point)
+            self.move(frame_geometry.topLeft())
     
     def log_output(self, message):
         """Append message to log output and update progress bar if needed"""
@@ -4805,7 +4811,7 @@ def main():
         window = MainWindow()
         window.show()
         
-        sys.exit(app.exec_())
+        sys.exit(app.exec())
     except Exception as e:
         print(f"Error starting GUI: {e}", file=sys.stderr)
         import traceback

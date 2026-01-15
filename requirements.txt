@@ -15,8 +15,8 @@ readlif>=0.6.4  # Alternative LIF reader
 czifile>=2019.7.2  # Alternative CZI reader (optional, aicsimageio preferred)
 
 # GUI framework
-# Pin to 5.15.10 for macOS compatibility (newer versions can have cocoa plugin issues)
-PyQt5==5.15.10
+# PyQt6 for better macOS support and active development
+PyQt6>=6.6.0
 
 # Data analysis and export
 pandas>=1.3.0

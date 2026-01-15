@@ -82,7 +82,7 @@ echo ""
 echo "Building with Nuitka (this may take a while)..."
 echo ""
 echo "NOTE: QML warnings about Qt Quick 3D files are safe to ignore -"
-echo "      we use PyQt5 widgets, not QML, so these files aren't needed."
+echo "      we use PyQt6 widgets, not QML, so these files aren't needed."
 echo ""
 
 # Start progress monitor in background to show build progress
@@ -123,7 +123,7 @@ python3 -m nuitka \
     --follow-imports \
     --include-package=omnipose \
     --include-package=cellpose_omni \
-    --include-package=PyQt5 \
+    --include-package=PyQt6 \
     --include-package=numpy \
     --include-package=scipy \
     --include-package=skimage \
@@ -131,17 +131,17 @@ python3 -m nuitka \
     --include-package=matplotlib \
     --include-package-data=omnipose \
     --include-package-data=cellpose_omni \
-    --include-package-data=PyQt5 \
-    --enable-plugin=pyqt5 \
+    --include-package-data=PyQt6 \
+    --enable-plugin=pyqt6 \
     --nofollow-import-to=tkinter \
     --nofollow-import-to=matplotlib.tests \
     --nofollow-import-to=numpy.tests \
     --nofollow-import-to=scipy.tests \
     --nofollow-import-to=pandas.tests \
-    --nofollow-import-to=PyQt5.QtQml \
-    --nofollow-import-to=PyQt5.QtQuick \
-    --nofollow-import-to=PyQt5.QtQuick3D \
-    omnipose_batch_gui.py 2>&1 | grep -v "WARNING: pyqt5: Including QML file" | tee /tmp/nuitka_build.log
+    --nofollow-import-to=PyQt6.QtQml \
+    --nofollow-import-to=PyQt6.QtQuick \
+    --nofollow-import-to=PyQt6.QtQuick3D \
+    omnipose_batch_gui.py 2>&1 | grep -v "WARNING: pyqt6: Including QML file" | tee /tmp/nuitka_build.log
 
 BUILD_EXIT_CODE=${PIPESTATUS[0]}
 

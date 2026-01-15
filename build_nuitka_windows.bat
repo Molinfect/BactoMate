@@ -44,7 +44,7 @@ python -m nuitka ^
     --follow-imports ^
     --include-package=omnipose ^
     --include-package=cellpose_omni ^
-    --include-package=PyQt5 ^
+    --include-package=PyQt6 ^
     --include-package=numpy ^
     --include-package=scipy ^
     --include-package=skimage ^
@@ -52,8 +52,8 @@ python -m nuitka ^
     --include-package=matplotlib ^
     --include-package-data=omnipose ^
     --include-package-data=cellpose_omni ^
-    --include-package-data=PyQt5 ^
-    --enable-plugin=pyqt5 ^
+    --include-package-data=PyQt6 ^
+    --enable-plugin=pyqt6 ^
     --nofollow-import-to=tkinter ^
     --nofollow-import-to=matplotlib.tests ^
     --nofollow-import-to=numpy.tests ^
