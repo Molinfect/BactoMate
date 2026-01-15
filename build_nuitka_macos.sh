@@ -53,6 +53,7 @@ echo ""
 
 python3 -m nuitka \
     --standalone \
+    --static-libpython=no \
     --macos-create-app-bundle \
     --macos-app-icon=BactiMate.icns \
     --macos-app-name=BactiMate \
