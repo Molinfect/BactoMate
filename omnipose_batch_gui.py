@@ -150,7 +150,7 @@ if is_frozen:
     # Note: We can't easily monkeypatch __import__ without breaking things
     # Instead, we'll patch it when omnipose is actually used (in load_model)
 
-# CRITICAL: Set Qt paths BEFORE any Qt imports (PyQt5 or matplotlib Qt backend)
+# CRITICAL: Set Qt paths BEFORE any Qt imports (PyQt6 or matplotlib Qt backend)
 # This prevents conflicts with system Qt (Homebrew/conda) installations
 # Also handles Nuitka frozen executables
 
@@ -170,12 +170,12 @@ abs_lib_dir = None
 if sys.platform in ['darwin', 'win32']:
     # For compiled bundles (Nuitka), plugins are in the bundle
     if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
-        # In compiled bundle, plugins are at PyQt5/Qt5/plugins relative to base_path
-        plugin_candidate = os.path.join(base_path, 'PyQt5', 'Qt5', 'plugins')
+        # In compiled bundle, plugins are at PyQt6/Qt6/plugins relative to base_path
+        plugin_candidate = os.path.join(base_path, 'PyQt6', 'Qt6', 'plugins')
         if os.path.exists(plugin_candidate):
             abs_plugin_path = os.path.abspath(plugin_candidate)
             if sys.platform == 'darwin':
-                lib_candidate = os.path.join(base_path, 'PyQt5', 'Qt5', 'lib')
+                lib_candidate = os.path.join(base_path, 'PyQt6', 'Qt6', 'lib')
                 abs_lib_dir = os.path.abspath(lib_candidate) if os.path.exists(lib_candidate) else None
     else:
         # Running as script - use original logic
@@ -184,7 +184,7 @@ if sys.platform in ['darwin', 'win32']:
         # Detect Python version and venv directory dynamically
         python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
         
-        # Try to find PyQt5 in the current Python environment
+        # Try to find PyQt6 in the current Python environment
         # First, try to find it relative to the script (for venv scenarios)
         venv_candidates = [
             os.path.join(script_dir, 'venv_py310'),  # Python 3.10+ venv
@@ -197,17 +197,17 @@ if sys.platform in ['darwin', 'win32']:
             venv_base = sys.prefix
             venv_candidates.insert(0, venv_base)
         
-        # Search for PyQt5 plugins in candidate locations
+        # Search for PyQt6 plugins in candidate locations
         for venv_dir in venv_candidates:
             if not os.path.exists(venv_dir):
                 continue
             
             # Try the detected Python version first, then try common versions
             for py_ver in [python_version, 'python3.11', 'python3.10', 'python3.9']:
-                candidate = os.path.join(venv_dir, 'lib', py_ver, 'site-packages', 'PyQt5', 'Qt5', 'plugins')
+                candidate = os.path.join(venv_dir, 'lib', py_ver, 'site-packages', 'PyQt6', 'Qt6', 'plugins')
                 if os.path.exists(candidate):
                     abs_plugin_path = os.path.abspath(candidate)
-                    qt_lib_candidate = os.path.join(venv_dir, 'lib', py_ver, 'site-packages', 'PyQt5', 'Qt5', 'lib')
+                    qt_lib_candidate = os.path.join(venv_dir, 'lib', py_ver, 'site-packages', 'PyQt6', 'Qt6', 'lib')
                     if os.path.exists(qt_lib_candidate):
                         abs_lib_dir = os.path.abspath(qt_lib_candidate)
                     break
@@ -215,7 +215,7 @@ if sys.platform in ['darwin', 'win32']:
             if abs_plugin_path:
                 break
         
-        # If not found in venv candidates, try to find PyQt5 in site-packages
+        # If not found in venv candidates, try to find PyQt6 in site-packages
         if not abs_plugin_path:
             try:
                 import PyQt5
