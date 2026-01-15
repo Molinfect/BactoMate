@@ -316,7 +316,7 @@ class ClickableTooltip(QLabel):
             "}"
         )
         self.setWordWrap(True)
-        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.hide()
     
     @classmethod
@@ -4659,7 +4659,7 @@ class MainWindow(QMainWindow):
         else:
             logo_label.setText("BactiMate")
             logo_label.setStyleSheet("font-size: 20pt; font-weight: bold; color: #ECF0F1;")
-        logo_label.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
         title_bar_layout.addWidget(logo_label)
         
         # Title text
@@ -4673,7 +4673,7 @@ class MainWindow(QMainWindow):
             "padding-left: 15px;"
             "}"
         )
-        title_text.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+        title_text.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
         title_bar_layout.addWidget(title_text)
         
         # Add stretch to center content
