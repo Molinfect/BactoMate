@@ -1719,7 +1719,7 @@ class ND2ConversionTab(QWidget):
             if 'torch.testing' in error_msg:
                 QMessageBox.warning(self, "Preview Unavailable", 
                                   "Preview requires torch.testing module.\n\n"
-                                  "This is a known issue with PyInstaller builds.\n"
+                                  "This is a known issue with frozen builds.\n"
                                   "Try running from source: python omnipose_batch_gui.py")
             else:
                 QMessageBox.warning(self, "Preview Unavailable", 
@@ -1729,7 +1729,7 @@ class ND2ConversionTab(QWidget):
             if 'RpcBackendOptions' in error_msg or 'generic_type' in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "PyTorch initialization error.\n\n"
-                                  "This is a known issue with PyInstaller and PyTorch.\n"
+                                  "This is a known issue with frozen builds and PyTorch.\n"
                                   "Try restarting the application or running from source.")
             else:
                 QMessageBox.critical(self, "Preview Error", f"Could not preview file:\n{error_msg}")
@@ -3494,7 +3494,7 @@ class ProcessingTab(QWidget):
             elif 'TorchScript requires source access' in error_msg or "Can't get source for" in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "TorchScript compilation error detected.\n\n"
-                                  "This is a known issue with PyInstaller and PyTorch's TorchScript.\n"
+                                  "This is a known issue with frozen builds and PyTorch's TorchScript.\n"
                                   "TorchScript requires access to original source files which aren't\n"
                                   "available in packaged applications.\n\n"
                                   "Try:\n"
