@@ -93,6 +93,7 @@ python3 -m nuitka \
     --macos-app-name=BactiMate \
     --macos-app-version=1.0.0 \
     --macos-disable-code-signing \
+    --macos-remove-signature \
     --macos-app-protected-resource=NSMicrophoneUsageDescription:"BactiMate needs microphone access" \
     --macos-app-protected-resource=NSCameraUsageDescription:"BactiMate needs camera access" \
     --output-dir=dist \
@@ -137,6 +138,15 @@ fi
 # Ensure executable has proper permissions (Nuitka sometimes creates files without execute bit)
 if [ -f "dist/BactiMate.app/Contents/MacOS/BactiMate" ]; then
     chmod +x "dist/BactiMate.app/Contents/MacOS/BactiMate"
+fi
+
+# Remove invalid code signatures from all libraries to prevent macOS from killing the app
+# This is necessary because some bundled libraries may have invalid signatures
+if [ -d "dist/BactiMate.app" ]; then
+    echo "Removing invalid code signatures from bundled libraries..."
+    find "dist/BactiMate.app/Contents/MacOS" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --remove-signature {} \; 2>/dev/null || true
+    # Also remove signature from main executable if it has one
+    codesign --remove-signature "dist/BactiMate.app/Contents/MacOS/BactiMate" 2>/dev/null || true
 fi
 
 # Check if .app was created
