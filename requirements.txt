@@ -36,4 +36,4 @@ natsort>=8.0.0
 torch>=1.9.0
 
 # Cell tracking
-# TODO: Add Python 3.9 compatible tracking solution
+trackastra>=0.1.0  # Cell tracking library for time-lapse data

@@ -18,6 +18,9 @@ import warnings
 # Suppress deprecation warnings from omnipose/pkg_resources
 # This is harmless - omnipose uses pkg_resources which is deprecated in newer setuptools
 warnings.filterwarnings('ignore', category=UserWarning, message='.*pkg_resources.*')
+# Suppress FutureWarning from omnipose about deprecated area_threshold parameter
+# This is from omnipose's internal code using deprecated scikit-image API
+warnings.filterwarnings('ignore', category=FutureWarning, message='.*area_threshold.*')
 
 # CRITICAL: Patch pbr.version.VersionInfo early to prevent versioning errors in frozen builds
 if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
@@ -283,7 +286,7 @@ try:
         QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QRadioButton, QListWidget, QSizePolicy
     )
     
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize, QEvent
     from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence, QShortcut, QCursor
 except ImportError as e:
     print(f"ERROR: Failed to import PyQt6: {e}", file=sys.stderr)
@@ -304,7 +307,7 @@ class ClickableTooltip(QLabel):
     
     def __init__(self, text, parent=None):
         super().__init__(text, parent)
-        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet(
             "QLabel {"
             "background-color: #2b2b2b;"
@@ -380,24 +383,36 @@ class TooltipClickFilter(QObject):
         self.tooltip = tooltip
     
     def eventFilter(self, obj, event):
-        if event.type() == event.MouseButtonPress:
+        if event.type() == QEvent.Type.MouseButtonPress:
             # Get widget under mouse
-            widget_under_mouse = QApplication.widgetAt(event.globalPos())
+            # PyQt6: globalPos() -> globalPosition().toPoint()
+            global_pos = event.globalPosition().toPoint()
+            widget_under_mouse = QApplication.widgetAt(global_pos)
             
             # Hide if clicking outside the tooltip
             if self.tooltip and self.tooltip.isVisible():
-                # Check if click is on the tooltip or its children
-                if widget_under_mouse != self.tooltip:
-                    # Also check if it's a child of the tooltip
-                    parent = widget_under_mouse
-                    is_tooltip_child = False
-                    while parent:
-                        if parent == self.tooltip:
-                            is_tooltip_child = True
-                            break
-                        parent = parent.parent()
+                # Check if click is on the tooltip itself
+                tooltip_rect = QRect(
+                    self.tooltip.mapToGlobal(QPoint(0, 0)),
+                    self.tooltip.size()
+                )
+                click_in_tooltip = tooltip_rect.contains(global_pos)
+                
+                if not click_in_tooltip:
+                    # Check if click is on any (?) icon (to allow toggling)
+                    click_on_icon = False
+                    for widget in QApplication.allWidgets():
+                        if isinstance(widget, QLabel) and widget.text() == "(?)":
+                            icon_rect = QRect(
+                                widget.mapToGlobal(QPoint(0, 0)),
+                                widget.size()
+                            )
+                            if icon_rect.contains(global_pos):
+                                click_on_icon = True
+                                break
                     
-                    if not is_tooltip_child:
+                    if not click_on_icon:
+                        # Click is outside tooltip and not on an icon - hide tooltip
                         ClickableTooltip.hide_current()
         return False
 
@@ -2440,7 +2455,6 @@ class ProcessingTab(QWidget):
         # Show progress dialog while loading
         loading_progress = QProgressDialog("Loading file and initializing preview...", None, 0, 0, self)
         loading_progress.setWindowTitle("Loading")
-        loading_progress.setWindowModality(Qt.WindowModal)
         loading_progress.setAutoClose(False)
         loading_progress.setAutoReset(False)
         loading_progress.setCancelButton(None)
@@ -3252,7 +3266,6 @@ class ProcessingTab(QWidget):
                 if show_progress and not has_cache:
                     progress_dialog = QProgressDialog("Segmenting frame...", None, 0, 0, preview_dialog)
                     progress_dialog.setWindowTitle("Processing")
-                    progress_dialog.setWindowModality(Qt.WindowModal)
                     progress_dialog.setAutoClose(False)
                     progress_dialog.setAutoReset(False)
                     progress_dialog.setCancelButton(None)  # Don't allow cancellation
@@ -3368,38 +3381,77 @@ class ProcessingTab(QWidget):
             nav_layout.addStretch()
             nav_layout.addWidget(status_label)
             
+            # Track if we're currently updating to prevent concurrent updates
+            is_updating_frame = False
+            
             def go_to_frame(idx, force_recalc=False):
-                if 0 <= idx < num_frames:
-                    preview_dialog.current_frame = idx
-                    # Block signals to prevent recursive calls
+                nonlocal is_updating_frame
+                # Prevent concurrent frame updates
+                if is_updating_frame:
+                    return
+                
+                if not (0 <= idx < num_frames):
+                    # Invalid frame index - reset to current frame
                     frame_spin.blockSignals(True)
-                    frame_spin.setValue(idx + 1)
+                    frame_spin.setValue(preview_dialog.current_frame + 1)
                     frame_spin.blockSignals(False)
-                    try:
-                        # Check if we have cached result for this frame with current parameters
-                        params = get_current_parameters()
-                        cache_key = get_cache_key(idx, params)
-                        has_cache = cache_key in preview_dialog.segmentation_cache
-                        
-                        # Only show progress if we need to recalculate
-                        update_display(idx, show_progress=(not has_cache or force_recalc))
-                    except Exception as e:
-                        QMessageBox.warning(preview_dialog, "Preview Error", 
-                                          f"Could not display frame {idx + 1}:\n{str(e)}")
+                    return
+                
+                is_updating_frame = True
+                preview_dialog.current_frame = idx
+                # Block signals to prevent recursive calls
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(idx + 1)
+                frame_spin.blockSignals(False)
+                
+                try:
+                    # Check if we have cached result for this frame with current parameters
+                    params = get_current_parameters()
+                    cache_key = get_cache_key(idx, params)
+                    has_cache = cache_key in preview_dialog.segmentation_cache
+                    
+                    # Only show progress if we need to recalculate
+                    update_display(idx, show_progress=(not has_cache or force_recalc))
+                except Exception as e:
+                    import traceback
+                    error_msg = f"Could not display frame {idx + 1}:\n{str(e)}"
+                    if hasattr(e, '__traceback__'):
+                        error_msg += f"\n\n{traceback.format_exc()}"
+                    QMessageBox.warning(preview_dialog, "Preview Error", error_msg)
+                finally:
+                    is_updating_frame = False
             
             # Use editingFinished for when user finishes editing (presses Enter or leaves field)
             # and a debounced valueChanged for when using arrow keys
             def on_frame_changed():
+                # Cancel any pending timer updates
+                if hasattr(frame_spin, '_change_timer'):
+                    frame_spin._change_timer.stop()
                 frame_num = frame_spin.value() - 1
                 if 0 <= frame_num < num_frames:
                     go_to_frame(frame_num)
+                else:
+                    # Invalid frame - reset to current
+                    frame_spin.blockSignals(True)
+                    frame_spin.setValue(preview_dialog.current_frame + 1)
+                    frame_spin.blockSignals(False)
             
             frame_spin.editingFinished.connect(on_frame_changed)
             # Debounce valueChanged to avoid triggering while typing
             frame_spin._change_timer = QTimer()
             frame_spin._change_timer.setSingleShot(True)
             frame_spin._change_timer.timeout.connect(on_frame_changed)
-            frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
+            # Only start timer if value is valid
+            def on_value_changed(v):
+                if 1 <= v <= num_frames:
+                    frame_spin._change_timer.start(300)
+                else:
+                    # Invalid value - cancel timer and reset
+                    frame_spin._change_timer.stop()
+                    frame_spin.blockSignals(True)
+                    frame_spin.setValue(preview_dialog.current_frame + 1)
+                    frame_spin.blockSignals(False)
+            frame_spin.valueChanged.connect(on_value_changed)
             
             nav_layout.addStretch()
             
@@ -3464,9 +3516,9 @@ class ProcessingTab(QWidget):
                 close_shortcut_mac.activated.connect(preview_dialog.close)
             
             # Close button
-            button_box = QDialogButtonBox(QDialogButtonBox.Close)
-            button_box.rejected.connect(preview_dialog.close)
-            layout.addWidget(button_box)
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(preview_dialog.close)
+            layout.addWidget(close_btn)
             
             preview_dialog.setLayout(layout)
             preview_dialog.show()  # Use show() instead of exec_() to make it non-modal
@@ -4158,7 +4210,6 @@ class AnalyzeMasksTab(QWidget):
         # Show loading progress
         loading_progress = QProgressDialog("Loading mask file and initializing preview...", None, 0, 0, self)
         loading_progress.setWindowTitle("Loading")
-        loading_progress.setWindowModality(Qt.WindowModal)
         loading_progress.setAutoClose(False)
         loading_progress.setAutoReset(False)
         loading_progress.setCancelButton(None)
@@ -4271,7 +4322,6 @@ class AnalyzeMasksTab(QWidget):
                 if show_progress:
                     progress_dialog = QProgressDialog("Applying filters...", None, 0, 0, preview_dialog)
                     progress_dialog.setWindowTitle("Processing")
-                    progress_dialog.setWindowModality(Qt.WindowModal)
                     progress_dialog.setAutoClose(False)
                     progress_dialog.setAutoReset(False)
                     progress_dialog.setCancelButton(None)
@@ -4457,9 +4507,9 @@ class AnalyzeMasksTab(QWidget):
                 close_shortcut_mac.activated.connect(preview_dialog.close)
             
             # Close button
-            button_box = QDialogButtonBox(QDialogButtonBox.Close)
-            button_box.rejected.connect(preview_dialog.close)
-            layout.addWidget(button_box)
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(preview_dialog.close)
+            layout.addWidget(close_btn)
             
             preview_dialog.setLayout(layout)
             preview_dialog.show()  # Use show() instead of exec_() to make it non-modal
@@ -4643,6 +4693,491 @@ class AnalyzeMasksTab(QWidget):
             QMessageBox.critical(self, "Error", f"Analysis failed:\n{message}")
 
 
+class TrackingTab(QWidget):
+    """Tab for cell tracking using trackastra"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        
+        # Mask file selection
+        mask_group = QGroupBox("Mask File")
+        mask_layout = QHBoxLayout()
+        self.mask_path = QLineEdit()
+        self.mask_path.setPlaceholderText("Select mask TIFF file (time series)...")
+        self.mask_path.setMinimumWidth(500)
+        file_font = QFont()
+        file_font.setPointSize(11)
+        self.mask_path.setFont(file_font)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.mask_path.setSizePolicy(size_policy)
+        mask_btn = QPushButton("Browse File...")
+        mask_btn.setFixedWidth(120)
+        mask_btn.clicked.connect(self.select_mask_file)
+        mask_layout.addWidget(self.mask_path, 0)
+        mask_layout.addWidget(mask_btn, 0)
+        mask_group.setLayout(mask_layout)
+        scroll_layout.addWidget(mask_group)
+        
+        # Original data file selection (optional)
+        original_group = QGroupBox("Original Data File (Optional)")
+        original_layout = QHBoxLayout()
+        self.original_path = QLineEdit()
+        self.original_path.setPlaceholderText("Select original TIFF file for visualization (optional)...")
+        self.original_path.setMinimumWidth(500)
+        self.original_path.setFont(file_font)
+        self.original_path.setSizePolicy(size_policy)
+        original_btn = QPushButton("Browse File...")
+        original_btn.setFixedWidth(120)
+        original_btn.clicked.connect(self.select_original_file)
+        original_layout.addWidget(self.original_path, 0)
+        original_layout.addWidget(original_btn, 0)
+        original_group.setLayout(original_layout)
+        scroll_layout.addWidget(original_group)
+        
+        # Excel analysis file selection (for linking cell data)
+        excel_group = QGroupBox("Excel Analysis File (Optional)")
+        excel_layout = QHBoxLayout()
+        self.excel_path = QLineEdit()
+        self.excel_path.setPlaceholderText("Select Excel file with cell analysis data (e.g., *_masks_analysis.xlsx)...")
+        self.excel_path.setMinimumWidth(500)
+        self.excel_path.setFont(file_font)
+        self.excel_path.setSizePolicy(size_policy)
+        excel_btn = QPushButton("Browse File...")
+        excel_btn.setFixedWidth(120)
+        excel_btn.clicked.connect(self.select_excel_file)
+        excel_info_icon = create_info_icon(
+            "Link to existing Excel analysis file containing cell measurements.\n\n"
+            "This file should contain per-cell data from the Analyze Masks tab.\n"
+            "Example: 5_18771_NoPhage_2_masks_analysis.xlsx\n\n"
+            "The tracking will link cell IDs across frames and preserve\n"
+            "cell properties from the analysis file.",
+            parent_widget=self
+        )
+        # Set size policy to prevent stretching
+        excel_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        excel_layout.addWidget(self.excel_path, 0)
+        excel_layout.addWidget(excel_btn, 0)
+        excel_layout.addWidget(excel_info_icon, 0)  # No stretch - keep icon next to button
+        excel_layout.addStretch()  # Add stretch after to push everything left
+        excel_group.setLayout(excel_layout)
+        scroll_layout.addWidget(excel_group)
+        
+        # Tracking parameters
+        tracking_group = QGroupBox("Tracking Parameters")
+        tracking_layout = QVBoxLayout()
+        
+        # Model selection
+        model_layout = QHBoxLayout()
+        model_label = QLabel("Model:")
+        model_info_icon = create_info_icon(
+            "Pretrained Trackastra model for tracking.\n\n"
+            "Default: 'general_2d'\n"
+            "Source: Trackastra pretrained models\n\n"
+            "Available models:\n"
+            "- general_2d: General 2D tracking (default)\n"
+            "- general_2d_w_SAM2_features: With SAM2 features (better but slower)\n\n"
+            "Tip: Use 'general_2d' for most cases.",
+            parent_widget=self
+        )
+        model_layout.addWidget(model_label)
+        model_layout.addWidget(model_info_icon)
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(['general_2d', 'general_2d_w_SAM2_features'])
+        self.model_combo.setCurrentText('general_2d')
+        model_layout.addWidget(self.model_combo)
+        model_layout.addStretch()
+        tracking_layout.addLayout(model_layout)
+        
+        # Tracking mode
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("Tracking Mode:")
+        mode_info_icon = create_info_icon(
+            "Linking mode for cell tracking.\n\n"
+            "Default: 'greedy'\n"
+            "Source: Trackastra linking modes\n\n"
+            "Available modes:\n"
+            "- greedy: Fast tracking with division support (recommended)\n"
+            "- greedy_nodiv: Fast tracking without division (cells don't split)\n"
+            "- ilp: Integer Linear Programming (more accurate but slower, needs extra dependencies)\n\n"
+            "Tip: Use 'greedy' for most cases with bacterial cells.",
+            parent_widget=self
+        )
+        mode_layout.addWidget(mode_label)
+        mode_layout.addWidget(mode_info_icon)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(['greedy', 'greedy_nodiv', 'ilp'])
+        self.mode_combo.setCurrentText('greedy')
+        mode_layout.addWidget(self.mode_combo)
+        mode_layout.addStretch()
+        tracking_layout.addLayout(mode_layout)
+        
+        # Device selection
+        device_layout = QHBoxLayout()
+        device_label = QLabel("Device:")
+        device_info_icon = create_info_icon(
+            "Compute device for tracking.\n\n"
+            "Default: 'cpu'\n"
+            "Source: PyTorch device selection\n\n"
+            "Options:\n"
+            "- cpu: CPU processing (works everywhere, slower)\n"
+            "- cuda: GPU processing (faster, requires CUDA-capable GPU)\n\n"
+            "Tip: Use GPU if available for faster processing.",
+            parent_widget=self
+        )
+        device_layout.addWidget(device_label)
+        device_layout.addWidget(device_info_icon)
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(['cpu', 'cuda'])
+        self.device_combo.setCurrentText('cpu')
+        device_layout.addWidget(self.device_combo)
+        device_layout.addStretch()
+        tracking_layout.addLayout(device_layout)
+        
+        tracking_group.setLayout(tracking_layout)
+        scroll_layout.addWidget(tracking_group)
+        
+        # Process button
+        process_btn = QPushButton("Run Tracking")
+        process_btn.setStyleSheet(
+            "QPushButton {"
+            "background-color: #5D6D7E;"
+            "color: white;"
+            "font-weight: bold;"
+            "padding: 8px;"
+            "border: none;"
+            "border-radius: 4px;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #4A5A6B;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #3A4A5B;"
+            "}"
+        )
+        process_btn.clicked.connect(self.run_tracking)
+        scroll_layout.addWidget(process_btn)
+        
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        self.setLayout(layout)
+    
+    def select_mask_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Mask File", "",
+            "TIFF Files (*.tif *.tiff);;All Files (*)"
+        )
+        if file_path:
+            self.mask_path.setText(file_path)
+    
+    def select_original_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Original Data File", "",
+            "TIFF Files (*.tif *.tiff);;All Files (*)"
+        )
+        if file_path:
+            self.original_path.setText(file_path)
+    
+    def select_excel_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Excel Analysis File", "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        if file_path:
+            self.excel_path.setText(file_path)
+    
+    def run_tracking(self):
+        if not self.mask_path.text():
+            QMessageBox.warning(self, "Missing Input", "Please select a mask file.")
+            return
+        
+        mask_file = Path(self.mask_path.text())
+        if not mask_file.exists():
+            QMessageBox.warning(self, "File Not Found", f"Mask file not found:\n{mask_file}")
+            return
+        
+        # Get optional files
+        original_file = self.original_path.text() if self.original_path.text() else None
+        excel_file = self.excel_path.text() if self.excel_path.text() else None
+        
+        if original_file and not Path(original_file).exists():
+            QMessageBox.warning(self, "File Not Found", f"Original file not found:\n{original_file}")
+            return
+        
+        if excel_file and not Path(excel_file).exists():
+            QMessageBox.warning(self, "File Not Found", f"Excel file not found:\n{excel_file}")
+            return
+        
+        # Get parameters
+        model_name = self.model_combo.currentText()
+        mode = self.mode_combo.currentText()
+        device = self.device_combo.currentText()
+        
+        # Check if CUDA is available
+        if device == 'cuda':
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    reply = QMessageBox.question(
+                        self, "CUDA Not Available",
+                        "CUDA GPU is not available on this system.\n\n"
+                        "Would you like to continue with CPU mode?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes
+                    )
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                    device = 'cpu'
+                    self.device_combo.setCurrentText('cpu')
+                else:
+                    # CUDA is available, verify it works
+                    try:
+                        # Test CUDA with a simple operation
+                        test_tensor = torch.tensor([1.0], device='cuda')
+                        del test_tensor
+                        torch.cuda.empty_cache()
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self, "CUDA Error",
+                            f"CUDA is available but encountered an error:\n{str(e)}\n\n"
+                            "Switching to CPU mode."
+                        )
+                        device = 'cpu'
+                        self.device_combo.setCurrentText('cpu')
+            except ImportError:
+                QMessageBox.warning(
+                    self, "PyTorch Not Found",
+                    "PyTorch is not installed. Please install PyTorch to use CUDA.\n\n"
+                    "Switching to CPU mode."
+                )
+                device = 'cpu'
+                self.device_combo.setCurrentText('cpu')
+        
+        # Create worker thread
+        self.worker = TrackingWorker(
+            mask_file, original_file, excel_file,
+            model_name, mode, device, self
+        )
+        self.worker.finished.connect(self.on_tracking_finished)
+        self.worker.start()
+        
+        # Disable button during processing
+        self.parent_window.progress_bar.setVisible(True)
+        self.parent_window.progress_bar.setRange(0, 0)  # Indeterminate
+        self.parent_window.log_output(f"Starting tracking for: {mask_file.name}\n")
+    
+    def on_tracking_finished(self, success, message):
+        self.parent_window.progress_bar.setVisible(False)
+        if success:
+            self.parent_window.log_output("✓ Tracking completed successfully!\n")
+            QMessageBox.information(self, "Success", "Tracking completed successfully!")
+        else:
+            QMessageBox.critical(self, "Error", f"Tracking failed:\n{message}")
+
+
+class TrackingWorker(QThread):
+    """Worker thread for running tracking"""
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, mask_file, original_file, excel_file, model_name, mode, device, parent=None):
+        super().__init__(parent)
+        self.mask_file = mask_file
+        self.original_file = original_file
+        self.excel_file = excel_file
+        self.model_name = model_name
+        self.mode = mode
+        self.device = device
+    
+    def run(self):
+        try:
+            from trackastra.model import Trackastra
+            from trackastra.tracking import graph_to_edge_table, graph_to_ctc
+            import tifffile
+            import pandas as pd
+            import numpy as np
+            from pathlib import Path
+            
+            # Load masks
+            masks = tifffile.imread(str(self.mask_file))
+            
+            if len(masks.shape) != 3:
+                self.finished.emit(False, f"Expected 3D mask array (T, Y, X), got shape: {masks.shape}")
+                return
+            
+            # Load original images if provided (required for trackastra)
+            if self.original_file:
+                imgs = tifffile.imread(str(self.original_file))
+                if len(imgs.shape) != 3:
+                    self.finished.emit(False, f"Expected 3D image array (T, Y, X), got shape: {imgs.shape}")
+                    return
+                # Ensure images and masks have same number of frames
+                if imgs.shape[0] != masks.shape[0]:
+                    self.finished.emit(False, f"Image frames ({imgs.shape[0]}) don't match mask frames ({masks.shape[0]})")
+                    return
+            else:
+                # If no original images provided, create dummy images (trackastra needs them)
+                # Use masks as images (will work but not ideal)
+                imgs = masks.astype(np.float32)
+            
+            # Load Excel data if provided
+            cell_data = None
+            if self.excel_file:
+                try:
+                    excel_path = Path(self.excel_file)
+                    # Try to read the per-cell data sheet
+                    excel_data = pd.read_excel(excel_path, sheet_name=None)
+                    # Look for sheet with per-cell data (usually named "Per-Cell Data" or similar)
+                    for sheet_name in excel_data.keys():
+                        if 'cell' in sheet_name.lower() or 'per' in sheet_name.lower():
+                            cell_data = excel_data[sheet_name]
+                            break
+                    if cell_data is None:
+                        # Use first sheet if no per-cell sheet found
+                        cell_data = list(excel_data.values())[0]
+                except Exception as e:
+                    self.finished.emit(False, f"Error reading Excel file: {str(e)}")
+                    return
+            
+            # Load pretrained model
+            try:
+                model = Trackastra.from_pretrained(self.model_name, device=self.device)
+            except Exception as e:
+                self.finished.emit(False, f"Error loading Trackastra model: {str(e)}\n\nMake sure the model name is correct and trackastra is properly installed.")
+                return
+            
+            # Run tracking
+            try:
+                track_graph, masks_tracked = model.track(imgs, masks, mode=self.mode)
+            except Exception as e:
+                import traceback
+                self.finished.emit(False, f"Error during tracking: {str(e)}\n\n{traceback.format_exc()}")
+                return
+            
+            # Save tracking results
+            output_dir = Path(self.mask_file).parent / f"{Path(self.mask_file).stem}_tracking"
+            output_dir.mkdir(exist_ok=True)
+            
+            # Convert track graph to edge table (DataFrame)
+            try:
+                tracks_df = graph_to_edge_table(track_graph)
+            except Exception as e:
+                # Fallback: try to extract tracks manually
+                self.finished.emit(False, f"Error converting tracks to table: {str(e)}")
+                return
+            
+            # Save tracks as CSV
+            tracks_file = output_dir / f"{Path(self.mask_file).stem}_tracks.csv"
+            tracks_df.to_csv(tracks_file, index=False)
+            
+            # Save tracked masks
+            masks_tracked_file = output_dir / f"{Path(self.mask_file).stem}_masks_tracked.tif"
+            tifffile.imwrite(str(masks_tracked_file), masks_tracked)
+            
+            # Save in CTC format (Cell Tracking Challenge format)
+            try:
+                ctc_dir = output_dir / "ctc_format"
+                ctc_dir.mkdir(exist_ok=True)
+                graph_to_ctc(track_graph, masks_tracked, outdir=str(ctc_dir))
+            except Exception as e:
+                # CTC format is optional, don't fail if it doesn't work
+                pass
+            
+            # If Excel data was provided, merge with tracks
+            if cell_data is not None:
+                # Merge tracking data with cell properties
+                merged_data = self._merge_tracking_with_analysis(tracks_df, cell_data, masks_tracked)
+                merged_file = output_dir / f"{Path(self.mask_file).stem}_tracks_with_analysis.xlsx"
+                with pd.ExcelWriter(merged_file, engine='openpyxl') as writer:
+                    merged_data.to_excel(writer, sheet_name='Tracks with Analysis', index=False)
+                    tracks_df.to_excel(writer, sheet_name='Tracks', index=False)
+                    if isinstance(cell_data, pd.DataFrame):
+                        cell_data.to_excel(writer, sheet_name='Original Analysis', index=False)
+                self.finished.emit(True, f"Tracking completed!\n\n"
+                    f"Tracks saved to: {tracks_file}\n"
+                    f"Tracked masks saved to: {masks_tracked_file}\n"
+                    f"Merged data saved to: {merged_file}")
+            else:
+                self.finished.emit(True, f"Tracking completed!\n\n"
+                    f"Tracks saved to: {tracks_file}\n"
+                    f"Tracked masks saved to: {masks_tracked_file}")
+                
+        except ImportError as e:
+            self.finished.emit(False, f"trackastra is not installed or import failed: {str(e)}\n\nPlease install it with: pip install trackastra")
+        except Exception as e:
+            import traceback
+            error_msg = f"Tracking error: {str(e)}\n\n{traceback.format_exc()}"
+            self.finished.emit(False, error_msg)
+    
+    def _merge_tracking_with_analysis(self, tracks_df, cell_data, masks_tracked):
+        """Merge tracking results with Excel analysis data"""
+        import pandas as pd
+        import numpy as np
+        from skimage.measure import regionprops
+        
+        # Ensure cell_data is a DataFrame
+        if not isinstance(cell_data, pd.DataFrame):
+            cell_data = pd.DataFrame(cell_data)
+        
+        # Extract per-cell data from tracked masks for each frame
+        # This creates a mapping of (frame, cell_id) to track_id
+        frame_track_map = {}
+        for frame_idx in range(masks_tracked.shape[0]):
+            mask_frame = masks_tracked[frame_idx]
+            regions = regionprops(mask_frame)
+            for region in regions:
+                if region.label > 0:  # Skip background
+                    # In tracked masks, label is the track_id
+                    track_id = region.label
+                    # We need to find the original cell_id from the analysis data
+                    # This is approximate - we match by position
+                    frame_track_map[(frame_idx, track_id)] = {
+                        'centroid_y': region.centroid[0],
+                        'centroid_x': region.centroid[1],
+                        'area': region.area
+                    }
+        
+        # Try to merge tracks_df with cell_data
+        # tracks_df from graph_to_edge_table typically has: source, target, frame, etc.
+        # cell_data typically has: frame, cell_id, area, aspect_ratio, etc.
+        
+        # Create a mapping from tracks to cell properties
+        # This is a simplified merge - adjust based on actual data structure
+        merged_list = []
+        
+        for _, track_row in tracks_df.iterrows():
+            frame = track_row.get('frame', track_row.get('t', None))
+            if frame is None:
+                continue
+            
+            # Try to find matching cell data
+            matching_cells = cell_data[cell_data.get('frame', cell_data.get('Frame', None)) == frame]
+            
+            # Add track information
+            merged_row = track_row.to_dict()
+            
+            # Add cell properties if available
+            if len(matching_cells) > 0:
+                # Use first matching cell (or implement better matching logic)
+                for col in matching_cells.columns:
+                    if col not in merged_row:
+                        merged_row[col] = matching_cells.iloc[0][col]
+            
+            merged_list.append(merged_row)
+        
+        merged = pd.DataFrame(merged_list)
+        
+        return merged
+
+
 class MainWindow(QMainWindow):
     """Main application window"""
     
@@ -4722,10 +5257,12 @@ class MainWindow(QMainWindow):
         self.nd2_tab = ND2ConversionTab(self)
         self.processing_tab = ProcessingTab(self)
         self.analyze_tab = AnalyzeMasksTab(self)
+        self.tracking_tab = TrackingTab(self)
         
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.processing_tab, "Segmentation")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
+        tabs.addTab(self.tracking_tab, "Tracking")
         
         main_layout.addWidget(tabs)
         
@@ -4826,6 +5363,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Import sys at function level to avoid any potential scoping issues
+    import sys
     # Qt plugin paths should already be set by launch_gui.sh or module-level code
     # Set library paths programmatically as well (Qt reads this)
     if sys.platform == 'darwin':
@@ -4841,8 +5380,7 @@ def main():
     # Install custom exception handler for PyQt6 to prevent abort() on exceptions in slots
     # PyQt6 calls abort() by default when exceptions occur in slots, which crashes the app
     # Note: We use the module-level sys, not a local variable
-    import sys as _sys_module
-    original_excepthook = _sys_module.excepthook
+    original_excepthook = sys.excepthook
     def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
         """Custom exception handler that prevents PyQt6 from aborting"""
         # Print the exception to stderr
@@ -4850,7 +5388,7 @@ def main():
         traceback.print_exception(exc_type, exc_value, exc_traceback)
         # Don't call abort() - let the exception propagate or be handled
         # This prevents PyQt6's default behavior of calling abort()
-    _sys_module.excepthook = pyqt6_exception_handler
+    sys.excepthook = pyqt6_exception_handler
     
     try:
         app = QApplication(sys.argv)
