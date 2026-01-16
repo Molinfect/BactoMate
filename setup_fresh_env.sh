@@ -44,6 +44,25 @@ if [ -f "requirements.txt" ]; then
     pip install -r requirements.txt
     echo "✓ Requirements installed"
     
+    # Check for NVIDIA GPU and offer CUDA installation
+    if command -v nvidia-smi &> /dev/null; then
+        echo ""
+        echo "NVIDIA GPU detected!"
+        read -p "Would you like to install PyTorch with CUDA support for GPU acceleration? (y/n) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if [ -f "install_cuda_pytorch.sh" ]; then
+                echo "Installing PyTorch with CUDA..."
+                bash install_cuda_pytorch.sh
+            else
+                echo "Installing PyTorch with CUDA (default: cu118)..."
+                pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+                pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+                echo "✓ CUDA-enabled PyTorch installed"
+            fi
+        fi
+    fi
+    
     # Apply all patches automatically
     echo ""
     echo "Applying compatibility patches..."

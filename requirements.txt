@@ -29,11 +29,21 @@ matplotlib>=3.4.0
 tqdm>=4.62.0
 natsort>=8.0.0
 
-# PyTorch (for Omnipose models)
-# Note: Install appropriate version for your system (CPU or GPU)
-# For CPU: torch>=1.9.0
-# For GPU (CUDA): torch>=1.9.0+cu111 (adjust CUDA version as needed)
-torch>=1.9.0
+# PyTorch (for Omnipose models and Trackastra tracking)
+# Default installation works for:
+#   - CPU processing (all systems)
+#   - Apple Silicon (M1/M2/M3) with MPS GPU acceleration
+#   - Linux/macOS CPU
+#
+# For NVIDIA GPU (CUDA) on Windows/Linux:
+#   After installing requirements.txt, run:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#   (Replace cu118 with your CUDA version: cu121, cu118, cu117, etc.)
+#
+# To check your CUDA version: nvidia-smi
+# Common CUDA versions: 11.8 (cu118), 12.1 (cu121), 12.4 (cu124)
+torch>=2.0.0
+torchvision>=0.15.0
 
 # Cell tracking
 trackastra>=0.1.0  # Cell tracking library for time-lapse data

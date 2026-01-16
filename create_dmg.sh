@@ -5,7 +5,17 @@
 set -e  # Exit on error
 
 APP_NAME="BactiMate"
-APP_PATH="dist/${APP_NAME}.app"
+# Check for app bundle in root first, then dist (for backwards compatibility)
+if [ -d "${APP_NAME}.app" ]; then
+    APP_PATH="${APP_NAME}.app"
+elif [ -d "dist/${APP_NAME}.app" ]; then
+    APP_PATH="dist/${APP_NAME}.app"
+else
+    echo "ERROR: ${APP_NAME}.app not found!"
+    echo "Please run ./build_app_bundle.sh first"
+    exit 1
+fi
+
 DMG_NAME="${APP_NAME}.dmg"
 DMG_PATH="dist/${DMG_NAME}"
 VOLUME_NAME="${APP_NAME}"
@@ -14,13 +24,8 @@ echo "=========================================="
 echo "Creating DMG for macOS"
 echo "=========================================="
 echo ""
-
-# Check if app exists
-if [ ! -d "$APP_PATH" ]; then
-    echo "ERROR: ${APP_PATH} not found!"
-    echo "Please run ./build_nuitka_macos.sh first"
-    exit 1
-fi
+echo "Using app bundle: $APP_PATH"
+echo ""
 
 # Check if create-dmg is installed, otherwise use built-in hdiutil
 if ! command -v create-dmg &> /dev/null; then

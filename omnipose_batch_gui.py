@@ -134,8 +134,8 @@ def _patch_omnipose_get_masks():
             # omnipose not available yet or patching failed - will retry later
             pass
 
-# Try to patch immediately if in frozen build (Nuitka)
-# Nuitka uses __compiled__ or sys.frozen
+# Try to patch immediately if in frozen/build environment
+# Check for frozen executables or compiled builds
 is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
 if is_frozen:
     _patch_omnipose_get_masks()
@@ -155,12 +155,12 @@ if is_frozen:
 
 # CRITICAL: Set Qt paths BEFORE any Qt imports (PyQt6 or matplotlib Qt backend)
 # This prevents conflicts with system Qt (Homebrew/conda) installations
-# Also handles Nuitka frozen executables
+# Also handles frozen executables and app bundles
 
-# Check if running as compiled executable (Nuitka)
+# Check if running as frozen/compiled executable or app bundle
 if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
-    # Running as compiled executable (Nuitka)
-    # Nuitka: use directory containing the executable
+    # Running as frozen executable or app bundle
+    # Use directory containing the executable
     base_path = os.path.dirname(sys.executable)
 else:
     # Running as script
@@ -171,9 +171,9 @@ abs_plugin_path = None
 abs_lib_dir = None
 
 if sys.platform in ['darwin', 'win32']:
-    # For compiled bundles (Nuitka), plugins are in the bundle
+    # For frozen executables or app bundles, plugins are in the bundle
     if getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__'):
-        # In compiled bundle, plugins are at PyQt6/Qt6/plugins relative to base_path
+        # In app bundle or frozen executable, plugins are at PyQt6/Qt6/plugins relative to base_path
         plugin_candidate = os.path.join(base_path, 'PyQt6', 'Qt6', 'plugins')
         if os.path.exists(plugin_candidate):
             abs_plugin_path = os.path.abspath(plugin_candidate)
@@ -1455,44 +1455,223 @@ class ND2ConversionTab(QWidget):
             
             layout.addLayout(nav_layout)
             
-            # LUT controls (min/max sliders)
+            # LUT controls with histogram
             lut_group = QGroupBox("LUT (Lookup Table) Controls")
-            lut_layout = QHBoxLayout()
+            lut_layout = QVBoxLayout()
             
-            lut_layout.addWidget(QLabel("Min:"))
+            # Histogram plot for visual min/max adjustment (smaller, more compact)
+            hist_fig = Figure(figsize=(8, 2))
+            hist_canvas = FigureCanvas(hist_fig)
+            hist_canvas.setMaximumHeight(120)  # Limit height
+            hist_ax = hist_fig.add_subplot(111)
+            hist_fig.patch.set_facecolor('#2b2b2b')  # Dark background
+            hist_ax.set_facecolor('#2b2b2b')
+            hist_ax.tick_params(colors='white', labelsize=8)
+            hist_ax.spines['bottom'].set_color('white')
+            hist_ax.spines['top'].set_color('white')
+            hist_ax.spines['left'].set_color('white')
+            hist_ax.spines['right'].set_color('white')
+            hist_ax.xaxis.label.set_color('white')
+            hist_ax.yaxis.label.set_color('white')
+            hist_canvas.setStyleSheet("background-color: #2b2b2b;")
+            lut_layout.addWidget(hist_canvas)
+            
+            # Min/Max value displays and manual input
+            value_layout = QHBoxLayout()
+            value_layout.addWidget(QLabel("Min:"))
             lut_min_slider = QDoubleSpinBox()
             lut_min_slider.setRange(0, 65535)
             lut_min_slider.setDecimals(1)
             lut_min_slider.setSingleStep(10)
-            lut_min_slider.setToolTip("Minimum intensity value for display")
-            lut_layout.addWidget(lut_min_slider)
+            lut_min_slider.setToolTip("Minimum intensity value for display (or adjust via histogram)")
+            value_layout.addWidget(lut_min_slider)
             
-            lut_layout.addWidget(QLabel("Max:"))
+            value_layout.addWidget(QLabel("Max:"))
             lut_max_slider = QDoubleSpinBox()
             lut_max_slider.setRange(0, 65535)
             lut_max_slider.setDecimals(1)
             lut_max_slider.setSingleStep(10)
-            lut_max_slider.setToolTip("Maximum intensity value for display")
-            lut_layout.addWidget(lut_max_slider)
+            lut_max_slider.setToolTip("Maximum intensity value for display (or adjust via histogram)")
+            value_layout.addWidget(lut_max_slider)
             
-            auto_lut_btn = QPushButton("Auto LUT")
-            auto_lut_btn.setToolTip("Auto-adjust min/max intensity for better contrast (1st-99th percentile)")
-            lut_layout.addWidget(auto_lut_btn)
+            value_layout.addStretch()
+            lut_layout.addLayout(value_layout)
             
-            lut_layout.addStretch()
             lut_group.setLayout(lut_layout)
             layout.addWidget(lut_group)
             
             layout.addWidget(canvas)
             
             # Store current frame data and LUT settings
-            current_frame_data = {'frame': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None}
-            use_auto_lut = True  # Track if we should use auto LUT or manual values
+            current_frame_data = {'frame': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None, 'histogram': None}
             is_updating_lut = False  # Flag to prevent recursive updates during LUT adjustment
             im_handle = None  # Store image handle for LUT updates
+            hist_vmin_line = None  # Vertical line for min value in histogram
+            hist_vmax_line = None  # Vertical line for max value in histogram
+            hist_plot = None  # Histogram bar plot
+            dragging_line = None  # Track which line is being dragged
+            
+            # Initialize LUT values (will be set from first frame)
+            current_vmin = None
+            current_vmax = None
+            
+            def update_histogram(frame, vmin, vmax):
+                """Update histogram plot with min/max lines"""
+                nonlocal hist_vmin_line, hist_vmax_line, hist_plot
+                
+                # Clear axes instead of trying to remove lines
+                hist_ax.clear()
+                
+                # Calculate histogram
+                flat_frame = frame.flatten()
+                flat_frame = flat_frame[flat_frame > 0]  # Exclude zeros for better visualization
+                if len(flat_frame) == 0:
+                    flat_frame = frame.flatten()
+                
+                frame_min = float(frame.min())
+                frame_max = float(frame.max())
+                
+                # Create histogram
+                bins = min(256, int(frame_max - frame_min + 1))
+                hist, bin_edges = np.histogram(flat_frame, bins=bins, range=(frame_min, frame_max))
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                # Plot histogram (log scale for better visualization)
+                hist_plot = hist_ax.bar(bin_centers, np.log1p(hist), width=bin_edges[1] - bin_edges[0], 
+                                       color='#4A90E2', alpha=0.7, edgecolor='none')
+                
+                # Draw min/max lines (create new ones since we cleared the axes)
+                hist_vmin_line = hist_ax.axvline(vmin, color='#FF6B6B', linewidth=2, linestyle='--', label=f'Min: {vmin:.1f}')
+                hist_vmax_line = hist_ax.axvline(vmax, color='#4ECDC4', linewidth=2, linestyle='--', label=f'Max: {vmax:.1f}')
+                
+                # Fill region between min and max
+                hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
+                
+                hist_ax.set_xlabel('Intensity', color='white', fontsize=9)
+                hist_ax.set_ylabel('Log(Count+1)', color='white', fontsize=9)
+                hist_ax.set_title('Click/drag lines to adjust min/max', color='white', fontsize=9)
+                hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8)
+                hist_ax.grid(True, alpha=0.3, color='white')
+                
+                hist_canvas.draw()
+                current_frame_data['histogram'] = (hist, bin_edges, frame_min, frame_max)
+            
+            def on_histogram_press(event):
+                """Handle mouse press on histogram to start dragging"""
+                if event.inaxes != hist_ax:
+                    return
+                
+                x = event.xdata
+                if x is None:
+                    return
+                
+                nonlocal dragging_line, current_vmin, current_vmax
+                
+                # Determine which line is closest (within 5% of range for easier grabbing)
+                if current_vmin is not None and current_vmax is not None:
+                    frame_min = current_frame_data.get('frame_min', 0)
+                    frame_max = current_frame_data.get('frame_max', 65535)
+                    range_size = frame_max - frame_min
+                    if range_size > 0:
+                        threshold = max(range_size * 0.05, (frame_max - frame_min) * 0.01)  # 5% of range, or 1% minimum
+                    else:
+                        threshold = 100  # Default threshold
+                    
+                    dist_to_min = abs(x - current_vmin)
+                    dist_to_max = abs(x - current_vmax)
+                    
+                    # Check if clicking near a line
+                    if dist_to_min < threshold and dist_to_min < dist_to_max:
+                        dragging_line = 'min'
+                    elif dist_to_max < threshold:
+                        dragging_line = 'max'
+                    else:
+                        # If not near a line, create a new line at click position
+                        # Determine which side of the midpoint to adjust
+                        midpoint = (current_vmin + current_vmax) / 2
+                        if x < midpoint:
+                            dragging_line = 'min'
+                        else:
+                            dragging_line = 'max'
+            
+            def on_histogram_motion(event):
+                """Handle mouse motion to drag lines"""
+                if event.inaxes != hist_ax:
+                    return
+                
+                x = event.xdata
+                if x is None or dragging_line is None:
+                    return
+                
+                nonlocal current_vmin, current_vmax, is_updating_lut
+                if is_updating_lut:
+                    return
+                
+                is_updating_lut = True
+                try:
+                    frame_min = current_frame_data.get('frame_min', 0)
+                    frame_max = current_frame_data.get('frame_max', 65535)
+                    
+                    if dragging_line == 'min':
+                        new_min = max(frame_min, min(x, (current_vmax or frame_max) - 1))
+                        current_vmin = new_min
+                        # Block signals to prevent recursive updates
+                        lut_min_slider.blockSignals(True)
+                        lut_min_slider.setValue(new_min)
+                        lut_min_slider.blockSignals(False)
+                    elif dragging_line == 'max':
+                        new_max = min(frame_max, max(x, (current_vmin or frame_min) + 1))
+                        current_vmax = new_max
+                        # Block signals to prevent recursive updates
+                        lut_max_slider.blockSignals(True)
+                        lut_max_slider.setValue(new_max)
+                        lut_max_slider.blockSignals(False)
+                    
+                    # Update display directly without calling update_lut_from_sliders (to avoid recursion)
+                    vmin = current_vmin
+                    vmax = current_vmax
+                    
+                    # Update image display
+                    if current_frame_data['frame'] is not None and im_handle is not None:
+                        im_handle.set_clim(vmin=vmin, vmax=vmax)
+                        canvas.draw()
+                        
+                        # Update frame info
+                        frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                        
+                        # Update histogram lines
+                        if hist_vmin_line is not None:
+                            hist_vmin_line.set_xdata([vmin, vmin])
+                        if hist_vmax_line is not None:
+                            hist_vmax_line.set_xdata([vmax, vmax])
+                        # Update fill region
+                        for patch in list(hist_ax.patches):
+                            if hasattr(patch, 'get_alpha') and patch.get_alpha() == 0.2:
+                                patch.remove()
+                        hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
+                        # Update legend
+                        if hist_vmin_line is not None and hist_vmax_line is not None:
+                            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8)
+                        hist_canvas.draw()
+                        
+                        # Store values
+                        current_frame_data['vmin'] = vmin
+                        current_frame_data['vmax'] = vmax
+                finally:
+                    is_updating_lut = False
+            
+            def on_histogram_release(event):
+                """Handle mouse release to stop dragging"""
+                nonlocal dragging_line
+                dragging_line = None
+            
+            # Connect histogram interaction handlers
+            hist_canvas.mpl_connect('button_press_event', on_histogram_press)
+            hist_canvas.mpl_connect('motion_notify_event', on_histogram_motion)
+            hist_canvas.mpl_connect('button_release_event', on_histogram_release)
             
             # Function to update displayed frame
-            def update_frame(frame_idx, vmin=None, vmax=None, update_sliders=True, force_auto=False):
+            def update_frame(frame_idx, vmin=None, vmax=None, update_sliders=True):
                 """Update the displayed frame (frame_idx is 0-indexed internally)"""
                 # Get frame at index (0-indexed)
                 if len(all_frames.shape) >= 3:
@@ -1518,26 +1697,20 @@ class ND2ConversionTab(QWidget):
                 current_frame_data['frame_min'] = frame_min
                 current_frame_data['frame_max'] = frame_max
                 
-                # Determine LUT values
-                nonlocal use_auto_lut
-                if force_auto:
-                    # Force auto LUT (when Auto LUT button is clicked)
-                    vmin = np.percentile(frame, 1)  # Use 1st percentile for min
-                    vmax = np.percentile(frame, 99)  # Use 99th percentile for max
-                    use_auto_lut = True
-                elif vmin is not None and vmax is not None:
-                    # Explicit values provided (manual adjustment from sliders)
-                    use_auto_lut = False
-                elif vmin is None or vmax is None:
-                    # No values provided - check if we should use auto or manual
-                    if use_auto_lut:
-                        # Auto mode - calculate from frame
-                        vmin = np.percentile(frame, 1)
-                        vmax = np.percentile(frame, 99)
-                    else:
-                        # Manual mode - use current slider values
-                        vmin = lut_min_slider.value()
-                        vmax = lut_max_slider.value()
+                # Determine LUT values - preserve current values or use defaults
+                nonlocal current_vmin, current_vmax
+                if vmin is not None and vmax is not None:
+                    # Explicit values provided
+                    current_vmin = vmin
+                    current_vmax = vmax
+                elif current_vmin is None or current_vmax is None:
+                    # First time - use percentile-based defaults
+                    current_vmin = float(np.percentile(frame, 1))
+                    current_vmax = float(np.percentile(frame, 99))
+                # Otherwise, keep current_vmin and current_vmax (preserve user settings)
+                
+                vmin = current_vmin
+                vmax = current_vmax
                 
                 current_frame_data['vmin'] = vmin
                 current_frame_data['vmax'] = vmax
@@ -1549,36 +1722,49 @@ class ND2ConversionTab(QWidget):
                     try:
                         lut_min_slider.blockSignals(True)
                         lut_max_slider.blockSignals(True)
-                        # Store current values before changing range (to preserve manual adjustments)
+                        
+                        # Update range based on current frame (but don't change values!)
+                        # Only expand range if needed, never shrink it
+                        current_min_range = lut_min_slider.minimum()
+                        current_max_range = lut_min_slider.maximum()
+                        new_min_range = min(current_min_range, frame_min) if current_min_range > 0 else frame_min
+                        new_max_range = max(current_max_range, frame_max)
+                        
+                        lut_min_slider.setRange(new_min_range, new_max_range)
+                        lut_max_slider.setRange(new_min_range, new_max_range)
+                        
+                        # DON'T change the values - preserve what user set!
+                        # Only clamp if absolutely necessary (out of new range)
                         current_min_val = lut_min_slider.value()
                         current_max_val = lut_max_slider.value()
                         
-                        # Only update range if it actually changed (to avoid unnecessary resets)
-                        if lut_min_slider.minimum() != frame_min or lut_min_slider.maximum() != frame_max:
-                            lut_min_slider.setRange(frame_min, frame_max)
-                            lut_max_slider.setRange(frame_min, frame_max)
-                        
-                        # Set values - prioritize provided vmin/vmax, then preserve current if in manual mode
                         if vmin is not None and vmax is not None:
-                            # Use the provided values (either from manual adjustment or auto calculation)
-                            lut_min_slider.setValue(vmin)
-                            lut_max_slider.setValue(vmax)
+                            # Use provided values
+                            lut_min_slider.setValue(max(new_min_range, min(new_max_range, vmin)))
+                            lut_max_slider.setValue(max(new_min_range, min(new_max_range, vmax)))
                         else:
-                            # No explicit values - preserve current manual values if they're still in range
-                            # This happens when navigating frames in manual mode
-                            if frame_min <= current_min_val <= frame_max:
-                                lut_min_slider.setValue(current_min_val)
+                            # Preserve current values if they're still valid
+                            if new_min_range <= current_min_val <= new_max_range:
+                                # Keep current value
+                                pass
                             else:
-                                # Clamp to range if out of bounds
-                                lut_min_slider.setValue(max(frame_min, min(frame_max, current_min_val)))
-                            if frame_min <= current_max_val <= frame_max:
-                                lut_max_slider.setValue(current_max_val)
+                                # Clamp to new range
+                                lut_min_slider.setValue(max(new_min_range, min(new_max_range, current_min_val)))
+                            
+                            if new_min_range <= current_max_val <= new_max_range:
+                                # Keep current value
+                                pass
                             else:
-                                lut_max_slider.setValue(max(frame_min, min(frame_max, current_max_val)))
+                                # Clamp to new range
+                                lut_max_slider.setValue(max(new_min_range, min(new_max_range, current_max_val)))
+                        
                         lut_min_slider.blockSignals(False)
                         lut_max_slider.blockSignals(False)
                     finally:
                         is_updating_lut = False
+                
+                # Update histogram
+                update_histogram(frame, vmin, vmax)
                 
                 # Clear and redraw
                 fig.clear()
@@ -1596,33 +1782,31 @@ class ND2ConversionTab(QWidget):
             def update_lut_from_sliders():
                 """Update display when sliders are moved"""
                 # Prevent recursive calls
-                nonlocal use_auto_lut, is_updating_lut
+                nonlocal is_updating_lut, current_vmin, current_vmax
                 if is_updating_lut:
                     return
                 
                 is_updating_lut = True
                 try:
-                    # Explicitly set manual mode when user adjusts sliders
-                    use_auto_lut = False
-                    
-                    # Block signals to prevent recursive updates
-                    lut_min_slider.blockSignals(True)
-                    lut_max_slider.blockSignals(True)
-                    
                     vmin = lut_min_slider.value()
                     vmax = lut_max_slider.value()
                     
                     # Ensure min < max for valid display
                     if vmin >= vmax:
                         vmax = vmin + 1.0
+                        lut_max_slider.blockSignals(True)
                         lut_max_slider.setValue(vmax)
+                        lut_max_slider.blockSignals(False)
+                    
+                    # Update stored values
+                    current_vmin = vmin
+                    current_vmax = vmax
                     
                     # Update the image display directly using matplotlib's set_clim
-                    # This is the proper way to update LUT without redrawing the entire figure
                     if current_frame_data['frame'] is not None and im_handle is not None:
                         # Update the color limits on the existing image
                         im_handle.set_clim(vmin=vmin, vmax=vmax)
-                        # Force immediate redraw (draw_idle might not work reliably)
+                        # Force immediate redraw
                         canvas.draw()
                         
                         # Update frame info
@@ -1631,21 +1815,29 @@ class ND2ConversionTab(QWidget):
                         # Store the current LUT values so they persist
                         current_frame_data['vmin'] = vmin
                         current_frame_data['vmax'] = vmax
+                        
+                        # Update histogram lines (only update lines, don't redraw entire histogram)
+                        if hist_vmin_line is not None and hist_vmax_line is not None:
+                            # Update line positions
+                            hist_vmin_line.set_xdata([vmin, vmin])
+                            hist_vmax_line.set_xdata([vmax, vmax])
+                            # Update the fill region - clear old and add new
+                            for patch in list(hist_ax.patches):
+                                if hasattr(patch, 'get_alpha') and patch.get_alpha() == 0.2:
+                                    patch.remove()
+                            hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
+                            # Update legend
+                            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8)
+                            hist_canvas.draw()
+                        else:
+                            # If lines don't exist yet, update full histogram
+                            if current_frame_data['frame'] is not None:
+                                update_histogram(current_frame_data['frame'], vmin, vmax)
                     else:
                         # Fallback: full update if image handle doesn't exist
                         update_frame(preview_dialog.current_frame, vmin=vmin, vmax=vmax, update_sliders=False)
-                    
-                    # Unblock signals
-                    lut_min_slider.blockSignals(False)
-                    lut_max_slider.blockSignals(False)
                 finally:
                     is_updating_lut = False
-            
-            # Auto LUT function
-            def auto_lut():
-                """Auto-adjust LUT based on current frame"""
-                if current_frame_data['frame'] is not None:
-                    update_frame(preview_dialog.current_frame, force_auto=True)
             
             # Debounce timer for valueChanged signals (to avoid too many updates while dragging)
             lut_update_timer = QTimer()
@@ -1671,7 +1863,6 @@ class ND2ConversionTab(QWidget):
             
             lut_min_slider.editingFinished.connect(on_lut_editing_finished)
             lut_max_slider.editingFinished.connect(on_lut_editing_finished)
-            auto_lut_btn.clicked.connect(auto_lut)
             
             # Store current frame
             preview_dialog.current_frame = 0
@@ -1685,17 +1876,13 @@ class ND2ConversionTab(QWidget):
                     frame_spin.setValue(idx + 1)
                     frame_spin.blockSignals(False)
                     try:
-                        # Always preserve current slider values when navigating (don't force auto)
-                        # User can click Auto LUT button if they want auto for new frame
-                        # Only use manual values if we're in manual mode, otherwise use auto
-                        if not use_auto_lut:
-                            # Manual mode: preserve current slider values
-                            vmin = lut_min_slider.value()
-                            vmax = lut_max_slider.value()
-                            update_frame(idx, vmin=vmin, vmax=vmax, update_sliders=False)
-                        else:
-                            # Auto mode: let update_frame calculate auto LUT
-                            update_frame(idx, vmin=None, vmax=None, update_sliders=True)
+                        # Always preserve current slider values when navigating
+                        # User's manual adjustments persist across frames
+                        # Get current values from sliders (user's settings)
+                        vmin = lut_min_slider.value()
+                        vmax = lut_max_slider.value()
+                        # Update frame with user's values - don't recalculate!
+                        update_frame(idx, vmin=vmin, vmax=vmax, update_sliders=False)
                     except Exception as e:
                         QMessageBox.warning(preview_dialog, "Preview Error", 
                                           f"Could not display frame {idx + 1}:\n{str(e)}")
@@ -3179,7 +3366,7 @@ class ProcessingTab(QWidget):
                         import sys
                         is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
                         
-                        # This error occurs in frozen builds (Nuitka) due to a bug in omnipose/core.py
+                        # This error occurs in frozen builds due to a bug in omnipose/core.py
                         # Try different diameter values as workaround
                         retry_diameters = [30.0, 25.0, 35.0, 20.0, 40.0] if is_frozen else []
                         
@@ -4208,16 +4395,18 @@ class AnalyzeMasksTab(QWidget):
     def _show_filter_preview(self, mask_path):
         """Show preview dialog with filter effects"""
         # Show loading progress
-        loading_progress = QProgressDialog("Loading mask file and initializing preview...", None, 0, 0, self)
+        loading_progress = QProgressDialog("Loading mask file and initializing preview...", None, 0, 100, self)
         loading_progress.setWindowTitle("Loading")
         loading_progress.setAutoClose(False)
         loading_progress.setAutoReset(False)
         loading_progress.setCancelButton(None)
+        loading_progress.setValue(0)
         loading_progress.show()
         QApplication.processEvents()
         
         try:
-            loading_progress.setLabelText("Loading mask file...")
+            loading_progress.setLabelText("Loading mask file... (20%)")
+            loading_progress.setValue(20)
             QApplication.processEvents()
             
             import tifffile
@@ -4230,13 +4419,21 @@ class AnalyzeMasksTab(QWidget):
             # Load masks
             masks = tifffile.imread(mask_path)
             
-            loading_progress.setLabelText("Processing mask data...")
+            loading_progress.setLabelText("Processing mask data... (50%)")
+            loading_progress.setValue(50)
             QApplication.processEvents()
             if masks.ndim == 2:
                 masks = masks[np.newaxis, :, :]
             num_frames = masks.shape[0]
             
+            loading_progress.setLabelText("Initializing preview dialog... (80%)")
+            loading_progress.setValue(80)
+            QApplication.processEvents()
+            
             # Create preview dialog (non-modal so user can access main window)
+            loading_progress.setLabelText("Ready! (100%)")
+            loading_progress.setValue(100)
+            QApplication.processEvents()
             preview_dialog = QDialog(self)
             preview_dialog.setWindowTitle("Filter Effects Preview")
             preview_dialog.setMinimumSize(1000, 800)
@@ -4320,11 +4517,12 @@ class AnalyzeMasksTab(QWidget):
                 # Show progress dialog
                 progress_dialog = None
                 if show_progress:
-                    progress_dialog = QProgressDialog("Applying filters...", None, 0, 0, preview_dialog)
+                    progress_dialog = QProgressDialog("Applying filters...", None, 0, 100, preview_dialog)
                     progress_dialog.setWindowTitle("Processing")
                     progress_dialog.setAutoClose(False)
                     progress_dialog.setAutoReset(False)
                     progress_dialog.setCancelButton(None)
+                    progress_dialog.setValue(0)
                     progress_dialog.show()
                     QApplication.processEvents()
                 
@@ -4340,7 +4538,8 @@ class AnalyzeMasksTab(QWidget):
                     mask = masks[frame_idx]
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Cleaning mask...")
+                        progress_dialog.setLabelText("Cleaning mask... (10%)")
+                        progress_dialog.setValue(10)
                         QApplication.processEvents()
                     
                     # Remove small objects
@@ -4350,7 +4549,8 @@ class AnalyzeMasksTab(QWidget):
                     params = get_current_parameters()
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Calculating cell properties...")
+                        progress_dialog.setLabelText("Calculating cell properties... (30%)")
+                        progress_dialog.setValue(30)
                         QApplication.processEvents()
                     
                     # Calculate properties
@@ -4358,7 +4558,8 @@ class AnalyzeMasksTab(QWidget):
                     all_labels = {prop['label'] for prop in properties}
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Applying morphological filters...")
+                        progress_dialog.setLabelText("Applying morphological filters... (50%)")
+                        progress_dialog.setValue(50)
                         QApplication.processEvents()
                     
                     # Apply filters with current parameters
@@ -4372,7 +4573,8 @@ class AnalyzeMasksTab(QWidget):
                     rod_shaped_labels = {cell['label'] for cell in rod_shaped}
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Applying size filters...")
+                        progress_dialog.setLabelText("Applying size filters... (70%)")
+                        progress_dialog.setValue(70)
                         QApplication.processEvents()
                     
                     filtered = filter_by_size(
@@ -4384,7 +4586,8 @@ class AnalyzeMasksTab(QWidget):
                     rejected_labels = all_labels - accepted_labels
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Creating visualization...")
+                        progress_dialog.setLabelText("Creating visualization... (85%)")
+                        progress_dialog.setValue(85)
                         QApplication.processEvents()
                     
                     # Create visualization
@@ -4400,7 +4603,8 @@ class AnalyzeMasksTab(QWidget):
                         vis[mask == label, 0] = 255
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Rendering display...")
+                        progress_dialog.setLabelText("Rendering display... (100%)")
+                        progress_dialog.setValue(100)
                         QApplication.processEvents()
                     
                     # Update plot
@@ -4415,6 +4619,8 @@ class AnalyzeMasksTab(QWidget):
                     
                     # Close progress dialog
                     if progress_dialog:
+                        progress_dialog.setValue(100)
+                        QApplication.processEvents()
                         progress_dialog.close()
                     
                     # Re-enable buttons
@@ -4606,13 +4812,38 @@ class AnalyzeMasksTab(QWidget):
             
             # Show progress bar
             self.parent_window.progress_bar.setVisible(True)
-            self.parent_window.progress_bar.setRange(0, 0)  # Indeterminate
+            self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range
+            self.parent_window.progress_bar.setValue(0)
             
             # Store reference to prevent garbage collection
             self.worker = WorkerThread(script_path, cmd_args, parent=self)
             self.worker.finished.connect(self.on_finished)
-            self.worker.progress.connect(self.parent_window.log_output)
+            self.worker.progress.connect(self._parse_analyze_progress)
             self.worker.start()
+    
+    def _parse_analyze_progress(self, message):
+        """Parse progress messages from analyze script and update progress bar"""
+        import re
+        # Log the message
+        self.parent_window.log_output(message)
+        
+        # Try to parse tqdm-style progress: "Creating visualization: 25%|"
+        # Or percentage in message
+        progress_match = re.search(r'(\d+)%', message)
+        if progress_match:
+            try:
+                progress_pct = int(progress_match.group(1))
+                # Clamp to 0-100
+                progress_pct = max(0, min(100, progress_pct))
+                self.parent_window.progress_bar.setValue(progress_pct)
+            except:
+                pass
+        # Also check for "X/Y" patterns which might indicate progress
+        elif 'Creating visualization' in message or 'Processing' in message:
+            # If we see these messages, increment progress slightly
+            current = self.parent_window.progress_bar.value()
+            if current < 90:
+                self.parent_window.progress_bar.setValue(min(90, current + 1))
     
     def _process_next_folder_file(self, script_path):
         """Process next file in folder mode"""
@@ -4648,8 +4879,9 @@ class AnalyzeMasksTab(QWidget):
         if self.create_vis.isChecked():
             cmd_args.append('--visualization')
         
-        # Update progress
-        self.parent_window.progress_bar.setValue(self.current_file_index)
+        # Update progress (for folder mode, show file progress)
+        file_progress = int((self.current_file_index / len(self.folder_files)) * 100)
+        self.parent_window.progress_bar.setValue(file_progress)
         self.analyze_btn.setText(f"Analyzing... ({self.current_file_index + 1}/{len(self.folder_files)})")
         
         # Store reference to prevent garbage collection
@@ -4699,6 +4931,7 @@ class TrackingTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
+        self.device_mapping = {}  # Initialize device mapping
         self.init_ui()
     
     def init_ui(self):
@@ -4822,21 +5055,39 @@ class TrackingTab(QWidget):
         # Device selection
         device_layout = QHBoxLayout()
         device_label = QLabel("Device:")
-        device_info_icon = create_info_icon(
-            "Compute device for tracking.\n\n"
-            "Default: 'cpu'\n"
-            "Source: PyTorch device selection\n\n"
-            "Options:\n"
-            "- cpu: CPU processing (works everywhere, slower)\n"
-            "- cuda: GPU processing (faster, requires CUDA-capable GPU)\n\n"
-            "Tip: Use GPU if available for faster processing.",
-            parent_widget=self
-        )
+        
+        # Check available devices and create mapping
+        available_devices_display = ['CPU']
+        self.device_mapping = {'CPU': 'cpu'}  # Map display name to actual device value
+        device_info_text = "Compute device for tracking.\n\n"
+        device_info_text += "Default: CPU\n"
+        device_info_text += "Source: PyTorch device selection\n\n"
+        device_info_text += "Options:\n"
+        device_info_text += "- CPU: CPU processing (works everywhere, slower)\n"
+        
+        try:
+            import torch
+            if torch.cuda.is_available():
+                available_devices_display.append('CUDA')
+                self.device_mapping['CUDA'] = 'cuda'
+                device_info_text += "- CUDA: NVIDIA GPU processing (faster, requires CUDA-capable GPU)\n"
+            
+            # Check for Apple Silicon MPS support
+            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                available_devices_display.append('GPU')
+                self.device_mapping['GPU'] = 'mps'
+                device_info_text += "- GPU: Apple Silicon GPU (M1/M2/M3) or NVIDIA GPU (faster)\n"
+        except ImportError:
+            pass
+        
+        device_info_text += "\nTip: Use GPU if available for faster processing."
+        
+        device_info_icon = create_info_icon(device_info_text, parent_widget=self)
         device_layout.addWidget(device_label)
         device_layout.addWidget(device_info_icon)
         self.device_combo = QComboBox()
-        self.device_combo.addItems(['cpu', 'cuda'])
-        self.device_combo.setCurrentText('cpu')
+        self.device_combo.addItems(available_devices_display)
+        self.device_combo.setCurrentText('CPU')
         device_layout.addWidget(self.device_combo)
         device_layout.addStretch()
         tracking_layout.addLayout(device_layout)
@@ -4920,47 +5171,276 @@ class TrackingTab(QWidget):
         # Get parameters
         model_name = self.model_combo.currentText()
         mode = self.mode_combo.currentText()
-        device = self.device_combo.currentText()
+        # Map display name to actual device value
+        device_display = self.device_combo.currentText()
+        device = self.device_mapping.get(device_display, 'cpu')
         
-        # Check if CUDA is available
+        # Check device availability with detailed debugging
         if device == 'cuda':
+            debug_info = []
+            debug_info.append("=== CUDA Debugging Information ===")
+            
             try:
                 import torch
-                if not torch.cuda.is_available():
+                debug_info.append(f"✓ PyTorch version: {torch.__version__}")
+                
+                # Check CUDA availability
+                cuda_available = torch.cuda.is_available()
+                debug_info.append(f"✓ torch.cuda.is_available(): {cuda_available}")
+                
+                if not cuda_available:
+                    debug_info.append("✗ CUDA is not available")
+                    debug_info.append(f"  - CUDA version (compiled): {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
+                    debug_info.append(f"  - cuDNN version: {torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else 'N/A'}")
+                    
+                    # Check if CUDA libraries are found
+                    try:
+                        import subprocess
+                        result = subprocess.run(['which', 'nvcc'], capture_output=True, text=True)
+                        if result.returncode == 0:
+                            debug_info.append(f"  - nvcc found: {result.stdout.strip()}")
+                        else:
+                            debug_info.append("  - nvcc not found in PATH")
+                    except:
+                        pass
+                    
+                    error_msg = "\n".join(debug_info)
+                    error_msg += "\n\nCUDA GPU is not available on this system."
+                    error_msg += "\n\nPossible reasons:"
+                    error_msg += "\n- No NVIDIA GPU installed"
+                    error_msg += "\n- CUDA drivers not installed"
+                    error_msg += "\n- PyTorch was installed without CUDA support"
+                    error_msg += "\n- GPU drivers are outdated"
+                    
                     reply = QMessageBox.question(
                         self, "CUDA Not Available",
-                        "CUDA GPU is not available on this system.\n\n"
-                        "Would you like to continue with CPU mode?",
+                        error_msg + "\n\nWould you like to continue with CPU mode?",
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.Yes
                     )
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = 'cpu'
-                    self.device_combo.setCurrentText('cpu')
+                    self.device_combo.setCurrentText('CPU')
+                    self.parent_window.log_output("\n".join(debug_info) + "\n")
                 else:
-                    # CUDA is available, verify it works
+                    # CUDA is available, get detailed info
+                    debug_info.append("✓ CUDA is available!")
+                    debug_info.append(f"  - CUDA version (compiled): {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
+                    debug_info.append(f"  - Number of GPUs: {torch.cuda.device_count()}")
+                    
+                    for i in range(torch.cuda.device_count()):
+                        gpu_name = torch.cuda.get_device_name(i)
+                        gpu_props = torch.cuda.get_device_properties(i)
+                        debug_info.append(f"  - GPU {i}: {gpu_name}")
+                        debug_info.append(f"    - Memory: {gpu_props.total_memory / 1024**3:.2f} GB")
+                        debug_info.append(f"    - Compute Capability: {gpu_props.major}.{gpu_props.minor}")
+                    
+                    # Test CUDA with a simple operation
+                    debug_info.append("\nTesting CUDA functionality...")
                     try:
-                        # Test CUDA with a simple operation
+                        # Test basic tensor creation
                         test_tensor = torch.tensor([1.0], device='cuda')
-                        del test_tensor
+                        debug_info.append("  ✓ Tensor creation: SUCCESS")
+                        
+                        # Test simple operation
+                        result = test_tensor * 2.0
+                        debug_info.append("  ✓ Tensor operation: SUCCESS")
+                        
+                        # Test memory allocation
+                        test_large = torch.zeros(1000, 1000, device='cuda')
+                        debug_info.append("  ✓ Memory allocation: SUCCESS")
+                        
+                        del test_tensor, result, test_large
                         torch.cuda.empty_cache()
+                        debug_info.append("  ✓ Memory cleanup: SUCCESS")
+                        
+                        debug_info.append("\n✓ CUDA is working correctly!")
+                        self.parent_window.log_output("\n".join(debug_info) + "\n")
+                        
                     except Exception as e:
-                        QMessageBox.warning(
+                        import traceback
+                        error_details = traceback.format_exc()
+                        debug_info.append(f"  ✗ CUDA test failed: {str(e)}")
+                        debug_info.append(f"\nError details:\n{error_details}")
+                        
+                        error_msg = "\n".join(debug_info)
+                        error_msg += "\n\nCUDA is available but encountered an error during testing."
+                        error_msg += "\nThis might indicate:"
+                        error_msg += "\n- GPU driver issues"
+                        error_msg += "\n- CUDA runtime problems"
+                        error_msg += "\n- Memory allocation issues"
+                        
+                        reply = QMessageBox.question(
                             self, "CUDA Error",
-                            f"CUDA is available but encountered an error:\n{str(e)}\n\n"
-                            "Switching to CPU mode."
+                            error_msg + "\n\nWould you like to continue with CPU mode?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.Yes
                         )
+                        if reply == QMessageBox.StandardButton.No:
+                            return
                         device = 'cpu'
                         self.device_combo.setCurrentText('cpu')
+                        self.parent_window.log_output("\n".join(debug_info) + "\n")
+                        
             except ImportError:
+                debug_info.append("✗ PyTorch is not installed")
+                error_msg = "\n".join(debug_info)
+                error_msg += "\n\nPyTorch is required for CUDA support."
+                error_msg += "\nInstall with: pip install torch torchvision"
+                error_msg += "\nFor CUDA support: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
+                
                 QMessageBox.warning(
                     self, "PyTorch Not Found",
-                    "PyTorch is not installed. Please install PyTorch to use CUDA.\n\n"
-                    "Switching to CPU mode."
+                    error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.device_combo.setCurrentText('cpu')
+                self.device_combo.setCurrentText('CPU')
+                self.parent_window.log_output("\n".join(debug_info) + "\n")
+            except Exception as e:
+                import traceback
+                debug_info.append(f"✗ Unexpected error: {str(e)}")
+                debug_info.append(f"\n{traceback.format_exc()}")
+                error_msg = "\n".join(debug_info)
+                
+                QMessageBox.warning(
+                    self, "CUDA Check Error",
+                    error_msg + "\n\nSwitching to CPU mode."
+                )
+                device = 'cpu'
+                self.device_combo.setCurrentText('CPU')
+                self.parent_window.log_output("\n".join(debug_info) + "\n")
+        elif device == 'mps':
+            # Check MPS (Apple Silicon) availability
+            debug_info = []
+            debug_info.append("=== GPU (Apple Silicon) Debugging Information ===")
+            
+            try:
+                import torch
+                debug_info.append(f"✓ PyTorch version: {torch.__version__}")
+                
+                # Check MPS availability
+                if hasattr(torch.backends, 'mps'):
+                    mps_available = torch.backends.mps.is_available()
+                    debug_info.append(f"✓ torch.backends.mps.is_available(): {mps_available}")
+                    
+                    if not mps_available:
+                        debug_info.append("✗ GPU is not available")
+                        debug_info.append("  - This usually means you're not on Apple Silicon (M1/M2/M3)")
+                        debug_info.append("  - Or PyTorch was built without GPU support")
+                        
+                        error_msg = "\n".join(debug_info)
+                        error_msg += "\n\nMPS (Apple Silicon GPU) is not available."
+                        error_msg += "\n\nPossible reasons:"
+                        error_msg += "\n- Not running on Apple Silicon (M1/M2/M3 chip)"
+                        error_msg += "\n- PyTorch was installed without MPS support"
+                        error_msg += "\n- macOS version too old (needs macOS 12.3+)"
+                        
+                        reply = QMessageBox.question(
+                            self, "MPS Not Available",
+                            error_msg + "\n\nWould you like to continue with CPU mode?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.Yes
+                        )
+                        if reply == QMessageBox.StandardButton.No:
+                            return
+                        device = 'cpu'
+                        self.device_combo.setCurrentText('cpu')
+                        self.parent_window.log_output("\n".join(debug_info) + "\n")
+                    else:
+                        # MPS is available, test it
+                        debug_info.append("✓ GPU is available!")
+                        debug_info.append("  - Device: Apple Silicon GPU")
+                        
+                        # Test MPS with a simple operation
+                        debug_info.append("\nTesting GPU functionality...")
+                        try:
+                            # Test basic tensor creation
+                            test_tensor = torch.tensor([1.0], device='mps')
+                            debug_info.append("  ✓ Tensor creation: SUCCESS")
+                            
+                            # Test simple operation
+                            result = test_tensor * 2.0
+                            debug_info.append("  ✓ Tensor operation: SUCCESS")
+                            
+                            # Test memory allocation
+                            test_large = torch.zeros(1000, 1000, device='mps')
+                            debug_info.append("  ✓ Memory allocation: SUCCESS")
+                            
+                            del test_tensor, result, test_large
+                            torch.mps.empty_cache()
+                            debug_info.append("  ✓ Memory cleanup: SUCCESS")
+                            
+                            debug_info.append("\n✓ GPU is working correctly!")
+                            self.parent_window.log_output("\n".join(debug_info) + "\n")
+                            
+                        except Exception as e:
+                            import traceback
+                            error_details = traceback.format_exc()
+                            debug_info.append(f"  ✗ MPS test failed: {str(e)}")
+                            debug_info.append(f"\nError details:\n{error_details}")
+                            
+                            error_msg = "\n".join(debug_info)
+                            error_msg += "\n\GPU is available but encountered an error during testing."
+                            error_msg += "\nThis might indicate:"
+                            error_msg += "\n- macOS version compatibility issues"
+                            error_msg += "\n- PyTorch MPS backend problems"
+                            error_msg += "\n- Memory allocation issues"
+                            
+                            reply = QMessageBox.question(
+                                self, "MPS Error",
+                                error_msg + "\n\nWould you like to continue with CPU mode?",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.Yes
+                            )
+                            if reply == QMessageBox.StandardButton.No:
+                                return
+                            device = 'cpu'
+                            self.device_combo.setCurrentText('cpu')
+                            self.parent_window.log_output("\n".join(debug_info) + "\n")
+                else:
+                    debug_info.append("✗ MPS backend not available in this PyTorch version")
+                    error_msg = "\n".join(debug_info)
+                    error_msg += "\n\nMPS backend is not available."
+                    error_msg += "\nThis PyTorch version may not support MPS."
+                    
+                    reply = QMessageBox.question(
+                        self, "MPS Not Supported",
+                        error_msg + "\n\nWould you like to continue with CPU mode?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes
+                    )
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                    device = 'cpu'
+                    self.device_combo.setCurrentText('CPU')
+                    self.parent_window.log_output("\n".join(debug_info) + "\n")
+                    
+            except ImportError:
+                debug_info.append("✗ PyTorch is not installed")
+                error_msg = "\n".join(debug_info)
+                error_msg += "\n\nPyTorch is required for MPS support."
+                
+                QMessageBox.warning(
+                    self, "PyTorch Not Found",
+                    error_msg + "\n\nSwitching to CPU mode."
+                )
+                device = 'cpu'
+                self.device_combo.setCurrentText('CPU')
+                self.parent_window.log_output("\n".join(debug_info) + "\n")
+            except Exception as e:
+                import traceback
+                debug_info.append(f"✗ Unexpected error: {str(e)}")
+                debug_info.append(f"\n{traceback.format_exc()}")
+                error_msg = "\n".join(debug_info)
+                
+                QMessageBox.warning(
+                    self, "MPS Check Error",
+                    error_msg + "\n\nSwitching to CPU mode."
+                )
+                device = 'cpu'
+                self.device_combo.setCurrentText('CPU')
+                self.parent_window.log_output("\n".join(debug_info) + "\n")
         
         # Create worker thread
         self.worker = TrackingWorker(
@@ -4972,21 +5452,35 @@ class TrackingTab(QWidget):
         
         # Disable button during processing
         self.parent_window.progress_bar.setVisible(True)
-        self.parent_window.progress_bar.setRange(0, 0)  # Indeterminate
+        self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range
+        self.parent_window.progress_bar.setValue(0)
         self.parent_window.log_output(f"Starting tracking for: {mask_file.name}\n")
+        
+        # Connect progress signal
+        self.worker.progress.connect(self.on_tracking_progress)
+    
+    def on_tracking_progress(self, value, message):
+        """Update progress bar and log message"""
+        self.parent_window.progress_bar.setValue(value)
+        if message:
+            self.parent_window.log_output(f"[{value}%] {message}\n")
     
     def on_tracking_finished(self, success, message):
-        self.parent_window.progress_bar.setVisible(False)
+        self.parent_window.progress_bar.setValue(100)
         if success:
             self.parent_window.log_output("✓ Tracking completed successfully!\n")
             QMessageBox.information(self, "Success", "Tracking completed successfully!")
         else:
             QMessageBox.critical(self, "Error", f"Tracking failed:\n{message}")
+        # Hide progress bar after a short delay
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
 
 
 class TrackingWorker(QThread):
     """Worker thread for running tracking"""
     finished = pyqtSignal(bool, str)
+    progress = pyqtSignal(int, str)  # progress percentage, status message
     
     def __init__(self, mask_file, original_file, excel_file, model_name, mode, device, parent=None):
         super().__init__(parent)
@@ -4998,89 +5492,332 @@ class TrackingWorker(QThread):
         self.device = device
     
     def run(self):
+        # Initialize debug output list
+        debug_output = []
+        debug_output.append("=== Tracking Debug Information ===")
+        
         try:
             from trackastra.model import Trackastra
-            from trackastra.tracking import graph_to_edge_table, graph_to_ctc
+            from trackastra.tracking import graph_to_edge_table, graph_to_ctc, graph_to_napari_tracks
             import tifffile
             import pandas as pd
             import numpy as np
             from pathlib import Path
+            import networkx as nx
+            
+            debug_output.append("✓ All imports successful")
+            self.progress.emit(5, "Loading masks...")
             
             # Load masks
+            debug_output.append(f"\nLoading masks from: {self.mask_file}")
             masks = tifffile.imread(str(self.mask_file))
+            debug_output.append(f"✓ Masks loaded - Shape: {masks.shape}")
+            self.progress.emit(10, "Masks loaded")
             
             if len(masks.shape) != 3:
-                self.finished.emit(False, f"Expected 3D mask array (T, Y, X), got shape: {masks.shape}")
+                error_msg = f"Expected 3D mask array (T, Y, X), got shape: {masks.shape}\n\n" + "\n".join(debug_output)
+                self.finished.emit(False, error_msg)
                 return
             
             # Load original images if provided (required for trackastra)
             if self.original_file:
+                self.progress.emit(15, "Loading original images...")
+                debug_output.append(f"\nLoading original images from: {self.original_file}")
                 imgs = tifffile.imread(str(self.original_file))
+                debug_output.append(f"✓ Images loaded - Shape: {imgs.shape}")
+                self.progress.emit(20, "Images loaded")
+                
                 if len(imgs.shape) != 3:
-                    self.finished.emit(False, f"Expected 3D image array (T, Y, X), got shape: {imgs.shape}")
+                    error_msg = f"Expected 3D image array (T, Y, X), got shape: {imgs.shape}\n\n" + "\n".join(debug_output)
+                    self.finished.emit(False, error_msg)
                     return
                 # Ensure images and masks have same number of frames
                 if imgs.shape[0] != masks.shape[0]:
-                    self.finished.emit(False, f"Image frames ({imgs.shape[0]}) don't match mask frames ({masks.shape[0]})")
+                    error_msg = f"Image frames ({imgs.shape[0]}) don't match mask frames ({masks.shape[0]})\n\n" + "\n".join(debug_output)
+                    self.finished.emit(False, error_msg)
                     return
             else:
                 # If no original images provided, create dummy images (trackastra needs them)
                 # Use masks as images (will work but not ideal)
+                self.progress.emit(15, "Creating images from masks...")
+                debug_output.append("\nNo original images provided - using masks as images")
                 imgs = masks.astype(np.float32)
+                debug_output.append("✓ Created dummy images from masks")
+                self.progress.emit(20, "Images ready")
             
             # Load Excel data if provided
             cell_data = None
             if self.excel_file:
+                self.progress.emit(25, "Loading Excel analysis data...")
                 try:
                     excel_path = Path(self.excel_file)
+                    debug_output.append(f"\nLoading Excel file: {excel_path}")
                     # Try to read the per-cell data sheet
                     excel_data = pd.read_excel(excel_path, sheet_name=None)
+                    debug_output.append(f"✓ Excel file loaded with sheets: {list(excel_data.keys())}")
+                    
                     # Look for sheet with per-cell data (usually named "Per-Cell Data" or similar)
                     for sheet_name in excel_data.keys():
                         if 'cell' in sheet_name.lower() or 'per' in sheet_name.lower():
                             cell_data = excel_data[sheet_name]
+                            debug_output.append(f"✓ Using sheet: {sheet_name} (per-cell data)")
                             break
                     if cell_data is None:
                         # Use first sheet if no per-cell sheet found
                         cell_data = list(excel_data.values())[0]
+                        debug_output.append(f"✓ Using first sheet: {list(excel_data.keys())[0]}")
+                    
+                    debug_output.append(f"  - Cell data shape: {cell_data.shape}")
+                    debug_output.append(f"  - Cell data columns: {list(cell_data.columns)}")
+                    if len(cell_data) > 0:
+                        debug_output.append(f"  - Sample row: {cell_data.iloc[0].to_dict()}")
+                    self.progress.emit(30, "Excel data loaded")
                 except Exception as e:
-                    self.finished.emit(False, f"Error reading Excel file: {str(e)}")
+                    import traceback
+                    error_msg = f"Error reading Excel file: {str(e)}\n\n{traceback.format_exc()}"
+                    self.finished.emit(False, error_msg)
                     return
             
-            # Load pretrained model
-            try:
-                model = Trackastra.from_pretrained(self.model_name, device=self.device)
-            except Exception as e:
-                self.finished.emit(False, f"Error loading Trackastra model: {str(e)}\n\nMake sure the model name is correct and trackastra is properly installed.")
-                return
+            # Load pretrained model with detailed debugging
+            self.progress.emit(35, f"Loading Trackastra model ({self.model_name})...")
+            debug_output.append(f"\nLoading Trackastra model: {self.model_name}")
+            debug_output.append(f"Device: {self.device}")
             
-            # Run tracking
             try:
-                track_graph, masks_tracked = model.track(imgs, masks, mode=self.mode)
+                import torch
+                if self.device == 'cuda':
+                    debug_output.append(f"CUDA available: {torch.cuda.is_available()}")
+                    if torch.cuda.is_available():
+                        debug_output.append(f"GPU: {torch.cuda.get_device_name(0)}")
+                        debug_output.append(f"CUDA memory allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+                elif self.device == 'mps':
+                    debug_output.append(f"MPS available: {torch.backends.mps.is_available() if hasattr(torch.backends, 'mps') else False}")
+                    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                        debug_output.append("GPU: Apple Silicon (MPS)")
+                else:
+                    debug_output.append("Using CPU")
+            except:
+                pass
+            
+            try:
+                debug_output.append("Calling Trackastra.from_pretrained()...")
+                model = Trackastra.from_pretrained(self.model_name, device=self.device)
+                debug_output.append("✓ Model loaded successfully")
+                self.progress.emit(50, "Model loaded, starting tracking...")
             except Exception as e:
                 import traceback
-                self.finished.emit(False, f"Error during tracking: {str(e)}\n\n{traceback.format_exc()}")
+                error_details = traceback.format_exc()
+                debug_output.append(f"✗ Error loading model: {str(e)}")
+                debug_output.append(f"\nFull traceback:\n{error_details}")
+                
+                error_msg = f"Error loading Trackastra model: {str(e)}\n\n"
+                error_msg += "Debug information:\n" + "\n".join(debug_output)
+                error_msg += "\n\nPossible issues:"
+                error_msg += "\n- Model name incorrect"
+                error_msg += "\n- Trackastra not properly installed"
+                error_msg += "\n- CUDA/GPU issues (if using cuda device)"
+                error_msg += "\n- Network issues (downloading model)"
+                
+                self.finished.emit(False, error_msg)
+                return
+            
+            # Run tracking with detailed debugging
+            debug_output.append(f"\nStarting tracking with mode: {self.mode}")
+            debug_output.append(f"Input shapes - Images: {imgs.shape}, Masks: {masks.shape}")
+            
+            try:
+                import torch
+                if self.device == 'cuda' and torch.cuda.is_available():
+                    debug_output.append(f"GPU memory before tracking: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+                    debug_output.append(f"GPU memory reserved: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
+                elif self.device == 'mps' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    debug_output.append("MPS device ready for tracking")
+            except:
+                pass
+            
+            try:
+                self.progress.emit(55, "Running tracking algorithm...")
+                debug_output.append("Calling model.track()...")
+                track_graph, masks_tracked = model.track(imgs, masks, mode=self.mode)
+                debug_output.append("✓ Tracking completed successfully")
+                self.progress.emit(70, "Tracking completed, processing results...")
+                debug_output.append(f"  - Track graph type: {type(track_graph)}")
+                debug_output.append(f"  - Track graph nodes: {track_graph.number_of_nodes() if hasattr(track_graph, 'number_of_nodes') else 'N/A'}")
+                debug_output.append(f"  - Track graph edges: {track_graph.number_of_edges() if hasattr(track_graph, 'number_of_edges') else 'N/A'}")
+                debug_output.append(f"  - Tracked masks shape: {masks_tracked.shape}")
+                debug_output.append(f"  - Tracked masks dtype: {masks_tracked.dtype}")
+                debug_output.append(f"  - Original masks max: {masks.max()}")
+                debug_output.append(f"  - Tracked masks max: {masks_tracked.max()}")
+                debug_output.append(f"  - Unique labels in first frame (original): {len(np.unique(masks[0]))}")
+                debug_output.append(f"  - Unique labels in first frame (tracked): {len(np.unique(masks_tracked[0]))}")
+                debug_output.append(f"  - Unique labels in last frame (original): {len(np.unique(masks[-1]))}")
+                debug_output.append(f"  - Unique labels in last frame (tracked): {len(np.unique(masks_tracked[-1]))}")
+                # Check if track IDs are consistent across frames
+                if masks_tracked.shape[0] > 1:
+                    unique_tracks = set()
+                    for i in range(masks_tracked.shape[0]):
+                        unique_tracks.update(np.unique(masks_tracked[i]))
+                    debug_output.append(f"  - Total unique track IDs across all frames: {len(unique_tracks)}")
+                    # Check if masks changed (should have consistent track IDs)
+                    if np.array_equal(masks, masks_tracked):
+                        debug_output.append("  ⚠ WARNING: Tracked masks are identical to input masks!")
+                        debug_output.append("    This suggests track IDs were not properly assigned.")
+                    else:
+                        debug_output.append("  ✓ Tracked masks differ from input (track IDs assigned)")
+                
+                try:
+                    import torch
+                    if self.device == 'cuda' and torch.cuda.is_available():
+                        debug_output.append(f"GPU memory after tracking: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+                        torch.cuda.empty_cache()
+                        debug_output.append("✓ GPU cache cleared")
+                    elif self.device == 'mps' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                        torch.mps.empty_cache()
+                        debug_output.append("✓ MPS cache cleared")
+                except:
+                    pass
+                    
+            except Exception as e:
+                import traceback
+                error_details = traceback.format_exc()
+                debug_output.append(f"✗ Error during tracking: {str(e)}")
+                debug_output.append(f"\nFull traceback:\n{error_details}")
+                
+                try:
+                    import torch
+                    if self.device == 'cuda' and torch.cuda.is_available():
+                        debug_output.append(f"\nGPU memory at error: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+                        debug_output.append(f"GPU memory reserved: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
+                    elif self.device == 'mps' and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                        debug_output.append("\nMPS device error occurred")
+                except:
+                    pass
+                
+                error_msg = f"Error during tracking: {str(e)}\n\n"
+                error_msg += "Debug information:\n" + "\n".join(debug_output)
+                error_msg += "\n\nPossible issues:"
+                error_msg += "\n- GPU out of memory (try CPU mode)"
+                error_msg += "\n- CUDA runtime error"
+                error_msg += "\n- Input data format issues"
+                error_msg += "\n- Model compatibility issues"
+                
+                self.finished.emit(False, error_msg)
                 return
             
             # Save tracking results
             output_dir = Path(self.mask_file).parent / f"{Path(self.mask_file).stem}_tracking"
             output_dir.mkdir(exist_ok=True)
             
-            # Convert track graph to edge table (DataFrame)
+            # Extract track information from the graph
+            self.progress.emit(75, "Extracting track information...")
+            debug_output.append("\nExtracting track information from graph...")
+            
+            # Method 1: Use graph_to_napari_tracks to get proper track data
             try:
-                tracks_df = graph_to_edge_table(track_graph)
+                napari_tracks, napari_graph, _ = graph_to_napari_tracks(track_graph)
+                debug_output.append(f"✓ Extracted {len(napari_tracks)} track points from graph")
+                debug_output.append(f"  - Napari tracks shape: {napari_tracks.shape if hasattr(napari_tracks, 'shape') else 'N/A'}")
+                
+                # Convert napari tracks to DataFrame
+                # napari_tracks is numpy array with columns: [track_id, frame, y, x, ...]
+                if len(napari_tracks) > 0 and hasattr(napari_tracks, 'shape'):
+                    # napari_tracks is typically (N, 4+) array: [track_id, frame, y, x, ...]
+                    num_cols = napari_tracks.shape[1] if len(napari_tracks.shape) > 1 else 4
+                    col_names = ['track_id', 'frame', 'y', 'x']
+                    if num_cols > 4:
+                        col_names.extend([f'property_{i}' for i in range(num_cols - 4)])
+                    
+                    tracks_df = pd.DataFrame(napari_tracks, columns=col_names[:num_cols])
+                    # Ensure track_id and frame are integers
+                    if 'track_id' in tracks_df.columns:
+                        tracks_df['track_id'] = tracks_df['track_id'].astype(int)
+                    if 'frame' in tracks_df.columns:
+                        tracks_df['frame'] = tracks_df['frame'].astype(int)
+                    debug_output.append(f"✓ Created tracks DataFrame with {len(tracks_df)} rows")
+                    debug_output.append(f"  - Columns: {list(tracks_df.columns)}")
+                else:
+                    debug_output.append("⚠ Warning: No tracks extracted from graph or invalid format")
+                    tracks_df = pd.DataFrame(columns=['track_id', 'frame', 'y', 'x'])
             except Exception as e:
-                # Fallback: try to extract tracks manually
-                self.finished.emit(False, f"Error converting tracks to table: {str(e)}")
-                return
+                debug_output.append(f"⚠ graph_to_napari_tracks failed: {str(e)}")
+                # Fallback: Extract tracks manually from graph
+                debug_output.append("Trying manual track extraction from graph...")
+                tracks_list = []
+                
+                # Extract all nodes and their properties
+                for node_id, node_data in track_graph.nodes(data=True):
+                    # Node data typically has 'time' or 'frame' and position info
+                    frame = node_data.get('time', node_data.get('frame', node_data.get('t', None)))
+                    if frame is not None:
+                        track_id = node_data.get('track_id', node_id)
+                        y = node_data.get('y', node_data.get('centroid_y', 0))
+                        x = node_data.get('x', node_data.get('centroid_x', 0))
+                        tracks_list.append({
+                            'track_id': track_id,
+                            'frame': int(frame),
+                            'y': y,
+                            'x': x,
+                            'node_id': node_id
+                        })
+                
+                if tracks_list:
+                    tracks_df = pd.DataFrame(tracks_list)
+                    debug_output.append(f"✓ Manually extracted {len(tracks_df)} track points")
+                else:
+                    # Last resort: use edge table
+                    debug_output.append("Trying graph_to_edge_table as fallback...")
+                    try:
+                        edge_df = graph_to_edge_table(track_graph)
+                        debug_output.append(f"✓ Edge table has {len(edge_df)} edges")
+                        # Try to extract track info from edges
+                        if len(edge_df) > 0:
+                            tracks_df = edge_df
+                        else:
+                            tracks_df = pd.DataFrame(columns=['track_id', 'frame', 'y', 'x'])
+                    except Exception as e2:
+                        debug_output.append(f"✗ All extraction methods failed: {str(e2)}")
+                        tracks_df = pd.DataFrame(columns=['track_id', 'frame', 'y', 'x'])
+            
+            # Add debug info about tracks
+            debug_output.append(f"\nTrack DataFrame info:")
+            debug_output.append(f"  - Shape: {tracks_df.shape}")
+            debug_output.append(f"  - Columns: {list(tracks_df.columns)}")
+            if len(tracks_df) > 0:
+                debug_output.append(f"  - Unique track IDs: {tracks_df['track_id'].nunique() if 'track_id' in tracks_df.columns else 'N/A'}")
+                debug_output.append(f"  - Frame range: {tracks_df['frame'].min() if 'frame' in tracks_df.columns else 'N/A'} to {tracks_df['frame'].max() if 'frame' in tracks_df.columns else 'N/A'}")
             
             # Save tracks as CSV
+            self.progress.emit(80, "Saving tracks...")
             tracks_file = output_dir / f"{Path(self.mask_file).stem}_tracks.csv"
             tracks_df.to_csv(tracks_file, index=False)
+            debug_output.append(f"✓ Saved tracks to: {tracks_file}")
             
             # Save tracked masks
+            self.progress.emit(85, "Saving tracked masks...")
             masks_tracked_file = output_dir / f"{Path(self.mask_file).stem}_masks_tracked.tif"
+            debug_output.append(f"\nSaving tracked masks...")
+            debug_output.append(f"  - Shape: {masks_tracked.shape}")
+            debug_output.append(f"  - Unique labels per frame: {[len(np.unique(masks_tracked[i])) for i in range(min(5, masks_tracked.shape[0]))]}")
             tifffile.imwrite(str(masks_tracked_file), masks_tracked)
+            debug_output.append(f"✓ Saved tracked masks to: {masks_tracked_file}")
+            
+            # Create visualization with trajectories overlaid on original images
+            if self.original_file:
+                self.progress.emit(90, "Creating trajectory visualization...")
+                debug_output.append("\nCreating trajectory visualization...")
+                debug_output.append("  (This may take a while for large datasets - optimizing...)")
+                try:
+                    vis_file = output_dir / f"{Path(self.mask_file).stem}_trajectories.tif"
+                    # Pass progress callback to visualization function
+                    def progress_callback(pct, msg):
+                        self.progress.emit(pct, msg)
+                    # Create visualization (with optimizations: compressed TIFF, faster line drawing)
+                    self._create_trajectory_visualization(imgs, masks_tracked, tracks_df, vis_file, progress_callback)
+                    debug_output.append(f"✓ Saved trajectory visualization to: {vis_file}")
+                except Exception as e:
+                    import traceback
+                    debug_output.append(f"⚠ Could not create trajectory visualization: {str(e)}")
+                    debug_output.append(f"  {traceback.format_exc()}")
             
             # Save in CTC format (Cell Tracking Challenge format)
             try:
@@ -5093,6 +5830,7 @@ class TrackingWorker(QThread):
             
             # If Excel data was provided, merge with tracks
             if cell_data is not None:
+                self.progress.emit(95, "Merging with analysis data...")
                 # Merge tracking data with cell properties
                 merged_data = self._merge_tracking_with_analysis(tracks_df, cell_data, masks_tracked)
                 merged_file = output_dir / f"{Path(self.mask_file).stem}_tracks_with_analysis.xlsx"
@@ -5101,20 +5839,35 @@ class TrackingWorker(QThread):
                     tracks_df.to_excel(writer, sheet_name='Tracks', index=False)
                     if isinstance(cell_data, pd.DataFrame):
                         cell_data.to_excel(writer, sheet_name='Original Analysis', index=False)
-                self.finished.emit(True, f"Tracking completed!\n\n"
-                    f"Tracks saved to: {tracks_file}\n"
-                    f"Tracked masks saved to: {masks_tracked_file}\n"
-                    f"Merged data saved to: {merged_file}")
+                self.progress.emit(100, "Tracking completed!")
+                # Add debug output to success message
+                success_msg = "Tracking completed!\n\n"
+                success_msg += "\n".join(debug_output)
+                success_msg += f"\n\nTracks saved to: {tracks_file}\n"
+                success_msg += f"Tracked masks saved to: {masks_tracked_file}\n"
+                success_msg += f"Merged data saved to: {merged_file}"
+                self.finished.emit(True, success_msg)
             else:
-                self.finished.emit(True, f"Tracking completed!\n\n"
-                    f"Tracks saved to: {tracks_file}\n"
-                    f"Tracked masks saved to: {masks_tracked_file}")
+                self.progress.emit(100, "Tracking completed!")
+                # Add debug output to success message
+                success_msg = "Tracking completed!\n\n"
+                success_msg += "\n".join(debug_output)
+                success_msg += f"\n\nTracks saved to: {tracks_file}\n"
+                success_msg += f"Tracked masks saved to: {masks_tracked_file}"
+                self.finished.emit(True, success_msg)
                 
         except ImportError as e:
-            self.finished.emit(False, f"trackastra is not installed or import failed: {str(e)}\n\nPlease install it with: pip install trackastra")
+            debug_output.append(f"\n✗ Import error: {str(e)}")
+            error_msg = f"trackastra is not installed or import failed: {str(e)}\n\n"
+            error_msg += "Debug information:\n" + "\n".join(debug_output)
+            error_msg += "\n\nPlease install it with: pip install trackastra"
+            self.finished.emit(False, error_msg)
         except Exception as e:
             import traceback
-            error_msg = f"Tracking error: {str(e)}\n\n{traceback.format_exc()}"
+            debug_output.append(f"\n✗ Unexpected error: {str(e)}")
+            debug_output.append(f"\nFull traceback:\n{traceback.format_exc()}")
+            error_msg = f"Tracking error: {str(e)}\n\n"
+            error_msg += "Debug information:\n" + "\n".join(debug_output)
             self.finished.emit(False, error_msg)
     
     def _merge_tracking_with_analysis(self, tracks_df, cell_data, masks_tracked):
@@ -5122,60 +5875,426 @@ class TrackingWorker(QThread):
         import pandas as pd
         import numpy as np
         from skimage.measure import regionprops
+        from scipy.spatial.distance import cdist
         
         # Ensure cell_data is a DataFrame
         if not isinstance(cell_data, pd.DataFrame):
             cell_data = pd.DataFrame(cell_data)
         
-        # Extract per-cell data from tracked masks for each frame
-        # This creates a mapping of (frame, cell_id) to track_id
-        frame_track_map = {}
-        for frame_idx in range(masks_tracked.shape[0]):
-            mask_frame = masks_tracked[frame_idx]
-            regions = regionprops(mask_frame)
-            for region in regions:
-                if region.label > 0:  # Skip background
-                    # In tracked masks, label is the track_id
-                    track_id = region.label
-                    # We need to find the original cell_id from the analysis data
-                    # This is approximate - we match by position
-                    frame_track_map[(frame_idx, track_id)] = {
-                        'centroid_y': region.centroid[0],
-                        'centroid_x': region.centroid[1],
-                        'area': region.area
-                    }
+        # Debug: Check what columns we have
+        debug_info = []
+        debug_info.append(f"Tracks DataFrame columns: {list(tracks_df.columns)}")
+        debug_info.append(f"Cell data DataFrame columns: {list(cell_data.columns)}")
+        debug_info.append(f"Tracks shape: {tracks_df.shape}, Cell data shape: {cell_data.shape}")
         
-        # Try to merge tracks_df with cell_data
-        # tracks_df from graph_to_edge_table typically has: source, target, frame, etc.
-        # cell_data typically has: frame, cell_id, area, aspect_ratio, etc.
+        # Find frame column in cell_data (could be 'frame', 'Frame', 't', 'time', etc.)
+        frame_col = None
+        for col in ['frame', 'Frame', 't', 'time', 'Time', 'T']:
+            if col in cell_data.columns:
+                frame_col = col
+                break
         
-        # Create a mapping from tracks to cell properties
-        # This is a simplified merge - adjust based on actual data structure
+        if frame_col is None:
+            debug_info.append("⚠ Warning: Could not find frame column in cell_data")
+            # Return tracks_df with a note
+            return tracks_df
+        
+        debug_info.append(f"Using frame column: {frame_col}")
+        
+        # Find cell_id column in cell_data
+        cell_id_col = None
+        for col in ['cell_id', 'Cell_ID', 'cell', 'Cell', 'label', 'Label']:
+            if col in cell_data.columns:
+                cell_id_col = col
+                break
+        
+        # Extract track information from tracked masks
+        # In tracked masks, each label is a track_id that persists across frames
+        # We need to map (frame, track_id) to original cell properties from Excel
+        
         merged_list = []
         
-        for _, track_row in tracks_df.iterrows():
-            frame = track_row.get('frame', track_row.get('t', None))
+        # For each track point, find matching cell data
+        matches_found = 0
+        matches_by_position = 0
+        matches_by_first = 0
+        
+        # Track which frames we've already warned about
+        frames_with_no_cells = set()
+        
+        # Detect if Excel uses 1-based indexing by checking if frame 0 has no data but frame 1 does
+        frame_0_count = len(cell_data[cell_data[frame_col].astype(int) == 0]) if frame_col else 0
+        frame_1_count = len(cell_data[cell_data[frame_col].astype(int) == 1]) if frame_col else 0
+        excel_is_1_indexed = (frame_0_count == 0 and frame_1_count > 0)
+        if excel_is_1_indexed:
+            debug_info.append(f"Detected 1-based frame indexing in Excel (Frame 0 has {frame_0_count} cells, Frame 1 has {frame_1_count} cells)")
+        
+        for idx, track_row in tracks_df.iterrows():
+            # Get frame - try multiple column names
+            frame = None
+            for col in ['frame', 't', 'time', 'Frame', 'T', 'Time']:
+                if col in track_row.index:
+                    frame_val = track_row[col]
+                    if pd.notna(frame_val):
+                        frame = int(frame_val)
+                        break
+            
+            # Get track_id
+            track_id = None
+            for col in ['track_id', 'track', 'Track', 'track_ID']:
+                if col in track_row.index:
+                    track_id_val = track_row[col]
+                    if pd.notna(track_id_val):
+                        track_id = int(track_id_val)
+                        break
+            
             if frame is None:
+                debug_info.append(f"  Skipping row {idx}: frame is None")
+                continue
+            if track_id is None:
+                debug_info.append(f"  Skipping row {idx}: track_id is None")
                 continue
             
-            # Try to find matching cell data
-            matching_cells = cell_data[cell_data.get('frame', cell_data.get('Frame', None)) == frame]
+            # Get track position from tracks_df
+            track_y = None
+            track_x = None
+            for col in ['y', 'Y', 'centroid_y', 'centroid-0']:
+                if col in track_row.index and pd.notna(track_row[col]):
+                    track_y = float(track_row[col])
+                    break
+            for col in ['x', 'X', 'centroid_x', 'centroid-1']:
+                if col in track_row.index and pd.notna(track_row[col]):
+                    track_x = float(track_row[col])
+                    break
             
-            # Add track information
+            # Start with track information
             merged_row = track_row.to_dict()
             
-            # Add cell properties if available
-            if len(matching_cells) > 0:
-                # Use first matching cell (or implement better matching logic)
-                for col in matching_cells.columns:
-                    if col not in merged_row:
-                        merged_row[col] = matching_cells.iloc[0][col]
+            # Find cells in this frame from cell_data
+            # Handle 0-based vs 1-based frame indexing
+            # Tracking uses 0-based (0, 1, 2...), Excel might use 1-based (1, 2, 3...)
+            frame_cells = pd.DataFrame()
+            
+            # Use detected indexing preference
+            excel_frame = frame + 1 if excel_is_1_indexed else frame
+            
+            # Try to find cells for this frame
+            try:
+                frame_cells = cell_data[cell_data[frame_col].astype(int) == excel_frame].copy()
+            except:
+                try:
+                    frame_cells = cell_data[cell_data[frame_col] == excel_frame].copy()
+                except:
+                    pass
+            
+            # If still no match and we haven't tried the other indexing, try it
+            if len(frame_cells) == 0 and not excel_is_1_indexed:
+                try:
+                    frame_cells = cell_data[cell_data[frame_col].astype(int) == (frame + 1)].copy()
+                    if len(frame_cells) > 0:
+                        excel_is_1_indexed = True  # Update detection
+                        debug_info.append(f"Detected 1-based frame indexing: Frame {frame} matched to Excel Frame {frame + 1}")
+                except:
+                    pass
+            
+            if len(frame_cells) > 0:
+                matched = False
+                # Try to match by position if we have coordinates
+                if track_y is not None and track_x is not None:
+                    # Find centroid columns in cell_data
+                    y_col = None
+                    x_col = None
+                    for col in ['centroid_y', 'Centroid_Y', 'y', 'Y', 'centroid-0', 'centroid_y-0']:
+                        if col in frame_cells.columns:
+                            y_col = col
+                            break
+                    for col in ['centroid_x', 'Centroid_X', 'x', 'X', 'centroid-1', 'centroid_x-1']:
+                        if col in frame_cells.columns:
+                            x_col = col
+                            break
+                    
+                    if y_col and x_col:
+                        # Calculate distances and find closest match
+                        try:
+                            distances = np.sqrt(
+                                (frame_cells[y_col].astype(float) - track_y)**2 + 
+                                (frame_cells[x_col].astype(float) - track_x)**2
+                            )
+                            closest_idx = distances.idxmin()
+                            closest_dist = distances.loc[closest_idx]
+                            
+                            # If close enough (within 20 pixels), use this match
+                            if closest_dist < 20:
+                                matched_cell = frame_cells.loc[closest_idx]
+                                # Add all cell properties to merged row
+                                for col in matched_cell.index:
+                                    if col not in merged_row or pd.isna(merged_row.get(col)):
+                                        merged_row[col] = matched_cell[col]
+                                matches_by_position += 1
+                                matched = True
+                        except Exception as e:
+                            debug_info.append(f"  Error matching by position: {str(e)}")
+                
+                if not matched:
+                    # No position match, use first cell in frame (or match by track_id if available)
+                    if cell_id_col and 'track_id' in frame_cells.columns:
+                        # Try to match by track_id
+                        matching = frame_cells[frame_cells[cell_id_col] == track_id]
+                        if len(matching) > 0:
+                            matched_cell = matching.iloc[0]
+                        else:
+                            matched_cell = frame_cells.iloc[0]
+                    else:
+                        matched_cell = frame_cells.iloc[0]
+                    
+                    # Add all cell properties to merged row
+                    for col in matched_cell.index:
+                        if col not in merged_row or pd.isna(merged_row.get(col)):
+                            merged_row[col] = matched_cell[col]
+                    matches_by_first += 1
+                    matched = True
+                
+                if matched:
+                    matches_found += 1
+            else:
+                # Only log once per frame to reduce noise
+                if frame not in frames_with_no_cells:
+                    frames_with_no_cells.add(frame)
+                    debug_info.append(f"  Frame {frame} (Excel Frame {excel_frame}): No cells found in cell_data")
             
             merged_list.append(merged_row)
         
-        merged = pd.DataFrame(merged_list)
+        debug_info.append(f"\nMerge statistics:")
+        debug_info.append(f"  - Total track points: {len(tracks_df)}")
+        debug_info.append(f"  - Matches found: {matches_found}")
+        debug_info.append(f"  - Matched by position: {matches_by_position}")
+        debug_info.append(f"  - Matched by first cell: {matches_by_first}")
+        
+        if merged_list:
+            merged = pd.DataFrame(merged_list)
+            debug_info.append(f"✓ Merged DataFrame created with {len(merged)} rows")
+        else:
+            debug_info.append("⚠ Warning: No merged rows created")
+            merged = tracks_df.copy()
+        
+        # Log debug info
+        import sys
+        print("\n".join(debug_info), file=sys.stderr)
         
         return merged
+    
+    def _create_trajectory_visualization(self, images, masks_tracked, tracks_df, output_path, progress_callback=None):
+        """Create visualization showing original images with tracked cell IDs and trajectories"""
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap
+        from matplotlib import cm
+        from scipy.ndimage import label, binary_dilation
+        import tifffile
+        
+        # Use progress callback if provided, otherwise check for attribute
+        if progress_callback is None and hasattr(self, '_progress_callback'):
+            progress_callback = self._progress_callback
+        
+        debug_output = []
+        debug_output.append("Creating trajectory visualization...")
+        
+        num_frames = images.shape[0]
+        height, width = images.shape[1], images.shape[2]
+        
+        # Normalize images for display (vectorized for speed)
+        if progress_callback:
+            progress_callback(91, "Normalizing images...")
+        
+        # Vectorized normalization across all frames
+        img_min = images.min(axis=(1, 2), keepdims=True)
+        img_max = images.max(axis=(1, 2), keepdims=True)
+        # Avoid division by zero
+        img_range = img_max - img_min
+        img_range[img_range == 0] = 1  # Avoid division by zero
+        images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
+        
+        # Get unique track IDs
+        if 'track_id' in tracks_df.columns:
+            unique_tracks = tracks_df['track_id'].unique()
+            num_tracks = len(unique_tracks)
+            debug_output.append(f"  - Found {num_tracks} unique tracks")
+        else:
+            unique_tracks = np.unique(masks_tracked)
+            unique_tracks = unique_tracks[unique_tracks > 0]  # Remove background
+            num_tracks = len(unique_tracks)
+            debug_output.append(f"  - Found {num_tracks} unique track IDs in masks")
+        
+        # Generate colormap for tracks
+        cmap = plt.get_cmap('gist_ncar')
+        track_colors = {}
+        for i, track_id in enumerate(unique_tracks):
+            color = cmap(i / max(num_tracks, 1))
+            track_colors[int(track_id)] = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+        
+        # Create RGB visualization
+        visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
+        
+        # Group tracks by frame for trajectory drawing
+        if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns:
+            tracks_by_frame = {}
+            for _, row in tracks_df.iterrows():
+                frame = int(row['frame'])
+                track_id = int(row['track_id'])
+                if frame not in tracks_by_frame:
+                    tracks_by_frame[frame] = {}
+                if track_id not in tracks_by_frame[frame]:
+                    tracks_by_frame[frame][track_id] = []
+                y = row.get('y', 0)
+                x = row.get('x', 0)
+                tracks_by_frame[frame][track_id].append((y, x))
+        
+        for frame_idx in range(num_frames):
+            # Update progress if we have a callback
+            if progress_callback:
+                progress_pct = int(90 + (frame_idx / num_frames) * 10)  # 90-100%
+                progress_callback(progress_pct, f"Creating visualization: {frame_idx + 1}/{num_frames} ({progress_pct}%)")
+            
+            # Start with normalized image as grayscale RGB
+            img = images_norm[frame_idx]
+            vis_frame = np.stack([img, img, img], axis=-1)
+            
+            # Overlay tracked masks with colors
+            mask_frame = masks_tracked[frame_idx]
+            for track_id in unique_tracks:
+                track_id_int = int(track_id)
+                if track_id_int in track_colors:
+                    color = track_colors[track_id_int]
+                    mask_region = (mask_frame == track_id_int)
+                    vis_frame[mask_region, 0] = np.clip(vis_frame[mask_region, 0] * 0.5 + color[0] * 0.5, 0, 255)
+                    vis_frame[mask_region, 1] = np.clip(vis_frame[mask_region, 1] * 0.5 + color[1] * 0.5, 0, 255)
+                    vis_frame[mask_region, 2] = np.clip(vis_frame[mask_region, 2] * 0.5 + color[2] * 0.5, 0, 255)
+            
+            # Draw trajectories up to current frame (only for tracks visible in this frame)
+            # Pre-filter tracks to only those present in current frame for speed
+            if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns:
+                # Get tracks that have points up to current frame
+                tracks_in_frame = tracks_df[
+                    (tracks_df['frame'] <= frame_idx) & 
+                    (tracks_df['track_id'].isin(unique_tracks))
+                ]['track_id'].unique()
+                
+                for track_id_int in tracks_in_frame:
+                    track_id_int = int(track_id_int)
+                    if track_id_int not in track_colors:
+                        continue
+                    
+                    # Get all points for this track up to current frame
+                    track_points = tracks_df[
+                        (tracks_df['track_id'] == track_id_int) & 
+                        (tracks_df['frame'] <= frame_idx)
+                    ]
+                    
+                    if len(track_points) > 1:
+                        color = track_colors[track_id_int]
+                        # Draw lines connecting consecutive points using vectorized operations
+                        points = track_points[['y', 'x']].values.astype(int)
+                        # Clip points to valid bounds
+                        points[:, 0] = np.clip(points[:, 0], 0, height - 1)
+                        points[:, 1] = np.clip(points[:, 1], 0, width - 1)
+                        
+                        # Draw lines between consecutive points using optimized approach
+                        # For speed, we'll draw lines more efficiently
+                        for i in range(len(points) - 1):
+                            y1, x1 = points[i]
+                            y2, x2 = points[i + 1]
+                            
+                            # Calculate line length
+                            dy = abs(y2 - y1)
+                            dx = abs(x2 - x1)
+                            
+                            if dx == 0 and dy == 0:
+                                continue
+                            
+                            # Optimize: Use fewer points for long lines (subsample)
+                            max_steps = max(dx, dy)
+                            # For very long lines, subsample more aggressively
+                            if max_steps > 200:
+                                step_size = max(1, max_steps // 200)  # Very aggressive subsampling
+                            elif max_steps > 50:
+                                step_size = max(1, max_steps // 50)  # Moderate subsampling
+                            else:
+                                step_size = 1  # Full resolution for short lines
+                            
+                            num_steps = max_steps // step_size + 1
+                            
+                            # Generate line points using numpy (much faster than loops)
+                            if dx > dy:
+                                # Horizontal line
+                                x_coords = np.linspace(x1, x2, num_steps, dtype=int)
+                                y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
+                            else:
+                                # Vertical line
+                                y_coords = np.linspace(y1, y2, num_steps, dtype=int)
+                                x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
+                            
+                            # Clip coordinates
+                            y_coords = np.clip(y_coords, 1, height - 2)  # Keep 1 pixel margin for 3x3 drawing
+                            x_coords = np.clip(x_coords, 1, width - 2)
+                            
+                            # Draw thick line using vectorized operations (batch process all points)
+                            # Use advanced indexing for speed
+                            for y, x in zip(y_coords, x_coords):
+                                # Direct assignment is faster than clipping each time
+                                y_start, y_end = y - 1, y + 2
+                                x_start, x_end = x - 1, x + 2
+                                vis_frame[y_start:y_end, x_start:x_end, 0] = (
+                                    vis_frame[y_start:y_end, x_start:x_end, 0] * 0.3 + color[0] * 0.7
+                                ).astype(np.uint8)
+                                vis_frame[y_start:y_end, x_start:x_end, 1] = (
+                                    vis_frame[y_start:y_end, x_start:x_end, 1] * 0.3 + color[1] * 0.7
+                                ).astype(np.uint8)
+                                vis_frame[y_start:y_end, x_start:x_end, 2] = (
+                                    vis_frame[y_start:y_end, x_start:x_end, 2] * 0.3 + color[2] * 0.7
+                                ).astype(np.uint8)
+                    
+                    # Draw track ID label at current position
+                    current_track = track_points[track_points['frame'] == frame_idx]
+                    if len(current_track) > 0:
+                        y = int(current_track.iloc[0]['y'])
+                        x = int(current_track.iloc[0]['x'])
+                        if 0 <= y < height and 0 <= x < width:
+                            # Draw text background (simple rectangle)
+                            text_size = 10
+                            y_start = max(0, y - text_size // 2)
+                            y_end = min(height, y + text_size // 2)
+                            x_start = max(0, x - text_size)
+                            x_end = min(width, x + text_size * 2)
+                            vis_frame[y_start:y_end, x_start:x_end, :] = [255, 255, 255]  # White background
+                            # Note: Actual text rendering would require PIL or similar
+                            # For now, just mark the position with a colored dot
+                            dot_size = 3
+                            y_dot_start = max(0, y - dot_size)
+                            y_dot_end = min(height, y + dot_size + 1)
+                            x_dot_start = max(0, x - dot_size)
+                            x_dot_end = min(width, x + dot_size + 1)
+                            vis_frame[y_dot_start:y_dot_end, x_dot_start:x_dot_end, :] = color
+            
+            visualization[frame_idx] = vis_frame
+        
+        # Save visualization with compression for faster I/O
+        # Use compression to reduce file size and write time
+        if progress_callback:
+            progress_callback(99, "Saving visualization file...")
+        
+        try:
+            # Try saving with compression (faster for large files)
+            tifffile.imwrite(
+                str(output_path),
+                visualization,
+                compress=6,  # Zlib compression level (0-9, 6 is a good balance)
+                compression='zlib'  # Use zlib compression
+            )
+            debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (compressed)")
+        except Exception as e:
+            # Fallback to uncompressed if compression fails
+            debug_output.append(f"⚠ Compression failed, saving uncompressed: {str(e)}")
+            tifffile.imwrite(str(output_path), visualization)
+            debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (uncompressed)")
 
 
 class MainWindow(QMainWindow):

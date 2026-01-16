@@ -65,6 +65,12 @@ python batch_process_folder.py /path/to/folder \
    ```bash
    pip install -r requirements.txt
    ```
+   
+   **For NVIDIA GPU (CUDA) support (optional):**
+   - **macOS/Linux:** Run `./install_cuda_pytorch.sh` after installing requirements
+   - **Windows:** Run `install_cuda_pytorch.bat` after installing requirements
+   - Or manually: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118`
+   - Replace `cu118` with your CUDA version (check with `nvidia-smi` or `nvcc --version`)
 
 3. **For fresh setup (optional):**
    ```bash
@@ -369,15 +375,15 @@ python batch_process_tiff_sequence.py input.tif --model bact_phase_omni --diamet
 python analyze_cell_areas.py input_masks.tif --pixel-size 0.108 --max-area 50 --max-width 2.0
 ```
 
-## Building Executables
+## Building App Bundles
 
-BactiMate can be packaged into standalone executables for Windows (.exe) and macOS (.app/.dmg) using Nuitka.
+BactiMate can be packaged into a macOS `.app` bundle that includes the Python environment, similar to how [ilastik](https://github.com/ilastik/ilastik) distributes their application.
 
 ### Prerequisites
 
-1. **Install Nuitka:**
+1. **Set up the environment:**
    ```bash
-   pip install nuitka
+   ./setup_fresh_env.sh
    ```
 
 2. **For macOS DMG creation (optional):**
@@ -385,37 +391,26 @@ BactiMate can be packaged into standalone executables for Windows (.exe) and mac
    brew install create-dmg
    ```
 
-3. **Python Requirements:**
-   - macOS: Use CPython from python.org or Homebrew (not Apple's system Python)
-   - Windows: Standard Python installation
-
 ### macOS Build
 
 ```bash
 # 1. Create icons (first time only)
 ./create_icons.sh
 
-# 2. Build the app
-./build_nuitka_macos.sh
+# 2. Build the app bundle
+./build_app_bundle.sh
 
 # 3. Create DMG (optional)
 ./create_dmg.sh
 ```
 
-**Output:** `dist/BactiMate.app` and optionally `dist/BactiMate.dmg`
+**Output:** `BactiMate.app` and optionally `dist/BactiMate.dmg`
 
-### Windows Build
-
-```cmd
-build_nuitka_windows.bat
-```
-
-**Output:** `dist\BactiMate.exe`
+The app bundle includes the entire project folder with the Python virtual environment, making it self-contained and easy to distribute.
 
 ### Building on Different Platforms
 
-**Cross-platform builds are not supported.** You must build on each platform:
-- macOS builds only work on macOS
+**macOS builds only work on macOS.** The app bundle approach is currently implemented for macOS only.
 - Windows builds only work on Windows
 
 **Recommended:** Use GitHub Actions for automated builds (see `.github/workflows/build.yml`)
@@ -515,8 +510,7 @@ python check_tiff_format.py input.tif output.tif
 - `setup_fresh_env.sh` - Setup fresh virtual environment
 - `repair_pyqt5.sh` - Repair PyQt5 installation
 - `clear_models.sh` - Clear corrupted model cache
-- `build_nuitka_macos.sh` - Build macOS application bundle with Nuitka
-- `build_nuitka_windows.bat` - Build Windows executable with Nuitka
+- `build_app_bundle.sh` - Build macOS application bundle
 - `create_dmg.sh` - Create macOS DMG file
 - `create_icons.sh` - Create application icons
 
