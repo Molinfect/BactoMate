@@ -260,54 +260,65 @@ if [ -L "$PYTHON_EXEC" ]; then
     echo "  Resolved Python path: $PYTHON_EXEC_RESOLVED"
 fi
 
-# Fix library paths in Python executable for relocatability
-echo "  Fixing Python library paths for relocatability..."
-if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2>&1; then
+# Bundle Python framework for self-contained app
+echo "Bundling Python framework for self-contained app..."
+if command -v otool >/dev/null 2>&1; then
     # Check what libraries Python is linked against
     PYTHON_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' || true)
     if [ -n "$PYTHON_LIBS" ]; then
         echo "  Python is linked against: $PYTHON_LIBS"
         
-        # Check if the framework path exists
         if [[ "$PYTHON_LIBS" == /* ]]; then
-            # Absolute path - need to either copy framework or change path
-            if [ ! -f "$PYTHON_LIBS" ]; then
-                echo "  WARNING: Python framework not found at: $PYTHON_LIBS"
-                echo "  This will cause the bundle to fail. The venv may not be relocatable."
-                echo "  Consider creating venv with: python3 -m venv --copies venv"
-            else
-                echo "  Python framework found, but path is absolute - will need to be fixed"
-            fi
-            
-            # The issue: Python executable has hardcoded path to system Python framework
-            # Solution: We need to either:
-            # 1. Bundle the Python framework (large, ~100MB+)
-            # 2. Change the library path to use @rpath and bundle framework
-            # 3. Use a Python installation that doesn't require external framework
-            
-            # For now, try to change to @rpath (runtime search path)
-            # First, add @rpath to the executable's rpath
-            install_name_tool -add_rpath "@executable_path/../../.." "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
-            # Try to change the library path to use @rpath
-            # Extract version from path (e.g., /Library/.../Versions/3.11/Python -> 3.11)
+            # Extract framework directory (e.g., /Library/Frameworks/Python.framework)
+            FRAMEWORK_DIR=$(echo "$PYTHON_LIBS" | sed 's|/Versions/.*||')
             PYTHON_VERSION_MATCH=$(echo "$PYTHON_LIBS" | grep -o 'Versions/[0-9.]\+' | cut -d'/' -f2 || echo "3.11")
-            NEW_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
-            echo "  Attempting to change library path from $PYTHON_LIBS to $NEW_PATH"
-            if install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null; then
-                echo "  ✓ Successfully changed library path to use @rpath"
-                echo "  NOTE: Python framework must be bundled for this to work on machines without Python"
-                echo "  Current bundle does NOT include Python framework - this may cause issues"
+            
+            if [ -d "$FRAMEWORK_DIR" ]; then
+                echo "  Found Python framework at: $FRAMEWORK_DIR"
+                echo "  Copying framework to bundle (this may take a moment)..."
+                
+                # Copy framework to bundle
+                BUNDLE_FRAMEWORK_DIR="$APP_BUNDLE/Contents/Frameworks/Python.framework"
+                mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+                
+                # Use rsync to copy framework (preserves symlinks and structure)
+                if rsync -avL "$FRAMEWORK_DIR/" "$BUNDLE_FRAMEWORK_DIR/" 2>/dev/null; then
+                    echo "  ✓ Python framework copied to bundle"
+                    
+                    # Fix library paths in Python executable to use @rpath
+                    if command -v install_name_tool >/dev/null 2>&1; then
+                        echo "  Fixing Python library paths to use bundled framework..."
+                        # Add rpath to search in Frameworks directory
+                        install_name_tool -add_rpath "@executable_path/../../../Frameworks" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
+                        # Change library path to use @rpath
+                        NEW_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
+                        if install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null; then
+                            echo "  ✓ Successfully changed library path to use bundled framework"
+                        else
+                            echo "  WARNING: Could not change library path (may require codesigning)"
+                            echo "  Attempting to fix framework library paths..."
+                            # Fix paths inside the framework itself
+                            FRAMEWORK_PYTHON="$BUNDLE_FRAMEWORK_DIR/Versions/${PYTHON_VERSION_MATCH}/Python"
+                            if [ -f "$FRAMEWORK_PYTHON" ]; then
+                                # Fix framework's internal library paths
+                                install_name_tool -id "@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python" "$FRAMEWORK_PYTHON" 2>/dev/null || true
+                            fi
+                        fi
+                    fi
+                else
+                    echo "  ERROR: Failed to copy Python framework"
+                    echo "  The bundle will NOT be self-contained"
+                fi
             else
-                echo "  WARNING: Could not change library path (may require codesigning)"
-                echo "  The bundle will NOT work on machines without Python framework installed"
-                echo "  Consider bundling Python framework or using a different Python installation"
+                echo "  WARNING: Python framework directory not found: $FRAMEWORK_DIR"
+                echo "  The bundle will NOT be self-contained"
             fi
         fi
     else
-        echo "  No Python.framework dependencies found (may be using system Python)"
+        echo "  No Python.framework dependencies found (Python may be statically linked)"
     fi
 else
-    echo "  WARNING: install_name_tool or otool not found, cannot fix library paths"
+    echo "  WARNING: otool not found, cannot detect Python framework"
 fi
 
 if [ -f "$PYTHON_EXEC" ] || [ -L "$PYTHON_EXEC" ]; then

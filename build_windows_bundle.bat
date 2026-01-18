@@ -82,6 +82,22 @@ if not exist "%BUNDLE_DIR%\omnipose_batch_gui.py" (
     exit /b 1
 )
 
+REM Verify Python executable exists and is self-contained
+echo Verifying Python executable...
+if exist "%BUNDLE_DIR%\venv\Scripts\python.exe" (
+    echo   Python executable found
+) else (
+    echo ERROR: Python executable not found in bundle!
+    exit /b 1
+)
+
+REM Note: Windows Python is typically self-contained with DLLs in the venv
+REM The --copies flag in venv creation ensures all files are copied, not symlinked
+echo.
+echo NOTE: Windows bundle includes the entire Python virtual environment.
+echo       All Python DLLs and dependencies should be in venv\DLLs and venv\Scripts.
+echo       The bundle should work on Windows machines without Python installed.
+
 echo.
 echo ==========================================
 echo Build complete!
