@@ -42,6 +42,7 @@ jobs:
           pip install -r requirements.txt
       
       - name: Build Windows bundle
+        shell: cmd
         run: |
           build_windows_bundle.bat
       
