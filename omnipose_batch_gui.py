@@ -4081,6 +4081,8 @@ class ProcessingTab(QWidget):
             # Store files and current index for sequential processing
             self.folder_files = selected_files
             self.current_file_index = 0
+            # Track progress within current file (for batch/frame progress)
+            self.current_file_progress = 0.0  # 0.0 to 1.0
             
             # Show progress bar
             self.parent_window.progress_bar.setVisible(True)
@@ -4141,7 +4143,10 @@ class ProcessingTab(QWidget):
         if not self.create_overlay.isChecked():
             cmd_args.append('--no-overlay')
         
-        # Update progress bar
+        # Reset current file progress when starting a new file
+        self.current_file_progress = 0.0
+        
+        # Update progress bar to show file start
         file_progress = int((self.current_file_index / len(self.folder_files)) * 100)
         self.parent_window.progress_bar.setValue(file_progress)
         self.process_btn.setText(f"Processing... ({self.current_file_index + 1}/{len(self.folder_files)})")
@@ -4157,8 +4162,18 @@ class ProcessingTab(QWidget):
         self.parent_window.log_output(message)
         if success:
             self.parent_window.log_output(f"✓ File {self.current_file_index + 1}/{len(self.folder_files)} processed successfully!\n")
+            # Mark file as 100% complete
+            self.current_file_progress = 1.0
         else:
             self.parent_window.log_output(f"✗ File {self.current_file_index + 1}/{len(self.folder_files)} failed!\n")
+            # Still mark as complete (even if failed) for progress tracking
+            self.current_file_progress = 1.0
+        
+        # Update progress bar to show file completion
+        if hasattr(self, 'folder_files') and len(self.folder_files) > 0:
+            file_portion = 100.0 / len(self.folder_files)
+            file_progress_base = ((self.current_file_index + 1) / len(self.folder_files)) * 100
+            self.parent_window.progress_bar.setValue(int(min(100, file_progress_base)))
         
         # Clean up worker thread
         if hasattr(self, 'worker'):
@@ -4175,35 +4190,88 @@ class ProcessingTab(QWidget):
         # Log the message
         self.parent_window.log_output(message)
         
-        # Try to parse tqdm-style progress: "Processing: 25%|" or "Segmenting: 50%|"
-        # Or percentage in message
-        progress_match = re.search(r'(\d+)%', message)
-        if progress_match:
-            try:
-                progress_pct = int(progress_match.group(1))
-                # Clamp to 0-100
-                progress_pct = max(0, min(100, progress_pct))
-                # Scale by current file progress
-                if hasattr(self, 'folder_files') and len(self.folder_files) > 0:
-                    # Each file represents (100 / num_files) percent of total progress
-                    file_portion = 100.0 / len(self.folder_files)
-                    # Base progress from completed files
-                    file_progress_base = (self.current_file_index / len(self.folder_files)) * 100
-                    # Current file's progress scaled to its portion
-                    file_progress_current = (progress_pct / 100.0) * file_portion
-                    # Total progress
-                    total_progress = int(min(100, file_progress_base + file_progress_current))
-                    self.parent_window.progress_bar.setValue(total_progress)
-                else:
+        # Update overall progress based on file, batch, and frame progress
+        if hasattr(self, 'folder_files') and len(self.folder_files) > 0:
+            # Initialize current_file_progress if not set
+            if not hasattr(self, 'current_file_progress'):
+                self.current_file_progress = 0.0
+            
+            # Handle model download progress (small portion of first file, ~5%)
+            if 'Downloading:' in message or 'to /' in message and '.cellpose/models/' in message:
+                download_match = re.search(r'(\d+)%', message)
+                if download_match:
+                    try:
+                        download_pct = int(download_match.group(1))
+                        # Model download is ~5% of first file's progress
+                        if self.current_file_index == 0:
+                            self.current_file_progress = (download_pct / 100.0) * 0.05
+                    except:
+                        pass
+            
+            # Try to parse batch completion: "✓ Batch 2/6 complete: 64/181 frames (35%)"
+            batch_complete_match = re.search(r'Batch (\d+)/(\d+) complete', message)
+            if batch_complete_match:
+                try:
+                    batch_num = int(batch_complete_match.group(1))
+                    total_batches = int(batch_complete_match.group(2))
+                    # Update progress: batch_num/total_batches (e.g., 2/6 = 0.33)
+                    self.current_file_progress = batch_num / total_batches
+                except:
+                    pass
+            
+            # Try to parse batch start: "Processing batch 3/6: frames 65-96 of 181"
+            batch_start_match = re.search(r'Processing batch (\d+)/(\d+):', message)
+            if batch_start_match and not batch_complete_match:
+                try:
+                    batch_num = int(batch_start_match.group(1))
+                    total_batches = int(batch_start_match.group(2))
+                    # Progress at start of batch (e.g., batch 3/6 means we're at 2/6 = 0.33)
+                    # But if this is the first batch and we haven't started processing yet, set to 0.05 (after model load)
+                    if batch_num == 1 and self.current_file_progress < 0.05:
+                        self.current_file_progress = 0.05
+                    else:
+                        self.current_file_progress = (batch_num - 1) / total_batches
+                except:
+                    pass
+            
+            # Try to parse frame progress within batch: "12%|#2 | 4/32 [00:19<02:18, 4.95s/it]"
+            frame_progress_match = re.search(r'(\d+)%\s*\|\s*\d+/(\d+)', message)
+            if frame_progress_match:
+                try:
+                    frame_pct = int(frame_progress_match.group(1))
+                    # Find which batch we're in
+                    batch_info = re.search(r'batch (\d+)/(\d+)', message)
+                    if batch_info:
+                        batch_num = int(batch_info.group(1))
+                        total_batches = int(batch_info.group(2))
+                        # Progress = (batch-1)/total + (frame_pct/100)/total
+                        batch_progress = (batch_num - 1) / total_batches
+                        frame_progress = (frame_pct / 100.0) / total_batches
+                        self.current_file_progress = batch_progress + frame_progress
+                    else:
+                        # Fallback: use frame percentage directly
+                        self.current_file_progress = frame_pct / 100.0
+                except:
+                    pass
+            
+            # Calculate overall progress across all files
+            file_portion = 100.0 / len(self.folder_files)
+            # Base progress from completed files
+            file_progress_base = (self.current_file_index / len(self.folder_files)) * 100
+            # Current file's progress scaled to its portion
+            file_progress_current = self.current_file_progress * file_portion
+            # Total progress
+            total_progress = int(min(100, file_progress_base + file_progress_current))
+            self.parent_window.progress_bar.setValue(total_progress)
+        else:
+            # Single file mode - just use percentage from message
+            progress_match = re.search(r'(\d+)%', message)
+            if progress_match:
+                try:
+                    progress_pct = int(progress_match.group(1))
                     self.parent_window.progress_bar.setValue(progress_pct)
-            except:
-                pass
-        # Also check for "X/Y" patterns which might indicate progress
-        elif 'Processing' in message or 'Segmenting' in message or 'Creating' in message:
-            # If we see these messages, increment progress slightly
-            current = self.parent_window.progress_bar.value()
-            if current < 95:
-                self.parent_window.progress_bar.setValue(min(95, current + 1))
+                except:
+                    pass
     
     def on_finished(self, success, message):
         self.process_btn.setEnabled(True)
