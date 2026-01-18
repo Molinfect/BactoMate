@@ -95,4 +95,7 @@ echo.
 echo To distribute, zip the entire "%BUNDLE_DIR%" folder.
 echo Users can extract and run BactiMate.bat to launch the application.
 echo.
-pause
+REM Don't pause in CI environments (GitHub Actions)
+if not "%CI%"=="true" (
+    pause
+)
