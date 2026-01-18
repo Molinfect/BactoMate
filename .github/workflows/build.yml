@@ -6,12 +6,12 @@ on:
       build_windows:
         description: 'Build Windows executable'
         required: false
-        default: 'true'
+        default: true
         type: boolean
       build_macos:
         description: 'Build macOS application'
         required: false
-        default: 'true'
+        default: true
         type: boolean
   push:
     tags:
