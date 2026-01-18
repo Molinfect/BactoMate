@@ -8,8 +8,9 @@ echo Building BactiMate Windows Bundle
 echo ==========================================
 echo.
 
-REM Get the script directory
-set SCRIPT_DIR=%~dp0
+REM Get the script directory (remove trailing backslash)
+set "SCRIPT_DIR=%~dp0"
+set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 cd /d "%SCRIPT_DIR%"
 
 REM Clean previous builds
@@ -60,7 +61,15 @@ echo   (this may take several minutes for large venv...)
 
 REM Use robocopy for better progress and error handling
 REM Exclude patterns: .git, __pycache__, build artifacts, etc.
-robocopy "%SCRIPT_DIR%" "%BUNDLE_DIR%" /E /XD .git __pycache__ dist build BactiMate.app BactiMate-Windows venv_backup .venv /XF *.pyc *.pyo *.pyd .DS_Store *.log *.dmg nuitka-crash-report.xml /NFL /NDL /NP /NJH /NJS
+REM Note: ROBOCOPY requires absolute paths and proper quoting
+set "SOURCE_DIR=%SCRIPT_DIR%"
+set "DEST_DIR=%SCRIPT_DIR%\%BUNDLE_DIR%"
+robocopy "%SOURCE_DIR%" "%DEST_DIR%" /E /XD .git __pycache__ dist build BactiMate.app BactiMate-Windows venv_backup .venv /XF *.pyc *.pyo *.pyd .DS_Store *.log *.dmg nuitka-crash-report.xml /NFL /NDL /NP /NJH /NJS
+REM ROBOCOPY returns non-zero exit codes even on success, so check errorlevel properly
+if errorlevel 8 (
+    echo ERROR: ROBOCOPY failed with error level %errorlevel%
+    exit /b 1
+)
 
 REM Verify critical files were copied
 if not exist "%BUNDLE_DIR%\venv" (
