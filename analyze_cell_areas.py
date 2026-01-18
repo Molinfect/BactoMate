@@ -136,16 +136,20 @@ def filter_rod_shaped_cells(properties, min_aspect_ratio=1.5, max_aspect_ratio=1
     return filtered
 
 
-def filter_by_size(properties, max_area_um2=None, max_width_um=None):
+def filter_by_size(properties, min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None):
     """
-    Filter cells by maximum area and width.
+    Filter cells by minimum/maximum area and width.
     
     Parameters:
     -----------
     properties : list of dict
         Cell properties
+    min_area_um2 : float, optional
+        Minimum cell area in µm²
     max_area_um2 : float, optional
         Maximum cell area in µm²
+    min_width_um : float, optional
+        Minimum cell width in µm
     max_width_um : float, optional
         Maximum cell width in µm
         
@@ -156,8 +160,14 @@ def filter_by_size(properties, max_area_um2=None, max_width_um=None):
     """
     filtered = properties
     
+    if min_area_um2 is not None:
+        filtered = [p for p in filtered if p['area_um2'] >= min_area_um2]
+    
     if max_area_um2 is not None:
         filtered = [p for p in filtered if p['area_um2'] <= max_area_um2]
+    
+    if min_width_um is not None:
+        filtered = [p for p in filtered if p['width_um'] >= min_width_um]
     
     if max_width_um is not None:
         filtered = [p for p in filtered if p['width_um'] <= max_width_um]
@@ -168,7 +178,7 @@ def filter_by_size(properties, max_area_um2=None, max_width_um=None):
 def analyze_masks(masks_path, pixel_size=0.108, 
                   min_aspect_ratio=1.5, max_aspect_ratio=10.0,
                   min_eccentricity=0.5, min_solidity=0.7,
-                  max_area_um2=None, max_width_um=None,
+                  min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None,
                   remove_small=True, min_size_pixels=10):
     """
     Analyze masks and extract cell areas with morphological filtering.
@@ -187,8 +197,12 @@ def analyze_masks(masks_path, pixel_size=0.108,
         Minimum eccentricity
     min_solidity : float
         Minimum solidity
+    min_area_um2 : float, optional
+        Minimum cell area in µm²
     max_area_um2 : float, optional
         Maximum cell area in µm²
+    min_width_um : float, optional
+        Minimum cell width in µm
     max_width_um : float, optional
         Maximum cell width in µm
     remove_small : bool
@@ -247,7 +261,9 @@ def analyze_masks(masks_path, pixel_size=0.108,
         # Step 2: Filter by size constraints
         filtered = filter_by_size(
             rod_shaped,
+            min_area_um2=min_area_um2,
             max_area_um2=max_area_um2,
+            min_width_um=min_width_um,
             max_width_um=max_width_um
         )
         accepted_labels = {cell['label'] for cell in filtered}
@@ -436,8 +452,12 @@ Examples:
                        help='Minimum solidity (area/convex_hull_area) (default: 0.7)')
     
     # Size filtering
+    parser.add_argument('--min-area', type=float, default=None,
+                       help='Minimum cell area in µm² (default: no limit)')
     parser.add_argument('--max-area', type=float, default=None,
                        help='Maximum cell area in µm² (default: no limit)')
+    parser.add_argument('--min-width', type=float, default=None,
+                       help='Minimum cell width in µm (default: no limit)')
     parser.add_argument('--max-width', type=float, default=None,
                        help='Maximum cell width in µm (default: no limit)')
     
@@ -475,7 +495,9 @@ Examples:
         max_aspect_ratio=args.max_aspect_ratio,
         min_eccentricity=args.min_eccentricity,
         min_solidity=args.min_solidity,
+        min_area_um2=args.min_area,
         max_area_um2=args.max_area,
+        min_width_um=args.min_width,
         max_width_um=args.max_width,
         remove_small=not args.no_remove_small,
         min_size_pixels=args.min_size

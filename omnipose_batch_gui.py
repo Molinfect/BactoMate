@@ -283,7 +283,7 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QTabWidget, QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox,
         QGroupBox, QDoubleSpinBox, QSpinBox, QCheckBox, QComboBox, QTextEdit,
-        QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QRadioButton, QListWidget, QSizePolicy
+        QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QRadioButton, QListWidget, QListWidgetItem, QSizePolicy
     )
     
     from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize, QEvent
@@ -444,6 +444,153 @@ def create_info_icon(info_text, parent_widget=None):
     
     info_label.mousePressEvent = show_info
     return info_label
+
+
+def show_file_selection_dialog(parent, files, title="Select Files", message="Select files to process (all selected by default):"):
+    """
+    Show a dialog with checkboxes for file selection.
+    
+    Parameters:
+    -----------
+    parent : QWidget
+        Parent widget
+    files : list of Path
+        List of file paths
+    title : str
+        Dialog title
+    message : str
+        Dialog message
+        
+    Returns:
+    --------
+    selected_files : list of Path
+        List of selected file paths, or None if cancelled
+    """
+    if not files:
+        return None
+    
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.setMinimumSize(600, 500)
+    
+    layout = QVBoxLayout()
+    
+    # Message label
+    label = QLabel(message)
+    label.setStyleSheet("color: #ffffff; font-size: 11pt; padding: 10px;")
+    layout.addWidget(label)
+    
+    # Select All / Deselect All buttons
+    button_layout = QHBoxLayout()
+    select_all_btn = QPushButton("Select All")
+    select_all_btn.setStyleSheet(
+        "QPushButton {"
+        "background-color: #5D6D7E;"
+        "color: white;"
+        "font-weight: bold;"
+        "padding: 6px 12px;"
+        "border: none;"
+        "border-radius: 4px;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #34495E;"
+        "}"
+    )
+    deselect_all_btn = QPushButton("Deselect All")
+    deselect_all_btn.setStyleSheet(
+        "QPushButton {"
+        "background-color: #5D6D7E;"
+        "color: white;"
+        "font-weight: bold;"
+        "padding: 6px 12px;"
+        "border: none;"
+        "border-radius: 4px;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #34495E;"
+        "}"
+    )
+    button_layout.addWidget(select_all_btn)
+    button_layout.addWidget(deselect_all_btn)
+    button_layout.addStretch()
+    layout.addLayout(button_layout)
+    
+    # List widget with checkboxes
+    file_list = QListWidget()
+    file_list.setStyleSheet(
+        "QListWidget {"
+        "background-color: #2b2b2b;"
+        "color: #ffffff;"
+        "font-size: 11pt;"
+        "border: 1px solid #555555;"
+        "border-radius: 4px;"
+        "padding: 5px;"
+        "}"
+        "QListWidget::item {"
+        "padding: 8px;"
+        "border-bottom: 1px solid #3a3a3a;"
+        "}"
+        "QListWidget::item:hover {"
+        "background-color: #3a3a3a;"
+        "}"
+    )
+    
+    # Add files with checkboxes (all checked by default)
+    file_items = []
+    for f in files:
+        item = QListWidgetItem(f.name)
+        item.setCheckState(Qt.CheckState.Checked)  # All checked by default
+        item.setData(Qt.ItemDataRole.UserRole, f)  # Store full path
+        file_list.addItem(item)
+        file_items.append(item)
+    
+    # Connect select all / deselect all buttons
+    def select_all():
+        for item in file_items:
+            item.setCheckState(Qt.CheckState.Checked)
+    
+    def deselect_all():
+        for item in file_items:
+            item.setCheckState(Qt.CheckState.Unchecked)
+    
+    select_all_btn.clicked.connect(select_all)
+    deselect_all_btn.clicked.connect(deselect_all)
+    
+    layout.addWidget(file_list)
+    
+    # Buttons
+    button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    button_box.accepted.connect(dialog.accept)
+    button_box.rejected.connect(dialog.reject)
+    button_box.setStyleSheet(
+        "QPushButton {"
+        "background-color: #5D6D7E;"
+        "color: white;"
+        "font-weight: bold;"
+        "padding: 8px 20px;"
+        "border: none;"
+        "border-radius: 4px;"
+        "min-width: 80px;"
+        "}"
+        "QPushButton:hover {"
+        "background-color: #34495E;"
+        "}"
+    )
+    layout.addWidget(button_box)
+    
+    dialog.setLayout(layout)
+    
+    # Show dialog
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        # Return selected files
+        selected_files = []
+        for i in range(file_list.count()):
+            item = file_list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                selected_files.append(item.data(Qt.ItemDataRole.UserRole))
+        return selected_files if selected_files else None  # Return None if nothing selected
+    else:
+        return None
 
 
 class WorkerThread(QThread):
@@ -2372,6 +2519,30 @@ class ProcessingTab(QWidget):
         cluster_layout.addStretch()
         seg_layout.addLayout(cluster_layout)
         
+        # Overlay visualization option
+        overlay_layout = QHBoxLayout()
+        self.create_overlay = QCheckBox("Create overlay visualization")
+        self.create_overlay.setChecked(True)
+        overlay_info_icon = create_info_icon(
+            "Create overlay visualization showing masks overlaid on original images.\n\n"
+            "Default: Enabled (checked)\n"
+            "Source: Optional output file\n\n"
+            "When enabled: Creates a colored overlay TIFF file showing segmentation masks overlaid on the original images.\n"
+            "When disabled: Skips overlay creation (faster processing, saves disk space).\n\n"
+            "Saved as: filename_overlay.tif\n\n"
+            "Tip: Disable to speed up processing when you only need masks.",
+            parent_widget=self
+        )
+        overlay_layout.addWidget(self.create_overlay)
+        overlay_layout.addWidget(overlay_info_icon)
+        overlay_layout.addStretch()
+        seg_layout.addLayout(overlay_layout)
+        
+        # Connect file path changes to update overlay checkbox state
+        self.file_path.textChanged.connect(self._update_overlay_checkbox_state)
+        # Initialize state
+        self._update_overlay_checkbox_state()
+        
         # Reset to defaults button for segmentation parameters
         reset_seg_btn = QPushButton("Reset to Default")
         reset_seg_btn.setStyleSheet(
@@ -2455,6 +2626,28 @@ class ProcessingTab(QWidget):
         layout.addWidget(scroll)
         self.setLayout(layout)
     
+    def _update_overlay_checkbox_state(self):
+        """Update overlay checkbox tooltip based on folder vs file mode"""
+        is_folder = self._is_folder_mode()
+        # Overlay is now supported in both modes, so always enable it
+        self.create_overlay.setEnabled(True)
+        if is_folder:
+            self.create_overlay.setToolTip(
+                "Create overlay visualization showing masks overlaid on original images.\n\n"
+                "Default: Enabled (checked)\n"
+                "When enabled: Creates a colored overlay TIFF file for each file in the folder.\n"
+                "When disabled: Skips overlay creation (faster processing).\n\n"
+                "Saved as: filename_overlay.tif (in each file's output directory)"
+            )
+        else:
+            self.create_overlay.setToolTip(
+                "Create overlay visualization showing masks overlaid on original images.\n\n"
+                "Default: Enabled (checked)\n"
+                "When enabled: Creates a colored overlay TIFF file.\n"
+                "When disabled: Skips overlay creation (faster processing).\n\n"
+                "Saved as: filename_overlay.tif"
+            )
+    
     def select_file(self):
         """Open file dialog to select a TIFF file"""
         try:
@@ -2477,6 +2670,7 @@ class ProcessingTab(QWidget):
             )
             if file_path:
                 self.file_path.setText(file_path)
+                self._update_overlay_checkbox_state()
                 if self.parent_window and hasattr(self.parent_window, 'log_output'):
                     self.parent_window.log_output(f"Selected file: {file_path}\n")
         except Exception as e:
@@ -2493,6 +2687,7 @@ class ProcessingTab(QWidget):
         folder_path = QFileDialog.getExistingDirectory(self, "Select Folder")
         if folder_path:
             self.file_path.setText(folder_path)
+            self._update_overlay_checkbox_state()
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -2508,6 +2703,7 @@ class ProcessingTab(QWidget):
         self.flow_threshold.setValue(0.4)
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
+        self.create_overlay.setChecked(True)
     
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
@@ -2593,7 +2789,7 @@ class ProcessingTab(QWidget):
             layout.addWidget(file_list)
             
             # Buttons
-            button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
             button_box.accepted.connect(file_dialog.accept)
             button_box.rejected.connect(file_dialog.reject)
             button_box.setStyleSheet(
@@ -3809,38 +4005,173 @@ class ProcessingTab(QWidget):
                 cmd_args.append('--no-gpu')
             if self.cluster.isChecked():
                 cmd_args.append('--cluster')
+            if not self.create_overlay.isChecked():
+                cmd_args.append('--no-overlay')
             
             self.process_btn.setEnabled(False)
             self.process_btn.setText("Processing...")
             self.parent_window.log_output(f"Starting single file processing: {self.file_path.text()}\n")
         else:
-            # Folder mode - only segmentation, no analysis
-            script_path = str(script_dir / "batch_process_folder.py")
-            cmd_args = [
-                self.file_path.text(),
-                '--model', self.model_combo.currentText(),
-                '--diameter', str(self.diameter.value()),
-                '--flow-threshold', str(self.flow_threshold.value()),
-            ]
+            # Folder mode - show file selection dialog first
+            folder = Path(self.file_path.text())
+            # Find TIFF files (not mask files)
+            tiff_files_set = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | \
+                            set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
             
-            if not self.use_gpu.isChecked():
-                cmd_args.append('--no-gpu')
-            if self.cluster.isChecked():
-                cmd_args.append('--cluster')
+            # Filter out mask files and output files
+            tiff_files = sorted([f for f in tiff_files_set 
+                                if '_masks' not in f.name.lower() 
+                                and '_overlay' not in f.name.lower()
+                                and '_filter_visualization' not in f.name.lower()], 
+                               key=lambda x: x.name.lower())
+            
+            if not tiff_files:
+                QMessageBox.warning(self, "No TIFF Files Found", 
+                                  "No TIFF files found in the selected folder.\n\n"
+                                  "Please select a folder containing TIFF files to process.")
+                return
+            
+            # Show file selection dialog
+            selected_files = show_file_selection_dialog(
+                self,
+                tiff_files,
+                title="Select Files for Segmentation",
+                message=f"Select files to process (all {len(tiff_files)} files selected by default):"
+            )
+            
+            if selected_files is None:
+                # User cancelled or no files selected
+                return
+            
+            if len(selected_files) == 0:
+                QMessageBox.warning(self, "No Files Selected", 
+                                  "Please select at least one file to process.")
+                return
+            
+            # Process selected files - use batch_process_folder.py but we'll need to filter files
+            # For now, let's process each file individually (simpler approach)
+            script_path = str(script_dir / "batch_process_tiff_sequence.py")
+            
+            # Store files and current index for sequential processing
+            self.folder_files = selected_files
+            self.current_file_index = 0
+            
+            # Show progress bar
+            self.parent_window.progress_bar.setVisible(True)
+            self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range for percentage display
+            self.parent_window.progress_bar.setValue(0)
             
             self.process_btn.setEnabled(False)
-            self.process_btn.setText("Processing...")
-            self.parent_window.log_output(f"Starting batch folder processing (segmentation only): {self.file_path.text()}\n")
+            self.process_btn.setText(f"Processing... (0/{len(selected_files)})")
+            self.parent_window.log_output(f"Starting batch folder processing: {len(selected_files)} file(s) selected from {self.file_path.text()}\n")
+            
+            # Process first file
+            self._process_next_segmentation_file(script_path)
+            return  # Early return, processing continues in _process_next_segmentation_file
         
         # Show progress bar
         self.parent_window.progress_bar.setVisible(True)
-        self.parent_window.progress_bar.setRange(0, 0)  # Indeterminate
+        self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range for percentage display
+        self.parent_window.progress_bar.setValue(0)
         
         # Store reference to prevent garbage collection
         self.worker = WorkerThread(script_path, cmd_args, parent=self)
         self.worker.finished.connect(self.on_finished)
-        self.worker.progress.connect(self.parent_window.log_output)
+        self.worker.progress.connect(self._parse_segmentation_progress)
         self.worker.start()
+    
+    def _process_next_segmentation_file(self, script_path):
+        """Process next file in folder mode (segmentation)"""
+        if self.current_file_index >= len(self.folder_files):
+            # All files processed
+            self.process_btn.setEnabled(True)
+            is_folder = self._is_folder_mode()
+            if is_folder:
+                self.process_btn.setText("Process All Files in Folder")
+            else:
+                self.process_btn.setText("Process File")
+            self.parent_window.progress_bar.setVisible(False)
+            self.parent_window.log_output(f"\n✓ Segmentation complete for all {len(self.folder_files)} file(s)!\n")
+            QMessageBox.information(self, "Processing Complete", 
+                                  f"Successfully processed {len(self.folder_files)} file(s).")
+            return
+        
+        tiff_file = self.folder_files[self.current_file_index]
+        self.parent_window.log_output(f"\nProcessing file {self.current_file_index + 1}/{len(self.folder_files)}: {tiff_file.name}\n")
+        
+        # Build command arguments for this file
+        cmd_args = [
+            str(tiff_file),
+            '--model', self.model_combo.currentText(),
+            '--diameter', str(self.diameter.value()),
+            '--flow-threshold', str(self.flow_threshold.value()),
+        ]
+        
+        if not self.use_gpu.isChecked():
+            cmd_args.append('--no-gpu')
+        if self.cluster.isChecked():
+            cmd_args.append('--cluster')
+        if not self.create_overlay.isChecked():
+            cmd_args.append('--no-overlay')
+        
+        # Update progress bar
+        file_progress = int((self.current_file_index / len(self.folder_files)) * 100)
+        self.parent_window.progress_bar.setValue(file_progress)
+        self.process_btn.setText(f"Processing... ({self.current_file_index + 1}/{len(self.folder_files)})")
+        
+        # Store reference to prevent garbage collection
+        self.worker = WorkerThread(script_path, cmd_args, parent=self)
+        self.worker.finished.connect(lambda success, msg: self._on_segmentation_file_finished(success, msg, script_path))
+        self.worker.progress.connect(self._parse_segmentation_progress)
+        self.worker.start()
+    
+    def _on_segmentation_file_finished(self, success, message, script_path):
+        """Handle completion of a single file in folder mode"""
+        self.parent_window.log_output(message)
+        if success:
+            self.parent_window.log_output(f"✓ File {self.current_file_index + 1}/{len(self.folder_files)} processed successfully!\n")
+        else:
+            self.parent_window.log_output(f"✗ File {self.current_file_index + 1}/{len(self.folder_files)} failed!\n")
+        
+        # Clean up worker thread
+        if hasattr(self, 'worker'):
+            self.worker.wait()
+            self.worker = None
+        
+        # Move to next file
+        self.current_file_index += 1
+        self._process_next_segmentation_file(script_path)
+    
+    def _parse_segmentation_progress(self, message):
+        """Parse progress messages from segmentation script and update progress bar"""
+        import re
+        # Log the message
+        self.parent_window.log_output(message)
+        
+        # Try to parse tqdm-style progress: "Processing: 25%|" or "Segmenting: 50%|"
+        # Or percentage in message
+        progress_match = re.search(r'(\d+)%', message)
+        if progress_match:
+            try:
+                progress_pct = int(progress_match.group(1))
+                # Clamp to 0-100
+                progress_pct = max(0, min(100, progress_pct))
+                # Scale by current file progress
+                if hasattr(self, 'folder_files') and len(self.folder_files) > 0:
+                    file_progress_base = int((self.current_file_index / len(self.folder_files)) * 100)
+                    file_progress_current = int((progress_pct / len(self.folder_files)))
+                    total_progress = min(100, file_progress_base + file_progress_current)
+                    self.parent_window.progress_bar.setValue(total_progress)
+                else:
+                    self.parent_window.progress_bar.setValue(progress_pct)
+            except:
+                pass
+        # Also check for "X/Y" patterns which might indicate progress
+        elif 'Processing' in message or 'Segmenting' in message or 'Creating' in message:
+            # If we see these messages, increment progress slightly
+            current = self.parent_window.progress_bar.value()
+            if current < 95:
+                self.parent_window.progress_bar.setValue(min(95, current + 1))
     
     def on_finished(self, success, message):
         self.process_btn.setEnabled(True)
@@ -3850,6 +4181,9 @@ class ProcessingTab(QWidget):
         else:
             self.process_btn.setText("Process File")
         self.parent_window.log_output(message)
+        # Set progress to 100% on completion
+        if success:
+            self.parent_window.progress_bar.setValue(100)
         # Clean up worker thread
         if hasattr(self, 'worker'):
             self.worker.wait()  # Wait for thread to finish
@@ -4048,6 +4382,29 @@ class AnalyzeMasksTab(QWidget):
         size_group = QGroupBox("Size Filters")
         size_layout = QVBoxLayout()
         
+        min_area_layout = QHBoxLayout()
+        min_area_label = QLabel("Min Area (µm², 0=no limit):")
+        min_area_info_icon = create_info_icon(
+            "Minimum cell area in square micrometers (µm²).\n\n"
+            "Default: 0 (no limit)\n"
+            "Source: Optional filter, disabled by default\n\n"
+            "Filters out cells smaller than this value (likely debris or noise).\n\n"
+            "Set to 0 to disable this filter.\n"
+            "Typical values for bacteria: 0.5-5 µm²\n"
+            "Range: 0 to 10000 µm²\n\n"
+            "Tip: Use to filter out undersized objects that are likely artifacts."
+        , parent_widget=self)
+        min_area_layout.addWidget(min_area_label)
+        min_area_layout.addWidget(min_area_info_icon)
+        self.min_area = QDoubleSpinBox()
+        self.min_area.setRange(0, 10000)
+        self.min_area.setValue(0)
+        self.min_area.setDecimals(1)
+        self.min_area.setSingleStep(0.5)
+        min_area_layout.addWidget(self.min_area)
+        min_area_layout.addStretch()
+        size_layout.addLayout(min_area_layout)
+        
         max_area_layout = QHBoxLayout()
         max_area_label = QLabel("Max Area (µm², 0=no limit):")
         max_area_info_icon = create_info_icon(
@@ -4070,6 +4427,30 @@ class AnalyzeMasksTab(QWidget):
         max_area_layout.addWidget(self.max_area)
         max_area_layout.addStretch()
         size_layout.addLayout(max_area_layout)
+        
+        min_width_layout = QHBoxLayout()
+        min_width_label = QLabel("Min Width (µm, 0=no limit):")
+        min_width_info_icon = create_info_icon(
+            "Minimum cell width in micrometers (µm).\n\n"
+            "Default: 0 (no limit)\n"
+            "Source: Optional filter, disabled by default\n\n"
+            "Width is measured as the minor axis (perpendicular to length).\n"
+            "Filters out cells narrower than this value (likely debris or noise).\n\n"
+            "Set to 0 to disable this filter.\n"
+            "Typical values for rod-shaped bacteria: 0.3-0.5 µm\n"
+            "Range: 0 to 100 µm\n\n"
+            "Tip: Use to filter out objects that are too narrow to be single cells."
+        , parent_widget=self)
+        min_width_layout.addWidget(min_width_label)
+        min_width_layout.addWidget(min_width_info_icon)
+        self.min_width = QDoubleSpinBox()
+        self.min_width.setRange(0, 100)
+        self.min_width.setValue(0)
+        self.min_width.setDecimals(1)
+        self.min_width.setSingleStep(0.1)
+        min_width_layout.addWidget(self.min_width)
+        min_width_layout.addStretch()
+        size_layout.addLayout(min_width_layout)
         
         max_width_layout = QHBoxLayout()
         max_width_label = QLabel("Max Width (µm, 0=no limit):")
@@ -4245,7 +4626,9 @@ class AnalyzeMasksTab(QWidget):
         self.min_solidity.setValue(0.7)
         
         # Size filters
+        self.min_area.setValue(0)
         self.max_area.setValue(0)
+        self.min_width.setValue(0)
         self.max_width.setValue(0)
         
         # Options
@@ -4346,7 +4729,7 @@ class AnalyzeMasksTab(QWidget):
             layout.addWidget(file_list)
             
             # Buttons
-            button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
             button_box.accepted.connect(file_dialog.accept)
             button_box.rejected.connect(file_dialog.reject)
             button_box.setStyleSheet(
@@ -4505,7 +4888,9 @@ class AnalyzeMasksTab(QWidget):
                     'max_aspect_ratio': self.max_aspect_ratio.value(),
                     'min_eccentricity': self.min_eccentricity.value(),
                     'min_solidity': self.min_solidity.value(),
+                    'min_area': self.min_area.value() if self.min_area.value() > 0 else None,
                     'max_area': self.max_area.value() if self.max_area.value() > 0 else None,
+                    'min_width': self.min_width.value() if self.min_width.value() > 0 else None,
                     'max_width': self.max_width.value() if self.max_width.value() > 0 else None,
                 }
             
@@ -4579,7 +4964,9 @@ class AnalyzeMasksTab(QWidget):
                     
                     filtered = filter_by_size(
                         rod_shaped,
+                        min_area_um2=params['min_area'],
                         max_area_um2=params['max_area'],
+                        min_width_um=params['min_width'],
                         max_width_um=params['max_width']
                     )
                     accepted_labels = {cell['label'] for cell in filtered}
@@ -4767,18 +5154,35 @@ class AnalyzeMasksTab(QWidget):
                                   "Please select a folder containing mask TIFF files.")
                 return
             
+            # Show file selection dialog
+            selected_files = show_file_selection_dialog(
+                self,
+                mask_files,
+                title="Select Mask Files for Analysis",
+                message=f"Select mask files to analyze (all {len(mask_files)} files selected by default):"
+            )
+            
+            if selected_files is None:
+                # User cancelled or no files selected
+                return
+            
+            if len(selected_files) == 0:
+                QMessageBox.warning(self, "No Files Selected", 
+                                  "Please select at least one file to analyze.")
+                return
+            
             # Process each file sequentially
             self.analyze_btn.setEnabled(False)
-            self.analyze_btn.setText(f"Analyzing... (0/{len(mask_files)})")
-            self.parent_window.log_output(f"Starting mask analysis for {len(mask_files)} file(s) in folder: {folder}\n")
+            self.analyze_btn.setText(f"Analyzing... (0/{len(selected_files)})")
+            self.parent_window.log_output(f"Starting mask analysis for {len(selected_files)} file(s) selected from folder: {folder}\n")
             
             # Show progress bar
             self.parent_window.progress_bar.setVisible(True)
-            self.parent_window.progress_bar.setRange(0, len(mask_files))
+            self.parent_window.progress_bar.setRange(0, len(selected_files))
             self.parent_window.progress_bar.setValue(0)
             
             # Store files and current index
-            self.folder_files = mask_files
+            self.folder_files = selected_files
             self.current_file_index = 0
             self.folder_results = []
             
@@ -4796,8 +5200,12 @@ class AnalyzeMasksTab(QWidget):
                 '--min-solidity', str(self.min_solidity.value()),
             ]
             
+            if self.min_area.value() > 0:
+                cmd_args.extend(['--min-area', str(self.min_area.value())])
             if self.max_area.value() > 0:
                 cmd_args.extend(['--max-area', str(self.max_area.value())])
+            if self.min_width.value() > 0:
+                cmd_args.extend(['--min-width', str(self.min_width.value())])
             if self.max_width.value() > 0:
                 cmd_args.extend(['--max-width', str(self.max_width.value())])
             if self.detailed.isChecked():
@@ -4870,6 +5278,8 @@ class AnalyzeMasksTab(QWidget):
             '--min-solidity', str(self.min_solidity.value()),
         ]
         
+        if self.min_area.value() > 0:
+            cmd_args.extend(['--min-area', str(self.min_area.value())])
         if self.max_area.value() > 0:
             cmd_args.extend(['--max-area', str(self.max_area.value())])
         if self.max_width.value() > 0:

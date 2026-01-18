@@ -28,7 +28,8 @@ import subprocess
 from batch_process_tiff_sequence import (
     split_multipage_tiff, 
     process_frames_with_omnipose, 
-    concatenate_masks
+    concatenate_masks,
+    overlay_masks_on_images
 )
 from analyze_cell_areas import (
     analyze_masks,
@@ -79,7 +80,7 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
                         min_eccentricity=0.5, min_solidity=0.7,
                         max_area_um2=None, max_width_um=None,
                         min_size_pixels=10, remove_small=True,
-                        save_intermediate=False, create_visualization=True, verbose=False):
+                        save_intermediate=False, create_visualization=True, create_overlay=True, verbose=False):
     """
     Process a single TIFF file: segment and analyze.
     
@@ -129,6 +130,30 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
         masks_path = file_output_dir / f"{file_stem}_masks.tif"
         concatenate_masks(masks, str(masks_path))
         
+        # Step 1.5: Create overlay (if requested) - before analysis to avoid reloading images
+        overlay_path = None
+        if create_overlay:
+            try:
+                # Reload original images for overlay
+                images = tifffile.imread(str(input_file))
+                # Handle different formats (same logic as batch_process_tiff_sequence.py)
+                if images.ndim == 3:
+                    if images.shape[-1] < 10:
+                        images = images.transpose(2, 0, 1)[np.newaxis, ...]
+                    else:
+                        images = images[:, np.newaxis, :, :]
+                elif images.ndim == 4:
+                    if images.shape[-1] < 10:
+                        images = images.transpose(0, 3, 1, 2)
+                    elif images.shape[0] < 10:
+                        images = images.transpose(1, 0, 2, 3)
+                
+                overlay_path = file_output_dir / f"{file_stem}_overlay.tif"
+                overlay_masks_on_images(images, masks, str(overlay_path))
+            except Exception as e:
+                if verbose:
+                    print(f"WARNING: Could not create overlay: {e}")
+        
         # Step 2: Analyze masks
         results, detailed_data, masks_array = analyze_masks(
             str(masks_path),
@@ -149,7 +174,7 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
             vis_path = file_output_dir / f"{file_stem}_filter_visualization.tif"
             create_filter_visualization(masks_array, detailed_data, str(vis_path))
         
-        # Add filename to results
+        # Add filename and paths to results
         for result in results:
             result['filename'] = input_file.name
             result['file_stem'] = file_stem
@@ -381,6 +406,8 @@ Examples:
                        help='Save intermediate files (masks, frames)')
     parser.add_argument('--no-visualization', action='store_true',
                        help='Skip creating filter visualization TIFFs (green=accepted, red=rejected)')
+    parser.add_argument('--no-overlay', action='store_true',
+                       help='Skip creating overlay visualization TIFFs')
     parser.add_argument('--skip-processing', action='store_true',
                        help='Skip Omnipose processing, only analyze existing masks')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -488,6 +515,7 @@ Examples:
                     remove_small=not args.no_remove_small,
                     save_intermediate=args.save_intermediate,
                     create_visualization=not args.no_visualization,
+                    create_overlay=not args.no_overlay,
                     verbose=args.verbose
                 )
                 all_results.append(file_result)
