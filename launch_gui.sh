@@ -11,14 +11,28 @@ exec 2>> "$LOG_FILE"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Log script directory for debugging
+echo "$(date): Launch script directory: $SCRIPT_DIR" >> "$LOG_FILE"
+echo "$(date): Looking for Python in: $SCRIPT_DIR/venv/bin/" >> "$LOG_FILE"
+
 # Use venv Python directly instead of activation (more reliable across machines)
 VENV_PYTHON="$SCRIPT_DIR/venv/bin/python3"
 VENV_PYTHONW="$SCRIPT_DIR/venv/bin/pythonw"
 
+# Debug: List what's in venv/bin
+if [ -d "$SCRIPT_DIR/venv/bin" ]; then
+    echo "$(date): Contents of venv/bin:" >> "$LOG_FILE"
+    ls -la "$SCRIPT_DIR/venv/bin" | head -20 >> "$LOG_FILE" 2>&1 || true
+else
+    echo "$(date): ERROR: venv/bin directory does not exist: $SCRIPT_DIR/venv/bin" >> "$LOG_FILE"
+fi
+
 # Verify venv Python exists and is executable
 if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ]; then
     echo "$(date): ERROR: Python interpreter not found in venv: $SCRIPT_DIR/venv/bin/" >> "$LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: Python environment not found. The application may be corrupted." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    echo "$(date): VENV_PYTHON=$VENV_PYTHON" >> "$LOG_FILE"
+    echo "$(date): VENV_PYTHONW=$VENV_PYTHONW" >> "$LOG_FILE"
+    osascript -e 'display dialog "BactiMate Error: Python environment not found. The application may be corrupted. Check ~/Library/Logs/BactiMate/launch.log for details." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 

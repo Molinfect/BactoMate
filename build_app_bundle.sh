@@ -180,6 +180,74 @@ fi
 # Ensure launch_gui.sh is executable
 chmod +x "$APP_BUNDLE/Contents/Resources/launch_gui.sh"
 
+# Fix permissions for Python executables in venv (critical for app bundle)
+echo "Fixing Python executable permissions..."
+VENV_BIN="$APP_BUNDLE/Contents/Resources/venv/bin"
+if [ -d "$VENV_BIN" ]; then
+    # Make all Python executables executable
+    find "$VENV_BIN" -type f -name "python*" -exec chmod +x {} \;
+    find "$VENV_BIN" -type f -name "pythonw*" -exec chmod +x {} \;
+    # Also fix any symlinks by ensuring the target is executable
+    # Find all executables in bin directory
+    find "$VENV_BIN" -type f -exec chmod +x {} \;
+    echo "  Python executables made executable"
+else
+    echo "  WARNING: venv/bin directory not found!"
+fi
+
+# Make venv relocatable by updating pyvenv.cfg
+echo "Making venv relocatable..."
+PYVENV_CFG="$APP_BUNDLE/Contents/Resources/venv/pyvenv.cfg"
+if [ -f "$PYVENV_CFG" ]; then
+    # Read the current Python version from pyvenv.cfg
+    PYTHON_VERSION=$(grep "^version" "$PYVENV_CFG" | cut -d'=' -f2 | tr -d ' ')
+    if [ -n "$PYTHON_VERSION" ]; then
+        # Update pyvenv.cfg to use relative paths (make it relocatable)
+        # The 'home' field should be relative or we can remove it
+        # For relocatable venvs, we rely on PYTHONHOME environment variable
+        # Keep the version but make home relative
+        sed -i.bak "s|^home=.*|home = .|" "$PYVENV_CFG" 2>/dev/null || \
+        sed -i '' "s|^home=.*|home = .|" "$PYVENV_CFG" 2>/dev/null || true
+        rm -f "${PYVENV_CFG}.bak" 2>/dev/null || true
+        echo "  Updated pyvenv.cfg for relocatability"
+    fi
+else
+    echo "  WARNING: pyvenv.cfg not found!"
+fi
+
+# Verify Python executable exists and is executable
+PYTHON_EXEC="$VENV_BIN/python3"
+if [ -f "$PYTHON_EXEC" ] && [ -x "$PYTHON_EXEC" ]; then
+    echo "  ✓ Python executable verified: $PYTHON_EXEC"
+    # Test that it can run (use the venv's Python with PYTHONHOME set)
+    VENV_DIR="$APP_BUNDLE/Contents/Resources/venv"
+    if env PYTHONHOME="$VENV_DIR" "$PYTHON_EXEC" --version > /dev/null 2>&1; then
+        PYTHON_VERSION=$("$PYTHON_EXEC" --version 2>&1 | head -1)
+        echo "  ✓ Python executable is functional: $PYTHON_VERSION"
+    else
+        echo "  WARNING: Python executable exists but may not work correctly"
+        echo "  Attempting to test without PYTHONHOME..."
+        if "$PYTHON_EXEC" --version > /dev/null 2>&1; then
+            echo "  ✓ Python works without PYTHONHOME (will use PYTHONHOME at runtime)"
+        else
+            echo "  ERROR: Python executable cannot run even without PYTHONHOME"
+            exit 1
+        fi
+    fi
+else
+    echo "  ERROR: Python executable not found or not executable: $PYTHON_EXEC"
+    echo "  Checking if it's a symlink..."
+    if [ -L "$PYTHON_EXEC" ]; then
+        echo "  Python is a symlink to: $(readlink "$PYTHON_EXEC")"
+        # Try to make it executable anyway
+        chmod +x "$PYTHON_EXEC" 2>/dev/null || true
+    fi
+    if [ ! -x "$PYTHON_EXEC" ]; then
+        echo "  ERROR: Cannot make Python executable"
+        exit 1
+    fi
+fi
+
 # Show final size
 BUNDLE_SIZE=$(du -sh "$APP_BUNDLE" | cut -f1)
 echo "  App bundle created: $BUNDLE_SIZE"
