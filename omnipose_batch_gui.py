@@ -191,7 +191,7 @@ if sys.platform in ['darwin', 'win32']:
         # First, try to find it relative to the script (for venv scenarios)
         venv_candidates = [
             os.path.join(script_dir, 'venv_py310'),  # Python 3.10+ venv
-            os.path.join(script_dir, 'venv'),  # Original Python 3.9 venv
+            os.path.join(script_dir, 'venv'),  # Python 3.11 venv
         ]
         
         # Also check if we're in a venv (sys.prefix will point to venv)
@@ -206,7 +206,7 @@ if sys.platform in ['darwin', 'win32']:
                 continue
             
             # Try the detected Python version first, then try common versions
-            for py_ver in [python_version, 'python3.11', 'python3.10', 'python3.9']:
+            for py_ver in [python_version, 'python3.11', 'python3.10']:
                 candidate = os.path.join(venv_dir, 'lib', py_ver, 'site-packages', 'PyQt6', 'Qt6', 'plugins')
                 if os.path.exists(candidate):
                     abs_plugin_path = os.path.abspath(candidate)

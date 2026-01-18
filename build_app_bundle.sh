@@ -37,6 +37,12 @@ cat > "$APP_BUNDLE/Contents/MacOS/BactiMate" << 'LAUNCHER_EOF'
 #!/bin/bash
 # BactiMate launcher - runs launch_gui.sh from within the app bundle
 
+# Redirect stderr to a log file for debugging
+LOG_DIR="$HOME/Library/Logs/BactiMate"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/launch.log"
+exec 2>> "$LOG_FILE"
+
 # Get the directory where this script is located (inside the .app bundle)
 APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_CONTENTS="$APP_DIR/Contents"
@@ -44,8 +50,32 @@ APP_CONTENTS="$APP_DIR/Contents"
 # The actual project files are in the Resources directory
 PROJECT_DIR="$APP_CONTENTS/Resources"
 
-# Change to project directory and run launch script
-cd "$PROJECT_DIR"
+# Verify project directory exists
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo "$(date): ERROR: Project directory not found: $PROJECT_DIR" >> "$LOG_FILE"
+    osascript -e 'display dialog "BactiMate Error: Application bundle is corrupted. Project directory not found." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    exit 1
+fi
+
+# Change to project directory
+cd "$PROJECT_DIR" || {
+    echo "$(date): ERROR: Cannot change to project directory: $PROJECT_DIR" >> "$LOG_FILE"
+    osascript -e 'display dialog "BactiMate Error: Cannot access application directory." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    exit 1
+}
+
+# Verify launch script exists
+if [ ! -f "$PROJECT_DIR/launch_gui.sh" ]; then
+    echo "$(date): ERROR: Launch script not found: $PROJECT_DIR/launch_gui.sh" >> "$LOG_FILE"
+    osascript -e 'display dialog "BactiMate Error: Launch script not found." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    exit 1
+fi
+
+# Make sure launch script is executable
+chmod +x "$PROJECT_DIR/launch_gui.sh"
+
+# Log launch attempt
+echo "$(date): Launching BactiMate from: $PROJECT_DIR" >> "$LOG_FILE"
 
 # Run the launch script
 exec "$PROJECT_DIR/launch_gui.sh"

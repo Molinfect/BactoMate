@@ -91,7 +91,7 @@ python3 -c "import PyQt6; print('✓ PyQt6 imported successfully')" || {
 # Step 7: Check for cocoa plugin
 echo ""
 echo "Checking for Qt cocoa plugin..."
-PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.9")
+PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
 PLUGIN_PATH="venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
 if [ -f "$PLUGIN_PATH" ]; then
     echo "✓ Cocoa plugin found at: $PLUGIN_PATH"
@@ -109,7 +109,7 @@ fi
 # Step 8: Test PyQt6
 echo ""
 echo "Testing PyQt6 (this may take a moment)..."
-PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.9")
+PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
 TEST_OUTPUT=$(python3 -c "
 import sys, os
 script_dir = '$SCRIPT_DIR'

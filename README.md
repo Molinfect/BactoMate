@@ -10,8 +10,10 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 - [Command Line Usage](#command-line-usage)
 - [Batch Processing](#batch-processing)
 - [Cell Area Analysis](#cell-area-analysis)
-- [Building Executables](#building-executables)
+- [Building App Bundles](#building-app-bundles)
 - [Troubleshooting](#troubleshooting)
+- [Testing](#testing)
+- [Available Scripts](#available-scripts)
 
 ## Quick Start
 
@@ -50,7 +52,7 @@ python batch_process_folder.py /path/to/folder \
 
 ### Prerequisites
 
-- Python 3.9+
+- Python 3.11+
 - macOS 10.13+ or Windows 10/11
 
 ### Setup
@@ -79,9 +81,9 @@ python batch_process_folder.py /path/to/folder \
 
 ### Installation Details
 
-- **Python Version**: 3.9.6
+- **Python Version**: 3.11+
 - **Omnipose Version**: 1.0.6
-- **GUI Framework**: PyQt5
+- **GUI Framework**: PyQt6
 - **Virtual Environment**: `venv/`
 
 ## Graphical User Interface
@@ -379,6 +381,16 @@ python analyze_cell_areas.py input_masks.tif --pixel-size 0.108 --max-area 50 --
 
 BactiMate can be packaged into a macOS `.app` bundle that includes the Python environment, similar to how [ilastik](https://github.com/ilastik/ilastik) distributes their application.
 
+### Overview
+
+Instead of compiling with Nuitka (which has PyQt6 compatibility issues on macOS), we bundle the entire project folder including the Python virtual environment into a macOS `.app` bundle. This approach:
+
+- ✅ Avoids Nuitka compilation issues
+- ✅ Works with PyQt6 without modifications
+- ✅ Keeps the environment small and self-contained
+- ✅ Easy to maintain and update
+- ✅ Similar to how ilastik distributes their application
+
 ### Prerequisites
 
 1. **Set up the environment:**
@@ -391,22 +403,109 @@ BactiMate can be packaged into a macOS `.app` bundle that includes the Python en
    brew install create-dmg
    ```
 
-### macOS Build
+### Build Steps
 
-```bash
-# 1. Create icons (first time only)
-./create_icons.sh
+1. **Create icons (first time only):**
+   ```bash
+   ./create_icons.sh
+   ```
 
-# 2. Build the app bundle
-./build_app_bundle.sh
+2. **Build the app bundle:**
+   ```bash
+   ./build_app_bundle.sh
+   ```
+   
+   This will create `BactiMate.app` in the project root directory.
 
-# 3. Create DMG (optional)
-./create_dmg.sh
-```
+3. **Test the app bundle:**
+   ```bash
+   open BactiMate.app
+   ```
+   
+   Or double-click `BactiMate.app` in Finder.
+
+4. **Create a DMG for distribution (optional):**
+   ```bash
+   ./create_dmg.sh
+   ```
+   
+   This creates `dist/BactiMate.dmg` that users can mount and drag to Applications.
 
 **Output:** `BactiMate.app` and optionally `dist/BactiMate.dmg`
 
 The app bundle includes the entire project folder with the Python virtual environment, making it self-contained and easy to distribute.
+
+### App Bundle Structure
+
+```
+BactiMate.app/
+├── Contents/
+│   ├── MacOS/
+│   │   └── BactiMate          # Launcher executable (runs launch_gui.sh)
+│   ├── Resources/             # All project files
+│   │   ├── venv/              # Python virtual environment
+│   │   ├── omnipose_batch_gui.py
+│   │   ├── launch_gui.sh      # Main launch script
+│   │   └── ... (all other project files)
+│   └── Info.plist             # macOS app metadata
+```
+
+The launcher (`Contents/MacOS/BactiMate`) is a shell script that:
+1. Finds the project directory inside the app bundle
+2. Changes to that directory
+3. Executes `launch_gui.sh` which activates the venv and runs the Python script
+
+### Distribution
+
+**For Users:**
+1. Download the `.dmg` file
+2. Mount it by double-clicking
+3. Copy `BactiMate.app` to their Applications folder
+4. Control-click and choose "Open" the first time (to bypass Gatekeeper)
+5. Double-click to launch thereafter
+
+**Creating a Distribution Archive:**
+```bash
+# Create a tar.bz2 archive (similar to ilastik)
+tar -cjf BactiMate-macOS.tar.bz2 BactiMate.app
+```
+
+Or use the DMG method:
+```bash
+./create_dmg.sh
+```
+
+### Cross-Machine Compatibility
+
+The app bundle is designed to work across different Macs. Key features:
+
+1. **Relocatable Virtual Environment**: Uses `PYTHONHOME` environment variable to make the venv relocatable
+2. **Direct Python Execution**: Uses venv Python directly instead of activation (more reliable)
+3. **Error Logging**: Logs to `~/Library/Logs/BactiMate/launch.log` for debugging
+4. **User-Friendly Error Dialogs**: Shows error messages if launch fails
+
+**Key Environment Variables:**
+```bash
+export PYTHONHOME="$SCRIPT_DIR/venv"  # Makes venv relocatable
+export PATH="$SCRIPT_DIR/venv/bin:$PATH"  # Prioritize venv binaries
+```
+
+### Advantages Over Nuitka
+
+1. **No compilation required** - Just bundle existing files
+2. **Faster builds** - No long compilation process
+3. **Easier debugging** - Can inspect/modify files inside the bundle
+4. **PyQt6 compatible** - No need to switch to PySide6
+5. **Smaller learning curve** - Standard macOS app bundle structure
+
+### File Size
+
+The app bundle includes:
+- Python virtual environment (~500MB-1GB depending on dependencies)
+- All project files
+- Models and data files
+
+Total size is typically 500MB-1.5GB, which is reasonable for a scientific application with ML dependencies.
 
 ### Building on Different Platforms
 
@@ -415,37 +514,89 @@ The app bundle includes the entire project folder with the Python virtual enviro
 
 **Recommended:** Use GitHub Actions for automated builds (see `.github/workflows/build.yml`)
 
-### Distribution
-
-- **macOS**: Share the `.dmg` file (users mount and drag app to Applications)
-- **Windows**: Share the `.exe` file directly
-
-**Note:** Executables are large (500MB-1GB) because they include Python, PyTorch, PyQt5, and all dependencies.
-
 ## Troubleshooting
 
-### PyQt5 Issues (macOS)
+### App Bundle Issues
+
+#### App won't launch
+
+1. Check that `launch_gui.sh` is executable:
+   ```bash
+   chmod +x BactiMate.app/Contents/Resources/launch_gui.sh
+   ```
+
+2. Check console logs:
+   ```bash
+   open Console.app
+   # Then try launching BactiMate.app and look for errors
+   ```
+
+3. Check the log file:
+   ```bash
+   cat ~/Library/Logs/BactiMate/launch.log
+   ```
+   
+   The log will show:
+   - Launch attempts with timestamps
+   - Python version detection
+   - Qt plugin paths
+   - Any errors that occur
+
+4. Test the launcher manually:
+   ```bash
+   cd BactiMate.app/Contents/Resources
+   ./launch_gui.sh
+   ```
+
+#### Code signing issues
+
+The build script applies ad-hoc code signatures. For distribution outside the App Store, you may need:
+- A Developer ID certificate from Apple
+- Proper code signing with `codesign --sign "Developer ID Application: Your Name"`
+
+#### Gatekeeper warnings
+
+Users may see a warning the first time they open the app. They need to:
+1. Control-click the app
+2. Choose "Open"
+3. Click "Open" in the security dialog
+
+After the first launch, macOS will remember the app is safe.
+
+#### Cross-machine compatibility issues
+
+If the app fails on another machine, check the log file:
+```bash
+cat ~/Library/Logs/BactiMate/launch.log
+```
+
+Common issues:
+- **Hardcoded Python paths**: The venv's `pyvenv.cfg` may contain absolute paths that don't exist on other machines. The launch script uses `PYTHONHOME` to work around this.
+- **Missing dependencies**: Ensure all dependencies are installed in the venv before building the bundle.
+- **Qt plugin issues**: The launch script automatically detects and sets Qt plugin paths.
+
+### PyQt6 Issues (macOS)
 
 If you see "Could not find the Qt platform plugin 'cocoa'":
 
 ```bash
-./repair_pyqt5.sh
+./repair_pyqt6.sh
 ```
 
 **Why this happens:**
 - macOS version updates with stricter security policies
-- PyQt5 version changes during reinstallation
+- PyQt6 version changes during reinstallation
 - Virtual environment recreation
 
 **Prevention:**
-- PyQt5 is pinned to version 5.15.10 in `requirements.txt`
+- PyQt6 is pinned to a specific version in `requirements.txt`
 - Launch script automatically tests and repairs if needed
 
 ### GUI Won't Launch
 
 1. Make sure venv is activated: `source venv/bin/activate`
-2. Check PyQt5 is installed: `pip show PyQt5`
-3. Run repair script: `./repair_pyqt5.sh`
+2. Check PyQt6 is installed: `pip show PyQt6`
+3. Run repair script: `./repair_pyqt6.sh`
 4. Try fresh setup: `./setup_fresh_env.sh`
 
 ### Processing Fails
@@ -494,6 +645,100 @@ Reshape if needed:
 python check_tiff_format.py input.tif output.tif
 ```
 
+## Testing
+
+### Pre-Build Setup
+
+- [ ] Ensure virtual environment is activated
+- [ ] All dependencies installed (`pip install -r requirements.txt`)
+- [ ] All patches applied (`./apply_all_patches.py`)
+
+### Basic Functionality Tests
+
+#### Application Launch
+- [ ] Application launches successfully
+- [ ] No import errors in console/logs
+- [ ] GUI displays correctly
+- [ ] All tabs/buttons visible and accessible
+- [ ] No Qt plugin errors
+
+#### Model Loading
+- [ ] Can select different model types (bact_phase_omni, cyto2_omni, etc.)
+- [ ] Models download correctly if not cached
+- [ ] No model architecture mismatch errors
+- [ ] Model files found in correct location
+
+#### Segmentation Tests
+
+**Single Image Segmentation:**
+- [ ] Load a single TIFF image
+- [ ] Run segmentation with default settings
+- [ ] Segmentation completes successfully
+- [ ] Results display correctly
+- [ ] Can export results
+
+**Batch Processing:**
+- [ ] Load a folder of images
+- [ ] Run batch segmentation
+- [ ] All images process without errors
+- [ ] Progress bar updates correctly
+- [ ] Results saved correctly
+
+**Different Model Types:**
+- [ ] Test with `bact_phase_omni`
+- [ ] Test with `cyto2_omni`
+- [ ] Test with `bact_fluor_omni` (if available)
+- [ ] Each model type works correctly
+
+**Different Diameter Settings:**
+- [ ] Test with auto-detect (diameter = 0)
+- [ ] Test with specific diameter values (20, 30, 40 pixels)
+- [ ] No errors with any diameter setting
+
+#### File Format Support
+- [ ] TIFF files work correctly
+- [ ] ND2 files can be loaded (if applicable)
+- [ ] Multi-page TIFF sequences work
+- [ ] Export to Excel/CSV works
+
+### Error Handling Tests
+
+**Known Issues to Verify Fixed:**
+- [ ] No `TypeError: '>' not supported between instances of 'NoneType' and 'int'`
+- [ ] No model architecture mismatch errors
+- [ ] No missing dependency errors
+- [ ] No Qt plugin errors
+
+**Edge Cases:**
+- [ ] Handle empty image folders gracefully
+- [ ] Handle corrupted/invalid image files gracefully
+- [ ] Handle missing model files gracefully
+- [ ] Handle network errors during model download
+
+### Performance Tests
+
+- [ ] Startup time is reasonable (< 10 seconds)
+- [ ] Segmentation speed is acceptable
+- [ ] Memory usage is reasonable
+- [ ] No memory leaks during batch processing
+
+### Platform-Specific Tests (macOS)
+
+- [ ] Application bundle structure is correct
+- [ ] Can create DMG file (if applicable)
+- [ ] Application runs on clean macOS system (no venv)
+- [ ] Code signing works (if applicable)
+- [ ] Gatekeeper doesn't block the app
+
+### Cross-Machine Testing
+
+- [ ] Build app bundle on build machine
+- [ ] Test on build machine (should still work)
+- [ ] Copy to different Mac (different user, different location)
+- [ ] Test launch on different Mac
+- [ ] Check log file if it fails: `~/Library/Logs/BactiMate/launch.log`
+- [ ] Verify error dialogs appear if there are critical errors
+
 ## Available Scripts
 
 ### Main Scripts
@@ -506,13 +751,26 @@ python check_tiff_format.py input.tif output.tif
 
 ### Utility Scripts
 - `launch_gui.sh` - Launch Batch Processing GUI
-- `launch_omnipose.sh` - Launch Omnipose GUI
 - `setup_fresh_env.sh` - Setup fresh virtual environment
-- `repair_pyqt5.sh` - Repair PyQt5 installation
+- `repair_pyqt6.sh` - Repair PyQt6 installation
 - `clear_models.sh` - Clear corrupted model cache
 - `build_app_bundle.sh` - Build macOS application bundle
 - `create_dmg.sh` - Create macOS DMG file
 - `create_icons.sh` - Create application icons
+
+## Technical Notes
+
+### PyQt6 Migration
+
+BactiMate uses PyQt6 (migrated from PyQt5) for better:
+- macOS support (especially macOS 13+)
+- Active development and long-term support
+- Performance improvements
+- Nuitka compatibility
+
+### Virtual Environment Management
+
+The project uses Python 3.11+ with a virtual environment. The launch script (`launch_gui.sh`) uses the venv Python directly and sets `PYTHONHOME` to make the environment relocatable, which is essential for app bundle distribution.
 
 ## License
 
