@@ -95,6 +95,15 @@ export PATH="$SCRIPT_DIR/venv/bin:$PATH"
 # This is needed for relocatable app bundles but breaks regular venv usage
 if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
     export PYTHONHOME="$SCRIPT_DIR/venv"
+    
+    # Add bundled Python framework to library search path for self-contained bundles
+    APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    BUNDLED_FRAMEWORK="$APP_DIR/Contents/Frameworks/Python.framework"
+    if [ -d "$BUNDLED_FRAMEWORK" ]; then
+        # Add framework to DYLD_FRAMEWORK_PATH so Python can find it
+        export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+        echo "$(date): Using bundled Python framework: $BUNDLED_FRAMEWORK" >> "$LOG_FILE"
+    fi
 else
     # Don't set PYTHONHOME for regular venv - Python will find base installation automatically
     unset PYTHONHOME 2>/dev/null || true
