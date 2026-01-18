@@ -21,7 +21,7 @@ on:
 
 jobs:
   build-windows:
-    name: Build Windows Executable
+    name: Build Windows Bundle
     runs-on: windows-latest
     if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_windows == 'true' || github.event.inputs.build_windows == '') || github.event_name != 'workflow_dispatch'
     
@@ -32,30 +32,35 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       
-      - name: Install dependencies
+      - name: Create virtual environment
         run: |
+          python -m venv venv
+          venv\Scripts\activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
       
-      - name: Build Windows executable
+      - name: Build Windows bundle
         run: |
-          pyinstaller BactiMate.spec
+          build_windows_bundle.bat
       
-      - name: Upload Windows executable
+      - name: Create zip archive
+        run: |
+          Compress-Archive -Path BactiMate-Windows -DestinationPath dist\BactiMate-Windows.zip -Force
+      
+      - name: Upload Windows bundle
         uses: actions/upload-artifact@v4
         with:
           name: BactiMate-Windows
-          path: dist/BactiMate.exe
+          path: dist/BactiMate-Windows.zip
           retention-days: 30
       
-      - name: Upload Windows executable (release)
+      - name: Upload Windows bundle (release)
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/BactiMate.exe
+          files: dist/BactiMate-Windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -71,23 +76,24 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       
-      - name: Install dependencies
+      - name: Create virtual environment
         run: |
+          python3 -m venv venv
+          source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
       
       - name: Create icons
         run: |
           chmod +x create_icons.sh
           ./create_icons.sh || echo "Icons already exist or creation failed"
       
-      - name: Build macOS application
+      - name: Build macOS application bundle
         run: |
-          chmod +x build_macos.sh
-          ./build_macos.sh
+          chmod +x build_app_bundle.sh
+          ./build_app_bundle.sh
       
       - name: Create DMG
         run: |

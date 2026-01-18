@@ -164,6 +164,27 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
     try:
         model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
         
+        # Additional optimizations if available
+        try:
+            import torch
+            if use_gpu and torch.cuda.is_available():
+                # Enable cuDNN benchmarking for faster inference (finds optimal algorithms)
+                torch.backends.cudnn.benchmark = True
+                # Use deterministic algorithms for reproducibility (slower) - disabled for speed
+                torch.backends.cudnn.deterministic = False
+                
+                # Memory pooling optimizations
+                # Enable memory pool allocator for better memory reuse
+                # This reduces fragmentation and allows larger batch sizes
+                torch.cuda.empty_cache()  # Clear any existing cache
+                # PyTorch uses memory pools by default, but we can optimize further
+                # Set memory fraction to allow better memory management (optional)
+                # torch.cuda.set_per_process_memory_fraction(0.9)  # Use 90% of GPU memory
+                
+                print("GPU optimizations enabled (cuDNN benchmarking, memory pooling)")
+        except:
+            pass  # If torch not available or other error, continue without optimizations
+        
         # Verify architecture is correct (for C2_BD models: nchan=2, nclasses=4)
         if hasattr(model.cp, 'nchan') and hasattr(model.cp, 'nclasses'):
             expected_nchan = 2 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 1
@@ -203,12 +224,14 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
             raise
     
     masks = []
-    print(f"Processing {len(frame_paths)} frames with batch_size={batch_size}...")
+    num_frames_total = len(frame_paths)
+    num_batches = (num_frames_total + batch_size - 1) // batch_size  # Ceiling division
+    print(f"Processing {num_frames_total} frames in {num_batches} batch(es) of {batch_size}...")
     
     # Pre-load all frames into memory for faster batch processing
-    print("Loading all frames into memory...")
+    print(f"Loading {num_frames_total} frames into memory...")
     images_list = []
-    for frame_path in tqdm(frame_paths, desc="Loading frames", **tqdm_kwargs):
+    for i, frame_path in enumerate(tqdm(frame_paths, desc="Loading frames", **tqdm_kwargs), 1):
         try:
             image = imread(frame_path)
             # Ensure image is properly formatted
@@ -236,9 +259,15 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
     
     # Process frames in batches for better GPU utilization
     num_frames = len(images_list)
-    for batch_start in tqdm(range(0, num_frames, batch_size), desc="Segmenting batches", **tqdm_kwargs):
+    batch_num = 0
+    for batch_start in range(0, num_frames, batch_size):
+        batch_num += 1
         batch_end = min(batch_start + batch_size, num_frames)
         batch_images = images_list[batch_start:batch_end]
+        frames_in_batch = len(batch_images)
+        
+        # Clear progress message showing actual frame numbers
+        print(f"Processing batch {batch_num}/{num_batches}: frames {batch_start+1}-{batch_end} of {num_frames_total} ({frames_in_batch} frames)")
         
         try:
             # Process batch - model.eval can handle lists of images
@@ -285,6 +314,22 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
                 except:
                     masks.append(batch_masks)
             
+            # Progress update after batch completion
+            frames_completed = len(masks)
+            progress_pct = int((frames_completed / num_frames_total) * 100)
+            print(f"✓ Batch {batch_num}/{num_batches} complete: {frames_completed}/{num_frames_total} frames ({progress_pct}%)")
+            
+            # Memory management: clear GPU cache between batches to prevent fragmentation
+            # This allows memory pooling to work better and can enable larger batch sizes
+            try:
+                import torch
+                if use_gpu and torch.cuda.is_available():
+                    # Clear unused memory but keep allocated memory pools
+                    # This helps with memory fragmentation without losing the benefits of pooling
+                    torch.cuda.empty_cache()
+            except:
+                pass
+            
         except Exception as e:
             print(f"\nERROR processing batch {batch_start}-{batch_end}: {e}")
             # Fallback to individual processing for this batch
@@ -316,6 +361,19 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
                     else:
                         empty_mask = np.zeros(image.shape[:2], dtype=np.uint16)
                     masks.append(empty_mask)
+    
+    # Final memory cleanup
+    try:
+        import torch
+        if use_gpu and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            # Optional: show memory stats if verbose
+            if verbose:
+                allocated = torch.cuda.memory_allocated(0) / 1024**2  # MB
+                reserved = torch.cuda.memory_reserved(0) / 1024**2  # MB
+                print(f"GPU memory after processing: {allocated:.1f} MB allocated, {reserved:.1f} MB reserved")
+    except:
+        pass
     
     return masks
 

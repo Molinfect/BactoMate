@@ -509,10 +509,25 @@ Total size is typically 500MB-1.5GB, which is reasonable for a scientific applic
 
 ### Building on Different Platforms
 
-**macOS builds only work on macOS.** The app bundle approach is currently implemented for macOS only.
-- Windows builds only work on Windows
+**macOS Bundle:**
+- Run `./build_app_bundle.sh` on macOS
+- Creates `BactiMate.app` that can be distributed to other Macs
+- No compilation needed - just bundles the venv and files
 
-**Recommended:** Use GitHub Actions for automated builds (see `.github/workflows/build.yml`)
+**Windows Bundle:**
+- Run `./build_windows_bundle.sh` (on any platform) or `build_windows_bundle.bat` (on Windows)
+- Creates `BactiMate-Windows` folder with launcher `BactiMate.bat`
+- No compilation needed - just bundles the venv and files
+- Users run `BactiMate.bat` to launch the application
+- Can be zipped and distributed
+
+**Both approaches:**
+- ✅ No compilation (no PyInstaller, Nuitka, etc.)
+- ✅ Just bundle the venv and project files
+- ✅ Self-contained and distributable
+- ✅ Works across different machines (same OS)
+
+**Note:** Windows bundle must be created on Windows (or transferred there) because the venv contains platform-specific binaries. The bundle script can be run on macOS/Linux to prepare the structure, but the venv needs to be created on Windows.
 
 ## Troubleshooting
 
