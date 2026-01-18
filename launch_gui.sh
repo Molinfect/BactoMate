@@ -48,10 +48,43 @@ else
 fi
 
 # Test that Python actually works
-if ! "$PYTHON_CMD" --version >> "$LOG_FILE" 2>&1; then
+echo "$(date): Testing Python executable: $PYTHON_CMD" >> "$LOG_FILE"
+echo "$(date): Python file info:" >> "$LOG_FILE"
+ls -la "$PYTHON_CMD" >> "$LOG_FILE" 2>&1 || true
+file "$PYTHON_CMD" >> "$LOG_FILE" 2>&1 || true
+
+# Try to run Python and capture both stdout and stderr
+PYTHON_TEST_OUTPUT=$("$PYTHON_CMD" --version 2>&1)
+PYTHON_TEST_EXIT=$?
+
+if [ $PYTHON_TEST_EXIT -ne 0 ]; then
     echo "$(date): ERROR: Python interpreter failed to run: $PYTHON_CMD" >> "$LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: Python interpreter failed to start. The application may be corrupted or incompatible with this system." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    echo "$(date): Exit code: $PYTHON_TEST_EXIT" >> "$LOG_FILE"
+    echo "$(date): Error output: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"
+    
+    # Try to get more diagnostic info
+    echo "$(date): Attempting to diagnose Python issue..." >> "$LOG_FILE"
+    echo "$(date): Checking Python architecture..." >> "$LOG_FILE"
+    arch >> "$LOG_FILE" 2>&1 || true
+    echo "$(date): System architecture:" >> "$LOG_FILE"
+    uname -m >> "$LOG_FILE" 2>&1 || true
+    
+    # Check if it's a code signing issue
+    if command -v codesign >/dev/null 2>&1; then
+        echo "$(date): Checking code signature..." >> "$LOG_FILE"
+        codesign -dv --verbose=4 "$PYTHON_CMD" >> "$LOG_FILE" 2>&1 || true
+    fi
+    
+    # Check for missing libraries
+    if command -v otool >/dev/null 2>&1; then
+        echo "$(date): Checking linked libraries..." >> "$LOG_FILE"
+        otool -L "$PYTHON_CMD" | head -10 >> "$LOG_FILE" 2>&1 || true
+    fi
+    
+    osascript -e 'display dialog "BactiMate Error: Python interpreter failed to start. The application may be corrupted or incompatible with this system. Check ~/Library/Logs/BactiMate/launch.log for details." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
+else
+    echo "$(date): Python test successful: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"
 fi
 
 # Set PATH to prioritize venv binaries
