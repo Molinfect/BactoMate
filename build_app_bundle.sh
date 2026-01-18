@@ -190,6 +190,25 @@ if [ -d "$VENV_BIN" ]; then
     # Also fix any symlinks by ensuring the target is executable
     # Find all executables in bin directory
     find "$VENV_BIN" -type f -exec chmod +x {} \;
+    
+    # Check if Python is a symlink and resolve it
+    PYTHON_EXEC="$VENV_BIN/python3"
+    if [ -L "$PYTHON_EXEC" ]; then
+        echo "  Python3 is a symlink, checking target..."
+        TARGET=$(readlink "$PYTHON_EXEC")
+        echo "  Symlink target: $TARGET"
+        # If it's a relative symlink, resolve it relative to venv/bin
+        if [[ "$TARGET" != /* ]]; then
+            RESOLVED="$VENV_BIN/$TARGET"
+            if [ -f "$RESOLVED" ]; then
+                echo "  Resolved to: $RESOLVED"
+                chmod +x "$RESOLVED"
+            else
+                echo "  WARNING: Symlink target not found: $RESOLVED"
+            fi
+        fi
+    fi
+    
     echo "  Python executables made executable"
 else
     echo "  WARNING: venv/bin directory not found!"
@@ -217,35 +236,67 @@ fi
 
 # Verify Python executable exists and is executable
 PYTHON_EXEC="$VENV_BIN/python3"
-if [ -f "$PYTHON_EXEC" ] && [ -x "$PYTHON_EXEC" ]; then
-    echo "  ✓ Python executable verified: $PYTHON_EXEC"
-    # Test that it can run (use the venv's Python with PYTHONHOME set)
-    VENV_DIR="$APP_BUNDLE/Contents/Resources/venv"
-    if env PYTHONHOME="$VENV_DIR" "$PYTHON_EXEC" --version > /dev/null 2>&1; then
-        PYTHON_VERSION=$("$PYTHON_EXEC" --version 2>&1 | head -1)
-        echo "  ✓ Python executable is functional: $PYTHON_VERSION"
+PYTHON_EXEC_RESOLVED="$PYTHON_EXEC"
+
+# Resolve symlinks to get the actual Python executable
+if [ -L "$PYTHON_EXEC" ]; then
+    echo "  Python3 is a symlink, resolving..."
+    TARGET=$(readlink "$PYTHON_EXEC")
+    if [[ "$TARGET" == /* ]]; then
+        # Absolute path symlink
+        PYTHON_EXEC_RESOLVED="$TARGET"
     else
-        echo "  WARNING: Python executable exists but may not work correctly"
-        echo "  Attempting to test without PYTHONHOME..."
-        if "$PYTHON_EXEC" --version > /dev/null 2>&1; then
-            echo "  ✓ Python works without PYTHONHOME (will use PYTHONHOME at runtime)"
+        # Relative path symlink - resolve relative to venv/bin
+        PYTHON_EXEC_RESOLVED="$VENV_BIN/$TARGET"
+    fi
+    echo "  Resolved Python path: $PYTHON_EXEC_RESOLVED"
+fi
+
+if [ -f "$PYTHON_EXEC" ] || [ -L "$PYTHON_EXEC" ]; then
+    # Check if resolved path exists
+    if [ ! -f "$PYTHON_EXEC_RESOLVED" ]; then
+        echo "  ERROR: Python symlink target does not exist: $PYTHON_EXEC_RESOLVED"
+        echo "  This venv may not be relocatable. Trying to fix..."
+        # Try to find Python in the venv
+        PYTHON_ALT=$(find "$VENV_BIN" -name "python3.*" -type f | head -1)
+        if [ -n "$PYTHON_ALT" ]; then
+            echo "  Found alternative Python: $PYTHON_ALT"
+            PYTHON_EXEC_RESOLVED="$PYTHON_ALT"
         else
-            echo "  ERROR: Python executable cannot run even without PYTHONHOME"
+            echo "  ERROR: No Python executable found in venv!"
             exit 1
         fi
     fi
-else
-    echo "  ERROR: Python executable not found or not executable: $PYTHON_EXEC"
-    echo "  Checking if it's a symlink..."
-    if [ -L "$PYTHON_EXEC" ]; then
-        echo "  Python is a symlink to: $(readlink "$PYTHON_EXEC")"
-        # Try to make it executable anyway
-        chmod +x "$PYTHON_EXEC" 2>/dev/null || true
-    fi
-    if [ ! -x "$PYTHON_EXEC" ]; then
-        echo "  ERROR: Cannot make Python executable"
+    
+    # Make sure it's executable
+    chmod +x "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
+    
+    if [ -x "$PYTHON_EXEC_RESOLVED" ]; then
+        echo "  ✓ Python executable verified: $PYTHON_EXEC_RESOLVED"
+        # Test that it can run
+        VENV_DIR="$APP_BUNDLE/Contents/Resources/venv"
+        if env PYTHONHOME="$VENV_DIR" "$PYTHON_EXEC_RESOLVED" --version > /dev/null 2>&1; then
+            PYTHON_VERSION=$("$PYTHON_EXEC_RESOLVED" --version 2>&1 | head -1)
+            echo "  ✓ Python executable is functional: $PYTHON_VERSION"
+        else
+            echo "  WARNING: Python executable exists but may not work correctly"
+            echo "  Attempting to test without PYTHONHOME..."
+            if "$PYTHON_EXEC_RESOLVED" --version > /dev/null 2>&1; then
+                echo "  ✓ Python works without PYTHONHOME (will use PYTHONHOME at runtime)"
+            else
+                echo "  ERROR: Python executable cannot run"
+                exit 1
+            fi
+        fi
+    else
+        echo "  ERROR: Python executable is not executable: $PYTHON_EXEC_RESOLVED"
         exit 1
     fi
+else
+    echo "  ERROR: Python executable not found: $PYTHON_EXEC"
+    echo "  Listing venv/bin contents:"
+    ls -la "$VENV_BIN" | head -10
+    exit 1
 fi
 
 # Show final size
