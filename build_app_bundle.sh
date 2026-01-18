@@ -244,13 +244,41 @@ if [ -L "$PYTHON_EXEC" ]; then
     echo "  Python3 is a symlink, resolving..."
     TARGET=$(readlink "$PYTHON_EXEC")
     if [[ "$TARGET" == /* ]]; then
-        # Absolute path symlink
+        # Absolute path symlink - this is a problem for relocatable bundles
+        # The rsync -L flag should have copied it as a file, but let's check
+        echo "  WARNING: Python is a symlink to absolute path: $TARGET"
+        echo "  This may cause issues in the bundle. Checking if target exists..."
+        if [ ! -f "$TARGET" ]; then
+            echo "  ERROR: Symlink target does not exist: $TARGET"
+            echo "  The venv may not be relocatable. Consider recreating with --copies flag."
+        fi
         PYTHON_EXEC_RESOLVED="$TARGET"
     else
         # Relative path symlink - resolve relative to venv/bin
         PYTHON_EXEC_RESOLVED="$VENV_BIN/$TARGET"
     fi
     echo "  Resolved Python path: $PYTHON_EXEC_RESOLVED"
+fi
+
+# Fix library paths in Python executable for relocatability
+echo "  Fixing Python library paths for relocatability..."
+if command -v install_name_tool >/dev/null 2>&1; then
+    # Check what libraries Python is linked against
+    PYTHON_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i python.framework | head -1 | awk '{print $1}' || true)
+    if [ -n "$PYTHON_LIBS" ]; then
+        echo "  Python is linked against: $PYTHON_LIBS"
+        # Try to change to @rpath (runtime search path)
+        # First, add @rpath to the executable's rpath
+        install_name_tool -add_rpath "@executable_path/../../.." "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
+        # Try to change the library path to use @rpath
+        NEW_PATH=$(echo "$PYTHON_LIBS" | sed 's|.*Python.framework|@rpath/Python.framework|')
+        if [ "$NEW_PATH" != "$PYTHON_LIBS" ]; then
+            echo "  Attempting to change library path to: $NEW_PATH"
+            install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || echo "  WARNING: Could not change library path (may require codesigning)"
+        fi
+    fi
+else
+    echo "  WARNING: install_name_tool not found, cannot fix library paths"
 fi
 
 if [ -f "$PYTHON_EXEC" ] || [ -L "$PYTHON_EXEC" ]; then
