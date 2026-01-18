@@ -158,8 +158,9 @@ done
 
 # Use rsync to copy files (preserves permissions and symlinks)
 # Use --progress to show progress for large copies
+# --copy-links: transform symlinks into the files they point to (important for venv Python)
 echo "  Copying files (this may take several minutes for large venv)..."
-if ! rsync -av --progress "${RSYNC_EXCLUDES[@]}" \
+if ! rsync -avL --progress "${RSYNC_EXCLUDES[@]}" \
     --exclude="BactiMate.app" \
     "$SCRIPT_DIR/" "$APP_BUNDLE/Contents/Resources/"; then
     echo "ERROR: Failed to copy files to app bundle!"
