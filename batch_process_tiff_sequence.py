@@ -16,12 +16,30 @@ Usage:
 import argparse
 import os
 import sys
+import warnings
 import numpy as np
 import tifffile
 from pathlib import Path
 from tqdm import tqdm
 import tempfile
 import shutil
+
+# Configure tqdm to work better when output is redirected (not a terminal)
+# Disable tqdm progress bars when output is redirected to avoid cluttering logs
+import sys
+import os
+
+# Disable tqdm when output is redirected (e.g., when called from GUI)
+if not sys.stdout.isatty():
+    # When output is redirected, disable tqdm entirely for cleaner logs
+    # Set environment variable to disable tqdm in omnipose/cellpose
+    os.environ['TQDM_DISABLE'] = '1'
+    tqdm_kwargs = {'disable': True}  # Disable our own tqdm too
+else:
+    tqdm_kwargs = {}
+
+# Suppress FutureWarning from omnipose about deprecated area_threshold parameter
+warnings.filterwarnings('ignore', category=FutureWarning, message='.*area_threshold.*')
 
 try:
     from cellpose_omni import models
@@ -85,7 +103,7 @@ def split_multipage_tiff(input_path, output_dir=None, prefix="frame"):
     
     frame_paths = []
     print("Saving individual frames...")
-    for i in tqdm(range(num_frames), desc="Splitting frames"):
+    for i in tqdm(range(num_frames), desc="Splitting frames", **tqdm_kwargs):
         frame = images[i]
         frame_path = os.path.join(output_dir, f"{prefix}_{i:04d}.tif")
         tifffile.imwrite(frame_path, frame)
@@ -185,30 +203,48 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
             raise
     
     masks = []
-    print(f"Processing {len(frame_paths)} frames...")
+    print(f"Processing {len(frame_paths)} frames with batch_size={batch_size}...")
     
-    # Load first frame to determine image properties
-    first_image = imread(frame_paths[0])
-    
-    for frame_path in tqdm(frame_paths, desc="Segmenting frames"):
+    # Pre-load all frames into memory for faster batch processing
+    print("Loading all frames into memory...")
+    images_list = []
+    for frame_path in tqdm(frame_paths, desc="Loading frames", **tqdm_kwargs):
         try:
-            # Load frame
             image = imread(frame_path)
-            
-            # Ensure image is properly formatted (Omnipose handles channel reshaping internally)
-            # But we need to make sure it's in the right format
+            # Ensure image is properly formatted
             if image.ndim == 2:
-                # 2D grayscale - Omnipose will add second channel automatically
+                # 2D grayscale - keep as is, Omnipose will handle it
                 pass
             elif image.ndim == 3:
                 # Could be (Y, X, C) or (C, Y, X)
                 if image.shape[0] < 10:  # Channels first
                     image = image.transpose(1, 2, 0)  # (Y, X, C)
-            
-            # Run segmentation
-            # model.eval() returns (masks, flows, styles) or sometimes more values
+            images_list.append(image)
+        except Exception as e:
+            print(f"\nERROR loading {frame_path}: {e}")
+            # Use first image shape if available, otherwise create dummy
+            if len(images_list) > 0:
+                empty_image = np.zeros_like(images_list[0])
+            else:
+                # Try to read to get shape
+                try:
+                    dummy = imread(frame_paths[0])
+                    empty_image = np.zeros(dummy.shape[:2], dtype=np.uint8)
+                except:
+                    empty_image = np.zeros((512, 512), dtype=np.uint8)
+            images_list.append(empty_image)
+    
+    # Process frames in batches for better GPU utilization
+    num_frames = len(images_list)
+    for batch_start in tqdm(range(0, num_frames, batch_size), desc="Segmenting batches", **tqdm_kwargs):
+        batch_end = min(batch_start + batch_size, num_frames)
+        batch_images = images_list[batch_start:batch_end]
+        
+        try:
+            # Process batch - model.eval can handle lists of images
+            # This is much faster than processing one at a time
             result = model.eval(
-                image,
+                batch_images,  # Pass list of images for batch processing
                 channels=channels,
                 diameter=diameter,
                 flow_threshold=flow_threshold,
@@ -216,27 +252,70 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
                 omni=omni,
                 cluster=cluster,
                 net_avg=False,  # Faster, omni models don't support net_avg anyway
-                resample=True,
+                resample=False,  # Disable resampling for speed (was True)
+                tile=False,  # Disable tiling for speed (if GPU memory allows)
                 verbose=verbose
             )
             
             # Handle different return formats
             if isinstance(result, tuple):
-                mask = result[0]  # First element is always the mask
+                batch_masks = result[0]  # First element is always the masks
             else:
-                mask = result
+                batch_masks = result
             
-            masks.append(mask)
+            # batch_masks might be a list or array
+            if isinstance(batch_masks, list):
+                masks.extend(batch_masks)
+            elif isinstance(batch_masks, np.ndarray):
+                # If single array, might be stacked - check dimensions
+                if batch_masks.ndim == 2:
+                    # Single mask
+                    masks.append(batch_masks)
+                else:
+                    # Multiple masks - split them
+                    for i in range(len(batch_images)):
+                        if batch_masks.ndim == 3:
+                            masks.append(batch_masks[i])
+                        else:
+                            masks.append(batch_masks)
+            else:
+                # Fallback: try to iterate
+                try:
+                    masks.extend(batch_masks)
+                except:
+                    masks.append(batch_masks)
             
         except Exception as e:
-            print(f"\nERROR processing {frame_path}: {e}")
-            # Create empty mask with same shape as image
-            if len(masks) > 0:
-                empty_mask = np.zeros_like(masks[0])
-            else:
-                image = imread(frame_path)
-                empty_mask = np.zeros(image.shape[:2], dtype=np.uint16)
-            masks.append(empty_mask)
+            print(f"\nERROR processing batch {batch_start}-{batch_end}: {e}")
+            # Fallback to individual processing for this batch
+            print(f"Falling back to individual frame processing for this batch...")
+            for i, image in enumerate(batch_images):
+                try:
+                    result = model.eval(
+                        image,
+                        channels=channels,
+                        diameter=diameter,
+                        flow_threshold=flow_threshold,
+                        mask_threshold=mask_threshold,
+                        omni=omni,
+                        cluster=cluster,
+                        net_avg=False,
+                        resample=False,
+                        verbose=verbose
+                    )
+                    if isinstance(result, tuple):
+                        mask = result[0]
+                    else:
+                        mask = result
+                    masks.append(mask)
+                except Exception as e2:
+                    print(f"ERROR processing frame {batch_start + i}: {e2}")
+                    # Create empty mask
+                    if len(masks) > 0:
+                        empty_mask = np.zeros_like(masks[0])
+                    else:
+                        empty_mask = np.zeros(image.shape[:2], dtype=np.uint16)
+                    masks.append(empty_mask)
     
     return masks
 
@@ -320,7 +399,7 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
     overlays = []
     # Ensure we don't go out of bounds
     num_frames = min(len(images_norm), len(masks_array))
-    for i in tqdm(range(num_frames), desc="Creating overlays"):
+    for i in tqdm(range(num_frames), desc="Creating overlays", **tqdm_kwargs):
         img = images_norm[i]
         mask = masks_array[i]
         
@@ -382,8 +461,8 @@ Examples:
                        help='Use DBSCAN clustering (helps with thin cells)')
     parser.add_argument('--no-gpu', action='store_true',
                        help='Disable GPU (use CPU)')
-    parser.add_argument('--batch-size', type=int, default=8,
-                       help='Batch size for processing (default: 8)')
+    parser.add_argument('--batch-size', type=int, default=32,
+                       help='Batch size for processing frames (default: 32, increase if GPU memory allows)')
     parser.add_argument('--save-frames', type=str, default=None,
                        help='Save individual frames to this directory (for debugging)')
     parser.add_argument('--no-overlay', action='store_true',

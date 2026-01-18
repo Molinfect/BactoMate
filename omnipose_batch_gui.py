@@ -603,6 +603,22 @@ class WorkerThread(QThread):
         self.script_path = script_path
         self.cmd_args = cmd_args
     
+    @staticmethod
+    def strip_ansi_codes(text):
+        """Remove ANSI escape codes from text (e.g., [A for cursor movement)"""
+        import re
+        # Remove ANSI escape sequences
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        return ansi_escape.sub('', text)
+    
+    @staticmethod
+    def is_tqdm_progress_line(text):
+        """Check if a line is a tqdm progress bar (e.g., "12%|#2        | 4/32")"""
+        import re
+        # Pattern matches tqdm progress bars: "XX%|##...| X/Y [time<time, time/it]"
+        tqdm_pattern = re.compile(r'^\s*\d+%\s*\|[#\s]+\|\s*\d+/\d+\s*\[.*\]\s*$')
+        return bool(tqdm_pattern.match(text.strip()))
+    
     def run(self):
         try:
             # Build command
@@ -612,6 +628,8 @@ class WorkerThread(QThread):
             # Use unbuffered mode to get real-time output
             env = os.environ.copy()
             env['PYTHONUNBUFFERED'] = '1'
+            # Disable tqdm progress bars when output is redirected (cleaner logs)
+            env['TQDM_DISABLE'] = '1'
             
             process = subprocess.Popen(
                 cmd,
@@ -634,8 +652,15 @@ class WorkerThread(QThread):
                 
                 line = line.rstrip()
                 if line:
-                    output_lines.append(line)
-                    self.progress.emit(line)
+                    # Strip ANSI escape codes (like [A for cursor movement)
+                    cleaned_line = self.strip_ansi_codes(line)
+                    # Skip tqdm progress bar lines (they're too noisy in logs)
+                    if self.is_tqdm_progress_line(cleaned_line):
+                        continue  # Skip tqdm progress bars
+                    # Skip empty lines after cleaning
+                    if cleaned_line.strip():
+                        output_lines.append(cleaned_line)
+                        self.progress.emit(cleaned_line)
             
             process.wait()
             output = '\n'.join(output_lines)
@@ -3999,6 +4024,7 @@ class ProcessingTab(QWidget):
                 '--model', self.model_combo.currentText(),
                 '--diameter', str(self.diameter.value()),
                 '--flow-threshold', str(self.flow_threshold.value()),
+                '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
             ]
             
             if not self.use_gpu.isChecked():
@@ -4105,6 +4131,7 @@ class ProcessingTab(QWidget):
             '--model', self.model_combo.currentText(),
             '--diameter', str(self.diameter.value()),
             '--flow-threshold', str(self.flow_threshold.value()),
+            '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
         ]
         
         if not self.use_gpu.isChecked():
@@ -4158,9 +4185,14 @@ class ProcessingTab(QWidget):
                 progress_pct = max(0, min(100, progress_pct))
                 # Scale by current file progress
                 if hasattr(self, 'folder_files') and len(self.folder_files) > 0:
-                    file_progress_base = int((self.current_file_index / len(self.folder_files)) * 100)
-                    file_progress_current = int((progress_pct / len(self.folder_files)))
-                    total_progress = min(100, file_progress_base + file_progress_current)
+                    # Each file represents (100 / num_files) percent of total progress
+                    file_portion = 100.0 / len(self.folder_files)
+                    # Base progress from completed files
+                    file_progress_base = (self.current_file_index / len(self.folder_files)) * 100
+                    # Current file's progress scaled to its portion
+                    file_progress_current = (progress_pct / 100.0) * file_portion
+                    # Total progress
+                    total_progress = int(min(100, file_progress_base + file_progress_current))
                     self.parent_window.progress_bar.setValue(total_progress)
                 else:
                     self.parent_window.progress_bar.setValue(progress_pct)

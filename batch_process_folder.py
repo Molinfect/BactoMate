@@ -15,6 +15,7 @@ Usage:
 import argparse
 import os
 import sys
+import warnings
 import numpy as np
 import tifffile
 from pathlib import Path
@@ -23,6 +24,9 @@ from tqdm import tqdm
 import tempfile
 import shutil
 import subprocess
+
+# Suppress FutureWarning from omnipose about deprecated area_threshold parameter
+warnings.filterwarnings('ignore', category=FutureWarning, message='.*area_threshold.*')
 
 # Import functions from other scripts
 from batch_process_tiff_sequence import (
