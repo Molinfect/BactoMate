@@ -262,23 +262,39 @@ fi
 
 # Fix library paths in Python executable for relocatability
 echo "  Fixing Python library paths for relocatability..."
-if command -v install_name_tool >/dev/null 2>&1; then
+if command -v install_name_tool >/dev/null 2>&1 && command -v otool >/dev/null 2>&1; then
     # Check what libraries Python is linked against
-    PYTHON_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i python.framework | head -1 | awk '{print $1}' || true)
+    PYTHON_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' || true)
     if [ -n "$PYTHON_LIBS" ]; then
         echo "  Python is linked against: $PYTHON_LIBS"
-        # Try to change to @rpath (runtime search path)
-        # First, add @rpath to the executable's rpath
-        install_name_tool -add_rpath "@executable_path/../../.." "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
-        # Try to change the library path to use @rpath
-        NEW_PATH=$(echo "$PYTHON_LIBS" | sed 's|.*Python.framework|@rpath/Python.framework|')
-        if [ "$NEW_PATH" != "$PYTHON_LIBS" ]; then
-            echo "  Attempting to change library path to: $NEW_PATH"
-            install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || echo "  WARNING: Could not change library path (may require codesigning)"
+        
+        # Check if the framework path exists
+        if [[ "$PYTHON_LIBS" == /* ]]; then
+            # Absolute path - need to either copy framework or change path
+            if [ ! -f "$PYTHON_LIBS" ]; then
+                echo "  WARNING: Python framework not found at: $PYTHON_LIBS"
+                echo "  This will cause the bundle to fail. The venv may not be relocatable."
+                echo "  Consider creating venv with: python3 -m venv --copies venv"
+            else
+                echo "  Python framework found, but path is absolute - will need to be fixed"
+            fi
+            
+            # Try to change to @rpath (runtime search path)
+            # First, add @rpath to the executable's rpath
+            install_name_tool -add_rpath "@executable_path/../../.." "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
+            # Try to change the library path to use @rpath
+            NEW_PATH="@rpath/Python.framework/Versions/3.11/Python"
+            echo "  Attempting to change library path from $PYTHON_LIBS to $NEW_PATH"
+            install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || {
+                echo "  WARNING: Could not change library path (may require codesigning or framework not bundled)"
+                echo "  The bundle may not work on other machines without the Python framework installed"
+            }
         fi
+    else
+        echo "  No Python.framework dependencies found (may be using system Python)"
     fi
 else
-    echo "  WARNING: install_name_tool not found, cannot fix library paths"
+    echo "  WARNING: install_name_tool or otool not found, cannot fix library paths"
 fi
 
 if [ -f "$PYTHON_EXEC" ] || [ -L "$PYTHON_EXEC" ]; then
