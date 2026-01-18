@@ -40,11 +40,18 @@ if ! "$PYTHON_CMD" --version >> "$LOG_FILE" 2>&1; then
     exit 1
 fi
 
-# Set PYTHONHOME to venv to ensure Python uses the bundled environment
-export PYTHONHOME="$SCRIPT_DIR/venv"
-
 # Set PATH to prioritize venv binaries
 export PATH="$SCRIPT_DIR/venv/bin:$PATH"
+
+# Only set PYTHONHOME for app bundles (when running from .app bundle)
+# For regular venv usage, don't set PYTHONHOME - let Python auto-detect the base installation
+# This is needed for relocatable app bundles but breaks regular venv usage
+if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
+    export PYTHONHOME="$SCRIPT_DIR/venv"
+else
+    # Don't set PYTHONHOME for regular venv - Python will find base installation automatically
+    unset PYTHONHOME 2>/dev/null || true
+fi
 
 # Verify patches are applied (quick check, auto-apply if needed)
 # Note: SCRIPT_DIR is already set above
@@ -160,7 +167,17 @@ echo "$(date): Starting Python with QT_PLUGIN_PATH=$QT_PLUGIN_PATH" >> "$LOG_FIL
 # Launch the application
 echo "$(date): Using Python: $PYTHON_CMD" >> "$LOG_FILE"
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
+    # Only pass PYTHONHOME if it's set (for app bundles)
+    if [ -n "$PYTHONHOME" ]; then
+        exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
+    else
+        exec env PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
+    fi
 else
-    exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
+    # Only pass PYTHONHOME if it's set (for app bundles)
+    if [ -n "$PYTHONHOME" ]; then
+        exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
+    else
+        exec env PATH="$PATH" "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
+    fi
 fi
