@@ -96,10 +96,17 @@ if [ $PYTHON_TEST_EXIT -ne 0 ]; then
     exit 1
 else
     echo "$(date): Python test successful: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"
+    
+    # Log Python system information for debugging cross-machine issues
+    echo "$(date): Python system information:" >> "$LOG_FILE"
+    "$PYTHON_CMD" -c "import sys; import platform; print(f'  executable: {sys.executable}'); print(f'  prefix: {sys.prefix}'); print(f'  base_prefix: {sys.base_prefix}'); print(f'  version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); print(f'  platform: {platform.platform()}')" >> "$LOG_FILE" 2>&1 || true
 fi
 
 # Set PATH to prioritize venv binaries
 export PATH="$SCRIPT_DIR/venv/bin:$PATH"
+
+# Detect Python version from venv (for matching framework version)
+PYTHON_MAJOR_MINOR=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.11")
 
 # Only set PYTHONHOME for app bundles (when running from .app bundle)
 # Note: PYTHONHOME is already unset at the start of this script
@@ -111,10 +118,30 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
     BUNDLED_FRAMEWORK="$APP_DIR/Contents/Frameworks/Python.framework"
     if [ -d "$BUNDLED_FRAMEWORK" ]; then
         # Framework is bundled - set PYTHONHOME to the framework's Python installation
-        # Find the Python version in the framework
-        PYTHON_VERSION_IN_FRAMEWORK=$(ls "$BUNDLED_FRAMEWORK/Versions" 2>/dev/null | head -1 || echo "3.11")
-        FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/${PYTHON_VERSION_IN_FRAMEWORK}"
-        if [ -d "$FRAMEWORK_PYTHON_DIR" ]; then
+        # Find the Python version in the framework that matches the venv Python version
+        # Prefer Versions/Current if present, otherwise match major.minor version
+        FRAMEWORK_PYTHON_DIR=""
+        if [ -L "$BUNDLED_FRAMEWORK/Versions/Current" ]; then
+            # Use Current symlink if available
+            FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/Current"
+            echo "$(date): Found Versions/Current symlink in framework" >> "$LOG_FILE"
+        else
+            # Try to match the detected Python version (e.g., 3.11)
+            POSSIBLE_VERSION_DIR="$BUNDLED_FRAMEWORK/Versions/${PYTHON_MAJOR_MINOR}"
+            if [ -d "$POSSIBLE_VERSION_DIR" ]; then
+                FRAMEWORK_PYTHON_DIR="$POSSIBLE_VERSION_DIR"
+                echo "$(date): Found matching framework version: ${PYTHON_MAJOR_MINOR}" >> "$LOG_FILE"
+            else
+                # Fallback: try any available version
+                AVAILABLE_VERSION=$(ls "$BUNDLED_FRAMEWORK/Versions" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | head -1 || echo "")
+                if [ -n "$AVAILABLE_VERSION" ]; then
+                    FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/${AVAILABLE_VERSION}"
+                    echo "$(date): Using available framework version: ${AVAILABLE_VERSION}" >> "$LOG_FILE"
+                fi
+            fi
+        fi
+        
+        if [ -n "$FRAMEWORK_PYTHON_DIR" ] && [ -d "$FRAMEWORK_PYTHON_DIR" ]; then
             # Set PYTHONHOME to the framework's Python installation (contains standard library)
             export PYTHONHOME="$FRAMEWORK_PYTHON_DIR"
             # CRITICAL: Add framework to DYLD_FRAMEWORK_PATH FIRST so Python can find it
@@ -128,16 +155,21 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
             echo "$(date): PYTHONHOME set to framework: $PYTHONHOME" >> "$LOG_FILE"
             echo "$(date): DYLD_FRAMEWORK_PATH set to: $DYLD_FRAMEWORK_PATH" >> "$LOG_FILE"
         else
-            # Fallback: use venv (may not work if standard library is missing)
-            export PYTHONHOME="$SCRIPT_DIR/venv"
+            # Fallback: Don't set PYTHONHOME to venv - it doesn't have full stdlib
+            # Let Python auto-detect the base installation instead
+            unset PYTHONHOME 2>/dev/null || true
             export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
-            echo "$(date): WARNING: Framework Python directory not found, using venv as PYTHONHOME" >> "$LOG_FILE"
+            echo "$(date): WARNING: Framework Python directory not found at expected location" >> "$LOG_FILE"
+            echo "$(date): PYTHONHOME left unset - Python will auto-detect base installation" >> "$LOG_FILE"
+            echo "$(date): Bundle may not work on machines without Python installed" >> "$LOG_FILE"
         fi
     else
-        # No framework bundled - use venv (requires system Python to be installed)
-        export PYTHONHOME="$SCRIPT_DIR/venv"
-        echo "$(date): No bundled framework found, using venv as PYTHONHOME" >> "$LOG_FILE"
-        echo "$(date): WARNING: Bundle may not work on machines without Python installed" >> "$LOG_FILE"
+        # No framework bundled - don't set PYTHONHOME to venv (it lacks full stdlib)
+        # Let Python auto-detect the base installation instead
+        unset PYTHONHOME 2>/dev/null || true
+        echo "$(date): No bundled framework found" >> "$LOG_FILE"
+        echo "$(date): PYTHONHOME left unset - Python will auto-detect base installation" >> "$LOG_FILE"
+        echo "$(date): WARNING: Bundle requires Python to be installed on target machine" >> "$LOG_FILE"
     fi
 else
     # Don't set PYTHONHOME for regular venv - Python will find base installation automatically
