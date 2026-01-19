@@ -240,12 +240,12 @@ PYTHON_EXEC="$VENV_BIN/python3"
 PYTHON_EXEC_RESOLVED="$PYTHON_EXEC"
 
 # Resolve symlinks to get the actual Python executable
+# Note: rsync -L should have copied symlinks as files, so this should be a real file
 if [ -L "$PYTHON_EXEC" ]; then
-    echo "  Python3 is a symlink, resolving..."
+    echo "  Python3 is still a symlink (rsync -L may not have worked), resolving..."
     TARGET=$(readlink "$PYTHON_EXEC")
     if [[ "$TARGET" == /* ]]; then
         # Absolute path symlink - this is a problem for relocatable bundles
-        # The rsync -L flag should have copied it as a file, but let's check
         echo "  WARNING: Python is a symlink to absolute path: $TARGET"
         echo "  This may cause issues in the bundle. Checking if target exists..."
         if [ ! -f "$TARGET" ]; then
@@ -258,6 +258,9 @@ if [ -L "$PYTHON_EXEC" ]; then
         PYTHON_EXEC_RESOLVED="$VENV_BIN/$TARGET"
     fi
     echo "  Resolved Python path: $PYTHON_EXEC_RESOLVED"
+elif [ ! -f "$PYTHON_EXEC" ]; then
+    echo "  ERROR: Python executable not found: $PYTHON_EXEC"
+    exit 1
 fi
 
 # Bundle Python framework for self-contained app
@@ -277,21 +280,31 @@ if command -v otool >/dev/null 2>&1; then
             if [ ! -d "$FRAMEWORK_DIR" ]; then
                 echo "  WARNING: Framework directory not found at hardcoded path: $FRAMEWORK_DIR"
                 echo "  Attempting to find actual framework location..."
-                # Try to find the actual framework by following the Python executable's real location
-                # The Python executable might be a symlink or copy that points to a different location
-                ACTUAL_PYTHON=$(readlink -f "$PYTHON_EXEC_RESOLVED" 2>/dev/null || echo "$PYTHON_EXEC_RESOLVED")
-                # Try to find framework in common locations
-                for POSSIBLE_FRAMEWORK in \
-                    "/opt/homebrew/Cellar/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
-                    "/opt/homebrew/opt/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
-                    "/usr/local/Frameworks/Python.framework" \
-                    "/Library/Frameworks/Python.framework"; do
-                    if [ -d "$POSSIBLE_FRAMEWORK" ]; then
-                        FRAMEWORK_DIR="$POSSIBLE_FRAMEWORK"
-                        echo "  Found framework at: $FRAMEWORK_DIR"
-                        break
-                    fi
-                done
+                # The hardcoded path doesn't exist, so we need to find where Python actually loads from
+                # Check the actual linked library (not the hardcoded path)
+                ACTUAL_LIB=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' | xargs readlink -f 2>/dev/null || otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' || true)
+                if [ -n "$ACTUAL_LIB" ] && [ -f "$ACTUAL_LIB" ]; then
+                    # Extract framework directory from actual library path
+                    FRAMEWORK_DIR=$(echo "$ACTUAL_LIB" | sed 's|/Versions/.*||')
+                    echo "  Found actual framework at: $FRAMEWORK_DIR"
+                else
+                    # Try to find framework in common locations
+                    echo "  Searching common framework locations..."
+                    for POSSIBLE_FRAMEWORK in \
+                        "/opt/homebrew/Cellar/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
+                        "/opt/homebrew/opt/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
+                        "/usr/local/Frameworks/Python.framework" \
+                        "/Library/Frameworks/Python.framework"; do
+                        # Expand glob patterns
+                        for EXPANDED in $POSSIBLE_FRAMEWORK; do
+                            if [ -d "$EXPANDED" ]; then
+                                FRAMEWORK_DIR="$EXPANDED"
+                                echo "  Found framework at: $FRAMEWORK_DIR"
+                                break 2
+                            fi
+                        done
+                    done
+                fi
             fi
             
             if [ -d "$FRAMEWORK_DIR" ]; then
