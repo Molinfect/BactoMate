@@ -94,15 +94,32 @@ export PATH="$SCRIPT_DIR/venv/bin:$PATH"
 # For regular venv usage, don't set PYTHONHOME - let Python auto-detect the base installation
 # This is needed for relocatable app bundles but breaks regular venv usage
 if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
-    export PYTHONHOME="$SCRIPT_DIR/venv"
-    
     # Add bundled Python framework to library search path for self-contained bundles
     APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
     BUNDLED_FRAMEWORK="$APP_DIR/Contents/Frameworks/Python.framework"
     if [ -d "$BUNDLED_FRAMEWORK" ]; then
-        # Add framework to DYLD_FRAMEWORK_PATH so Python can find it
-        export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
-        echo "$(date): Using bundled Python framework: $BUNDLED_FRAMEWORK" >> "$LOG_FILE"
+        # Framework is bundled - set PYTHONHOME to the framework's Python installation
+        # Find the Python version in the framework
+        PYTHON_VERSION_IN_FRAMEWORK=$(ls "$BUNDLED_FRAMEWORK/Versions" 2>/dev/null | head -1 || echo "3.11")
+        FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/${PYTHON_VERSION_IN_FRAMEWORK}"
+        if [ -d "$FRAMEWORK_PYTHON_DIR" ]; then
+            # Set PYTHONHOME to the framework's Python installation (contains standard library)
+            export PYTHONHOME="$FRAMEWORK_PYTHON_DIR"
+            # Add framework to DYLD_FRAMEWORK_PATH so Python can find it
+            export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+            echo "$(date): Using bundled Python framework: $BUNDLED_FRAMEWORK" >> "$LOG_FILE"
+            echo "$(date): PYTHONHOME set to framework: $PYTHONHOME" >> "$LOG_FILE"
+        else
+            # Fallback: use venv (may not work if standard library is missing)
+            export PYTHONHOME="$SCRIPT_DIR/venv"
+            export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+            echo "$(date): WARNING: Framework Python directory not found, using venv as PYTHONHOME" >> "$LOG_FILE"
+        fi
+    else
+        # No framework bundled - use venv (requires system Python to be installed)
+        export PYTHONHOME="$SCRIPT_DIR/venv"
+        echo "$(date): No bundled framework found, using venv as PYTHONHOME" >> "$LOG_FILE"
+        echo "$(date): WARNING: Bundle may not work on machines without Python installed" >> "$LOG_FILE"
     fi
 else
     # Don't set PYTHONHOME for regular venv - Python will find base installation automatically
