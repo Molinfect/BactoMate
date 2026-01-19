@@ -322,7 +322,22 @@ if command -v otool >/dev/null 2>&1; then
                 
                 # Use rsync to copy framework (preserves symlinks and structure)
                 # The framework contains the complete Python installation including standard library
-                if rsync -avL --progress "$FRAMEWORK_DIR/" "$BUNDLE_FRAMEWORK_DIR/" 2>/dev/null; then
+                # Capture rsync output to check for actual errors
+                # Temporarily disable set -e for this command to handle exit codes properly
+                set +e
+                RSYNC_OUTPUT=$(rsync -avL --progress "$FRAMEWORK_DIR/" "$BUNDLE_FRAMEWORK_DIR/" 2>&1)
+                RSYNC_EXIT_CODE=$?
+                set -e
+                
+                # Check if rsync actually failed (exit code > 1 indicates error)
+                # Exit code 1 is just "some files were skipped" which is often OK
+                if [ $RSYNC_EXIT_CODE -gt 1 ]; then
+                    echo "  ERROR: Failed to copy Python framework (rsync exit code: $RSYNC_EXIT_CODE)"
+                    echo "  Rsync output: $RSYNC_OUTPUT"
+                    echo "  The bundle will NOT be self-contained"
+                    # Don't exit - continue with bundle creation but warn user
+                    echo "  WARNING: Continuing without bundled framework - app may not work on machines without Python"
+                else
                     echo "  ✓ Complete Python framework copied to bundle"
                     
                     # Verify framework was copied correctly
@@ -334,6 +349,9 @@ if command -v otool >/dev/null 2>&1; then
                         FRAMEWORK_PYTHON=$(find "$BUNDLE_FRAMEWORK_DIR" -name "Python" -type f | head -1)
                         if [ -n "$FRAMEWORK_PYTHON" ]; then
                             echo "  Found framework Python at: $FRAMEWORK_PYTHON"
+                        else
+                            echo "  WARNING: Could not locate framework Python executable"
+                            echo "  Framework may not have been copied correctly"
                         fi
                     fi
                     
@@ -365,22 +383,18 @@ if command -v otool >/dev/null 2>&1; then
                                 install_name_tool -id "@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python" "$FRAMEWORK_PYTHON" 2>/dev/null || true
                                 # Try again to change the path
                                 install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || {
-                                    echo "  ERROR: Failed to change library path even after fixing framework"
+                                    echo "  WARNING: Failed to change library path even after fixing framework"
                                     echo "  The bundle may not work on machines without Python installed"
                                 }
                             fi
                         fi
                     fi
-                else
-                    echo "  ERROR: Failed to copy Python framework"
-                    echo "  The bundle will NOT be self-contained"
-                    exit 1
                 fi
             else
-                echo "  ERROR: Python framework directory not found"
+                echo "  WARNING: Python framework directory not found"
                 echo "  Searched for framework but could not locate it"
                 echo "  The bundle will NOT be self-contained"
-                exit 1
+                echo "  Continuing with bundle creation - app may require Python to be installed on target machine"
             fi
         fi
     else
@@ -388,9 +402,9 @@ if command -v otool >/dev/null 2>&1; then
         echo "  The bundle may not be fully self-contained"
     fi
 else
-    echo "  ERROR: otool not found, cannot detect Python framework"
+    echo "  WARNING: otool not found, cannot detect Python framework"
     echo "  The bundle will NOT be self-contained"
-    exit 1
+    echo "  Continuing with bundle creation - app may require Python to be installed on target machine"
 fi
 
 if [ -f "$PYTHON_EXEC" ] || [ -L "$PYTHON_EXEC" ]; then

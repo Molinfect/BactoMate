@@ -48,6 +48,7 @@ jobs:
       
       - name: Create zip archive
         run: |
+          if (-not (Test-Path dist)) { New-Item -ItemType Directory -Path dist }
           Compress-Archive -Path BactiMate-Windows -DestinationPath dist\BactiMate-Windows.zip -Force
       
       - name: Upload Windows bundle
