@@ -142,6 +142,13 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
         fi
         
         if [ -n "$FRAMEWORK_PYTHON_DIR" ] && [ -d "$FRAMEWORK_PYTHON_DIR" ]; then
+            # CRITICAL: For standalone bundles, venvs are NOT self-contained - they depend on base Python.
+            # This only works because:
+            # 1. We bundle the full Python framework (contains complete stdlib)
+            # 2. We set PYTHONHOME to point at the bundled framework (not the venv)
+            # 3. We set DYLD_FRAMEWORK_PATH so Python can find the bundled framework libraries
+            # 4. The venv Python executable is linked to use @rpath (fixed during build)
+            
             # Set PYTHONHOME to the framework's Python installation (contains standard library)
             export PYTHONHOME="$FRAMEWORK_PYTHON_DIR"
             # CRITICAL: Add framework to DYLD_FRAMEWORK_PATH FIRST so Python can find it
@@ -154,6 +161,13 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
             echo "$(date): Using bundled Python framework: $BUNDLED_FRAMEWORK" >> "$LOG_FILE"
             echo "$(date): PYTHONHOME set to framework: $PYTHONHOME" >> "$LOG_FILE"
             echo "$(date): DYLD_FRAMEWORK_PATH set to: $DYLD_FRAMEWORK_PATH" >> "$LOG_FILE"
+            
+            # Verify the framework has the standard library
+            if [ -d "$FRAMEWORK_PYTHON_DIR/lib/python${PYTHON_MAJOR_MINOR}" ]; then
+                echo "$(date): ✓ Framework contains standard library at: $FRAMEWORK_PYTHON_DIR/lib/python${PYTHON_MAJOR_MINOR}" >> "$LOG_FILE"
+            else
+                echo "$(date): WARNING: Framework standard library not found at expected location" >> "$LOG_FILE"
+            fi
         else
             # Fallback: Don't set PYTHONHOME to venv - it doesn't have full stdlib
             # Let Python auto-detect the base installation instead

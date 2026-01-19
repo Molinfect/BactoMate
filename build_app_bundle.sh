@@ -216,6 +216,8 @@ else
 fi
 
 # Make venv relocatable by updating pyvenv.cfg
+# CRITICAL: For standalone bundles, the venv must not reference the original base Python
+# We'll rely on PYTHONHOME being set to the bundled framework at runtime
 echo "Making venv relocatable..."
 PYVENV_CFG="$APP_BUNDLE/Contents/Resources/venv/pyvenv.cfg"
 if [ -f "$PYVENV_CFG" ]; then
@@ -224,12 +226,14 @@ if [ -f "$PYVENV_CFG" ]; then
     if [ -n "$PYTHON_VERSION" ]; then
         # Update pyvenv.cfg to use relative paths (make it relocatable)
         # The 'home' field should be relative or we can remove it
-        # For relocatable venvs, we rely on PYTHONHOME environment variable
-        # Keep the version but make home relative
+        # For standalone bundles with bundled framework, we rely on PYTHONHOME being set
+        # to the bundled framework at runtime (handled by launch_gui.sh)
+        # Keep the version but make home relative to avoid hardcoded paths
         sed -i.bak "s|^home=.*|home = .|" "$PYVENV_CFG" 2>/dev/null || \
         sed -i '' "s|^home=.*|home = .|" "$PYVENV_CFG" 2>/dev/null || true
         rm -f "${PYVENV_CFG}.bak" 2>/dev/null || true
-        echo "  Updated pyvenv.cfg for relocatability"
+        echo "  Updated pyvenv.cfg for relocatability (home set to relative path)"
+        echo "  Note: Runtime will use PYTHONHOME pointing to bundled framework"
     fi
 else
     echo "  WARNING: pyvenv.cfg not found!"
@@ -428,6 +432,17 @@ if command -v otool >/dev/null 2>&1; then
                             fi
                         fi
                         echo "  ✓ All Python library paths fixed to use bundled framework"
+                        
+                        # Verify the venv Python is correctly pointing at the bundled framework
+                        echo "  Verifying venv Python is correctly linked to bundled framework..."
+                        FINAL_VENV_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 || echo "")
+                        if echo "$FINAL_VENV_LIBS" | grep -q "@rpath"; then
+                            echo "  ✓ Venv Python correctly uses @rpath to find bundled framework"
+                        else
+                            echo "  WARNING: Venv Python may still have hardcoded paths"
+                            echo "  Final library reference: $FINAL_VENV_LIBS"
+                            echo "  This may cause issues on machines without the original Python installation"
+                        fi
                     fi
                 fi
             else
