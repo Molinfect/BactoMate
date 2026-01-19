@@ -4,13 +4,19 @@
 # CRITICAL: Unset PYTHONHOME immediately - it breaks venv usage
 # Venvs don't contain the full standard library, so PYTHONHOME must point to base Python
 # We'll only set it later if we're in an app bundle with a bundled framework
-unset PYTHONHOME 2>/dev/null || true
+# Log initial PYTHONHOME value before unsetting (for debugging)
+INITIAL_PYTHONHOME="${PYTHONHOME:-<not set>}"
 
 # Redirect stderr to log file for debugging
 LOG_DIR="$HOME/Library/Logs/BactiMate"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/launch.log"
 exec 2>> "$LOG_FILE"
+
+# Now unset PYTHONHOME and log it
+unset PYTHONHOME 2>/dev/null || true
+echo "$(date): [DEBUG] Initial PYTHONHOME was: $INITIAL_PYTHONHOME" >> "$LOG_FILE"
+echo "$(date): [DEBUG] PYTHONHOME after unset: ${PYTHONHOME:-<unset>}" >> "$LOG_FILE"
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -132,6 +138,7 @@ else
     # This is already unset above, but ensure it stays unset
     unset PYTHONHOME 2>/dev/null || true
     echo "$(date): Running from regular venv - PYTHONHOME is unset (Python will auto-detect base installation)" >> "$LOG_FILE"
+    echo "$(date): [DEBUG] PYTHONHOME check before exec: ${PYTHONHOME:-<unset>}" >> "$LOG_FILE"
 fi
 
 # Verify patches are applied (quick check, auto-apply if needed)
@@ -247,11 +254,14 @@ echo "$(date): Starting Python with QT_PLUGIN_PATH=$QT_PLUGIN_PATH" >> "$LOG_FIL
 
 # Launch the application
 echo "$(date): Using Python: $PYTHON_CMD" >> "$LOG_FILE"
+echo "$(date): [DEBUG] Final PYTHONHOME before exec: ${PYTHONHOME:-<unset>}" >> "$LOG_FILE"
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Only pass PYTHONHOME if it's set (for app bundles)
     if [ -n "$PYTHONHOME" ]; then
+        echo "$(date): [DEBUG] Passing PYTHONHOME=$PYTHONHOME to Python (app bundle mode)" >> "$LOG_FILE"
         exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
     else
+        echo "$(date): [DEBUG] NOT passing PYTHONHOME to Python (regular venv mode)" >> "$LOG_FILE"
         exec env PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$SCRIPT_DIR/omnipose_batch_gui.py"
     fi
 else
