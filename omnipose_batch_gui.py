@@ -2393,26 +2393,63 @@ class ProcessingTab(QWidget):
         model_info_icon = create_info_icon(
             "Omnipose model type for cell segmentation.\n\n"
             "Default: 'bact_phase_omni'\n"
-            "Source: Optimized for bacterial phase contrast images\n\n"
-            "Available models:\n"
+            "Source: Official Omnipose models (https://omnipose.readthedocs.io/models.html)\n\n"
+            "Available Omnipose models:\n"
             "- bact_phase_omni: Bacterial phase contrast (default, best for bacteria)\n"
-            "- cyto2_omni: General cytoplasm segmentation\n"
-            "- cyto_omni: Original cytoplasm model\n"
-            "- bact_omni: General bacterial cells\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
+            "- cyto2_omni: General cytoplasm segmentation\n"
             "- worm_omni: C. elegans and similar\n"
-            "- nuclei: Nucleus segmentation only\n"
-            "- cyto2/cyto: Cellpose models (no Omnipose)\n\n"
+            "- plant_omni: Plant cells (3D)\n"
+            "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
+            "Cellpose models (no Omnipose):\n"
+            "- cyto2: General cytoplasm (Cellpose)\n"
+            "- cyto: Original cytoplasm (Cellpose)\n"
+            "- nuclei: Nucleus segmentation (Cellpose)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         , parent_widget=self)
         model_layout.addWidget(model_label)
         model_layout.addWidget(model_info_icon)
         self.model_combo = QComboBox()
+        # Only include models that actually exist according to official Omnipose documentation
         self.model_combo.addItems([
-            'bact_phase_omni', 'cyto2_omni', 'cyto_omni', 'bact_omni',
-            'bact_fluor_omni', 'worm_omni', 'nuclei', 'cyto2', 'cyto'
+            'bact_phase_omni', 'bact_fluor_omni', 'cyto2_omni', 'worm_omni',
+            'plant_omni', 'bact_phase_affinity',
+            'cyto2', 'cyto', 'nuclei'  # Cellpose models
         ])
         self.model_combo.setCurrentText('bact_phase_omni')
+        
+        # Model status indicator
+        self.model_status_label = QLabel("")
+        self.model_status_label.setStyleSheet("color: #7F8C8D; font-size: 9pt; font-style: italic;")
+        model_layout.addWidget(self.model_combo)
+        model_layout.addWidget(self.model_status_label)
+        
+        # Check model availability when changed
+        def check_model_availability():
+            """Check if selected model is available (cached or downloadable)"""
+            from pathlib import Path
+            try:
+                from cellpose_omni.models import MODEL_DIR
+                model_type = self.model_combo.currentText()
+                
+                # Check if model exists in cache
+                torch_str = 'torch'
+                basename = f'{model_type}{torch_str}_0'
+                cache_model_file = Path(MODEL_DIR) / basename
+                
+                if cache_model_file.exists():
+                    self.model_status_label.setText("✓ Cached")
+                    self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
+                else:
+                    self.model_status_label.setText("Will download on first use")
+                    self.model_status_label.setStyleSheet("color: #FF9800; font-size: 9pt;")
+            except Exception:
+                # If check fails, just don't show status
+                self.model_status_label.setText("")
+        
+        self.model_combo.currentTextChanged.connect(check_model_availability)
+        # Check initial model
+        check_model_availability()
         self.model_combo.setToolTip(
             "Omnipose model type for cell segmentation.\n\n"
             "Default: 'bact_phase_omni'\n"
@@ -2428,7 +2465,6 @@ class ProcessingTab(QWidget):
             "- cyto2/cyto: Cellpose models (no Omnipose)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         )
-        model_layout.addWidget(self.model_combo)
         model_layout.addStretch()
         seg_layout.addLayout(model_layout)
         
@@ -2453,20 +2489,7 @@ class ProcessingTab(QWidget):
         self.diameter.setRange(0, 1000)
         self.diameter.setValue(0)
         self.diameter.setDecimals(1)
-        self.diameter.setToolTip(
-            "Expected cell diameter in pixels.\n\n"
-            "Default: 0 (auto-detect)\n"
-            "Source: Omnipose default (auto-detection)\n\n"
-            "Set to 0 for automatic detection (recommended for first try).\n"
-            "Note: Auto-detection requires a pre-trained size model. If you see a warning\n"
-            "'no pretrained size model specified', set a specific diameter value instead.\n\n"
-            "Specify a value (e.g., 20-50 pixels for bacteria) for more consistent results.\n\n"
-            "Typical values:\n"
-            "- Bacteria: 20-50 pixels\n"
-            "- Mammalian cells: 30-100 pixels\n"
-            "- Nuclei: 15-30 pixels\n\n"
-            "Tip: If auto-detection fails, try setting diameter to 30 pixels as a starting point."
-        )
+        # Tooltip removed - info available via (?) icon only
         diam_layout.addWidget(self.diameter)
         diam_layout.addStretch()
         seg_layout.addLayout(diam_layout)
@@ -2491,16 +2514,7 @@ class ProcessingTab(QWidget):
         self.flow_threshold.setValue(0.4)
         self.flow_threshold.setSingleStep(0.1)
         self.flow_threshold.setDecimals(2)
-        self.flow_threshold.setToolTip(
-            "Flow error threshold for cell detection.\n\n"
-            "Default: 0.4\n"
-            "Source: Omnipose default value\n\n"
-            "Controls sensitivity of cell detection:\n"
-            "- Lower values (0.2-0.3): More sensitive, detects more cells (may include false positives)\n"
-            "- Higher values (0.5-0.7): More strict, fewer cells (may miss some cells)\n\n"
-            "Range: 0.0 to 1.0\n"
-            "Tip: If missing cells, try lowering to 0.3. If too many false positives, raise to 0.5."
-        )
+        # Tooltip removed - info available via (?) icon only
         flow_layout.addWidget(self.flow_threshold)
         flow_layout.addStretch()
         seg_layout.addLayout(flow_layout)
@@ -3043,7 +3057,7 @@ class ProcessingTab(QWidget):
                         # Check for model in local directory first, then cache
                         model_file = find_model_file(current_model_type, 0, True)
                         
-                        if model_file:
+                        if model_file and os.path.exists(model_file):
                             # Model found in cache
                             status_label.setText("Loading model from cache...")
                             QApplication.processEvents()
@@ -3051,18 +3065,79 @@ class ProcessingTab(QWidget):
                             # Model not found - need to download
                             status_label.setText("Downloading model (this may take a moment)...")
                             QApplication.processEvents()
-                            # Only call model_path if we need to download (it will check and download if needed)
+                            # Call model_path - it will download if needed
                             try:
                                 model_file = model_path(current_model_type, 0, True)
+                                # Verify the model was actually downloaded
+                                if not model_file or not os.path.exists(model_file):
+                                    # model_path returned a path but file doesn't exist - try to download explicitly
+                                    status_label.setText("Model not found, downloading...")
+                                    QApplication.processEvents()
+                                    # Force download by calling model_path again (it should download if file doesn't exist)
+                                    model_file = model_path(current_model_type, 0, True)
+                                    # Wait a moment for download to complete
+                                    import time
+                                    time.sleep(0.5)
+                                    # Verify again
+                                    if not model_file or not os.path.exists(model_file):
+                                        raise FileNotFoundError(f"Model file not found after download attempt: {model_file}")
+                                status_label.setText("Model downloaded, loading...")
+                                QApplication.processEvents()
                             except HTTPError as http_err:
-                                # Server error during download - check local directory one more time
+                                # Handle 404 errors (model not found in repository)
+                                if http_err.code == 404:
+                                    # Check if model exists in cache
+                                    model_file = find_model_file(current_model_type, 0, True)
+                                    if model_file and os.path.exists(model_file):
+                                        status_label.setText("Using cached model (not in repo)...")
+                                        QApplication.processEvents()
+                                    else:
+                                        # Model not available - show helpful error
+                                        QMessageBox.warning(
+                                            preview_dialog,
+                                            "Model Not Available",
+                                            f"Model '{current_model_type}' is not available in the repository (404 error).\n\n"
+                                            f"Available Omnipose models:\n"
+                                            f"  • bact_phase_omni (recommended for bacteria)\n"
+                                            f"  • bact_fluor_omni\n"
+                                            f"  • cyto2_omni\n"
+                                            f"  • worm_omni\n"
+                                            f"  • plant_omni\n"
+                                            f"  • bact_phase_affinity\n\n"
+                                            f"See: https://omnipose.readthedocs.io/models.html\n\n"
+                                            f"Please select a different model from the dropdown."
+                                        )
+                                        status_label.setText("Model not available")
+                                        return False
+                                else:
+                                    # Other HTTP errors - check local directory one more time
+                                    model_file = find_model_file(current_model_type, 0, True)
+                                    if model_file and os.path.exists(model_file):
+                                        status_label.setText("Download failed, using local/cached model...")
+                                        QApplication.processEvents()
+                                    else:
+                                        # Re-raise to be handled by outer exception handler
+                                        raise
+                            except Exception as download_err:
+                                # Check one more time if model exists (might have been downloaded in background)
                                 model_file = find_model_file(current_model_type, 0, True)
-                                if model_file:
-                                    status_label.setText("Download failed, using local/cached model...")
+                                if model_file and os.path.exists(model_file):
+                                    status_label.setText("Using model from cache...")
                                     QApplication.processEvents()
                                 else:
                                     # Re-raise to be handled by outer exception handler
                                     raise
+                        
+                        # Final verification: ensure model file exists before loading
+                        if not model_file or not os.path.exists(model_file):
+                            raise FileNotFoundError(
+                                f"Model file not found: {model_file}\n\n"
+                                f"Model '{current_model_type}' may not be available or download failed.\n"
+                                f"Please check your internet connection and try again."
+                            )
+                        
+                        status_label.setText("Loading model...")
+                        QApplication.processEvents()
                         
                         preview_dialog.model = models.Cellpose(
                             gpu=current_use_gpu, 
@@ -3248,9 +3323,65 @@ class ProcessingTab(QWidget):
                     except HTTPError as http_err:
                         # Handle HTTP errors (network issues when downloading models)
                         error_msg = str(http_err)
+                        
+                        # Special handling for 404 errors (model not found)
+                        if http_err.code == 404:
+                            model_file = find_model_file(current_model_type, 0, True)
+                            if model_file and os.path.exists(model_file):
+                                # Try to use cached model even if download failed
+                                try:
+                                    status_label.setText("Using cached model (not in repo)...")
+                                    QApplication.processEvents()
+                                    preview_dialog.model = models.Cellpose(
+                                        gpu=current_use_gpu, 
+                                        model_type=current_model_type, 
+                                        omni=True
+                                    )
+                                    preview_dialog._last_model_type = current_model_type
+                                    preview_dialog._last_use_gpu = current_use_gpu
+                                    status_label.setText("Using cached model")
+                                    QApplication.processEvents()
+                                    return True  # Success with cached model
+                                except Exception as cache_error:
+                                    # Cached model also failed
+                                    QMessageBox.warning(
+                                        preview_dialog, 
+                                        "Model Not Available",
+                                        f"Model '{current_model_type}' is not available in the repository (404 error).\n\n"
+                                        f"Available Omnipose models:\n"
+                                        f"  • bact_phase_omni (recommended for bacteria)\n"
+                                        f"  • bact_fluor_omni\n"
+                                        f"  • cyto2_omni\n"
+                                        f"  • worm_omni\n"
+                                        f"  • plant_omni\n"
+                                        f"  • bact_phase_affinity\n\n"
+                                        f"See: https://omnipose.readthedocs.io/models.html\n\n"
+                                        f"Please select a different model from the dropdown."
+                                    )
+                                    status_label.setText("Model not available")
+                                    return False
+                            else:
+                                # Model not available and not cached
+                                QMessageBox.warning(
+                                    preview_dialog, 
+                                    "Model Not Available",
+                                    f"Model '{current_model_type}' is not available in the repository (404 error).\n\n"
+                                    f"Available Omnipose models:\n"
+                                    f"  • bact_phase_omni (recommended for bacteria)\n"
+                                    f"  • bact_fluor_omni\n"
+                                    f"  • cyto2_omni\n"
+                                    f"  • worm_omni\n"
+                                    f"  • plant_omni\n"
+                                    f"  • bact_phase_affinity\n\n"
+                                    f"See: https://omnipose.readthedocs.io/models.html\n\n"
+                                    f"Please select a different model from the dropdown."
+                                )
+                                status_label.setText("Model not available")
+                                return False
+                        
                         # Check for model in local directory or cache without triggering another download
                         model_file = find_model_file(current_model_type, 0, True)
-                        cached_model_exists = (model_file is not None)
+                        cached_model_exists = (model_file is not None and os.path.exists(model_file))
                         
                         if cached_model_exists:
                                 # Try to use cached model even if download failed

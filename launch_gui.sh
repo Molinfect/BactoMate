@@ -11,7 +11,16 @@ INITIAL_PYTHONHOME="${PYTHONHOME:-<not set>}"
 LOG_DIR="$HOME/Library/Logs/BactiMate"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/launch.log"
-exec 2>> "$LOG_FILE"
+
+# If running interactively (from terminal), also show errors in terminal
+# Check if stderr is a terminal (not redirected)
+if [ -t 2 ]; then
+    # Running in terminal - tee errors to both log and terminal
+    exec 2> >(tee -a "$LOG_FILE" >&2)
+else
+    # Running from app bundle or redirected - just log
+    exec 2>> "$LOG_FILE"
+fi
 
 # Now unset PYTHONHOME and log it
 unset PYTHONHOME 2>/dev/null || true
@@ -173,13 +182,13 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
                         # Skip empty entries
                         [ -z "$path" ] && continue
                         # Always keep bundled frameworks inside an app
-                        case "$path" in
-                            *".app/Contents/Frameworks"*) echo "$path" ;;
-                            */opt/homebrew/*) : ;;     # drop Homebrew
-                            */usr/local/*) : ;;        # drop /usr/local
-                            */anaconda*|*/miniconda*) : ;;  # drop conda
-                            *) echo "$path" ;;
-                        esac
+                        if [[ "$path" == *".app/Contents/Frameworks"* ]]; then
+                            echo "$path"
+                        elif [[ "$path" == */opt/homebrew/* ]] || [[ "$path" == */usr/local/* ]] || [[ "$path" == */anaconda* ]] || [[ "$path" == */miniconda* ]]; then
+                            : # drop system paths
+                        else
+                            echo "$path"
+                        fi
                     done | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//'
                 )
                 if [ -n "$CLEANED_DYLD" ]; then
@@ -244,13 +253,13 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
                 CLEANED_DYLD=$(
                     echo "$DYLD_FRAMEWORK_PATH" | tr ':' '\n' | while IFS= read -r path; do
                         [ -z "$path" ] && continue
-                        case "$path" in
-                            *".app/Contents/Frameworks"*) echo "$path" ;;
-                            */opt/homebrew/*) : ;;
-                            */usr/local/*) : ;;
-                            */anaconda*|*/miniconda*) : ;;
-                            *) echo "$path" ;;
-                        esac
+                        if [[ "$path" == *".app/Contents/Frameworks"* ]]; then
+                            echo "$path"
+                        elif [[ "$path" == */opt/homebrew/* ]] || [[ "$path" == */usr/local/* ]] || [[ "$path" == */anaconda* ]] || [[ "$path" == */miniconda* ]]; then
+                            : # drop system paths
+                        else
+                            echo "$path"
+                        fi
                     done | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//'
                 )
                 if [ -n "$CLEANED_DYLD" ]; then
@@ -380,13 +389,13 @@ if [ -d "$QT_LIB_DIR" ]; then
         CLEANED_DYLD=$(
             echo "$DYLD_FRAMEWORK_PATH" | tr ':' '\n' | while IFS= read -r path; do
                 [ -z "$path" ] && continue
-                case "$path" in
-                    *".app/Contents/Frameworks"*) echo "$path" ;;
-                    */opt/homebrew/*) : ;;     # drop Homebrew
-                    */usr/local/*) : ;;        # drop /usr/local
-                    */anaconda*|*/miniconda*) : ;;  # drop conda
-                    *) echo "$path" ;;
-                esac
+                if [[ "$path" == *".app/Contents/Frameworks"* ]]; then
+                    echo "$path"
+                elif [[ "$path" == */opt/homebrew/* ]] || [[ "$path" == */usr/local/* ]] || [[ "$path" == */anaconda* ]] || [[ "$path" == */miniconda* ]]; then
+                    : # drop system paths
+                else
+                    echo "$path"
+                fi
             done | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//'
         )
         # Ensure QT_LIB_DIR is at the front (avoid duplicates)
@@ -424,6 +433,13 @@ echo "$(date): Starting Python with QT_PLUGIN_PATH=$QT_PLUGIN_PATH" >> "$LOG_FIL
 # Launch the application
 echo "$(date): Using Python: $PYTHON_CMD" >> "$LOG_FILE"
 echo "$(date): [DEBUG] Final PYTHONHOME before exec: ${PYTHONHOME:-<unset>}" >> "$LOG_FILE"
+
+# If running from terminal, show a message
+if [ -t 0 ]; then
+    echo "Launching BactiMate GUI..." >&2
+    echo "Log file: $LOG_FILE" >&2
+fi
+
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Only pass PYTHONHOME if it's set (for app bundles)
     if [ -n "$PYTHONHOME" ]; then

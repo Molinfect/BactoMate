@@ -156,10 +156,68 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
     # Delete model file to force architecture detection when model is re-downloaded
     from cellpose_omni.models import model_path
     import os
-    model_file = model_path(model_type, 0, True)
-    if os.path.exists(model_file):
-        print(f"Removing existing model file to ensure correct architecture...")
-        os.remove(model_file)
+    from urllib.error import HTTPError
+    
+    try:
+        model_file = model_path(model_type, 0, True)
+        if os.path.exists(model_file):
+            print(f"Removing existing model file to ensure correct architecture...")
+            os.remove(model_file)
+    except HTTPError as e:
+        if e.code == 404:
+            print(f"\n⚠️  WARNING: Model '{model_type}' not found in GitHub repository (404 error).")
+            print(f"   This model may not be available in the Omnipose GitHub repository.")
+            print(f"   Trying to use cached model if available, or falling back to Cellpose server...")
+            # Check if model exists in cache
+            from pathlib import Path
+            from cellpose_omni.models import MODEL_DIR
+            torch_str = 'torch'
+            basename = f'{model_type}{torch_str}_0'
+            cache_model_file = Path(MODEL_DIR) / basename
+            if cache_model_file.exists():
+                print(f"   Using cached model: {cache_model_file}")
+                model_file = str(cache_model_file)
+            else:
+                # Try to get model from original Cellpose server as fallback
+                print(f"   Attempting to download from original Cellpose server...")
+                # Temporarily restore original URL
+                import cellpose_omni.models as models_module
+                original_url = getattr(models_module, '_MODEL_URL', None)
+                if original_url and 'github' in original_url:
+                    # Try original Cellpose server
+                    models_module._MODEL_URL = 'https://www.cellpose.org/models'
+                    try:
+                        model_file = model_path(model_type, 0, True)
+                        print(f"   ✓ Downloaded from Cellpose server")
+                    except Exception:
+                        raise RuntimeError(
+                            f"Model '{model_type}' is not available.\n\n"
+                            f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
+                            f"  - bact_phase_omni (recommended for bacteria)\n"
+                            f"  - bact_fluor_omni\n"
+                            f"  - cyto2_omni\n"
+                            f"  - worm_omni\n"
+                            f"  - plant_omni\n"
+                            f"  - bact_phase_affinity\n\n"
+                            f"Please select a different model or check if '{model_type}' exists in the repository."
+                        )
+                    finally:
+                        # Restore GitHub URL
+                        if original_url:
+                            models_module._MODEL_URL = original_url
+                else:
+                    raise RuntimeError(
+                        f"Model '{model_type}' is not available in the repository.\n\n"
+                        f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
+                        f"  - bact_phase_omni (recommended for bacteria)\n"
+                        f"  - bact_fluor_omni\n"
+                        f"  - cyto2_omni\n"
+                        f"  - worm_omni\n"
+                        f"  - plant_omni\n"
+                        f"  - bact_phase_affinity"
+                    )
+        else:
+            raise
     
     try:
         model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
