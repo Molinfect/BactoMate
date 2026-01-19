@@ -91,12 +91,40 @@ if exist "%BUNDLE_DIR%\venv\Scripts\python.exe" (
     exit /b 1
 )
 
-REM Note: Windows Python is typically self-contained with DLLs in the venv
-REM The --copies flag in venv creation ensures all files are copied, not symlinked
+REM Verify Python standard library is included (for standalone operation)
+echo Verifying Python standard library...
+if exist "%BUNDLE_DIR%\venv\Lib\encodings" (
+    echo   Standard library found (encodings module present)
+) else (
+    echo WARNING: Standard library may be incomplete
+    echo   The bundle may not work on machines without Python installed
+)
+
+REM Verify Python DLLs are included
+if exist "%BUNDLE_DIR%\venv\DLLs" (
+    echo   Python DLLs directory found
+) else (
+    echo WARNING: Python DLLs directory not found
+    echo   The bundle may not work on machines without Python installed
+)
+
+REM Note: Windows Python with --copies should be self-contained
+REM The --copies flag ensures all files are copied, not symlinked
+REM However, venvs don't include the full standard library - they reference the base Python
+REM For a truly standalone bundle, we need to ensure the base Python is also included
 echo.
-echo NOTE: Windows bundle includes the entire Python virtual environment.
-echo       All Python DLLs and dependencies should be in venv\DLLs and venv\Scripts.
-echo       The bundle should work on Windows machines without Python installed.
+echo NOTE: Windows bundle includes the Python virtual environment.
+echo       With --copies flag, Python executable and DLLs should be self-contained.
+echo       However, the standard library may reference the base Python installation.
+echo       For truly standalone operation, ensure the base Python is also bundled.
+echo.
+echo Verifying bundle completeness...
+if exist "%BUNDLE_DIR%\venv\Scripts\python.exe" if exist "%BUNDLE_DIR%\venv\Lib\encodings" if exist "%BUNDLE_DIR%\venv\DLLs" (
+    echo   Bundle appears to be self-contained
+) else (
+    echo WARNING: Bundle may not be fully self-contained
+    echo   Some components may be missing
+)
 
 echo.
 echo ==========================================
@@ -111,11 +139,11 @@ echo.
 echo To distribute, zip the entire "%BUNDLE_DIR%" folder.
 echo Users can extract and run BactiMate.bat to launch the application.
 echo.
-REM Don't pause in CI environments (GitHub Actions sets CI and GITHUB_ACTIONS)
-REM Only pause if we're definitely not in CI
-if not defined CI if not defined GITHUB_ACTIONS (
+REM Don't pause in CI environments (GitHub Actions)
+REM Check if CI environment variable is set (GitHub Actions sets this)
+if "%CI%"=="" (
     REM Not in CI, pause for user interaction
-    pause >nul 2>&1
+    pause >nul 2>&1 || pause
 )
-REM Always exit with success code (prevents exit code 3 from pause)
+REM Always exit with success code
 exit /b 0

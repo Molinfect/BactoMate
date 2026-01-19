@@ -263,8 +263,8 @@ elif [ ! -f "$PYTHON_EXEC" ]; then
     exit 1
 fi
 
-# Bundle Python framework for self-contained app
-echo "Bundling Python framework for self-contained app..."
+# Bundle complete Python framework for truly standalone app
+echo "Bundling complete Python framework for standalone app..."
 if command -v otool >/dev/null 2>&1; then
     # Check what libraries Python is linked against
     PYTHON_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' || true)
@@ -313,24 +313,36 @@ if command -v otool >/dev/null 2>&1; then
             
             if [ -d "$FRAMEWORK_DIR" ]; then
                 echo "  Using Python framework at: $FRAMEWORK_DIR"
-                echo "  Copying framework to bundle (this may take a moment)..."
+                echo "  Copying complete framework to bundle (this may take several minutes)..."
+                echo "  This includes the full Python installation with standard library."
                 
                 # Copy framework to bundle
                 BUNDLE_FRAMEWORK_DIR="$APP_BUNDLE/Contents/Frameworks/Python.framework"
                 mkdir -p "$APP_BUNDLE/Contents/Frameworks"
                 
                 # Use rsync to copy framework (preserves symlinks and structure)
+                # The framework contains the complete Python installation including standard library
                 if rsync -avL --progress "$FRAMEWORK_DIR/" "$BUNDLE_FRAMEWORK_DIR/" 2>/dev/null; then
-                    echo "  ✓ Python framework copied to bundle"
+                    echo "  ✓ Complete Python framework copied to bundle"
                     
-                    # Verify framework was copied
+                    # Verify framework was copied correctly
                     FRAMEWORK_PYTHON="$BUNDLE_FRAMEWORK_DIR/Versions/${PYTHON_VERSION_MATCH}/Python"
+                    FRAMEWORK_LIB="$BUNDLE_FRAMEWORK_DIR/Versions/${PYTHON_VERSION_MATCH}/lib"
                     if [ ! -f "$FRAMEWORK_PYTHON" ]; then
                         echo "  WARNING: Framework Python executable not found at expected location"
                         # Try to find it
                         FRAMEWORK_PYTHON=$(find "$BUNDLE_FRAMEWORK_DIR" -name "Python" -type f | head -1)
                         if [ -n "$FRAMEWORK_PYTHON" ]; then
                             echo "  Found framework Python at: $FRAMEWORK_PYTHON"
+                        fi
+                    fi
+                    
+                    # Verify standard library is included
+                    if [ -d "$FRAMEWORK_LIB" ]; then
+                        if [ -f "$FRAMEWORK_LIB/python${PYTHON_VERSION_MATCH}/encodings/__init__.py" ] || [ -d "$FRAMEWORK_LIB/python${PYTHON_VERSION_MATCH}/encodings" ]; then
+                            echo "  ✓ Standard library (including encodings) found in framework"
+                        else
+                            echo "  WARNING: Standard library may not be complete in framework"
                         fi
                     fi
                     
@@ -345,7 +357,7 @@ if command -v otool >/dev/null 2>&1; then
                         if install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null; then
                             echo "  ✓ Successfully changed library path to use bundled framework"
                         else
-                            echo "  WARNING: Could not change library path (may require codesigning or framework not accessible)"
+                            echo "  WARNING: Could not change library path (may require codesigning)"
                             echo "  Attempting alternative approach..."
                             # Try to fix framework's internal library paths first
                             if [ -f "$FRAMEWORK_PYTHON" ]; then
@@ -362,18 +374,23 @@ if command -v otool >/dev/null 2>&1; then
                 else
                     echo "  ERROR: Failed to copy Python framework"
                     echo "  The bundle will NOT be self-contained"
+                    exit 1
                 fi
             else
                 echo "  ERROR: Python framework directory not found"
                 echo "  Searched for framework but could not locate it"
                 echo "  The bundle will NOT be self-contained"
+                exit 1
             fi
         fi
     else
-        echo "  No Python.framework dependencies found (Python may be statically linked)"
+        echo "  WARNING: No Python.framework dependencies found (Python may be statically linked)"
+        echo "  The bundle may not be fully self-contained"
     fi
 else
-    echo "  WARNING: otool not found, cannot detect Python framework"
+    echo "  ERROR: otool not found, cannot detect Python framework"
+    echo "  The bundle will NOT be self-contained"
+    exit 1
 fi
 
 if [ -f "$PYTHON_EXEC" ] || [ -L "$PYTHON_EXEC" ]; then
