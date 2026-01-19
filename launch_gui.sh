@@ -132,11 +132,24 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
                 FRAMEWORK_PYTHON_DIR="$POSSIBLE_VERSION_DIR"
                 echo "$(date): Found matching framework version: ${PYTHON_MAJOR_MINOR}" >> "$LOG_FILE"
             else
-                # Fallback: try any available version
-                AVAILABLE_VERSION=$(ls "$BUNDLED_FRAMEWORK/Versions" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | head -1 || echo "")
-                if [ -n "$AVAILABLE_VERSION" ]; then
-                    FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/${AVAILABLE_VERSION}"
-                    echo "$(date): Using available framework version: ${AVAILABLE_VERSION}" >> "$LOG_FILE"
+                # Fallback: try to find the best matching version
+                # Prefer versions that match major version, then closest minor version
+                AVAILABLE_VERSIONS=$(ls "$BUNDLED_FRAMEWORK/Versions" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V || echo "")
+                if [ -n "$AVAILABLE_VERSIONS" ]; then
+                    # Extract major version from detected Python (e.g., "3" from "3.11")
+                    DETECTED_MAJOR=$(echo "$PYTHON_MAJOR_MINOR" | cut -d'.' -f1)
+                    # Try to find version matching major version first
+                    MATCHING_MAJOR=$(echo "$AVAILABLE_VERSIONS" | grep "^${DETECTED_MAJOR}\." | sort -V | tail -1 || echo "")
+                    if [ -n "$MATCHING_MAJOR" ]; then
+                        FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/${MATCHING_MAJOR}"
+                        echo "$(date): Using framework version with matching major version: ${MATCHING_MAJOR} (venv is ${PYTHON_MAJOR_MINOR})" >> "$LOG_FILE"
+                    else
+                        # Last resort: use the highest available version
+                        HIGHEST_VERSION=$(echo "$AVAILABLE_VERSIONS" | sort -V | tail -1)
+                        FRAMEWORK_PYTHON_DIR="$BUNDLED_FRAMEWORK/Versions/${HIGHEST_VERSION}"
+                        echo "$(date): WARNING: No matching major version found, using highest available: ${HIGHEST_VERSION} (venv is ${PYTHON_MAJOR_MINOR})" >> "$LOG_FILE"
+                        echo "$(date): This may cause compatibility issues if versions differ significantly" >> "$LOG_FILE"
+                    fi
                 fi
             fi
         fi
