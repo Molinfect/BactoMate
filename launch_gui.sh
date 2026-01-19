@@ -234,6 +234,14 @@ export QT_MAC_WANTS_LAYER=1
 export QT_AUTO_SCREEN_SCALE_FACTOR=1
 
 # Set framework path for Qt libraries (needed for plugins to find Qt frameworks)
+# NOTE: Qt plugin loading failures can come from multiple sources:
+# - Missing Qt runtime dependencies inside the bundle
+# - Code signing issues on libqcocoa.dylib and other Qt libraries
+# - Quarantine attributes on .dylib files (removed during build)
+# - Mismatched Qt minor versions between PyQt6 components
+# - System Qt paths conflicting with bundled Qt
+# We address these by: code signing Qt libs, removing quarantine, setting paths correctly,
+# and filtering system Qt paths. The repair_pyqt6.sh script handles runtime fixes.
 # SCRIPT_DIR is already set above
 
 # Detect Python version dynamically using venv Python (works with 3.10, 3.11, etc.)

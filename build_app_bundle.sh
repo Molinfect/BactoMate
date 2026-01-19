@@ -110,13 +110,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << 'INFOPLIST_EOF'
     <key>CFBundleVersion</key>
     <string>1.0.0</string>
     <key>LSMinimumSystemVersion</key>
-    <string>10.14</string>
+    <string>11.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>BactiMate needs microphone access</string>
-    <key>NSCameraUsageDescription</key>
-    <string>BactiMate needs camera access</string>
 </dict>
 </plist>
 INFOPLIST_EOF
@@ -268,6 +264,22 @@ elif [ ! -f "$PYTHON_EXEC" ]; then
 fi
 
 # Bundle complete Python framework for truly standalone app
+# First, get the source venv Python for framework detection (before bundle is finalized)
+SOURCE_VENV_PYTHON="$SCRIPT_DIR/venv/bin/python3"
+if [ -f "$SOURCE_VENV_PYTHON" ] && [ -x "$SOURCE_VENV_PYTHON" ]; then
+    # Resolve symlink if needed
+    if [ -L "$SOURCE_VENV_PYTHON" ]; then
+        SOURCE_PYTHON_TARGET=$(readlink "$SOURCE_VENV_PYTHON")
+        if [[ "$SOURCE_PYTHON_TARGET" != /* ]]; then
+            SOURCE_VENV_PYTHON="$SCRIPT_DIR/venv/bin/$SOURCE_PYTHON_TARGET"
+        else
+            SOURCE_VENV_PYTHON="$SOURCE_PYTHON_TARGET"
+        fi
+    fi
+else
+    SOURCE_VENV_PYTHON=""
+fi
+
 echo "Bundling complete Python framework for standalone app..."
 if command -v otool >/dev/null 2>&1; then
     # Check what libraries Python is linked against
@@ -286,15 +298,20 @@ if command -v otool >/dev/null 2>&1; then
                 echo "  Attempting to find actual framework location..."
                 
                 # Try to find the actual framework by checking where Python was installed
-                # First, try to get the actual Python installation path from the venv
-                VENV_PYTHON_BASE=$(python3 -c "import sys; print(sys.base_prefix)" 2>/dev/null || echo "")
-                if [ -n "$VENV_PYTHON_BASE" ] && [ -d "$VENV_PYTHON_BASE" ]; then
-                    # Check if framework is in the base Python installation
-                    POSSIBLE_FRAMEWORK="$VENV_PYTHON_BASE/../Frameworks/Python.framework"
-                    if [ -d "$POSSIBLE_FRAMEWORK" ]; then
-                        FRAMEWORK_DIR="$POSSIBLE_FRAMEWORK"
-                        echo "  Found framework at Python base: $FRAMEWORK_DIR"
+                # CRITICAL: Use the venv Python, not python3 from PATH (which may not exist or point elsewhere)
+                if [ -n "$SOURCE_VENV_PYTHON" ] && [ -f "$SOURCE_VENV_PYTHON" ] && [ -x "$SOURCE_VENV_PYTHON" ]; then
+                    # Use venv Python to get the base prefix
+                    VENV_PYTHON_BASE=$("$SOURCE_VENV_PYTHON" -c "import sys; print(sys.base_prefix)" 2>/dev/null || echo "")
+                    if [ -n "$VENV_PYTHON_BASE" ] && [ -d "$VENV_PYTHON_BASE" ]; then
+                        # Check if framework is in the base Python installation
+                        POSSIBLE_FRAMEWORK="$VENV_PYTHON_BASE/../Frameworks/Python.framework"
+                        if [ -d "$POSSIBLE_FRAMEWORK" ]; then
+                            FRAMEWORK_DIR="$POSSIBLE_FRAMEWORK"
+                            echo "  Found framework at Python base: $FRAMEWORK_DIR"
+                        fi
                     fi
+                else
+                    echo "  WARNING: Could not find venv Python to detect framework location"
                 fi
                 
                 # If still not found, try common Homebrew locations
@@ -544,10 +561,30 @@ echo "  App bundle created: $BUNDLE_SIZE"
 # But let's make sure it can find the venv relative to itself
 echo "Verifying launch script setup..."
 
-# Apply final code signatures (launcher and app bundle)
+# Apply final code signatures (launcher, Qt libraries, and app bundle)
 # Note: Python executables are already signed above before testing
 echo ""
 echo "Applying final code signatures..."
+
+# Code sign Qt libraries and plugins (critical for plugin loading on macOS)
+# Qt plugin loading failures can come from: missing dependencies, codesign issues,
+# quarantine attributes, or mismatched Qt versions
+echo "  Signing Qt libraries and plugins..."
+VENV_LIB="$APP_BUNDLE/Contents/Resources/venv/lib"
+if [ -d "$VENV_LIB" ]; then
+    # Find and sign all Qt .dylib files (libraries and plugins)
+    find "$VENV_LIB" -name "*.dylib" -type f | while read -r DYLIB; do
+        codesign --force --sign - "$DYLIB" 2>/dev/null || true
+    done
+    
+    # Specifically sign the Cocoa plugin (most critical for macOS GUI)
+    COCOA_PLUGIN=$(find "$VENV_LIB" -path "*/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib" 2>/dev/null | head -1)
+    if [ -n "$COCOA_PLUGIN" ] && [ -f "$COCOA_PLUGIN" ]; then
+        codesign --force --sign - "$COCOA_PLUGIN" 2>/dev/null || true
+        echo "    Signed Cocoa plugin: $COCOA_PLUGIN"
+    fi
+fi
+
 find "$APP_BUNDLE/Contents/MacOS" -type f -exec chmod +x {} \;
 
 # Sign the launcher
@@ -556,7 +593,9 @@ codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/BactiMate" 2>/dev/null || 
 # Try to sign the entire app bundle
 codesign --force --sign - "$APP_BUNDLE" 2>/dev/null || echo "Note: App bundle signing skipped (ad-hoc signing may fail without developer ID)"
 
-# Remove extended attributes that can interfere
+# Remove extended attributes that can interfere (quarantine, etc.)
+# This is critical for Qt plugins - quarantine attributes can prevent loading
+echo "  Removing extended attributes (quarantine, etc.)..."
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 
 echo ""
