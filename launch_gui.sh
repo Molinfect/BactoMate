@@ -90,6 +90,11 @@ fi
 # Set PATH to prioritize venv binaries
 export PATH="$SCRIPT_DIR/venv/bin:$PATH"
 
+# IMPORTANT: Unset PYTHONHOME first - it should NOT be set for regular venv usage
+# PYTHONHOME breaks venv usage because venvs don't contain the full standard library
+# Only set it later if we're in an app bundle with a bundled framework
+unset PYTHONHOME 2>/dev/null || true
+
 # Only set PYTHONHOME for app bundles (when running from .app bundle)
 # For regular venv usage, don't set PYTHONHOME - let Python auto-detect the base installation
 # This is needed for relocatable app bundles but breaks regular venv usage
@@ -123,7 +128,9 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
     fi
 else
     # Don't set PYTHONHOME for regular venv - Python will find base installation automatically
+    # This is already unset above, but ensure it stays unset
     unset PYTHONHOME 2>/dev/null || true
+    echo "$(date): Running from regular venv - PYTHONHOME is unset (Python will auto-detect base installation)" >> "$LOG_FILE"
 fi
 
 # Verify patches are applied (quick check, auto-apply if needed)
