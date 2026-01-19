@@ -111,7 +111,11 @@ echo.
 echo To distribute, zip the entire "%BUNDLE_DIR%" folder.
 echo Users can extract and run BactiMate.bat to launch the application.
 echo.
-REM Don't pause in CI environments (GitHub Actions)
-if not "%CI%"=="true" (
-    pause
+REM Don't pause in CI environments (GitHub Actions sets CI and GITHUB_ACTIONS)
+REM Only pause if we're definitely not in CI
+if not defined CI if not defined GITHUB_ACTIONS (
+    REM Not in CI, pause for user interaction
+    pause >nul 2>&1
 )
+REM Always exit with success code (prevents exit code 3 from pause)
+exit /b 0
