@@ -1,6 +1,11 @@
 #!/bin/bash
 # Launch the Omnipose Batch Processing GUI
 
+# CRITICAL: Unset PYTHONHOME immediately - it breaks venv usage
+# Venvs don't contain the full standard library, so PYTHONHOME must point to base Python
+# We'll only set it later if we're in an app bundle with a bundled framework
+unset PYTHONHOME 2>/dev/null || true
+
 # Redirect stderr to log file for debugging
 LOG_DIR="$HOME/Library/Logs/BactiMate"
 mkdir -p "$LOG_DIR"
@@ -90,12 +95,8 @@ fi
 # Set PATH to prioritize venv binaries
 export PATH="$SCRIPT_DIR/venv/bin:$PATH"
 
-# IMPORTANT: Unset PYTHONHOME first - it should NOT be set for regular venv usage
-# PYTHONHOME breaks venv usage because venvs don't contain the full standard library
-# Only set it later if we're in an app bundle with a bundled framework
-unset PYTHONHOME 2>/dev/null || true
-
 # Only set PYTHONHOME for app bundles (when running from .app bundle)
+# Note: PYTHONHOME is already unset at the start of this script
 # For regular venv usage, don't set PYTHONHOME - let Python auto-detect the base installation
 # This is needed for relocatable app bundles but breaks regular venv usage
 if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
