@@ -176,10 +176,45 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
             echo "$(date): DYLD_FRAMEWORK_PATH set to: $DYLD_FRAMEWORK_PATH" >> "$LOG_FILE"
             
             # Verify the framework has the standard library
-            if [ -d "$FRAMEWORK_PYTHON_DIR/lib/python${PYTHON_MAJOR_MINOR}" ]; then
-                echo "$(date): ✓ Framework contains standard library at: $FRAMEWORK_PYTHON_DIR/lib/python${PYTHON_MAJOR_MINOR}" >> "$LOG_FILE"
+            # Framework structure varies:
+            # - python.org: Versions/X.Y/lib/pythonX.Y/ (e.g., Versions/3.11/lib/python3.11/)
+            # - Homebrew: Versions/X.Y/lib/pythonX.Y/ (same structure)
+            # FRAMEWORK_PYTHON_DIR already points to Versions/X.Y, so check lib/pythonX.Y
+            # Extract version from FRAMEWORK_PYTHON_DIR to ensure consistency
+            FRAMEWORK_VERSION=$(basename "$FRAMEWORK_PYTHON_DIR")
+            STDlib_PATH="$FRAMEWORK_PYTHON_DIR/lib/python${FRAMEWORK_VERSION}"
+            
+            # Also try with detected venv version in case of mismatch
+            ALT_STDlib_PATH="$FRAMEWORK_PYTHON_DIR/lib/python${PYTHON_MAJOR_MINOR}"
+            
+            if [ -d "$STDlib_PATH" ]; then
+                # Verify it actually contains Python modules (not just empty directory)
+                if [ -f "$STDlib_PATH/encodings/__init__.py" ] || [ -d "$STDlib_PATH/encodings" ]; then
+                    echo "$(date): ✓ Framework contains standard library at: $STDlib_PATH" >> "$LOG_FILE"
+                else
+                    echo "$(date): WARNING: Framework lib directory exists but may not contain standard library" >> "$LOG_FILE"
+                    echo "$(date):   Checked: $STDlib_PATH" >> "$LOG_FILE"
+                fi
+            elif [ -d "$ALT_STDlib_PATH" ] && [ "$FRAMEWORK_VERSION" != "$PYTHON_MAJOR_MINOR" ]; then
+                # Version mismatch - try with venv version
+                if [ -f "$ALT_STDlib_PATH/encodings/__init__.py" ] || [ -d "$ALT_STDlib_PATH/encodings" ]; then
+                    echo "$(date): ✓ Framework contains standard library at: $ALT_STDlib_PATH (version mismatch: framework=$FRAMEWORK_VERSION, venv=$PYTHON_MAJOR_MINOR)" >> "$LOG_FILE"
+                else
+                    echo "$(date): WARNING: Framework standard library not found at either expected location" >> "$LOG_FILE"
+                    echo "$(date):   Checked: $STDlib_PATH and $ALT_STDlib_PATH" >> "$LOG_FILE"
+                fi
             else
                 echo "$(date): WARNING: Framework standard library not found at expected location" >> "$LOG_FILE"
+                echo "$(date):   Expected: $STDlib_PATH (framework version: $FRAMEWORK_VERSION)" >> "$LOG_FILE"
+                if [ "$FRAMEWORK_VERSION" != "$PYTHON_MAJOR_MINOR" ]; then
+                    echo "$(date):   Also checked: $ALT_STDlib_PATH (venv version: $PYTHON_MAJOR_MINOR)" >> "$LOG_FILE"
+                fi
+                # Try to find stdlib in alternative locations
+                POSSIBLE_STDLIB=$(find "$FRAMEWORK_PYTHON_DIR/lib" -name "encodings" -type d 2>/dev/null | head -1)
+                if [ -n "$POSSIBLE_STDLIB" ]; then
+                    echo "$(date):   Found encodings at: $POSSIBLE_STDLIB" >> "$LOG_FILE"
+                    echo "$(date):   Framework structure may differ from expected layout" >> "$LOG_FILE"
+                fi
             fi
         else
             # Fallback: Don't set PYTHONHOME to venv - it doesn't have full stdlib
