@@ -269,12 +269,33 @@ if command -v otool >/dev/null 2>&1; then
         echo "  Python is linked against: $PYTHON_LIBS"
         
         if [[ "$PYTHON_LIBS" == /* ]]; then
-            # Extract framework directory (e.g., /Library/Frameworks/Python.framework)
+            # Extract framework directory (e.g., /Library/Frameworks/Python.framework or /opt/homebrew/.../Python.framework)
             FRAMEWORK_DIR=$(echo "$PYTHON_LIBS" | sed 's|/Versions/.*||')
             PYTHON_VERSION_MATCH=$(echo "$PYTHON_LIBS" | grep -o 'Versions/[0-9.]\+' | cut -d'/' -f2 || echo "3.11")
             
+            # Check if the framework directory exists
+            if [ ! -d "$FRAMEWORK_DIR" ]; then
+                echo "  WARNING: Framework directory not found at hardcoded path: $FRAMEWORK_DIR"
+                echo "  Attempting to find actual framework location..."
+                # Try to find the actual framework by following the Python executable's real location
+                # The Python executable might be a symlink or copy that points to a different location
+                ACTUAL_PYTHON=$(readlink -f "$PYTHON_EXEC_RESOLVED" 2>/dev/null || echo "$PYTHON_EXEC_RESOLVED")
+                # Try to find framework in common locations
+                for POSSIBLE_FRAMEWORK in \
+                    "/opt/homebrew/Cellar/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
+                    "/opt/homebrew/opt/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
+                    "/usr/local/Frameworks/Python.framework" \
+                    "/Library/Frameworks/Python.framework"; do
+                    if [ -d "$POSSIBLE_FRAMEWORK" ]; then
+                        FRAMEWORK_DIR="$POSSIBLE_FRAMEWORK"
+                        echo "  Found framework at: $FRAMEWORK_DIR"
+                        break
+                    fi
+                done
+            fi
+            
             if [ -d "$FRAMEWORK_DIR" ]; then
-                echo "  Found Python framework at: $FRAMEWORK_DIR"
+                echo "  Using Python framework at: $FRAMEWORK_DIR"
                 echo "  Copying framework to bundle (this may take a moment)..."
                 
                 # Copy framework to bundle
@@ -282,26 +303,42 @@ if command -v otool >/dev/null 2>&1; then
                 mkdir -p "$APP_BUNDLE/Contents/Frameworks"
                 
                 # Use rsync to copy framework (preserves symlinks and structure)
-                if rsync -avL "$FRAMEWORK_DIR/" "$BUNDLE_FRAMEWORK_DIR/" 2>/dev/null; then
+                if rsync -avL --progress "$FRAMEWORK_DIR/" "$BUNDLE_FRAMEWORK_DIR/" 2>/dev/null; then
                     echo "  ✓ Python framework copied to bundle"
+                    
+                    # Verify framework was copied
+                    FRAMEWORK_PYTHON="$BUNDLE_FRAMEWORK_DIR/Versions/${PYTHON_VERSION_MATCH}/Python"
+                    if [ ! -f "$FRAMEWORK_PYTHON" ]; then
+                        echo "  WARNING: Framework Python executable not found at expected location"
+                        # Try to find it
+                        FRAMEWORK_PYTHON=$(find "$BUNDLE_FRAMEWORK_DIR" -name "Python" -type f | head -1)
+                        if [ -n "$FRAMEWORK_PYTHON" ]; then
+                            echo "  Found framework Python at: $FRAMEWORK_PYTHON"
+                        fi
+                    fi
                     
                     # Fix library paths in Python executable to use @rpath
                     if command -v install_name_tool >/dev/null 2>&1; then
                         echo "  Fixing Python library paths to use bundled framework..."
                         # Add rpath to search in Frameworks directory
                         install_name_tool -add_rpath "@executable_path/../../../Frameworks" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
-                        # Change library path to use @rpath
+                        # Change library path to use @rpath (use the original hardcoded path, not the actual location)
                         NEW_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
+                        echo "  Changing library path from $PYTHON_LIBS to $NEW_PATH"
                         if install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null; then
                             echo "  ✓ Successfully changed library path to use bundled framework"
                         else
-                            echo "  WARNING: Could not change library path (may require codesigning)"
-                            echo "  Attempting to fix framework library paths..."
-                            # Fix paths inside the framework itself
-                            FRAMEWORK_PYTHON="$BUNDLE_FRAMEWORK_DIR/Versions/${PYTHON_VERSION_MATCH}/Python"
+                            echo "  WARNING: Could not change library path (may require codesigning or framework not accessible)"
+                            echo "  Attempting alternative approach..."
+                            # Try to fix framework's internal library paths first
                             if [ -f "$FRAMEWORK_PYTHON" ]; then
                                 # Fix framework's internal library paths
                                 install_name_tool -id "@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python" "$FRAMEWORK_PYTHON" 2>/dev/null || true
+                                # Try again to change the path
+                                install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || {
+                                    echo "  ERROR: Failed to change library path even after fixing framework"
+                                    echo "  The bundle may not work on machines without Python installed"
+                                }
                             fi
                         fi
                     fi
@@ -310,7 +347,8 @@ if command -v otool >/dev/null 2>&1; then
                     echo "  The bundle will NOT be self-contained"
                 fi
             else
-                echo "  WARNING: Python framework directory not found: $FRAMEWORK_DIR"
+                echo "  ERROR: Python framework directory not found"
+                echo "  Searched for framework but could not locate it"
                 echo "  The bundle will NOT be self-contained"
             fi
         fi
