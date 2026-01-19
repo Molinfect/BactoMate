@@ -117,10 +117,16 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
         if [ -d "$FRAMEWORK_PYTHON_DIR" ]; then
             # Set PYTHONHOME to the framework's Python installation (contains standard library)
             export PYTHONHOME="$FRAMEWORK_PYTHON_DIR"
-            # Add framework to DYLD_FRAMEWORK_PATH so Python can find it
-            export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+            # CRITICAL: Add framework to DYLD_FRAMEWORK_PATH FIRST so Python can find it
+            # This must be set before Python runs, otherwise it will look for the original hardcoded paths
+            if [ -n "$DYLD_FRAMEWORK_PATH" ]; then
+                export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+            else
+                export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK"
+            fi
             echo "$(date): Using bundled Python framework: $BUNDLED_FRAMEWORK" >> "$LOG_FILE"
             echo "$(date): PYTHONHOME set to framework: $PYTHONHOME" >> "$LOG_FILE"
+            echo "$(date): DYLD_FRAMEWORK_PATH set to: $DYLD_FRAMEWORK_PATH" >> "$LOG_FILE"
         else
             # Fallback: use venv (may not work if standard library is missing)
             export PYTHONHOME="$SCRIPT_DIR/venv"

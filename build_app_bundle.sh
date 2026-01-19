@@ -367,27 +367,67 @@ if command -v otool >/dev/null 2>&1; then
                     # Fix library paths in Python executable to use @rpath
                     if command -v install_name_tool >/dev/null 2>&1; then
                         echo "  Fixing Python library paths to use bundled framework..."
-                        # Add rpath to search in Frameworks directory
-                        install_name_tool -add_rpath "@executable_path/../../../Frameworks" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
-                        # Change library path to use @rpath (use the original hardcoded path, not the actual location)
-                        NEW_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
-                        echo "  Changing library path from $PYTHON_LIBS to $NEW_PATH"
-                        if install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null; then
-                            echo "  ✓ Successfully changed library path to use bundled framework"
-                        else
-                            echo "  WARNING: Could not change library path (may require codesigning)"
-                            echo "  Attempting alternative approach..."
-                            # Try to fix framework's internal library paths first
-                            if [ -f "$FRAMEWORK_PYTHON" ]; then
-                                # Fix framework's internal library paths
-                                install_name_tool -id "@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python" "$FRAMEWORK_PYTHON" 2>/dev/null || true
-                                # Try again to change the path
-                                install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || {
-                                    echo "  WARNING: Failed to change library path even after fixing framework"
-                                    echo "  The bundle may not work on machines without Python installed"
-                                }
+                        
+                        # CRITICAL: First fix the framework's Python executable itself
+                        # The framework's Python executable may have hardcoded paths to the original location
+                        if [ -f "$FRAMEWORK_PYTHON" ]; then
+                            echo "  Fixing framework's Python executable library paths..."
+                            # Set the framework Python's ID to use @rpath
+                            install_name_tool -id "@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python" "$FRAMEWORK_PYTHON" 2>/dev/null || true
+                            
+                            # Fix any hardcoded paths in the framework Python executable
+                            # Check what it's linked against
+                            FRAMEWORK_PYTHON_LIBS=$(otool -L "$FRAMEWORK_PYTHON" 2>/dev/null | grep -i "Python.framework" | grep -v "@rpath" | awk '{print $1}' || true)
+                            if [ -n "$FRAMEWORK_PYTHON_LIBS" ]; then
+                                echo "$FRAMEWORK_PYTHON_LIBS" | while read -r OLD_LIB_PATH; do
+                                    if [[ "$OLD_LIB_PATH" == /* ]]; then
+                                        NEW_LIB_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
+                                        echo "    Changing framework Python library path: $OLD_LIB_PATH -> $NEW_LIB_PATH"
+                                        install_name_tool -change "$OLD_LIB_PATH" "$NEW_LIB_PATH" "$FRAMEWORK_PYTHON" 2>/dev/null || true
+                                    fi
+                                done
                             fi
                         fi
+                        
+                        # Also fix Python.app executable if it exists (macOS GUI Python)
+                        FRAMEWORK_PYTHON_APP="$BUNDLE_FRAMEWORK_DIR/Versions/${PYTHON_VERSION_MATCH}/Resources/Python.app/Contents/MacOS/Python"
+                        if [ -f "$FRAMEWORK_PYTHON_APP" ]; then
+                            echo "  Fixing Python.app executable library paths..."
+                            FRAMEWORK_PYTHON_APP_LIBS=$(otool -L "$FRAMEWORK_PYTHON_APP" 2>/dev/null | grep -i "Python.framework" | grep -v "@rpath" | awk '{print $1}' || true)
+                            if [ -n "$FRAMEWORK_PYTHON_APP_LIBS" ]; then
+                                echo "$FRAMEWORK_PYTHON_APP_LIBS" | while read -r OLD_LIB_PATH; do
+                                    if [[ "$OLD_LIB_PATH" == /* ]]; then
+                                        NEW_LIB_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
+                                        echo "    Changing Python.app library path: $OLD_LIB_PATH -> $NEW_LIB_PATH"
+                                        install_name_tool -change "$OLD_LIB_PATH" "$NEW_LIB_PATH" "$FRAMEWORK_PYTHON_APP" 2>/dev/null || true
+                                    fi
+                                done
+                            fi
+                        fi
+                        
+                        # Now fix the venv Python executable to use the bundled framework
+                        # Add rpath to search in Frameworks directory
+                        install_name_tool -add_rpath "@executable_path/../../../Frameworks" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
+                        # Change library path to use @rpath
+                        NEW_PATH="@rpath/Python.framework/Versions/${PYTHON_VERSION_MATCH}/Python"
+                        echo "  Changing venv Python library path from $PYTHON_LIBS to $NEW_PATH"
+                        if install_name_tool -change "$PYTHON_LIBS" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null; then
+                            echo "  ✓ Successfully changed venv Python library path to use bundled framework"
+                        else
+                            echo "  WARNING: Could not change venv Python library path"
+                            echo "  Attempting to find and fix all Python framework references..."
+                            # Find all hardcoded Python framework paths in the venv Python executable
+                            VENV_PYTHON_LIBS=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | grep -v "@rpath" | awk '{print $1}' || true)
+                            if [ -n "$VENV_PYTHON_LIBS" ]; then
+                                echo "$VENV_PYTHON_LIBS" | while read -r OLD_LIB_PATH; do
+                                    if [[ "$OLD_LIB_PATH" == /* ]]; then
+                                        echo "    Changing venv Python library path: $OLD_LIB_PATH -> $NEW_PATH"
+                                        install_name_tool -change "$OLD_LIB_PATH" "$NEW_PATH" "$PYTHON_EXEC_RESOLVED" 2>/dev/null || true
+                                    fi
+                                done
+                            fi
+                        fi
+                        echo "  ✓ All Python library paths fixed to use bundled framework"
                     fi
                 fi
             else
