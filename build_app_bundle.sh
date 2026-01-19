@@ -280,29 +280,33 @@ if command -v otool >/dev/null 2>&1; then
             if [ ! -d "$FRAMEWORK_DIR" ]; then
                 echo "  WARNING: Framework directory not found at hardcoded path: $FRAMEWORK_DIR"
                 echo "  Attempting to find actual framework location..."
-                # The hardcoded path doesn't exist, so we need to find where Python actually loads from
-                # Check the actual linked library (not the hardcoded path)
-                ACTUAL_LIB=$(otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' | xargs readlink -f 2>/dev/null || otool -L "$PYTHON_EXEC_RESOLVED" 2>/dev/null | grep -i "Python.framework" | head -1 | awk '{print $1}' || true)
-                if [ -n "$ACTUAL_LIB" ] && [ -f "$ACTUAL_LIB" ]; then
-                    # Extract framework directory from actual library path
-                    FRAMEWORK_DIR=$(echo "$ACTUAL_LIB" | sed 's|/Versions/.*||')
-                    echo "  Found actual framework at: $FRAMEWORK_DIR"
-                else
-                    # Try to find framework in common locations
-                    echo "  Searching common framework locations..."
+                
+                # Try to find the actual framework by checking where Python was installed
+                # First, try to get the actual Python installation path from the venv
+                VENV_PYTHON_BASE=$(python3 -c "import sys; print(sys.base_prefix)" 2>/dev/null || echo "")
+                if [ -n "$VENV_PYTHON_BASE" ] && [ -d "$VENV_PYTHON_BASE" ]; then
+                    # Check if framework is in the base Python installation
+                    POSSIBLE_FRAMEWORK="$VENV_PYTHON_BASE/../Frameworks/Python.framework"
+                    if [ -d "$POSSIBLE_FRAMEWORK" ]; then
+                        FRAMEWORK_DIR="$POSSIBLE_FRAMEWORK"
+                        echo "  Found framework at Python base: $FRAMEWORK_DIR"
+                    fi
+                fi
+                
+                # If still not found, try common Homebrew locations
+                if [ ! -d "$FRAMEWORK_DIR" ]; then
+                    echo "  Searching Homebrew framework locations..."
+                    # Use find to locate Python.framework in Homebrew Cellar
                     for POSSIBLE_FRAMEWORK in \
-                        "/opt/homebrew/Cellar/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
-                        "/opt/homebrew/opt/python@${PYTHON_VERSION_MATCH}"*/Frameworks/Python.framework \
+                        $(find /opt/homebrew/Cellar -name "Python.framework" -type d 2>/dev/null | head -1) \
+                        $(find /opt/homebrew/opt -name "Python.framework" -type d 2>/dev/null | head -1) \
                         "/usr/local/Frameworks/Python.framework" \
                         "/Library/Frameworks/Python.framework"; do
-                        # Expand glob patterns
-                        for EXPANDED in $POSSIBLE_FRAMEWORK; do
-                            if [ -d "$EXPANDED" ]; then
-                                FRAMEWORK_DIR="$EXPANDED"
-                                echo "  Found framework at: $FRAMEWORK_DIR"
-                                break 2
-                            fi
-                        done
+                        if [ -n "$POSSIBLE_FRAMEWORK" ] && [ -d "$POSSIBLE_FRAMEWORK" ]; then
+                            FRAMEWORK_DIR="$POSSIBLE_FRAMEWORK"
+                            echo "  Found framework at: $FRAMEWORK_DIR"
+                            break
+                        fi
                     done
                 fi
             fi
