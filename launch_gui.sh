@@ -164,10 +164,29 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
             
             # Set PYTHONHOME to the framework's Python installation (contains standard library)
             export PYTHONHOME="$FRAMEWORK_PYTHON_DIR"
-            # CRITICAL: Add framework to DYLD_FRAMEWORK_PATH FIRST so Python can find it
-            # This must be set before Python runs, otherwise it will look for the original hardcoded paths
+            # CRITICAL: Clean DYLD_FRAMEWORK_PATH first, then add bundled framework
+            # This ensures our bundled paths can't be filtered out by accident
             if [ -n "$DYLD_FRAMEWORK_PATH" ]; then
-                export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+                # Clean existing DYLD_FRAMEWORK_PATH (remove system paths, keep app bundles, dedupe)
+                CLEANED_DYLD=$(
+                    echo "$DYLD_FRAMEWORK_PATH" | tr ':' '\n' | while IFS= read -r path; do
+                        # Skip empty entries
+                        [ -z "$path" ] && continue
+                        # Always keep bundled frameworks inside an app
+                        case "$path" in
+                            *".app/Contents/Frameworks"*) echo "$path" ;;
+                            */opt/homebrew/*) : ;;     # drop Homebrew
+                            */usr/local/*) : ;;        # drop /usr/local
+                            */anaconda*|*/miniconda*) : ;;  # drop conda
+                            *) echo "$path" ;;
+                        esac
+                    done | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//'
+                )
+                if [ -n "$CLEANED_DYLD" ]; then
+                    export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$CLEANED_DYLD"
+                else
+                    export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK"
+                fi
             else
                 export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK"
             fi
@@ -220,7 +239,28 @@ if [[ "$SCRIPT_DIR" == *".app/Contents/Resources"* ]]; then
             # Fallback: Don't set PYTHONHOME to venv - it doesn't have full stdlib
             # Let Python auto-detect the base installation instead
             unset PYTHONHOME 2>/dev/null || true
-            export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$DYLD_FRAMEWORK_PATH"
+            # Clean DYLD_FRAMEWORK_PATH first, then add bundled framework
+            if [ -n "$DYLD_FRAMEWORK_PATH" ]; then
+                CLEANED_DYLD=$(
+                    echo "$DYLD_FRAMEWORK_PATH" | tr ':' '\n' | while IFS= read -r path; do
+                        [ -z "$path" ] && continue
+                        case "$path" in
+                            *".app/Contents/Frameworks"*) echo "$path" ;;
+                            */opt/homebrew/*) : ;;
+                            */usr/local/*) : ;;
+                            */anaconda*|*/miniconda*) : ;;
+                            *) echo "$path" ;;
+                        esac
+                    done | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//'
+                )
+                if [ -n "$CLEANED_DYLD" ]; then
+                    export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK:$CLEANED_DYLD"
+                else
+                    export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK"
+                fi
+            else
+                export DYLD_FRAMEWORK_PATH="$BUNDLED_FRAMEWORK"
+            fi
             echo "$(date): WARNING: Framework Python directory not found at expected location" >> "$LOG_FILE"
             echo "$(date): PYTHONHOME left unset - Python will auto-detect base installation" >> "$LOG_FILE"
             echo "$(date): Bundle may not work on machines without Python installed" >> "$LOG_FILE"
@@ -284,7 +324,7 @@ PYTHON_VERSION=$("$PYTHON_CMD" -c "import sys; print(f'python{sys.version_info.m
 
 QT_LIB_DIR="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/lib"
 if [ -d "$QT_LIB_DIR" ]; then
-    export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$DYLD_FRAMEWORK_PATH"
+    # Just set QT_FRAMEWORK_PATH here - DYLD_FRAMEWORK_PATH will be handled in final cleanup
     export QT_FRAMEWORK_PATH="$QT_LIB_DIR"
 fi
 
@@ -320,9 +360,8 @@ fi
 if [ "$PYQT6_OK" = false ]; then
     echo "$(date): PyQt6 issue detected. Running automatic repair..." >> "$LOG_FILE"
     if "$SCRIPT_DIR/repair_pyqt6.sh" >> "$LOG_FILE" 2>&1; then
-        # Re-export after repair
+        # Re-export after repair (final cleanup block will handle DYLD_FRAMEWORK_PATH)
         export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
-        export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$DYLD_FRAMEWORK_PATH"
         echo "$(date): Repair completed successfully." >> "$LOG_FILE"
     else
         echo "$(date): Automatic repair failed." >> "$LOG_FILE"
@@ -335,15 +374,37 @@ fi
 # Re-export to make absolutely sure they're set (using detected Python version)
 export QT_PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins"
 if [ -d "$QT_LIB_DIR" ]; then
-    # Remove any system Qt paths from DYLD_FRAMEWORK_PATH to avoid conflicts
+    # Final cleanup and ensure QT_LIB_DIR is present (avoid duplicates)
     if [ -n "$DYLD_FRAMEWORK_PATH" ]; then
-        # Filter out system Qt paths (Homebrew/conda)
-        CLEANED_DYLD=$(echo "$DYLD_FRAMEWORK_PATH" | tr ':' '\n' | grep -v -E '(homebrew|anaconda|miniconda|/usr/local)' | tr '\n' ':' | sed 's/:$//')
-        if [ -n "$CLEANED_DYLD" ]; then
-            export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$CLEANED_DYLD"
-        else
-            export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR"
-        fi
+        # Clean DYLD_FRAMEWORK_PATH (remove system paths, keep app bundles, dedupe)
+        CLEANED_DYLD=$(
+            echo "$DYLD_FRAMEWORK_PATH" | tr ':' '\n' | while IFS= read -r path; do
+                [ -z "$path" ] && continue
+                case "$path" in
+                    *".app/Contents/Frameworks"*) echo "$path" ;;
+                    */opt/homebrew/*) : ;;     # drop Homebrew
+                    */usr/local/*) : ;;        # drop /usr/local
+                    */anaconda*|*/miniconda*) : ;;  # drop conda
+                    *) echo "$path" ;;
+                esac
+            done | awk '!seen[$0]++' | tr '\n' ':' | sed 's/:$//'
+        )
+        # Ensure QT_LIB_DIR is at the front (avoid duplicates)
+        case ":$CLEANED_DYLD:" in
+            *":$QT_LIB_DIR:"*)
+                # Already present, remove it and prepend to ensure it's first
+                CLEANED_DYLD=$(echo "$CLEANED_DYLD" | tr ':' '\n' | grep -v "^$QT_LIB_DIR" | tr '\n' ':' | sed 's/:$//')
+                export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR${CLEANED_DYLD:+:$CLEANED_DYLD}"
+                ;;
+            *)
+                # Not present, prepend it
+                if [ -n "$CLEANED_DYLD" ]; then
+                    export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR:$CLEANED_DYLD"
+                else
+                    export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR"
+                fi
+                ;;
+        esac
     else
         export DYLD_FRAMEWORK_PATH="$QT_LIB_DIR"
     fi
