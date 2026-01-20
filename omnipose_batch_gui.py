@@ -5732,10 +5732,10 @@ class AnalyzeMasksTab(QWidget):
         pixel_label = QLabel("Pixel Size (µm):")
         pixel_info_icon = create_info_icon(
             "Pixel size in micrometers (µm) for area calculations.\n\n"
-            "Default: 0.108 µm (or from ND2 metadata if available)\n"
-            "Source: Hardcoded default, or extracted from ND2 file metadata\n\n"
+            "Default: 0.108 µm (or from metadata if available)\n"
+            "Source: Hardcoded default, or extracted from metadata\n\n"
             "This value is used to convert pixel areas to µm².\n"
-            "If you loaded an ND2 file with pixel size metadata, this will be auto-filled.\n\n"
+            "If you loaded a file with pixel size metadata, this will be auto-filled.\n\n"
             "Common values:\n"
             "- 100x objective: ~0.108 µm/pixel\n"
             "- 60x objective: ~0.18 µm/pixel\n"
@@ -8420,7 +8420,7 @@ class MainWindow(QMainWindow):
                 self.progress_bar.setRange(0, 0)  # Indeterminate
     
     def update_all_tabs_with_metadata(self):
-        """Update all tabs with shared metadata (e.g., pixel size from ND2)"""
+        """Update all tabs with shared metadata (e.g., pixel size)"""
         pixel_size = self.shared_metadata.get('pixel_size')
         
         if pixel_size is not None:
@@ -8429,7 +8429,7 @@ class MainWindow(QMainWindow):
                 self.processing_tab.pixel_size.setValue(pixel_size)
                 # Show indicator that value was auto-filled
                 if hasattr(self.processing_tab, 'pixel_size_indicator'):
-                    self.processing_tab.pixel_size_indicator.setText("(from ND2 metadata)")
+                    self.processing_tab.pixel_size_indicator.setText("(from metadata)")
                 self.log_output(f"✓ Updated pixel size in Processing tab: {pixel_size:.4f} µm\n")
             
             # Update Analyze Masks tab
@@ -8437,7 +8437,7 @@ class MainWindow(QMainWindow):
                 self.analyze_tab.pixel_size.setValue(pixel_size)
                 # Show indicator that value was auto-filled
                 if hasattr(self.analyze_tab, 'pixel_size_indicator'):
-                    self.analyze_tab.pixel_size_indicator.setText("(from ND2 metadata)")
+                    self.analyze_tab.pixel_size_indicator.setText("(from metadata)")
                 self.log_output(f"✓ Updated pixel size in Analyze Masks tab: {pixel_size:.4f} µm\n")
 
 
