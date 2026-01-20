@@ -696,7 +696,7 @@ class ND2ConversionTab(QWidget):
         
         file_select_layout = QHBoxLayout()
         self.file_path = QLineEdit()
-        self.file_path.setPlaceholderText("Select a microscopy file (ND2, LIF, CZI) or folder...")
+        self.file_path.setPlaceholderText("Select a microscopy file or folder...")
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
@@ -937,10 +937,11 @@ class ND2ConversionTab(QWidget):
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Microscopy File", "", 
-            "Microscopy Files (*.nd2 *.ND2 *.lif *.LIF *.czi *.CZI);;"
+            "Microscopy Files (*.nd2 *.ND2 *.lif *.LIF *.czi *.CZI *.tif *.tiff *.TIF *.TIFF);;"
             "ND2 Files (*.nd2 *.ND2);;"
             "LIF Files (*.lif *.LIF);;"
             "CZI Files (*.czi *.CZI);;"
+            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;"
             "All Files (*)"
         )
         if file_path:
@@ -956,12 +957,14 @@ class ND2ConversionTab(QWidget):
             supported_files = sorted(
                 list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
                 list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
-                list(folder.glob("*.czi")) + list(folder.glob("*.CZI"))
+                list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
+                list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
+                list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
             )
             if supported_files:
                 self.load_folder_info(folder_path, supported_files)
             else:
-                self.metadata_text.setText("No supported microscopy files (ND2, LIF, CZI) found in selected folder")
+                self.metadata_text.setText("No supported microscopy files (ND2, LIF, CZI, TIFF) found in selected folder")
                 self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
     
     def select_output_dir(self):
@@ -990,6 +993,8 @@ class ND2ConversionTab(QWidget):
                     file_info = self._get_lif_info(str(file_path))
                 elif file_ext == '.czi':
                     file_info = self._get_czi_info(str(file_path))
+                elif file_ext in ['.tif', '.tiff']:
+                    file_info = self._get_tiff_info(str(file_path))
                 
                 if file_info:
                     all_files_info.append((file_path.name, file_info))
@@ -1132,13 +1137,57 @@ class ND2ConversionTab(QWidget):
     def _get_lif_info(self, file_path):
         """Extract LIF file info without updating UI (for folder scanning)"""
         try:
+            import numpy as np
             from aicsimageio import AICSImage
-            with AICSImage(file_path) as lif_reader:
+            # AICSImage doesn't support context manager protocol, use direct instantiation
+            lif_reader = AICSImage(file_path)
+            try:
+                # Get dimensions - handle both old and new aicsimageio API
                 dims = lif_reader.dims
-                shape = lif_reader.shape
-                num_time = shape[dims.index('T')] if 'T' in dims else 1
-                num_channels = shape[dims.index('C')] if 'C' in dims else 1
-                num_z = shape[dims.index('Z')] if 'Z' in dims else 1
+                
+                # Try to get dimension order as string
+                if hasattr(dims, 'order'):
+                    dims_str = dims.order
+                elif isinstance(dims, str):
+                    dims_str = dims
+                elif isinstance(dims, (list, tuple)):
+                    dims_str = ''.join(str(d) for d in dims)
+                else:
+                    dims_str = str(dims)
+                
+                # Get shape - try different methods depending on aicsimageio version
+                try:
+                    # Try accessing as dictionary-like (newer versions)
+                    if hasattr(lif_reader, 'get_xarray_data'):
+                        xdata = lif_reader.get_xarray_data()
+                        num_time = int(xdata.sizes.get('T', 1))
+                        num_channels = int(xdata.sizes.get('C', 1))
+                        num_z = int(xdata.sizes.get('Z', 1))
+                    else:
+                        # Fallback to shape attribute
+                        shape = lif_reader.shape
+                        # Convert shape to tuple/list if needed
+                        if not isinstance(shape, (tuple, list)):
+                            shape = tuple(shape) if hasattr(shape, '__iter__') else (shape,)
+                        
+                        # Access dimensions by index in dims string
+                        num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                        num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                        num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                except (KeyError, IndexError, AttributeError, TypeError) as e:
+                    # If dimension access fails, try to get from shape directly
+                    shape = lif_reader.shape
+                    if isinstance(shape, dict):
+                        # Shape is a dictionary - access by dimension name
+                        num_time = shape.get('T', 1) if isinstance(shape.get('T'), (int, np.integer)) else 1
+                        num_channels = shape.get('C', 1) if isinstance(shape.get('C'), (int, np.integer)) else 1
+                        num_z = shape.get('Z', 1) if isinstance(shape.get('Z'), (int, np.integer)) else 1
+                    else:
+                        # Fallback: assume standard order and try indexing
+                        shape_list = list(shape) if hasattr(shape, '__iter__') else [shape]
+                        num_time = shape_list[dims_str.index('T')] if 'T' in dims_str and len(shape_list) > dims_str.index('T') else 1
+                        num_channels = shape_list[dims_str.index('C')] if 'C' in dims_str and len(shape_list) > dims_str.index('C') else 1
+                        num_z = shape_list[dims_str.index('Z')] if 'Z' in dims_str and len(shape_list) > dims_str.index('Z') else 1
                 
                 channel_names = []
                 try:
@@ -1166,19 +1215,162 @@ class ND2ConversionTab(QWidget):
                     'channel_names': channel_names,
                     'pixel_size': pixel_size
                 }
+            finally:
+                # Clean up if needed (AICSImage may have resources to close)
+                if hasattr(lif_reader, 'close'):
+                    try:
+                        lif_reader.close()
+                    except:
+                        pass
+        except Exception:
+            return None
+    
+    def _get_tiff_info(self, file_path):
+        """Extract TIFF file info without updating UI (for folder scanning)"""
+        try:
+            import tifffile
+            import numpy as np
+            
+            # Read TIFF file to get dimensions
+            with tifffile.TiffFile(file_path) as tif:
+                # Get shape from first page
+                first_page = tif.pages[0]
+                shape = first_page.shape
+                
+                # Try to get metadata
+                metadata = {}
+                if hasattr(tif, 'imagej_metadata') and tif.imagej_metadata:
+                    metadata = tif.imagej_metadata
+                elif hasattr(tif, 'ome_metadata') and tif.ome_metadata:
+                    # OME metadata parsing would be more complex
+                    pass
+                
+                # Determine dimensions from shape
+                # Common formats: (T, Y, X), (T, C, Y, X), (C, Y, X), (Y, X), (T, Z, C, Y, X)
+                ndim = len(shape)
+                
+                if ndim == 2:
+                    # Single 2D image
+                    num_time = 1
+                    num_channels = 1
+                    num_z = 1
+                elif ndim == 3:
+                    # Could be (T, Y, X) or (C, Y, X) or (Z, Y, X)
+                    # Check if first dimension is small (likely channels or z-slices)
+                    if shape[0] < 10:
+                        num_time = 1
+                        num_channels = shape[0]
+                        num_z = 1
+                    else:
+                        # Likely (T, Y, X)
+                        num_time = shape[0]
+                        num_channels = 1
+                        num_z = 1
+                elif ndim == 4:
+                    # Could be (T, C, Y, X) or (T, Z, Y, X) or (Z, C, Y, X)
+                    if shape[1] < 10:
+                        # Likely (T, C, Y, X)
+                        num_time = shape[0]
+                        num_channels = shape[1]
+                        num_z = 1
+                    elif shape[0] < 10:
+                        # Likely (Z, C, Y, X)
+                        num_time = 1
+                        num_channels = shape[1]
+                        num_z = shape[0]
+                    else:
+                        # Assume (T, Z, Y, X)
+                        num_time = shape[0]
+                        num_channels = 1
+                        num_z = shape[1]
+                else:
+                    # 5D or more - assume (T, Z, C, Y, X)
+                    num_time = shape[0] if len(shape) > 0 else 1
+                    num_z = shape[1] if len(shape) > 1 else 1
+                    num_channels = shape[2] if len(shape) > 2 else 1
+                
+                # Check if multi-page TIFF (time series)
+                num_pages = len(tif.pages)
+                if num_pages > 1 and ndim == 2:
+                    # Multi-page 2D images - treat as time series
+                    num_time = num_pages
+                    num_channels = 1
+                    num_z = 1
+                
+                # Get pixel size from metadata if available
+                pixel_size = None
+                if 'pixelSize' in metadata:
+                    pixel_size = float(metadata['pixelSize'])
+                elif 'unit' in metadata and 'pixelSize' in metadata:
+                    pixel_size = float(metadata['pixelSize'])
+                
+                channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
+                
+                return {
+                    'file_type': 'tiff',
+                    'num_time': num_time,
+                    'num_channels': num_channels,
+                    'num_z': num_z,
+                    'channel_names': channel_names,
+                    'pixel_size': pixel_size
+                }
         except Exception:
             return None
     
     def _get_czi_info(self, file_path):
         """Extract CZI file info without updating UI (for folder scanning)"""
         try:
+            import numpy as np
             from aicsimageio import AICSImage
-            with AICSImage(file_path) as czi_reader:
+            # AICSImage doesn't support context manager protocol, use direct instantiation
+            czi_reader = AICSImage(file_path)
+            try:
+                # Get dimensions - handle both old and new aicsimageio API
                 dims = czi_reader.dims
-                shape = czi_reader.shape
-                num_time = shape[dims.index('T')] if 'T' in dims else 1
-                num_channels = shape[dims.index('C')] if 'C' in dims else 1
-                num_z = shape[dims.index('Z')] if 'Z' in dims else 1
+                
+                # Try to get dimension order as string
+                if hasattr(dims, 'order'):
+                    dims_str = dims.order
+                elif isinstance(dims, str):
+                    dims_str = dims
+                elif isinstance(dims, (list, tuple)):
+                    dims_str = ''.join(str(d) for d in dims)
+                else:
+                    dims_str = str(dims)
+                
+                # Get shape - try different methods depending on aicsimageio version
+                try:
+                    # Try accessing as dictionary-like (newer versions)
+                    if hasattr(czi_reader, 'get_xarray_data'):
+                        xdata = czi_reader.get_xarray_data()
+                        num_time = int(xdata.sizes.get('T', 1))
+                        num_channels = int(xdata.sizes.get('C', 1))
+                        num_z = int(xdata.sizes.get('Z', 1))
+                    else:
+                        # Fallback to shape attribute
+                        shape = czi_reader.shape
+                        # Convert shape to tuple/list if needed
+                        if not isinstance(shape, (tuple, list)):
+                            shape = tuple(shape) if hasattr(shape, '__iter__') else (shape,)
+                        
+                        # Access dimensions by index in dims string
+                        num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                        num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                        num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                except (KeyError, IndexError, AttributeError, TypeError) as e:
+                    # If dimension access fails, try to get from shape directly
+                    shape = czi_reader.shape
+                    if isinstance(shape, dict):
+                        # Shape is a dictionary - access by dimension name
+                        num_time = shape.get('T', 1) if isinstance(shape.get('T'), (int, np.integer)) else 1
+                        num_channels = shape.get('C', 1) if isinstance(shape.get('C'), (int, np.integer)) else 1
+                        num_z = shape.get('Z', 1) if isinstance(shape.get('Z'), (int, np.integer)) else 1
+                    else:
+                        # Fallback: assume standard order and try indexing
+                        shape_list = list(shape) if hasattr(shape, '__iter__') else [shape]
+                        num_time = shape_list[dims_str.index('T')] if 'T' in dims_str and len(shape_list) > dims_str.index('T') else 1
+                        num_channels = shape_list[dims_str.index('C')] if 'C' in dims_str and len(shape_list) > dims_str.index('C') else 1
+                        num_z = shape_list[dims_str.index('Z')] if 'Z' in dims_str and len(shape_list) > dims_str.index('Z') else 1
                 
                 channel_names = []
                 try:
@@ -1206,11 +1398,18 @@ class ND2ConversionTab(QWidget):
                     'channel_names': channel_names,
                     'pixel_size': pixel_size
                 }
+            finally:
+                # Clean up if needed (AICSImage may have resources to close)
+                if hasattr(czi_reader, 'close'):
+                    try:
+                        czi_reader.close()
+                    except:
+                        pass
         except Exception:
             return None
     
     def load_file_info(self, file_path):
-        """Load and display microscopy file information (ND2, LIF, or CZI)"""
+        """Load and display microscopy file information (ND2, LIF, CZI, or TIFF)"""
         file_path_obj = Path(file_path)
         file_ext = file_path_obj.suffix.lower()
         
@@ -1221,10 +1420,12 @@ class ND2ConversionTab(QWidget):
                 self._load_lif_info(file_path)
             elif file_ext == '.czi':
                 self._load_czi_info(file_path)
+            elif file_ext in ['.tif', '.tiff']:
+                self._load_tiff_info(file_path)
             else:
                 QMessageBox.warning(self, "Unsupported Format", 
                                   f"File format '{file_ext}' is not supported.\n"
-                                  "Supported formats: ND2, LIF, CZI")
+                                  "Supported formats: ND2, LIF, CZI, TIFF")
                 return
         except Exception as e:
             QMessageBox.critical(self, "Error Loading File", 
@@ -1330,18 +1531,59 @@ class ND2ConversionTab(QWidget):
         try:
             # Try using aicsimageio for LIF files
             try:
+                import numpy as np
                 from aicsimageio import AICSImage
                 self.parent_window.log_output(f"Loading LIF file info: {file_path}\n")
                 
-                with AICSImage(file_path) as lif_reader:
+                # AICSImage doesn't support context manager protocol, use direct instantiation
+                lif_reader = AICSImage(file_path)
+                try:
+                    # Get dimensions - handle both old and new aicsimageio API
                     dims = lif_reader.dims
-                    shape = lif_reader.shape
                     
-                    # AICSImage uses dimension order like 'STCZYX' or similar
-                    # Find time, channel, and z dimensions
-                    num_time = shape[dims.index('T')] if 'T' in dims else 1
-                    num_channels = shape[dims.index('C')] if 'C' in dims else 1
-                    num_z = shape[dims.index('Z')] if 'Z' in dims else 1
+                    # Try to get dimension order as string
+                    if hasattr(dims, 'order'):
+                        dims_str = dims.order
+                    elif isinstance(dims, str):
+                        dims_str = dims
+                    elif isinstance(dims, (list, tuple)):
+                        dims_str = ''.join(str(d) for d in dims)
+                    else:
+                        dims_str = str(dims)
+                    
+                    # Get shape - try different methods depending on aicsimageio version
+                    try:
+                        # Try accessing as dictionary-like (newer versions)
+                        if hasattr(lif_reader, 'get_xarray_data'):
+                            xdata = lif_reader.get_xarray_data()
+                            num_time = int(xdata.sizes.get('T', 1))
+                            num_channels = int(xdata.sizes.get('C', 1))
+                            num_z = int(xdata.sizes.get('Z', 1))
+                        else:
+                            # Fallback to shape attribute
+                            shape = lif_reader.shape
+                            # Convert shape to tuple/list if needed
+                            if not isinstance(shape, (tuple, list)):
+                                shape = tuple(shape) if hasattr(shape, '__iter__') else (shape,)
+                            
+                            # Access dimensions by index in dims string
+                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                    except (KeyError, IndexError, AttributeError, TypeError) as e:
+                        # If dimension access fails, try to get from shape directly
+                        shape = lif_reader.shape
+                        if isinstance(shape, dict):
+                            # Shape is a dictionary - access by dimension name
+                            num_time = shape.get('T', 1) if isinstance(shape.get('T'), (int, np.integer)) else 1
+                            num_channels = shape.get('C', 1) if isinstance(shape.get('C'), (int, np.integer)) else 1
+                            num_z = shape.get('Z', 1) if isinstance(shape.get('Z'), (int, np.integer)) else 1
+                        else:
+                            # Fallback: assume standard order and try indexing
+                            shape_list = list(shape) if hasattr(shape, '__iter__') else [shape]
+                            num_time = shape_list[dims_str.index('T')] if 'T' in dims_str and len(shape_list) > dims_str.index('T') else 1
+                            num_channels = shape_list[dims_str.index('C')] if 'C' in dims_str and len(shape_list) > dims_str.index('C') else 1
+                            num_z = shape_list[dims_str.index('Z')] if 'Z' in dims_str and len(shape_list) > dims_str.index('Z') else 1
                     
                     # Get channel names if available
                     channel_names = []
@@ -1366,6 +1608,13 @@ class ND2ConversionTab(QWidget):
                     
                     self._update_file_info_ui(file_path, 'lif', num_time, num_channels, num_z, 
                                             channel_names, pixel_size)
+                finally:
+                    # Clean up if needed (AICSImage may have resources to close)
+                    if hasattr(lif_reader, 'close'):
+                        try:
+                            lif_reader.close()
+                        except:
+                            pass
                     
             except ImportError:
                 # Fallback to readlif if aicsimageio not available
@@ -1401,16 +1650,59 @@ class ND2ConversionTab(QWidget):
         try:
             # Try using aicsimageio for CZI files
             try:
+                import numpy as np
                 from aicsimageio import AICSImage
                 self.parent_window.log_output(f"Loading CZI file info: {file_path}\n")
                 
-                with AICSImage(file_path) as czi_reader:
+                # AICSImage doesn't support context manager protocol, use direct instantiation
+                czi_reader = AICSImage(file_path)
+                try:
+                    # Get dimensions - handle both old and new aicsimageio API
                     dims = czi_reader.dims
-                    shape = czi_reader.shape
                     
-                    num_time = shape[dims.index('T')] if 'T' in dims else 1
-                    num_channels = shape[dims.index('C')] if 'C' in dims else 1
-                    num_z = shape[dims.index('Z')] if 'Z' in dims else 1
+                    # Try to get dimension order as string
+                    if hasattr(dims, 'order'):
+                        dims_str = dims.order
+                    elif isinstance(dims, str):
+                        dims_str = dims
+                    elif isinstance(dims, (list, tuple)):
+                        dims_str = ''.join(str(d) for d in dims)
+                    else:
+                        dims_str = str(dims)
+                    
+                    # Get shape - try different methods depending on aicsimageio version
+                    try:
+                        # Try accessing as dictionary-like (newer versions)
+                        if hasattr(czi_reader, 'get_xarray_data'):
+                            xdata = czi_reader.get_xarray_data()
+                            num_time = int(xdata.sizes.get('T', 1))
+                            num_channels = int(xdata.sizes.get('C', 1))
+                            num_z = int(xdata.sizes.get('Z', 1))
+                        else:
+                            # Fallback to shape attribute
+                            shape = czi_reader.shape
+                            # Convert shape to tuple/list if needed
+                            if not isinstance(shape, (tuple, list)):
+                                shape = tuple(shape) if hasattr(shape, '__iter__') else (shape,)
+                            
+                            # Access dimensions by index in dims string
+                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                    except (KeyError, IndexError, AttributeError, TypeError) as e:
+                        # If dimension access fails, try to get from shape directly
+                        shape = czi_reader.shape
+                        if isinstance(shape, dict):
+                            # Shape is a dictionary - access by dimension name
+                            num_time = shape.get('T', 1) if isinstance(shape.get('T'), (int, np.integer)) else 1
+                            num_channels = shape.get('C', 1) if isinstance(shape.get('C'), (int, np.integer)) else 1
+                            num_z = shape.get('Z', 1) if isinstance(shape.get('Z'), (int, np.integer)) else 1
+                        else:
+                            # Fallback: assume standard order and try indexing
+                            shape_list = list(shape) if hasattr(shape, '__iter__') else [shape]
+                            num_time = shape_list[dims_str.index('T')] if 'T' in dims_str and len(shape_list) > dims_str.index('T') else 1
+                            num_channels = shape_list[dims_str.index('C')] if 'C' in dims_str and len(shape_list) > dims_str.index('C') else 1
+                            num_z = shape_list[dims_str.index('Z')] if 'Z' in dims_str and len(shape_list) > dims_str.index('Z') else 1
                     
                     # Get channel names if available
                     channel_names = []
@@ -1434,6 +1726,13 @@ class ND2ConversionTab(QWidget):
                     
                     self._update_file_info_ui(file_path, 'czi', num_time, num_channels, num_z,
                                             channel_names, pixel_size)
+                finally:
+                    # Clean up if needed (AICSImage may have resources to close)
+                    if hasattr(czi_reader, 'close'):
+                        try:
+                            czi_reader.close()
+                        except:
+                            pass
                     
             except ImportError:
                 # Fallback to czifile if aicsimageio not available
@@ -1471,6 +1770,82 @@ class ND2ConversionTab(QWidget):
                                       "Install with: pip install aicsimageio czifile")
         except Exception as e:
             QMessageBox.critical(self, "Error Loading CZI", f"Could not load CZI file:\n{str(e)}")
+            self.parent_window.log_output(f"Error: {str(e)}\n")
+    
+    def _load_tiff_info(self, file_path):
+        """Load and display TIFF file information"""
+        try:
+            import tifffile
+            import numpy as np
+            self.parent_window.log_output(f"Loading TIFF file info: {file_path}\n")
+            
+            # Read TIFF file to get dimensions
+            with tifffile.TiffFile(file_path) as tif:
+                # Get shape from first page
+                first_page = tif.pages[0]
+                shape = first_page.shape
+                
+                # Try to get metadata
+                metadata = {}
+                if hasattr(tif, 'imagej_metadata') and tif.imagej_metadata:
+                    metadata = tif.imagej_metadata
+                
+                # Determine dimensions from shape
+                ndim = len(shape)
+                num_pages = len(tif.pages)
+                
+                if ndim == 2:
+                    # Single 2D image or multi-page
+                    if num_pages > 1:
+                        num_time = num_pages
+                        num_channels = 1
+                        num_z = 1
+                    else:
+                        num_time = 1
+                        num_channels = 1
+                        num_z = 1
+                elif ndim == 3:
+                    # Could be (T, Y, X) or (C, Y, X) or (Z, Y, X)
+                    if shape[0] < 10:
+                        num_time = 1
+                        num_channels = shape[0]
+                        num_z = 1
+                    else:
+                        num_time = shape[0]
+                        num_channels = 1
+                        num_z = 1
+                elif ndim == 4:
+                    # Could be (T, C, Y, X) or (T, Z, Y, X) or (Z, C, Y, X)
+                    if shape[1] < 10:
+                        num_time = shape[0]
+                        num_channels = shape[1]
+                        num_z = 1
+                    elif shape[0] < 10:
+                        num_time = 1
+                        num_channels = shape[1]
+                        num_z = shape[0]
+                    else:
+                        num_time = shape[0]
+                        num_channels = 1
+                        num_z = shape[1]
+                else:
+                    # 5D or more - assume (T, Z, C, Y, X)
+                    num_time = shape[0] if len(shape) > 0 else 1
+                    num_z = shape[1] if len(shape) > 1 else 1
+                    num_channels = shape[2] if len(shape) > 2 else 1
+                
+                # Get pixel size from metadata if available
+                pixel_size = None
+                if 'pixelSize' in metadata:
+                    pixel_size = float(metadata['pixelSize'])
+                
+                channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
+                
+                self._update_file_info_ui(file_path, 'tiff', num_time, num_channels, num_z,
+                                        channel_names, pixel_size)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error Loading TIFF", f"Could not load TIFF file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _update_file_info_ui(self, file_path, file_type, num_time, num_channels, num_z, 
@@ -1538,6 +1913,150 @@ class ND2ConversionTab(QWidget):
             QMessageBox.warning(self, "No File", "Please select a valid microscopy file first.")
             return
         
+        file_path_obj = Path(self.file_path.text())
+        
+        # Check if it's a folder - if so, show file selection dialog
+        if file_path_obj.is_dir():
+            folder = file_path_obj
+            # Find all supported files in the folder
+            supported_files = sorted(
+                list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
+                list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
+                list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
+                list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
+                list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
+            )
+            
+            if not supported_files:
+                QMessageBox.warning(self, "No Files Found", 
+                                  "No supported microscopy files (ND2, LIF, CZI, TIFF) found in the selected folder.")
+                return
+            
+            # Show file selection dialog
+            file_dialog = QDialog(self)
+            file_dialog.setWindowTitle("Select File for Preview")
+            file_dialog.setMinimumSize(500, 400)
+            
+            layout = QVBoxLayout()
+            
+            # Label
+            label = QLabel("Select a file to preview:")
+            label.setStyleSheet("color: #ffffff; font-size: 11pt; padding: 10px;")
+            layout.addWidget(label)
+            
+            # List widget with file names
+            file_list = QListWidget()
+            file_list.setStyleSheet(
+                "QListWidget {"
+                "background-color: #2b2b2b;"
+                "color: #ffffff;"
+                "font-size: 11pt;"
+                "border: 1px solid #555555;"
+                "border-radius: 4px;"
+                "padding: 5px;"
+                "}"
+                "QListWidget::item {"
+                "padding: 8px;"
+                "border-bottom: 1px solid #3a3a3a;"
+                "}"
+                "QListWidget::item:selected {"
+                "background-color: #5D6D7E;"
+                "color: #ffffff;"
+                "}"
+                "QListWidget::item:hover {"
+                "background-color: #3a3a3a;"
+                "}"
+            )
+            
+            # Add file names to list
+            for f in supported_files:
+                file_list.addItem(f.name)
+            
+            # Select first item by default
+            if file_list.count() > 0:
+                file_list.setCurrentRow(0)
+            
+            # Enable double-click to accept
+            def on_item_double_clicked(item):
+                file_dialog.accept()
+            
+            file_list.itemDoubleClicked.connect(on_item_double_clicked)
+            
+            layout.addWidget(file_list)
+            
+            # Buttons
+            button_layout = QHBoxLayout()
+            button_layout.addStretch()
+            
+            cancel_btn = QPushButton("Cancel")
+            cancel_btn.setStyleSheet(
+                "QPushButton {"
+                "background-color: #5D6D7E;"
+                "color: white;"
+                "font-weight: bold;"
+                "padding: 6px 12px;"
+                "border: none;"
+                "border-radius: 4px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #34495E;"
+                "}"
+            )
+            cancel_btn.clicked.connect(file_dialog.reject)
+            button_layout.addWidget(cancel_btn)
+            
+            ok_btn = QPushButton("Preview")
+            ok_btn.setStyleSheet(
+                "QPushButton {"
+                "background-color: #2196F3;"
+                "color: white;"
+                "font-weight: bold;"
+                "padding: 6px 12px;"
+                "border: none;"
+                "border-radius: 4px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #1976D2;"
+                "}"
+            )
+            ok_btn.clicked.connect(file_dialog.accept)
+            button_layout.addWidget(ok_btn)
+            
+            layout.addLayout(button_layout)
+            file_dialog.setLayout(layout)
+            
+            # Show dialog and get selected file
+            if file_dialog.exec() == QDialog.DialogCode.Accepted:
+                current_item = file_list.currentItem()
+                if current_item:
+                    selected_file_name = current_item.text()
+                    selected_file = folder / selected_file_name
+                    
+                    # Temporarily update file_path and load info for selected file
+                    original_path = self.file_path.text()
+                    self.file_path.setText(str(selected_file))
+                    self.load_file_info(str(selected_file))
+                    
+                    # Now preview the selected file
+                    if self.file_info:
+                        file_type = self.file_info.get('file_type', 'nd2')
+                        
+                        if file_type == 'nd2':
+                            self._preview_nd2()
+                        elif file_type == 'lif':
+                            self._preview_lif()
+                        elif file_type == 'czi':
+                            self._preview_czi()
+                        elif file_type == 'tiff':
+                            self._preview_tiff()
+                        else:
+                            QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
+                    
+                    # Restore original path (optional - user might want to keep the selected file)
+                    # self.file_path.setText(original_path)
+            return
+        
+        # Single file mode - check if file info is loaded
         if not self.file_info:
             QMessageBox.warning(self, "File Not Loaded", "Please load file information first.")
             return
@@ -1550,17 +2069,544 @@ class ND2ConversionTab(QWidget):
             self._preview_lif()
         elif file_type == 'czi':
             self._preview_czi()
+        elif file_type == 'tiff':
+            self._preview_tiff()
         else:
             QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
+    
+    def _create_unified_preview_ui(self, preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path):
+        """Create unified preview UI with improved histogram layout (used by all file types)"""
+        import numpy as np
+        import sys
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+        from matplotlib.figure import Figure
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        
+        # Matplotlib figure with navigation toolbar
+        fig = Figure(figsize=(12, 8))
+        canvas = FigureCanvas(fig)
+        toolbar = NavigationToolbar(canvas, preview_dialog)
+        # Style toolbar buttons to be white/more visible
+        toolbar.setStyleSheet(
+            "QToolButton {"
+            "color: white;"
+            "background-color: #5D6D7E;"
+            "border: 1px solid #34495E;"
+            "border-radius: 3px;"
+            "padding: 4px;"
+            "}"
+            "QToolButton:hover {"
+            "background-color: #34495E;"
+            "}"
+        )
+        
+        layout.addWidget(toolbar)
+        
+        # Frame navigation (moved to top, below toolbar, to match segmentation preview)
+        nav_layout = QHBoxLayout()
+        prev_btn = QPushButton("Previous")
+        nav_layout.addWidget(prev_btn)
+        
+        nav_layout.addWidget(QLabel("Frame:"))
+        frame_spin = QSpinBox()
+        frame_spin.setRange(1, num_time)
+        frame_spin.setValue(1)
+        nav_layout.addWidget(frame_spin)
+        nav_layout.addWidget(QLabel(f"of {num_time}"))
+        
+        next_btn = QPushButton("Next")
+        nav_layout.addWidget(next_btn)
+        
+        nav_layout.addStretch()
+        
+        # Frame info label
+        frame_info = QLabel(f"Timepoint 1 of {num_time} | Channel: 1 | Z-slice: 1")
+        frame_info.setStyleSheet("font-weight: bold; color: #2196F3;")
+        nav_layout.addWidget(frame_info)
+        
+        layout.addLayout(nav_layout)
+        
+        # LUT controls with histogram - IMPROVED LAYOUT
+        lut_group = QGroupBox("LUT (Lookup Table) Controls")
+        lut_layout = QVBoxLayout()
+        lut_layout.setSpacing(8)  # Reduce spacing between elements
+        
+        # Histogram plot - optimized size and appearance
+        hist_fig = Figure(figsize=(10, 2.5))  # More balanced aspect ratio
+        hist_canvas = FigureCanvas(hist_fig)
+        hist_canvas.setMinimumHeight(150)  # Reduced for better proportions
+        hist_canvas.setMaximumHeight(150)  # Reduced for better proportions
+        hist_ax = hist_fig.add_subplot(111)
+        hist_fig.patch.set_facecolor('#2b2b2b')  # Dark background
+        hist_ax.set_facecolor('#2b2b2b')
+        hist_ax.tick_params(colors='white', labelsize=9)  # Slightly reduced for cleaner look
+        hist_ax.spines['bottom'].set_color('white')
+        hist_ax.spines['top'].set_color('white')
+        hist_ax.spines['left'].set_color('white')
+        hist_ax.spines['right'].set_color('white')
+        hist_ax.xaxis.label.set_color('white')
+        hist_ax.yaxis.label.set_color('white')
+        # Add padding to prevent cutoff
+        hist_fig.tight_layout(pad=1.2)
+        hist_canvas.setStyleSheet("background-color: #2b2b2b;")
+        lut_layout.addWidget(hist_canvas)
+        
+        # Min/Max value displays and manual input - more compact layout
+        value_layout = QHBoxLayout()
+        value_layout.setSpacing(10)  # Reduce spacing
+        value_layout.addWidget(QLabel("Min:"))
+        lut_min_slider = QDoubleSpinBox()
+        lut_min_slider.setRange(0, 65535)
+        lut_min_slider.setDecimals(1)
+        lut_min_slider.setSingleStep(10)
+        lut_min_slider.setToolTip("Minimum intensity value for display (or adjust via histogram)")
+        lut_min_slider.setMaximumWidth(120)  # Limit width to reduce white space
+        value_layout.addWidget(lut_min_slider)
+        
+        value_layout.addWidget(QLabel("Max:"))
+        lut_max_slider = QDoubleSpinBox()
+        lut_max_slider.setRange(0, 65535)
+        lut_max_slider.setDecimals(1)
+        lut_max_slider.setSingleStep(10)
+        lut_max_slider.setToolTip("Maximum intensity value for display (or adjust via histogram)")
+        lut_max_slider.setMaximumWidth(120)  # Limit width to reduce white space
+        value_layout.addWidget(lut_max_slider)
+        
+        value_layout.addStretch()
+        lut_layout.addLayout(value_layout)
+        
+        lut_group.setLayout(lut_layout)
+        lut_group.setMaximumHeight(250)  # Adjusted to match new histogram height
+        layout.addWidget(lut_group)
+        
+        layout.addWidget(canvas)
+        
+        # Store current frame data and LUT settings
+        current_frame_data = {'frame': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None, 'histogram': None}
+        is_updating_lut = False  # Flag to prevent recursive updates during LUT adjustment
+        im_handle = None  # Store image handle for LUT updates
+        hist_vmin_line = None  # Vertical line for min value in histogram
+        hist_vmax_line = None  # Vertical line for max value in histogram
+        hist_plot = None  # Histogram bar plot
+        dragging_line = None  # Track which line is being dragged
+        
+        # Initialize LUT values (will be set from first frame)
+        current_vmin = None
+        current_vmax = None
+        
+        def update_histogram(frame, vmin, vmax):
+            """Update histogram plot with min/max lines"""
+            nonlocal hist_vmin_line, hist_vmax_line, hist_plot
+            
+            # Clear axes instead of trying to remove lines
+            hist_ax.clear()
+            
+            # Calculate histogram
+            flat_frame = frame.flatten()
+            flat_frame = flat_frame[flat_frame > 0]  # Exclude zeros for better visualization
+            if len(flat_frame) == 0:
+                flat_frame = frame.flatten()
+            
+            frame_min = float(frame.min())
+            frame_max = float(frame.max())
+            
+            # Create histogram
+            bins = min(256, int(frame_max - frame_min + 1))
+            hist, bin_edges = np.histogram(flat_frame, bins=bins, range=(frame_min, frame_max))
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            
+            # Plot histogram (log scale for better visualization)
+            hist_plot = hist_ax.bar(bin_centers, np.log1p(hist), width=bin_edges[1] - bin_edges[0], 
+                                   color='#4A90E2', alpha=0.8, edgecolor='none')
+            
+            # Draw min/max lines (cleaner appearance)
+            hist_vmin_line = hist_ax.axvline(vmin, color='#FF6B6B', linewidth=2, linestyle='--', label=f'Min: {vmin:.1f}')
+            hist_vmax_line = hist_ax.axvline(vmax, color='#4ECDC4', linewidth=2, linestyle='--', label=f'Max: {vmax:.1f}')
+            
+            # Subtle fill region between min and max (lighter, less intrusive)
+            hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
+            
+            hist_ax.set_xlabel('Intensity', color='white', fontsize=10)
+            hist_ax.set_ylabel('Log(Count+1)', color='white', fontsize=10)
+            hist_ax.set_title('Click/drag lines to adjust min/max', color='white', fontsize=9, pad=8)
+            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9)
+            hist_ax.grid(True, alpha=0.25, color='white', linestyle='-', linewidth=0.5)
+            
+            # Ensure proper margins to prevent cutoff
+            hist_ax.margins(x=0.02, y=0.05)
+            
+            hist_canvas.draw()
+            current_frame_data['histogram'] = (hist, bin_edges, frame_min, frame_max)
+        
+        def on_histogram_press(event):
+            """Handle mouse press on histogram to start dragging"""
+            if event.inaxes != hist_ax:
+                return
+            
+            x = event.xdata
+            if x is None:
+                return
+            
+            nonlocal dragging_line, current_vmin, current_vmax
+            
+            # Determine which line is closest (within 5% of range for easier grabbing)
+            if current_vmin is not None and current_vmax is not None:
+                frame_min = current_frame_data.get('frame_min', 0)
+                frame_max = current_frame_data.get('frame_max', 65535)
+                range_size = frame_max - frame_min
+                if range_size > 0:
+                    threshold = max(range_size * 0.05, (frame_max - frame_min) * 0.01)  # 5% of range, or 1% minimum
+                else:
+                    threshold = 100  # Default threshold
+                
+                dist_to_min = abs(x - current_vmin)
+                dist_to_max = abs(x - current_vmax)
+                
+                # Check if clicking near a line
+                if dist_to_min < threshold and dist_to_min < dist_to_max:
+                    dragging_line = 'min'
+                elif dist_to_max < threshold:
+                    dragging_line = 'max'
+                else:
+                    # If not near a line, create a new line at click position
+                    # Determine which side of the midpoint to adjust
+                    midpoint = (current_vmin + current_vmax) / 2
+                    if x < midpoint:
+                        dragging_line = 'min'
+                    else:
+                        dragging_line = 'max'
+        
+        def on_histogram_motion(event):
+            """Handle mouse motion to drag lines"""
+            if event.inaxes != hist_ax:
+                return
+            
+            x = event.xdata
+            if x is None or dragging_line is None:
+                return
+            
+            nonlocal current_vmin, current_vmax, is_updating_lut
+            if is_updating_lut:
+                return
+            
+            is_updating_lut = True
+            try:
+                frame_min = current_frame_data.get('frame_min', 0)
+                frame_max = current_frame_data.get('frame_max', 65535)
+                
+                if dragging_line == 'min':
+                    new_min = max(frame_min, min(x, (current_vmax or frame_max) - 1))
+                    current_vmin = new_min
+                    # Block signals to prevent recursive updates
+                    lut_min_slider.blockSignals(True)
+                    lut_min_slider.setValue(new_min)
+                    lut_min_slider.blockSignals(False)
+                elif dragging_line == 'max':
+                    new_max = min(frame_max, max(x, (current_vmin or frame_min) + 1))
+                    current_vmax = new_max
+                    # Block signals to prevent recursive updates
+                    lut_max_slider.blockSignals(True)
+                    lut_max_slider.setValue(new_max)
+                    lut_max_slider.blockSignals(False)
+                
+                # Update display directly without calling update_lut_from_sliders (to avoid recursion)
+                vmin = current_vmin
+                vmax = current_vmax
+                
+                # Update image display
+                if current_frame_data['frame'] is not None and im_handle is not None:
+                    im_handle.set_clim(vmin=vmin, vmax=vmax)
+                    canvas.draw()
+                    
+                    # Update frame info
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                    
+                    # Update histogram lines
+                    if hist_vmin_line is not None:
+                        hist_vmin_line.set_xdata([vmin, vmin])
+                    if hist_vmax_line is not None:
+                        hist_vmax_line.set_xdata([vmax, vmax])
+                    # Update fill region
+                    for patch in list(hist_ax.patches):
+                        if hasattr(patch, 'get_alpha') and patch.get_alpha() == 0.2:
+                            patch.remove()
+                    hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
+                    # Update legend
+                    if hist_vmin_line is not None and hist_vmax_line is not None:
+                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=9)
+                    hist_canvas.draw()
+                    
+                    # Store values
+                    current_frame_data['vmin'] = vmin
+                    current_frame_data['vmax'] = vmax
+            finally:
+                is_updating_lut = False
+        
+        def on_histogram_release(event):
+            """Handle mouse release to stop dragging"""
+            nonlocal dragging_line
+            dragging_line = None
+        
+        # Connect histogram interaction handlers
+        hist_canvas.mpl_connect('button_press_event', on_histogram_press)
+        hist_canvas.mpl_connect('motion_notify_event', on_histogram_motion)
+        hist_canvas.mpl_connect('button_release_event', on_histogram_release)
+        
+        # Function to update displayed frame
+        def update_frame(frame_idx, vmin=None, vmax=None, update_sliders=True):
+            """Update the displayed frame (frame_idx is 0-indexed internally)"""
+            # Get frame at index (0-indexed)
+            if len(all_frames.shape) >= 3:
+                frame = all_frames[frame_idx]
+            else:
+                frame = all_frames
+            
+            # Handle different shapes
+            if len(frame.shape) == 3:  # CYX or ZYX
+                if num_channels > 1:
+                    frame = frame[0]  # Take first channel
+                else:
+                    frame = frame[0]  # Take first Z-slice
+            elif len(frame.shape) == 2:  # YX
+                pass
+            elif len(frame.shape) == 4:  # TCYX
+                frame = frame[0]  # Take first channel
+            
+            # Store frame data and actual min/max
+            current_frame_data['frame'] = frame
+            frame_min = float(frame.min())
+            frame_max = float(frame.max())
+            current_frame_data['frame_min'] = frame_min
+            current_frame_data['frame_max'] = frame_max
+            
+            # Determine LUT values - preserve current values or use defaults
+            nonlocal current_vmin, current_vmax
+            if vmin is not None and vmax is not None:
+                # Explicit values provided
+                current_vmin = vmin
+                current_vmax = vmax
+            elif current_vmin is None or current_vmax is None:
+                # First time - use percentile-based defaults
+                current_vmin = float(np.percentile(frame, 1))
+                current_vmax = float(np.percentile(frame, 99))
+            # Otherwise, keep current_vmin and current_vmax (preserve user settings)
+            
+            vmin = current_vmin
+            vmax = current_vmax
+            
+            current_frame_data['vmin'] = vmin
+            current_frame_data['vmax'] = vmax
+            
+            # Update sliders (block signals to prevent recursive calls)
+            if update_sliders:
+                nonlocal is_updating_lut
+                is_updating_lut = True
+                try:
+                    lut_min_slider.blockSignals(True)
+                    lut_max_slider.blockSignals(True)
+                    
+                    # Update range based on current frame (but don't change values!)
+                    # Only expand range if needed, never shrink it
+                    current_min_range = lut_min_slider.minimum()
+                    current_max_range = lut_min_slider.maximum()
+                    new_min_range = min(current_min_range, frame_min) if current_min_range > 0 else frame_min
+                    new_max_range = max(current_max_range, frame_max)
+                    
+                    lut_min_slider.setRange(new_min_range, new_max_range)
+                    lut_max_slider.setRange(new_min_range, new_max_range)
+                    
+                    # DON'T change the values - preserve what user set!
+                    # Only clamp if absolutely necessary (out of new range)
+                    current_min_val = lut_min_slider.value()
+                    current_max_val = lut_max_slider.value()
+                    
+                    if vmin is not None and vmax is not None:
+                        # Use provided values
+                        lut_min_slider.setValue(max(new_min_range, min(new_max_range, vmin)))
+                        lut_max_slider.setValue(max(new_min_range, min(new_max_range, vmax)))
+                    else:
+                        # Preserve current values if they're still valid
+                        if new_min_range <= current_min_val <= new_max_range:
+                            # Keep current value
+                            pass
+                        else:
+                            # Clamp to new range
+                            lut_min_slider.setValue(max(new_min_range, min(new_max_range, current_min_val)))
+                        
+                        if new_min_range <= current_max_val <= new_max_range:
+                            # Keep current value
+                            pass
+                        else:
+                            # Clamp to new range
+                            lut_max_slider.setValue(max(new_min_range, min(new_max_range, current_max_val)))
+                    
+                    lut_min_slider.blockSignals(False)
+                    lut_max_slider.blockSignals(False)
+                finally:
+                    is_updating_lut = False
+            
+            # Update histogram
+            update_histogram(frame, vmin, vmax)
+            
+            # Clear and redraw
+            fig.clear()
+            ax = fig.add_subplot(111)
+            nonlocal im_handle
+            im_handle = ax.imshow(frame, cmap='gray', vmin=vmin, vmax=vmax)
+            ax.set_title(f"Frame {frame_idx + 1} of {num_time}: {Path(file_path).name}")
+            ax.axis('off')
+            canvas.draw()
+            
+            # Update frame info (1-indexed for display)
+            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+        
+        # Manual LUT adjustment from sliders
+        def update_lut_from_sliders():
+            """Update display when sliders are moved"""
+            # Prevent recursive calls
+            nonlocal is_updating_lut, current_vmin, current_vmax
+            if is_updating_lut:
+                return
+            
+            is_updating_lut = True
+            try:
+                vmin = lut_min_slider.value()
+                vmax = lut_max_slider.value()
+                
+                # Ensure min < max for valid display
+                if vmin >= vmax:
+                    vmax = vmin + 1.0
+                    lut_max_slider.blockSignals(True)
+                    lut_max_slider.setValue(vmax)
+                    lut_max_slider.blockSignals(False)
+                
+                # Update stored values
+                current_vmin = vmin
+                current_vmax = vmax
+                
+                # Update the image display directly using matplotlib's set_clim
+                if current_frame_data['frame'] is not None and im_handle is not None:
+                    # Update the color limits on the existing image
+                    im_handle.set_clim(vmin=vmin, vmax=vmax)
+                    # Force immediate redraw
+                    canvas.draw()
+                    
+                    # Update frame info
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                    
+                    # Store the current LUT values so they persist
+                    current_frame_data['vmin'] = vmin
+                    current_frame_data['vmax'] = vmax
+                    
+                    # Update histogram lines (only update lines, don't redraw entire histogram)
+                    if hist_vmin_line is not None and hist_vmax_line is not None:
+                        # Update line positions
+                        hist_vmin_line.set_xdata([vmin, vmin])
+                        hist_vmax_line.set_xdata([vmax, vmax])
+                        # Update the fill region - clear old and add new
+                        for patch in list(hist_ax.patches):
+                            if hasattr(patch, 'get_alpha') and patch.get_alpha() == 0.2:
+                                patch.remove()
+                        hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
+                        # Update legend
+                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=9)
+                        hist_canvas.draw()
+                    else:
+                        # If lines don't exist yet, update full histogram
+                        if current_frame_data['frame'] is not None:
+                            update_histogram(current_frame_data['frame'], vmin, vmax)
+                else:
+                    # Fallback: full update if image handle doesn't exist
+                    update_frame(preview_dialog.current_frame, vmin=vmin, vmax=vmax, update_sliders=False)
+            finally:
+                is_updating_lut = False
+        
+        # Debounce timer for valueChanged signals (to avoid too many updates while dragging)
+        lut_update_timer = QTimer()
+        lut_update_timer.setSingleShot(True)
+        lut_update_timer.timeout.connect(update_lut_from_sliders)
+        
+        def on_lut_value_changed():
+            """Debounced handler for valueChanged signal"""
+            # Only trigger if not currently updating (to avoid conflicts)
+            if not is_updating_lut:
+                lut_update_timer.start(50)  # 50ms debounce
+        
+        # Connect LUT sliders
+        # Use debounced valueChanged for smooth real-time updates when using arrows
+        lut_min_slider.valueChanged.connect(on_lut_value_changed)
+        lut_max_slider.valueChanged.connect(on_lut_value_changed)
+        # Use editingFinished for immediate update when user finishes typing (Enter key)
+        # Make sure it doesn't get reset by blocking signals during update
+        def on_lut_editing_finished():
+            """Handle when user finishes editing (Enter key or focus loss)"""
+            if not is_updating_lut:
+                update_lut_from_sliders()
+        
+        lut_min_slider.editingFinished.connect(on_lut_editing_finished)
+        lut_max_slider.editingFinished.connect(on_lut_editing_finished)
+        
+        # Store current frame
+        preview_dialog.current_frame = 0
+        
+        # Connect navigation (matching Preview Segmentation style)
+        def go_to_frame(idx):
+            if 0 <= idx < num_time:
+                preview_dialog.current_frame = idx
+                # Block signals to prevent recursive calls
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(idx + 1)
+                frame_spin.blockSignals(False)
+                try:
+                    # Always preserve current slider values when navigating
+                    # User's manual adjustments persist across frames
+                    # Get current values from sliders (user's settings)
+                    vmin = lut_min_slider.value()
+                    vmax = lut_max_slider.value()
+                    # Update frame with user's values - don't recalculate!
+                    update_frame(idx, vmin=vmin, vmax=vmax, update_sliders=False)
+                except Exception as e:
+                    QMessageBox.warning(preview_dialog, "Preview Error", 
+                                      f"Could not display frame {idx + 1}:\n{str(e)}")
+        
+        prev_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame - 1))
+        next_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame + 1))
+        
+        # Use editingFinished for when user finishes editing (presses Enter or leaves field)
+        # and a debounced valueChanged for when using arrow keys
+        def on_frame_changed():
+            frame_num = frame_spin.value() - 1
+            if 0 <= frame_num < num_time:
+                go_to_frame(frame_num)
+        
+        frame_spin.editingFinished.connect(on_frame_changed)
+        # Debounce valueChanged to avoid triggering while typing
+        frame_spin._change_timer = QTimer()
+        frame_spin._change_timer.setSingleShot(True)
+        frame_spin._change_timer.timeout.connect(on_frame_changed)
+        frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
+        
+        # Add Cmd+W (or Ctrl+W) shortcut to close dialog
+        close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
+        close_shortcut.activated.connect(preview_dialog.close)
+        # Also handle Cmd+W on macOS (Qt uses Ctrl modifier for Cmd on macOS)
+        if sys.platform == 'darwin':
+            close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
+            close_shortcut_mac.activated.connect(preview_dialog.close)
+        
+        # Display first frame (with auto LUT applied by default)
+        update_frame(0)
+        
+        preview_dialog.setLayout(layout)
+        preview_dialog.show()  # Use show() instead of exec_() for non-modal dialog
     
     def _preview_nd2(self):
         """Preview ND2 file in a dialog with frame navigation"""
         
         try:
             import nd2
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.figure import Figure
             
             file_path = self.file_path.text()
             
@@ -1582,513 +2628,8 @@ class ND2ConversionTab(QWidget):
                 # Load all frames (for navigation)
                 all_frames = nd2_reader.asarray()
             
-            # Matplotlib figure with navigation toolbar
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-            fig = Figure(figsize=(12, 8))
-            canvas = FigureCanvas(fig)
-            toolbar = NavigationToolbar(canvas, preview_dialog)
-            # Style toolbar buttons to be white/more visible
-            toolbar.setStyleSheet(
-                "QToolButton {"
-                "color: white;"
-                "background-color: #5D6D7E;"
-                "border: 1px solid #34495E;"
-                "border-radius: 3px;"
-                "padding: 4px;"
-                "}"
-                "QToolButton:hover {"
-                "background-color: #34495E;"
-                "}"
-            )
-            
-            layout.addWidget(toolbar)
-            
-            # Frame navigation (moved to top, below toolbar, to match segmentation preview)
-            nav_layout = QHBoxLayout()
-            prev_btn = QPushButton("Previous")
-            nav_layout.addWidget(prev_btn)
-            
-            nav_layout.addWidget(QLabel("Frame:"))
-            frame_spin = QSpinBox()
-            frame_spin.setRange(1, num_time)
-            frame_spin.setValue(1)
-            nav_layout.addWidget(frame_spin)
-            nav_layout.addWidget(QLabel(f"of {num_time}"))
-            
-            next_btn = QPushButton("Next")
-            nav_layout.addWidget(next_btn)
-            
-            nav_layout.addStretch()
-            
-            # Frame info label
-            frame_info = QLabel(f"Timepoint 1 of {num_time} | Channel: 1 | Z-slice: 1")
-            frame_info.setStyleSheet("font-weight: bold; color: #2196F3;")
-            nav_layout.addWidget(frame_info)
-            
-            layout.addLayout(nav_layout)
-            
-            # LUT controls with histogram
-            lut_group = QGroupBox("LUT (Lookup Table) Controls")
-            lut_layout = QVBoxLayout()
-            
-            # Histogram plot for visual min/max adjustment (smaller, more compact)
-            hist_fig = Figure(figsize=(8, 2))
-            hist_canvas = FigureCanvas(hist_fig)
-            hist_canvas.setMaximumHeight(120)  # Limit height
-            hist_ax = hist_fig.add_subplot(111)
-            hist_fig.patch.set_facecolor('#2b2b2b')  # Dark background
-            hist_ax.set_facecolor('#2b2b2b')
-            hist_ax.tick_params(colors='white', labelsize=8)
-            hist_ax.spines['bottom'].set_color('white')
-            hist_ax.spines['top'].set_color('white')
-            hist_ax.spines['left'].set_color('white')
-            hist_ax.spines['right'].set_color('white')
-            hist_ax.xaxis.label.set_color('white')
-            hist_ax.yaxis.label.set_color('white')
-            hist_canvas.setStyleSheet("background-color: #2b2b2b;")
-            lut_layout.addWidget(hist_canvas)
-            
-            # Min/Max value displays and manual input
-            value_layout = QHBoxLayout()
-            value_layout.addWidget(QLabel("Min:"))
-            lut_min_slider = QDoubleSpinBox()
-            lut_min_slider.setRange(0, 65535)
-            lut_min_slider.setDecimals(1)
-            lut_min_slider.setSingleStep(10)
-            lut_min_slider.setToolTip("Minimum intensity value for display (or adjust via histogram)")
-            value_layout.addWidget(lut_min_slider)
-            
-            value_layout.addWidget(QLabel("Max:"))
-            lut_max_slider = QDoubleSpinBox()
-            lut_max_slider.setRange(0, 65535)
-            lut_max_slider.setDecimals(1)
-            lut_max_slider.setSingleStep(10)
-            lut_max_slider.setToolTip("Maximum intensity value for display (or adjust via histogram)")
-            value_layout.addWidget(lut_max_slider)
-            
-            value_layout.addStretch()
-            lut_layout.addLayout(value_layout)
-            
-            lut_group.setLayout(lut_layout)
-            layout.addWidget(lut_group)
-            
-            layout.addWidget(canvas)
-            
-            # Store current frame data and LUT settings
-            current_frame_data = {'frame': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None, 'histogram': None}
-            is_updating_lut = False  # Flag to prevent recursive updates during LUT adjustment
-            im_handle = None  # Store image handle for LUT updates
-            hist_vmin_line = None  # Vertical line for min value in histogram
-            hist_vmax_line = None  # Vertical line for max value in histogram
-            hist_plot = None  # Histogram bar plot
-            dragging_line = None  # Track which line is being dragged
-            
-            # Initialize LUT values (will be set from first frame)
-            current_vmin = None
-            current_vmax = None
-            
-            def update_histogram(frame, vmin, vmax):
-                """Update histogram plot with min/max lines"""
-                nonlocal hist_vmin_line, hist_vmax_line, hist_plot
-                
-                # Clear axes instead of trying to remove lines
-                hist_ax.clear()
-                
-                # Calculate histogram
-                flat_frame = frame.flatten()
-                flat_frame = flat_frame[flat_frame > 0]  # Exclude zeros for better visualization
-                if len(flat_frame) == 0:
-                    flat_frame = frame.flatten()
-                
-                frame_min = float(frame.min())
-                frame_max = float(frame.max())
-                
-                # Create histogram
-                bins = min(256, int(frame_max - frame_min + 1))
-                hist, bin_edges = np.histogram(flat_frame, bins=bins, range=(frame_min, frame_max))
-                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                
-                # Plot histogram (log scale for better visualization)
-                hist_plot = hist_ax.bar(bin_centers, np.log1p(hist), width=bin_edges[1] - bin_edges[0], 
-                                       color='#4A90E2', alpha=0.7, edgecolor='none')
-                
-                # Draw min/max lines (create new ones since we cleared the axes)
-                hist_vmin_line = hist_ax.axvline(vmin, color='#FF6B6B', linewidth=2, linestyle='--', label=f'Min: {vmin:.1f}')
-                hist_vmax_line = hist_ax.axvline(vmax, color='#4ECDC4', linewidth=2, linestyle='--', label=f'Max: {vmax:.1f}')
-                
-                # Fill region between min and max
-                hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
-                
-                hist_ax.set_xlabel('Intensity', color='white', fontsize=9)
-                hist_ax.set_ylabel('Log(Count+1)', color='white', fontsize=9)
-                hist_ax.set_title('Click/drag lines to adjust min/max', color='white', fontsize=9)
-                hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8)
-                hist_ax.grid(True, alpha=0.3, color='white')
-                
-                hist_canvas.draw()
-                current_frame_data['histogram'] = (hist, bin_edges, frame_min, frame_max)
-            
-            def on_histogram_press(event):
-                """Handle mouse press on histogram to start dragging"""
-                if event.inaxes != hist_ax:
-                    return
-                
-                x = event.xdata
-                if x is None:
-                    return
-                
-                nonlocal dragging_line, current_vmin, current_vmax
-                
-                # Determine which line is closest (within 5% of range for easier grabbing)
-                if current_vmin is not None and current_vmax is not None:
-                    frame_min = current_frame_data.get('frame_min', 0)
-                    frame_max = current_frame_data.get('frame_max', 65535)
-                    range_size = frame_max - frame_min
-                    if range_size > 0:
-                        threshold = max(range_size * 0.05, (frame_max - frame_min) * 0.01)  # 5% of range, or 1% minimum
-                    else:
-                        threshold = 100  # Default threshold
-                    
-                    dist_to_min = abs(x - current_vmin)
-                    dist_to_max = abs(x - current_vmax)
-                    
-                    # Check if clicking near a line
-                    if dist_to_min < threshold and dist_to_min < dist_to_max:
-                        dragging_line = 'min'
-                    elif dist_to_max < threshold:
-                        dragging_line = 'max'
-                    else:
-                        # If not near a line, create a new line at click position
-                        # Determine which side of the midpoint to adjust
-                        midpoint = (current_vmin + current_vmax) / 2
-                        if x < midpoint:
-                            dragging_line = 'min'
-                        else:
-                            dragging_line = 'max'
-            
-            def on_histogram_motion(event):
-                """Handle mouse motion to drag lines"""
-                if event.inaxes != hist_ax:
-                    return
-                
-                x = event.xdata
-                if x is None or dragging_line is None:
-                    return
-                
-                nonlocal current_vmin, current_vmax, is_updating_lut
-                if is_updating_lut:
-                    return
-                
-                is_updating_lut = True
-                try:
-                    frame_min = current_frame_data.get('frame_min', 0)
-                    frame_max = current_frame_data.get('frame_max', 65535)
-                    
-                    if dragging_line == 'min':
-                        new_min = max(frame_min, min(x, (current_vmax or frame_max) - 1))
-                        current_vmin = new_min
-                        # Block signals to prevent recursive updates
-                        lut_min_slider.blockSignals(True)
-                        lut_min_slider.setValue(new_min)
-                        lut_min_slider.blockSignals(False)
-                    elif dragging_line == 'max':
-                        new_max = min(frame_max, max(x, (current_vmin or frame_min) + 1))
-                        current_vmax = new_max
-                        # Block signals to prevent recursive updates
-                        lut_max_slider.blockSignals(True)
-                        lut_max_slider.setValue(new_max)
-                        lut_max_slider.blockSignals(False)
-                    
-                    # Update display directly without calling update_lut_from_sliders (to avoid recursion)
-                    vmin = current_vmin
-                    vmax = current_vmax
-                    
-                    # Update image display
-                    if current_frame_data['frame'] is not None and im_handle is not None:
-                        im_handle.set_clim(vmin=vmin, vmax=vmax)
-                        canvas.draw()
-                        
-                        # Update frame info
-                        frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
-                        
-                        # Update histogram lines
-                        if hist_vmin_line is not None:
-                            hist_vmin_line.set_xdata([vmin, vmin])
-                        if hist_vmax_line is not None:
-                            hist_vmax_line.set_xdata([vmax, vmax])
-                        # Update fill region
-                        for patch in list(hist_ax.patches):
-                            if hasattr(patch, 'get_alpha') and patch.get_alpha() == 0.2:
-                                patch.remove()
-                        hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
-                        # Update legend
-                        if hist_vmin_line is not None and hist_vmax_line is not None:
-                            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8)
-                        hist_canvas.draw()
-                        
-                        # Store values
-                        current_frame_data['vmin'] = vmin
-                        current_frame_data['vmax'] = vmax
-                finally:
-                    is_updating_lut = False
-            
-            def on_histogram_release(event):
-                """Handle mouse release to stop dragging"""
-                nonlocal dragging_line
-                dragging_line = None
-            
-            # Connect histogram interaction handlers
-            hist_canvas.mpl_connect('button_press_event', on_histogram_press)
-            hist_canvas.mpl_connect('motion_notify_event', on_histogram_motion)
-            hist_canvas.mpl_connect('button_release_event', on_histogram_release)
-            
-            # Function to update displayed frame
-            def update_frame(frame_idx, vmin=None, vmax=None, update_sliders=True):
-                """Update the displayed frame (frame_idx is 0-indexed internally)"""
-                # Get frame at index (0-indexed)
-                if len(all_frames.shape) >= 3:
-                    frame = all_frames[frame_idx]
-                else:
-                    frame = all_frames
-                
-                # Handle different shapes
-                if len(frame.shape) == 3:  # CYX or ZYX
-                    if num_channels > 1:
-                        frame = frame[0]  # Take first channel
-                    else:
-                        frame = frame[0]  # Take first Z-slice
-                elif len(frame.shape) == 2:  # YX
-                    pass
-                elif len(frame.shape) == 4:  # TCYX
-                    frame = frame[0]  # Take first channel
-                
-                # Store frame data and actual min/max
-                current_frame_data['frame'] = frame
-                frame_min = float(frame.min())
-                frame_max = float(frame.max())
-                current_frame_data['frame_min'] = frame_min
-                current_frame_data['frame_max'] = frame_max
-                
-                # Determine LUT values - preserve current values or use defaults
-                nonlocal current_vmin, current_vmax
-                if vmin is not None and vmax is not None:
-                    # Explicit values provided
-                    current_vmin = vmin
-                    current_vmax = vmax
-                elif current_vmin is None or current_vmax is None:
-                    # First time - use percentile-based defaults
-                    current_vmin = float(np.percentile(frame, 1))
-                    current_vmax = float(np.percentile(frame, 99))
-                # Otherwise, keep current_vmin and current_vmax (preserve user settings)
-                
-                vmin = current_vmin
-                vmax = current_vmax
-                
-                current_frame_data['vmin'] = vmin
-                current_frame_data['vmax'] = vmax
-                
-                # Update sliders (block signals to prevent recursive calls)
-                if update_sliders:
-                    nonlocal is_updating_lut
-                    is_updating_lut = True
-                    try:
-                        lut_min_slider.blockSignals(True)
-                        lut_max_slider.blockSignals(True)
-                        
-                        # Update range based on current frame (but don't change values!)
-                        # Only expand range if needed, never shrink it
-                        current_min_range = lut_min_slider.minimum()
-                        current_max_range = lut_min_slider.maximum()
-                        new_min_range = min(current_min_range, frame_min) if current_min_range > 0 else frame_min
-                        new_max_range = max(current_max_range, frame_max)
-                        
-                        lut_min_slider.setRange(new_min_range, new_max_range)
-                        lut_max_slider.setRange(new_min_range, new_max_range)
-                        
-                        # DON'T change the values - preserve what user set!
-                        # Only clamp if absolutely necessary (out of new range)
-                        current_min_val = lut_min_slider.value()
-                        current_max_val = lut_max_slider.value()
-                        
-                        if vmin is not None and vmax is not None:
-                            # Use provided values
-                            lut_min_slider.setValue(max(new_min_range, min(new_max_range, vmin)))
-                            lut_max_slider.setValue(max(new_min_range, min(new_max_range, vmax)))
-                        else:
-                            # Preserve current values if they're still valid
-                            if new_min_range <= current_min_val <= new_max_range:
-                                # Keep current value
-                                pass
-                            else:
-                                # Clamp to new range
-                                lut_min_slider.setValue(max(new_min_range, min(new_max_range, current_min_val)))
-                            
-                            if new_min_range <= current_max_val <= new_max_range:
-                                # Keep current value
-                                pass
-                            else:
-                                # Clamp to new range
-                                lut_max_slider.setValue(max(new_min_range, min(new_max_range, current_max_val)))
-                        
-                        lut_min_slider.blockSignals(False)
-                        lut_max_slider.blockSignals(False)
-                    finally:
-                        is_updating_lut = False
-                
-                # Update histogram
-                update_histogram(frame, vmin, vmax)
-                
-                # Clear and redraw
-                fig.clear()
-                ax = fig.add_subplot(111)
-                nonlocal im_handle
-                im_handle = ax.imshow(frame, cmap='gray', vmin=vmin, vmax=vmax)
-                ax.set_title(f"Frame {frame_idx + 1} of {num_time}: {Path(file_path).name}")
-                ax.axis('off')
-                canvas.draw()
-                
-                # Update frame info (1-indexed for display)
-                frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
-            
-            # Manual LUT adjustment from sliders
-            def update_lut_from_sliders():
-                """Update display when sliders are moved"""
-                # Prevent recursive calls
-                nonlocal is_updating_lut, current_vmin, current_vmax
-                if is_updating_lut:
-                    return
-                
-                is_updating_lut = True
-                try:
-                    vmin = lut_min_slider.value()
-                    vmax = lut_max_slider.value()
-                    
-                    # Ensure min < max for valid display
-                    if vmin >= vmax:
-                        vmax = vmin + 1.0
-                        lut_max_slider.blockSignals(True)
-                        lut_max_slider.setValue(vmax)
-                        lut_max_slider.blockSignals(False)
-                    
-                    # Update stored values
-                    current_vmin = vmin
-                    current_vmax = vmax
-                    
-                    # Update the image display directly using matplotlib's set_clim
-                    if current_frame_data['frame'] is not None and im_handle is not None:
-                        # Update the color limits on the existing image
-                        im_handle.set_clim(vmin=vmin, vmax=vmax)
-                        # Force immediate redraw
-                        canvas.draw()
-                        
-                        # Update frame info
-                        frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
-                        
-                        # Store the current LUT values so they persist
-                        current_frame_data['vmin'] = vmin
-                        current_frame_data['vmax'] = vmax
-                        
-                        # Update histogram lines (only update lines, don't redraw entire histogram)
-                        if hist_vmin_line is not None and hist_vmax_line is not None:
-                            # Update line positions
-                            hist_vmin_line.set_xdata([vmin, vmin])
-                            hist_vmax_line.set_xdata([vmax, vmax])
-                            # Update the fill region - clear old and add new
-                            for patch in list(hist_ax.patches):
-                                if hasattr(patch, 'get_alpha') and patch.get_alpha() == 0.2:
-                                    patch.remove()
-                            hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
-                            # Update legend
-                            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8)
-                            hist_canvas.draw()
-                        else:
-                            # If lines don't exist yet, update full histogram
-                            if current_frame_data['frame'] is not None:
-                                update_histogram(current_frame_data['frame'], vmin, vmax)
-                    else:
-                        # Fallback: full update if image handle doesn't exist
-                        update_frame(preview_dialog.current_frame, vmin=vmin, vmax=vmax, update_sliders=False)
-                finally:
-                    is_updating_lut = False
-            
-            # Debounce timer for valueChanged signals (to avoid too many updates while dragging)
-            lut_update_timer = QTimer()
-            lut_update_timer.setSingleShot(True)
-            lut_update_timer.timeout.connect(update_lut_from_sliders)
-            
-            def on_lut_value_changed():
-                """Debounced handler for valueChanged signal"""
-                # Only trigger if not currently updating (to avoid conflicts)
-                if not is_updating_lut:
-                    lut_update_timer.start(50)  # 50ms debounce
-            
-            # Connect LUT sliders
-            # Use debounced valueChanged for smooth real-time updates when using arrows
-            lut_min_slider.valueChanged.connect(on_lut_value_changed)
-            lut_max_slider.valueChanged.connect(on_lut_value_changed)
-            # Use editingFinished for immediate update when user finishes typing (Enter key)
-            # Make sure it doesn't get reset by blocking signals during update
-            def on_lut_editing_finished():
-                """Handle when user finishes editing (Enter key or focus loss)"""
-                if not is_updating_lut:
-                    update_lut_from_sliders()
-            
-            lut_min_slider.editingFinished.connect(on_lut_editing_finished)
-            lut_max_slider.editingFinished.connect(on_lut_editing_finished)
-            
-            # Store current frame
-            preview_dialog.current_frame = 0
-            
-            # Connect navigation (matching Preview Segmentation style)
-            def go_to_frame(idx):
-                if 0 <= idx < num_time:
-                    preview_dialog.current_frame = idx
-                    # Block signals to prevent recursive calls
-                    frame_spin.blockSignals(True)
-                    frame_spin.setValue(idx + 1)
-                    frame_spin.blockSignals(False)
-                    try:
-                        # Always preserve current slider values when navigating
-                        # User's manual adjustments persist across frames
-                        # Get current values from sliders (user's settings)
-                        vmin = lut_min_slider.value()
-                        vmax = lut_max_slider.value()
-                        # Update frame with user's values - don't recalculate!
-                        update_frame(idx, vmin=vmin, vmax=vmax, update_sliders=False)
-                    except Exception as e:
-                        QMessageBox.warning(preview_dialog, "Preview Error", 
-                                          f"Could not display frame {idx + 1}:\n{str(e)}")
-            
-            prev_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame - 1))
-            next_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame + 1))
-            
-            # Use editingFinished for when user finishes editing (presses Enter or leaves field)
-            # and a debounced valueChanged for when using arrow keys
-            def on_frame_changed():
-                frame_num = frame_spin.value() - 1
-                if 0 <= frame_num < num_time:
-                    go_to_frame(frame_num)
-            
-            frame_spin.editingFinished.connect(on_frame_changed)
-            # Debounce valueChanged to avoid triggering while typing
-            frame_spin._change_timer = QTimer()
-            frame_spin._change_timer.setSingleShot(True)
-            frame_spin._change_timer.timeout.connect(on_frame_changed)
-            frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
-            
-            # Add Cmd+W (or Ctrl+W) shortcut to close dialog
-            close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
-            close_shortcut.activated.connect(preview_dialog.close)
-            # Also handle Cmd+W on macOS (Qt uses Ctrl modifier for Cmd on macOS)
-            if sys.platform == 'darwin':
-                close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
-                close_shortcut_mac.activated.connect(preview_dialog.close)
-            
-            # Display first frame (with auto LUT applied by default)
-            update_frame(0)
-            
-            preview_dialog.setLayout(layout)
-            preview_dialog.show()  # Use show() instead of exec_() for non-modal dialog
+            # Use unified preview UI
+            self._create_unified_preview_ui(preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path)
             
         except ImportError as e:
             error_msg = str(e)
@@ -2113,16 +2654,199 @@ class ND2ConversionTab(QWidget):
             traceback.print_exc()
     
     def _preview_lif(self):
-        """Preview LIF file (stub - to be implemented)"""
-        QMessageBox.information(self, "LIF Preview", 
-                              "LIF file preview is not yet fully implemented.\n"
-                              "Please use ND2 or CZI files for preview.")
+        """Preview LIF file in a dialog with frame navigation"""
+        try:
+            import numpy as np
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            from aicsimageio import AICSImage
+            
+            file_path = self.file_path.text()
+            
+            # Create preview dialog
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle("File Preview")
+            preview_dialog.setMinimumSize(1000, 800)
+            preview_dialog.setModal(False)
+            
+            layout = QVBoxLayout()
+            
+            # Load LIF file
+            lif_reader = AICSImage(file_path)
+            try:
+                # Get dimensions
+                dims = lif_reader.dims
+                if hasattr(dims, 'order'):
+                    dims_str = dims.order
+                elif isinstance(dims, str):
+                    dims_str = dims
+                else:
+                    dims_str = str(dims)
+                
+                # Get data
+                if hasattr(lif_reader, 'get_xarray_data'):
+                    xdata = lif_reader.get_xarray_data()
+                    all_frames = np.array(xdata)
+                    num_time = int(xdata.sizes.get('T', 1))
+                    num_channels = int(xdata.sizes.get('C', 1))
+                    num_z = int(xdata.sizes.get('Z', 1))
+                else:
+                    all_frames = np.array(lif_reader.data)
+                    shape = all_frames.shape
+                    num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                    num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                    num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                
+                # Reshape to (T, Y, X) for preview (take first channel and z-slice)
+                if len(all_frames.shape) > 3:
+                    # Take first channel and first z-slice
+                    if 'C' in dims_str and 'Z' in dims_str:
+                        c_idx = dims_str.index('C')
+                        z_idx = dims_str.index('Z')
+                        t_idx = dims_str.index('T') if 'T' in dims_str else 0
+                        # Create indexing tuple
+                        indices = [slice(None)] * len(all_frames.shape)
+                        indices[c_idx] = 0  # First channel
+                        indices[z_idx] = 0  # First z-slice
+                        all_frames = all_frames[tuple(indices)]
+                    elif 'C' in dims_str:
+                        c_idx = dims_str.index('C')
+                        indices = [slice(None)] * len(all_frames.shape)
+                        indices[c_idx] = 0
+                        all_frames = all_frames[tuple(indices)]
+                    elif 'Z' in dims_str:
+                        z_idx = dims_str.index('Z')
+                        indices = [slice(None)] * len(all_frames.shape)
+                        indices[z_idx] = 0
+                        all_frames = all_frames[tuple(indices)]
+                
+                # Ensure we have (T, Y, X) shape
+                if len(all_frames.shape) == 2:
+                    all_frames = all_frames[np.newaxis, ...]
+                elif len(all_frames.shape) == 3 and all_frames.shape[0] > 1000:
+                    # Likely (Y, X, T) - transpose
+                    all_frames = all_frames.transpose(2, 0, 1)
+                
+                # Use unified preview UI with full LUT controls
+                self._create_unified_preview_ui(preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path)
+                
+            finally:
+                if hasattr(lif_reader, 'close'):
+                    try:
+                        lif_reader.close()
+                    except:
+                        pass
+                        
+        except ImportError:
+            QMessageBox.warning(self, "Library Missing", 
+                              "The 'aicsimageio' library is required for LIF preview.\n\n"
+                              "Install with: pip install aicsimageio")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Previewing LIF", f"Could not preview LIF file:\n{str(e)}")
+            self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _preview_czi(self):
         """Preview CZI file (stub - to be implemented)"""
         QMessageBox.information(self, "CZI Preview", 
                               "CZI file preview is not yet fully implemented.\n"
-                              "Please use ND2 files for preview.")
+                              "Please use ND2, LIF, or TIFF files for preview.")
+    
+    def _preview_tiff(self):
+        """Preview TIFF file in a dialog with frame navigation"""
+        try:
+            import tifffile
+            import numpy as np
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            
+            file_path = self.file_path.text()
+            
+            # Create preview dialog
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle("File Preview")
+            preview_dialog.setMinimumSize(1000, 800)
+            preview_dialog.setModal(False)
+            
+            layout = QVBoxLayout()
+            
+            # Load TIFF file
+            all_frames = tifffile.imread(file_path)
+            
+            # Determine dimensions
+            ndim = len(all_frames.shape)
+            num_pages = 1
+            try:
+                with tifffile.TiffFile(file_path) as tif:
+                    num_pages = len(tif.pages)
+            except:
+                pass
+            
+            if ndim == 2:
+                # Single 2D image or multi-page
+                if num_pages > 1:
+                    # Multi-page TIFF - load all pages
+                    all_frames = []
+                    with tifffile.TiffFile(file_path) as tif:
+                        for page in tif.pages:
+                            all_frames.append(page.asarray())
+                    all_frames = np.array(all_frames)
+                    num_time = len(all_frames)
+                    num_channels = 1
+                    num_z = 1
+                else:
+                    all_frames = all_frames[np.newaxis, ...]
+                    num_time = 1
+                    num_channels = 1
+                    num_z = 1
+            elif ndim == 3:
+                # Could be (T, Y, X) or (C, Y, X)
+                if all_frames.shape[0] < 10:
+                    # Likely channels
+                    num_time = 1
+                    num_channels = all_frames.shape[0]
+                    num_z = 1
+                    # Take first channel for preview
+                    all_frames = all_frames[0:1, ...]  # Keep time dimension
+                else:
+                    # Likely time series
+                    num_time = all_frames.shape[0]
+                    num_channels = 1
+                    num_z = 1
+            elif ndim == 4:
+                # Could be (T, C, Y, X) or (T, Z, Y, X)
+                if all_frames.shape[1] < 10:
+                    # Likely (T, C, Y, X)
+                    num_time = all_frames.shape[0]
+                    num_channels = all_frames.shape[1]
+                    num_z = 1
+                    # Take first channel for preview
+                    all_frames = all_frames[:, 0, ...]
+                else:
+                    # Likely (T, Z, Y, X)
+                    num_time = all_frames.shape[0]
+                    num_channels = 1
+                    num_z = all_frames.shape[1]
+                    # Take first z-slice for preview
+                    all_frames = all_frames[:, 0, ...]
+            else:
+                # 5D or more - take first channel and z-slice
+                num_time = all_frames.shape[0]
+                num_channels = all_frames.shape[2] if len(all_frames.shape) > 2 else 1
+                num_z = all_frames.shape[1] if len(all_frames.shape) > 1 else 1
+                all_frames = all_frames[:, 0, 0, ...]  # Take first z and channel
+            
+            # Ensure we have (T, Y, X) shape
+            if len(all_frames.shape) == 2:
+                all_frames = all_frames[np.newaxis, ...]
+            
+            # Use unified preview UI with full LUT controls
+            self._create_unified_preview_ui(preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error Previewing TIFF", f"Could not preview TIFF file:\n{str(e)}")
+            self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def convert_nd2(self):
         """Convert microscopy file(s) to TIFF"""
@@ -5652,13 +6376,21 @@ class TrackingTab(QWidget):
         model_layout = QHBoxLayout()
         model_label = QLabel("Model:")
         model_info_icon = create_info_icon(
-            "Pretrained Trackastra model for tracking.\n\n"
+            "Pretrained Trackastra model for cell tracking.\n\n"
             "Default: 'general_2d'\n"
-            "Source: Trackastra pretrained models\n\n"
+            "Source: Trackastra pretrained models (https://github.com/weigertlab/trackastra)\n\n"
             "Available models:\n"
-            "- general_2d: General 2D tracking (default)\n"
-            "- general_2d_w_SAM2_features: With SAM2 features (better but slower)\n\n"
-            "Tip: Use 'general_2d' for most cases.",
+            "- general_2d: General-purpose 2D tracking model (default)\n"
+            "  • Fast and works well for most cell types\n"
+            "  • Good balance between speed and accuracy\n"
+            "  • Recommended for general use cases\n\n"
+            "- general_2d_w_SAM2_features: Enhanced model with SAM2 features\n"
+            "  • Uses Segment Anything Model 2 (SAM2) features for improved tracking\n"
+            "  • Better performance on certain data types, especially bacteria\n"
+            "  • Slower than general_2d (requires GPU for reasonable speed)\n"
+            "  • Best for challenging tracking scenarios\n\n"
+            "Note: Trackastra won the 7th Cell Tracking Challenge (ISBI 2024).\n"
+            "The models use transformer-based architecture for cell linking.",
             parent_widget=self
         )
         model_layout.addWidget(model_label)
@@ -5674,14 +6406,28 @@ class TrackingTab(QWidget):
         mode_layout = QHBoxLayout()
         mode_label = QLabel("Tracking Mode:")
         mode_info_icon = create_info_icon(
-            "Linking mode for cell tracking.\n\n"
+            "Linking mode for connecting cells across time frames.\n\n"
             "Default: 'greedy'\n"
-            "Source: Trackastra linking modes\n\n"
+            "Source: Trackastra linking algorithms (https://github.com/weigertlab/trackastra)\n\n"
             "Available modes:\n"
-            "- greedy: Fast tracking with division support (recommended)\n"
-            "- greedy_nodiv: Fast tracking without division (cells don't split)\n"
-            "- ilp: Integer Linear Programming (more accurate but slower, needs extra dependencies)\n\n"
-            "Tip: Use 'greedy' for most cases with bacterial cells.",
+            "- greedy: Greedy linking with division support (recommended)\n"
+            "  • Fast algorithm, no additional dependencies\n"
+            "  • Handles cell divisions (splitting)\n"
+            "  • Good for most tracking scenarios\n"
+            "  • Best balance of speed and accuracy\n\n"
+            "- greedy_nodiv: Greedy linking without division support\n"
+            "  • Fast algorithm, no additional dependencies\n"
+            "  • Cells cannot split (no division tracking)\n"
+            "  • Use when cells don't divide or you want faster processing\n"
+            "  • Simpler tracking logic\n\n"
+            "- ilp: Integer Linear Programming (optimal linking)\n"
+            "  • More accurate than greedy methods\n"
+            "  • Solves global optimization problem\n"
+            "  • Slower than greedy methods\n"
+            "  • Requires additional dependencies (motile, Gurobi or SCIP solver)\n"
+            "  • Best for challenging cases where accuracy is critical\n"
+            "  • Note: Academic Gurobi licenses are free\n\n"
+            "Tip: Start with 'greedy' for most cases. Use 'ilp' if you need maximum accuracy.",
             parent_widget=self
         )
         mode_layout.addWidget(mode_label)
@@ -6726,6 +7472,7 @@ class TrackingWorker(QThread):
     
     def _create_trajectory_visualization(self, images, masks_tracked, tracks_df, output_path, progress_callback=None):
         """Create visualization showing original images with tracked cell IDs and trajectories"""
+        import numpy as np
         import matplotlib.pyplot as plt
         from matplotlib.colors import ListedColormap
         from matplotlib import cm
@@ -6893,27 +7640,68 @@ class TrackingWorker(QThread):
                                     vis_frame[y_start:y_end, x_start:x_end, 2] * 0.3 + color[2] * 0.7
                                 ).astype(np.uint8)
                     
-                    # Draw track ID label at current position
+                    # Draw track ID label and marker at current position
                     current_track = track_points[track_points['frame'] == frame_idx]
                     if len(current_track) > 0:
                         y = int(current_track.iloc[0]['y'])
                         x = int(current_track.iloc[0]['x'])
                         if 0 <= y < height and 0 <= x < width:
-                            # Draw text background (simple rectangle)
-                            text_size = 10
-                            y_start = max(0, y - text_size // 2)
-                            y_end = min(height, y + text_size // 2)
-                            x_start = max(0, x - text_size)
-                            x_end = min(width, x + text_size * 2)
-                            vis_frame[y_start:y_end, x_start:x_end, :] = [255, 255, 255]  # White background
-                            # Note: Actual text rendering would require PIL or similar
-                            # For now, just mark the position with a colored dot
-                            dot_size = 3
-                            y_dot_start = max(0, y - dot_size)
-                            y_dot_end = min(height, y + dot_size + 1)
-                            x_dot_start = max(0, x - dot_size)
-                            x_dot_end = min(width, x + dot_size + 1)
-                            vis_frame[y_dot_start:y_dot_end, x_dot_start:x_dot_end, :] = color
+                            # Draw a more visible colored dot with white outline for contrast
+                            dot_size = 5  # Larger dot for better visibility
+                            outline_size = 2  # White outline thickness
+                            
+                            # Draw white outline first (for contrast against dark backgrounds)
+                            y_outline_start = max(0, y - dot_size - outline_size)
+                            y_outline_end = min(height, y + dot_size + outline_size + 1)
+                            x_outline_start = max(0, x - dot_size - outline_size)
+                            x_outline_end = min(width, x + dot_size + outline_size + 1)
+                            
+                            # Create outline mask (ring shape)
+                            yy, xx = np.ogrid[y_outline_start:y_outline_end, x_outline_start:x_outline_end]
+                            center_y, center_x = y - y_outline_start, x - x_outline_start
+                            dist_sq = (yy - center_y)**2 + (xx - center_x)**2
+                            outline_mask = (dist_sq <= (dot_size + outline_size)**2) & (dist_sq > dot_size**2)
+                            
+                            # Draw white outline
+                            vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][outline_mask] = [255, 255, 255]
+                            
+                            # Draw colored center dot
+                            dot_mask = dist_sq <= dot_size**2
+                            vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][dot_mask] = color
+                            
+                            # Try to add text label if PIL is available
+                            try:
+                                from PIL import Image, ImageDraw, ImageFont
+                                # Convert numpy array to PIL Image
+                                pil_img = Image.fromarray(vis_frame)
+                                draw = ImageDraw.Draw(pil_img)
+                                
+                                # Try to use a nice font, fallback to default if not available
+                                try:
+                                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+                                except:
+                                    try:
+                                        font = ImageFont.truetype("arial.ttf", 10)
+                                    except:
+                                        font = ImageFont.load_default()
+                                
+                                # Draw track ID text with shadow for readability
+                                track_id_str = str(track_id_int)
+                                text_x, text_y = x + dot_size + outline_size + 2, y - 5
+                                
+                                # Draw text shadow (black)
+                                draw.text((text_x + 1, text_y + 1), track_id_str, fill=(0, 0, 0), font=font)
+                                # Draw text (white)
+                                draw.text((text_x, text_y), track_id_str, fill=(255, 255, 255), font=font)
+                                
+                                # Convert back to numpy array
+                                vis_frame = np.array(pil_img)
+                            except ImportError:
+                                # PIL not available, skip text rendering
+                                pass
+                            except Exception:
+                                # If text rendering fails for any reason, just continue without it
+                                pass
             
             visualization[frame_idx] = vis_frame
         
