@@ -2863,13 +2863,13 @@ class ND2ConversionTab(QWidget):
         if file_type == 'nd2':
             self._convert_nd2()
         elif file_type == 'lif':
-            QMessageBox.information(self, "LIF Conversion", 
-                                  "LIF file conversion is not yet fully implemented.\n"
-                                  "Please use ND2 or CZI files, or convert LIF files manually.")
+            self._convert_lif()
         elif file_type == 'czi':
-            QMessageBox.information(self, "CZI Conversion", 
-                                  "CZI file conversion is not yet fully implemented.\n"
-                                  "Please use ND2 files, or convert CZI files manually.")
+            self._convert_czi()
+        elif file_type == 'tiff':
+            QMessageBox.information(self, "TIFF File", 
+                                  "The selected file is already a TIFF file.\n"
+                                  "No conversion needed.")
         else:
             QMessageBox.warning(self, "Unsupported Format", f"Conversion not yet implemented for {file_type} files.")
     
@@ -3066,6 +3066,537 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output("✓ ND2 conversion completed successfully!\n")
         else:
             QMessageBox.critical(self, "Error", f"Conversion failed:\n{message}")
+    
+    def _convert_lif(self):
+        """Convert LIF file(s) to TIFF"""
+        try:
+            import numpy as np
+            import tifffile
+            from aicsimageio import AICSImage
+            
+            file_path = Path(self.file_path.text())
+            
+            # Check if it's a folder or single file
+            if file_path.is_dir():
+                # Folder mode: find all LIF files
+                lif_files = sorted(
+                    list(file_path.glob("*.lif")) + list(file_path.glob("*.LIF"))
+                )
+                
+                if not lif_files:
+                    QMessageBox.warning(self, "No LIF Files", 
+                                      "No LIF files found in the selected folder.")
+                    return
+                
+                total_files = len(lif_files)
+                self.parent_window.log_output(f"Found {total_files} LIF file(s) to convert\n")
+            else:
+                # Single file mode
+                lif_files = [file_path]
+                total_files = 1
+            
+            # Determine output directory
+            if self.output_dir.text():
+                output_base = Path(self.output_dir.text())
+            else:
+                output_base = file_path.parent if file_path.is_file() else file_path
+            
+            # Get conversion parameters
+            max_frames = self.max_frames.value()
+            separate_channels = self.separate_channels.isChecked()
+            selected_channel = self.channel_select.currentIndex() - 1  # -1 means all
+            
+            # Show progress
+            self.convert_btn.setEnabled(False)
+            self.convert_btn.setText("Converting...")
+            self.parent_window.progress_bar.setVisible(True)
+            self.parent_window.progress_bar.setRange(0, 100)
+            self.parent_window.progress_bar.setValue(0)
+            
+            # Process each file
+            for file_idx, lif_file in enumerate(lif_files):
+                try:
+                    self.parent_window.log_output(f"Processing: {lif_file.name}\n")
+                    progress = int((file_idx / total_files) * 100)
+                    self.parent_window.progress_bar.setValue(progress)
+                    QApplication.processEvents()
+                    
+                    # Load LIF file
+                    lif_reader = AICSImage(str(lif_file))
+                    try:
+                        # Get dimensions
+                        dims = lif_reader.dims
+                        if hasattr(dims, 'order'):
+                            dims_str = dims.order
+                        elif isinstance(dims, str):
+                            dims_str = dims
+                        else:
+                            dims_str = str(dims)
+                        
+                        # Get data
+                        if hasattr(lif_reader, 'get_xarray_data'):
+                            xdata = lif_reader.get_xarray_data()
+                            all_frames = np.array(xdata)
+                            num_time = int(xdata.sizes.get('T', 1))
+                            num_channels = int(xdata.sizes.get('C', 1))
+                            num_z = int(xdata.sizes.get('Z', 1))
+                        else:
+                            all_frames = np.array(lif_reader.data)
+                            shape = all_frames.shape
+                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                        
+                        # Limit frames
+                        num_time = min(num_time, max_frames)
+                        if 'T' in dims_str:
+                            t_idx = dims_str.index('T')
+                            indices = [slice(None)] * len(all_frames.shape)
+                            indices[t_idx] = slice(0, num_time)
+                            all_frames = all_frames[tuple(indices)]
+                        
+                        # Handle channel selection - validate bounds first
+                        if selected_channel >= 0 and num_channels > 1:
+                            if 'C' in dims_str:
+                                c_idx = dims_str.index('C')
+                                # Validate bounds before accessing
+                                if c_idx < len(all_frames.shape) and selected_channel < all_frames.shape[c_idx]:
+                                    indices = [slice(None)] * len(all_frames.shape)
+                                    indices[c_idx] = selected_channel
+                                    all_frames = all_frames[tuple(indices)]
+                                    num_channels = 1
+                                else:
+                                    self.parent_window.log_output(f"  Warning: Selected channel {selected_channel + 1} is out of bounds (shape: {all_frames.shape}, channel dim: {c_idx}). Using all channels.\n")
+                        
+                        # Take first z-slice if multiple z-slices
+                        if num_z > 1 and 'Z' in dims_str:
+                            z_idx = dims_str.index('Z')
+                            if z_idx < len(all_frames.shape):
+                                indices = [slice(None)] * len(all_frames.shape)
+                                indices[z_idx] = 0
+                                all_frames = all_frames[tuple(indices)]
+                                num_z = 1
+                        
+                        # Reshape to (T, C, Y, X) or (T, Y, X)
+                        # CRITICAL: Don't use all_frames[0] as it might remove time dimension!
+                        # Find time dimension and avoid removing it
+                        if len(all_frames.shape) > 4:
+                            # Find time dimension index
+                            time_dim_idx = None
+                            if 'T' in dims_str:
+                                time_dim_idx = dims_str.index('T')
+                            
+                            # Remove dimensions that are not time, starting from the end
+                            while len(all_frames.shape) > 4:
+                                # Find a dimension to remove (not time dimension)
+                                dim_to_remove = None
+                                for i in range(len(all_frames.shape) - 1, -1, -1):  # Start from end
+                                    if time_dim_idx is None or i != time_dim_idx:
+                                        if all_frames.shape[i] == 1:
+                                            dim_to_remove = i
+                                            break
+                                
+                                if dim_to_remove is not None:
+                                    # Remove singleton dimension
+                                    all_frames = np.squeeze(all_frames, axis=dim_to_remove)
+                                    # Update dims_str if needed
+                                    if dim_to_remove < len(dims_str):
+                                        dims_str = dims_str[:dim_to_remove] + dims_str[dim_to_remove+1:]
+                                        if time_dim_idx is not None and dim_to_remove < time_dim_idx:
+                                            time_dim_idx -= 1
+                                else:
+                                    # No singleton dimensions found, take first of a non-time dimension
+                                    for i in range(len(all_frames.shape) - 1, -1, -1):
+                                        if time_dim_idx is None or i != time_dim_idx:
+                                            # Create indices to take first element of this dimension
+                                            indices = [slice(None)] * len(all_frames.shape)
+                                            indices[i] = 0
+                                            all_frames = all_frames[tuple(indices)]
+                                            # Update dims_str
+                                            if i < len(dims_str):
+                                                dims_str = dims_str[:i] + dims_str[i+1:]
+                                                if time_dim_idx is not None and i < time_dim_idx:
+                                                    time_dim_idx -= 1
+                                            break
+                        
+                        # Create output filename
+                        output_file = output_base / f"{lif_file.stem}.tif"
+                        
+                        # Save as TIFF - use more robust dimension handling
+                        # Find channel dimension by looking at actual shape after all slicing
+                        current_shape = all_frames.shape
+                        channel_dim = None
+                        
+                        # Try to find channel dimension - look for dimension matching num_channels
+                        # But only if we still have multiple channels
+                        if num_channels > 1:
+                            for i, size in enumerate(current_shape):
+                                if size == num_channels:
+                                    channel_dim = i
+                                    break
+                        
+                        
+                        # Find time dimension to preserve it
+                        time_dim = None
+                        if 'T' in dims_str:
+                            t_idx = dims_str.index('T')
+                            # After slicing, find which dimension corresponds to time
+                            # Look for dimension with size matching num_time
+                            for i, size in enumerate(current_shape):
+                                if size == num_time and num_time > 1:
+                                    time_dim = i
+                                    break
+                            # If time dimension not found by size, try original position
+                            if time_dim is None and t_idx < len(current_shape):
+                                time_dim = t_idx
+                        
+                        if separate_channels and num_channels > 1 and channel_dim is not None:
+                            # Save each channel separately
+                            max_channels = min(num_channels, current_shape[channel_dim])
+                            for ch in range(max_channels):
+                                # Create indexing that selects one channel
+                                indices = [slice(None)] * len(current_shape)
+                                indices[channel_dim] = ch
+                                channel_data = all_frames[tuple(indices)]
+                                
+                                # Remove singleton dimensions but preserve time dimension
+                                # Only squeeze dimensions that are size 1 and not the time dimension
+                                axes_to_squeeze = []
+                                for i, size in enumerate(channel_data.shape):
+                                    if size == 1 and (time_dim is None or i != time_dim):
+                                        axes_to_squeeze.append(i)
+                                if axes_to_squeeze:
+                                    channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                                
+                                # Ensure we have at least 2D (add time dimension if needed)
+                                if len(channel_data.shape) == 2:
+                                    channel_data = channel_data[np.newaxis, ...]
+                                
+                                ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
+                                tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
+                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
+                        else:
+                            # Combine channels or single channel
+                            if channel_dim is not None and num_channels > 1 and current_shape[channel_dim] > 1:
+                                # Use max projection across channels
+                                combined = np.max(all_frames, axis=channel_dim)
+                            else:
+                                # Single channel or no channel dimension
+                                combined = all_frames
+                            
+                            # Remove singleton dimensions but preserve time dimension
+                            # Only squeeze dimensions that are size 1 and not the time dimension
+                            axes_to_squeeze = []
+                            for i, size in enumerate(combined.shape):
+                                if size == 1 and (time_dim is None or i != time_dim):
+                                    axes_to_squeeze.append(i)
+                            if axes_to_squeeze:
+                                combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
+                            
+                            # Ensure we have at least 2D (add time dimension if needed)
+                            if len(combined.shape) == 2:
+                                combined = combined[np.newaxis, ...]
+                            
+                            # Log shape for debugging
+                            self.parent_window.log_output(f"  Saving with shape: {combined.shape}\n")
+                            
+                            tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                            self.parent_window.log_output(f"  Saved: {output_file.name}\n")
+                        
+                        self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
+                        
+                    finally:
+                        if hasattr(lif_reader, 'close'):
+                            try:
+                                lif_reader.close()
+                            except:
+                                pass
+                
+                except Exception as e:
+                    self.parent_window.log_output(f"✗ Error converting {lif_file.name}: {str(e)}\n")
+                    QMessageBox.warning(self, "Conversion Error", 
+                                      f"Error converting {lif_file.name}:\n{str(e)}")
+            
+            # Complete
+            self.parent_window.progress_bar.setValue(100)
+            QMessageBox.information(self, "Conversion Complete", 
+                                  f"Successfully converted {total_files} LIF file(s) to TIFF.")
+            
+        except ImportError:
+            QMessageBox.warning(self, "Library Missing", 
+                              "LIF conversion requires 'aicsimageio' and 'tifffile' libraries.\n\n"
+                              "Install with: pip install aicsimageio tifffile")
+        except Exception as e:
+            QMessageBox.critical(self, "Conversion Error", f"LIF conversion failed:\n{str(e)}")
+            self.parent_window.log_output(f"Error: {str(e)}\n")
+        finally:
+            self.convert_btn.setEnabled(True)
+            self.convert_btn.setText("Convert to TIFF")
+            self.parent_window.progress_bar.setVisible(False)
+    
+    def _convert_czi(self):
+        """Convert CZI file(s) to TIFF"""
+        try:
+            import numpy as np
+            import tifffile
+            from aicsimageio import AICSImage
+            
+            file_path = Path(self.file_path.text())
+            
+            # Check if it's a folder or single file
+            if file_path.is_dir():
+                # Folder mode: find all CZI files
+                czi_files = sorted(
+                    list(file_path.glob("*.czi")) + list(file_path.glob("*.CZI"))
+                )
+                
+                if not czi_files:
+                    QMessageBox.warning(self, "No CZI Files", 
+                                      "No CZI files found in the selected folder.")
+                    return
+                
+                total_files = len(czi_files)
+                self.parent_window.log_output(f"Found {total_files} CZI file(s) to convert\n")
+            else:
+                # Single file mode
+                czi_files = [file_path]
+                total_files = 1
+            
+            # Determine output directory
+            if self.output_dir.text():
+                output_base = Path(self.output_dir.text())
+            else:
+                output_base = file_path.parent if file_path.is_file() else file_path
+            
+            # Get conversion parameters
+            max_frames = self.max_frames.value()
+            separate_channels = self.separate_channels.isChecked()
+            selected_channel = self.channel_select.currentIndex() - 1  # -1 means all
+            
+            # Show progress
+            self.convert_btn.setEnabled(False)
+            self.convert_btn.setText("Converting...")
+            self.parent_window.progress_bar.setVisible(True)
+            self.parent_window.progress_bar.setRange(0, 100)
+            self.parent_window.progress_bar.setValue(0)
+            
+            # Process each file
+            for file_idx, czi_file in enumerate(czi_files):
+                try:
+                    self.parent_window.log_output(f"Processing: {czi_file.name}\n")
+                    progress = int((file_idx / total_files) * 100)
+                    self.parent_window.progress_bar.setValue(progress)
+                    QApplication.processEvents()
+                    
+                    # Load CZI file
+                    czi_reader = AICSImage(str(czi_file))
+                    try:
+                        # Get dimensions
+                        dims = czi_reader.dims
+                        if hasattr(dims, 'order'):
+                            dims_str = dims.order
+                        elif isinstance(dims, str):
+                            dims_str = dims
+                        else:
+                            dims_str = str(dims)
+                        
+                        # Get data
+                        if hasattr(czi_reader, 'get_xarray_data'):
+                            xdata = czi_reader.get_xarray_data()
+                            all_frames = np.array(xdata)
+                            num_time = int(xdata.sizes.get('T', 1))
+                            num_channels = int(xdata.sizes.get('C', 1))
+                            num_z = int(xdata.sizes.get('Z', 1))
+                        else:
+                            all_frames = np.array(czi_reader.data)
+                            shape = all_frames.shape
+                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                        
+                        # Limit frames
+                        num_time = min(num_time, max_frames)
+                        if 'T' in dims_str:
+                            t_idx = dims_str.index('T')
+                            indices = [slice(None)] * len(all_frames.shape)
+                            indices[t_idx] = slice(0, num_time)
+                            all_frames = all_frames[tuple(indices)]
+                        
+                        # Handle channel selection - validate bounds first
+                        if selected_channel >= 0 and num_channels > 1:
+                            if 'C' in dims_str:
+                                c_idx = dims_str.index('C')
+                                # Validate bounds before accessing
+                                if c_idx < len(all_frames.shape) and selected_channel < all_frames.shape[c_idx]:
+                                    indices = [slice(None)] * len(all_frames.shape)
+                                    indices[c_idx] = selected_channel
+                                    all_frames = all_frames[tuple(indices)]
+                                    num_channels = 1
+                                else:
+                                    self.parent_window.log_output(f"  Warning: Selected channel {selected_channel + 1} is out of bounds (shape: {all_frames.shape}, channel dim: {c_idx}). Using all channels.\n")
+                        
+                        # Take first z-slice if multiple z-slices
+                        if num_z > 1 and 'Z' in dims_str:
+                            z_idx = dims_str.index('Z')
+                            if z_idx < len(all_frames.shape):
+                                indices = [slice(None)] * len(all_frames.shape)
+                                indices[z_idx] = 0
+                                all_frames = all_frames[tuple(indices)]
+                                num_z = 1
+                        
+                        # Reshape to (T, C, Y, X) or (T, Y, X)
+                        # Don't use all_frames[0] as it might remove time dimension!
+                        # Instead, find and remove only non-time singleton dimensions
+                        if len(all_frames.shape) > 4:
+                            # Find time dimension first
+                            time_dim_idx = None
+                            if 'T' in dims_str:
+                                time_dim_idx = dims_str.index('T')
+                            
+                            # Remove dimensions that are not time, starting from the end
+                            while len(all_frames.shape) > 4:
+                                # Find a dimension to remove (not time dimension)
+                                dim_to_remove = None
+                                for i in range(len(all_frames.shape) - 1, -1, -1):  # Start from end
+                                    if time_dim_idx is None or i != time_dim_idx:
+                                        if all_frames.shape[i] == 1:
+                                            dim_to_remove = i
+                                            break
+                                
+                                if dim_to_remove is not None:
+                                    # Remove singleton dimension
+                                    all_frames = np.squeeze(all_frames, axis=dim_to_remove)
+                                    # Update dims_str if needed
+                                    if dim_to_remove < len(dims_str):
+                                        dims_str = dims_str[:dim_to_remove] + dims_str[dim_to_remove+1:]
+                                        if time_dim_idx is not None and dim_to_remove < time_dim_idx:
+                                            time_dim_idx -= 1
+                                else:
+                                    # No singleton dimensions found, take first of a non-time dimension
+                                    for i in range(len(all_frames.shape) - 1, -1, -1):
+                                        if time_dim_idx is None or i != time_dim_idx:
+                                            # Create indices to take first element of this dimension
+                                            indices = [slice(None)] * len(all_frames.shape)
+                                            indices[i] = 0
+                                            all_frames = all_frames[tuple(indices)]
+                                            # Update dims_str
+                                            if i < len(dims_str):
+                                                dims_str = dims_str[:i] + dims_str[i+1:]
+                                                if time_dim_idx is not None and i < time_dim_idx:
+                                                    time_dim_idx -= 1
+                                            break
+                        
+                        # Create output filename
+                        output_file = output_base / f"{czi_file.stem}.tif"
+                        
+                        # Save as TIFF - use more robust dimension handling
+                        current_shape = all_frames.shape
+                        channel_dim = None
+                        
+                        # Try to find channel dimension - look for dimension matching num_channels
+                        if num_channels > 1:
+                            for i, size in enumerate(current_shape):
+                                if size == num_channels:
+                                    channel_dim = i
+                                    break
+                        
+                        # Find time dimension to preserve it
+                        time_dim = None
+                        if 'T' in dims_str:
+                            t_idx = dims_str.index('T')
+                            # After slicing, find which dimension corresponds to time
+                            # Look for dimension with size matching num_time
+                            for i, size in enumerate(current_shape):
+                                if size == num_time and num_time > 1:
+                                    time_dim = i
+                                    break
+                            # If time dimension not found by size, try original position
+                            if time_dim is None and t_idx < len(current_shape):
+                                time_dim = t_idx
+                        
+                        if separate_channels and num_channels > 1 and channel_dim is not None:
+                            # Save each channel separately
+                            max_channels = min(num_channels, current_shape[channel_dim])
+                            for ch in range(max_channels):
+                                # Create indexing that selects one channel
+                                indices = [slice(None)] * len(current_shape)
+                                indices[channel_dim] = ch
+                                channel_data = all_frames[tuple(indices)]
+                                
+                                # Remove singleton dimensions but preserve time dimension
+                                # Only squeeze dimensions that are size 1 and not the time dimension
+                                axes_to_squeeze = []
+                                for i, size in enumerate(channel_data.shape):
+                                    if size == 1 and (time_dim is None or i != time_dim):
+                                        axes_to_squeeze.append(i)
+                                if axes_to_squeeze:
+                                    channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                                
+                                # Ensure we have at least 2D (add time dimension if needed)
+                                if len(channel_data.shape) == 2:
+                                    channel_data = channel_data[np.newaxis, ...]
+                                
+                                ch_output = output_base / f"{czi_file.stem}_ch{ch+1}.tif"
+                                tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
+                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
+                        else:
+                            # Combine channels or single channel
+                            if channel_dim is not None and num_channels > 1 and current_shape[channel_dim] > 1:
+                                # Use max projection across channels
+                                combined = np.max(all_frames, axis=channel_dim)
+                            else:
+                                # Single channel or no channel dimension
+                                combined = all_frames
+                            
+                            # Remove singleton dimensions but preserve time dimension
+                            # Only squeeze dimensions that are size 1 and not the time dimension
+                            axes_to_squeeze = []
+                            for i, size in enumerate(combined.shape):
+                                if size == 1 and (time_dim is None or i != time_dim):
+                                    axes_to_squeeze.append(i)
+                            if axes_to_squeeze:
+                                combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
+                            
+                            # Ensure we have at least 2D (add time dimension if needed)
+                            if len(combined.shape) == 2:
+                                combined = combined[np.newaxis, ...]
+                            
+                            # Log shape for debugging
+                            self.parent_window.log_output(f"  Saving with shape: {combined.shape}\n")
+                            
+                            tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                            self.parent_window.log_output(f"  Saved: {output_file.name}\n")
+                        
+                        self.parent_window.log_output(f"✓ Converted: {czi_file.name}\n")
+                        
+                    finally:
+                        if hasattr(czi_reader, 'close'):
+                            try:
+                                czi_reader.close()
+                            except:
+                                pass
+                
+                except Exception as e:
+                    self.parent_window.log_output(f"✗ Error converting {czi_file.name}: {str(e)}\n")
+                    QMessageBox.warning(self, "Conversion Error", 
+                                      f"Error converting {czi_file.name}:\n{str(e)}")
+            
+            # Complete
+            self.parent_window.progress_bar.setValue(100)
+            QMessageBox.information(self, "Conversion Complete", 
+                                  f"Successfully converted {total_files} CZI file(s) to TIFF.")
+            
+        except ImportError:
+            QMessageBox.warning(self, "Library Missing", 
+                              "CZI conversion requires 'aicsimageio' and 'tifffile' libraries.\n\n"
+                              "Install with: pip install aicsimageio tifffile")
+        except Exception as e:
+            QMessageBox.critical(self, "Conversion Error", f"CZI conversion failed:\n{str(e)}")
+            self.parent_window.log_output(f"Error: {str(e)}\n")
+        finally:
+            self.convert_btn.setEnabled(True)
+            self.convert_btn.setText("Convert to TIFF")
+            self.parent_window.progress_bar.setVisible(False)
 
 
 class ProcessingTab(QWidget):
