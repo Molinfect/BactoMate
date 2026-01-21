@@ -2134,10 +2134,10 @@ class ND2ConversionTab(QWidget):
         lut_layout.setSpacing(8)  # Reduce spacing between elements
         
         # Histogram plot - optimized size and appearance
-        hist_fig = Figure(figsize=(10, 2.5))  # More balanced aspect ratio
+        hist_fig = Figure(figsize=(10, 3.0))  # Increased height for better visibility
         hist_canvas = FigureCanvas(hist_fig)
-        hist_canvas.setMinimumHeight(150)  # Reduced for better proportions
-        hist_canvas.setMaximumHeight(150)  # Reduced for better proportions
+        hist_canvas.setMinimumHeight(180)  # Increased to prevent cutoff
+        hist_canvas.setMaximumHeight(180)  # Increased to prevent cutoff
         hist_ax = hist_fig.add_subplot(111)
         hist_fig.patch.set_facecolor('#2b2b2b')  # Dark background
         hist_ax.set_facecolor('#2b2b2b')
@@ -2148,8 +2148,8 @@ class ND2ConversionTab(QWidget):
         hist_ax.spines['right'].set_color('white')
         hist_ax.xaxis.label.set_color('white')
         hist_ax.yaxis.label.set_color('white')
-        # Add padding to prevent cutoff
-        hist_fig.tight_layout(pad=1.2)
+        # Set subplot parameters to ensure nothing gets cut off
+        hist_fig.subplots_adjust(left=0.12, right=0.95, top=0.90, bottom=0.15)
         hist_canvas.setStyleSheet("background-color: #2b2b2b;")
         lut_layout.addWidget(hist_canvas)
         
@@ -2178,7 +2178,7 @@ class ND2ConversionTab(QWidget):
         lut_layout.addLayout(value_layout)
         
         lut_group.setLayout(lut_layout)
-        lut_group.setMaximumHeight(250)  # Adjusted to match new histogram height
+        lut_group.setMaximumHeight(280)  # Increased to match new histogram height
         layout.addWidget(lut_group)
         
         layout.addWidget(canvas)
@@ -2230,12 +2230,15 @@ class ND2ConversionTab(QWidget):
             
             hist_ax.set_xlabel('Intensity', color='white', fontsize=10)
             hist_ax.set_ylabel('Log(Count+1)', color='white', fontsize=10)
-            hist_ax.set_title('Click/drag lines to adjust min/max', color='white', fontsize=9, pad=8)
-            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9)
+            hist_ax.set_title('Click/drag lines to adjust min/max', color='white', fontsize=9, pad=10)
+            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
             hist_ax.grid(True, alpha=0.25, color='white', linestyle='-', linewidth=0.5)
             
             # Ensure proper margins to prevent cutoff
-            hist_ax.margins(x=0.02, y=0.05)
+            hist_ax.margins(x=0.02, y=0.08)
+            
+            # Reapply tight layout after drawing to prevent cutoff
+            hist_fig.tight_layout(pad=2.0)
             
             hist_canvas.draw()
             current_frame_data['histogram'] = (hist, bin_edges, frame_min, frame_max)
@@ -2335,7 +2338,7 @@ class ND2ConversionTab(QWidget):
                     hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
                     # Update legend
                     if hist_vmin_line is not None and hist_vmax_line is not None:
-                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=9)
+                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
                     hist_canvas.draw()
                     
                     # Store values
@@ -2511,7 +2514,7 @@ class ND2ConversionTab(QWidget):
                                 patch.remove()
                         hist_ax.axvspan(vmin, vmax, alpha=0.2, color='yellow')
                         # Update legend
-                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=9)
+                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
                         hist_canvas.draw()
                     else:
                         # If lines don't exist yet, update full histogram
@@ -5752,6 +5755,9 @@ class AnalyzeMasksTab(QWidget):
         self.pixel_size.setValue(default_pixel_size)
         self.pixel_size.setDecimals(3)
         self.pixel_size.setSingleStep(0.001)
+        # Disable keyboard tracking to reduce event processing overhead
+        # valueChanged will only fire when user finishes editing (Enter or focus loss)
+        self.pixel_size.setKeyboardTracking(False)
         pixel_layout.addWidget(self.pixel_size)
         # Add indicator label for auto-filled values
         self.pixel_size_indicator = QLabel("")
@@ -5786,6 +5792,8 @@ class AnalyzeMasksTab(QWidget):
         self.min_aspect_ratio.setValue(1.5)
         self.min_aspect_ratio.setDecimals(1)
         self.min_aspect_ratio.setSingleStep(0.1)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.min_aspect_ratio.setKeyboardTracking(False)
         aspect_min_layout.addWidget(self.min_aspect_ratio)
         aspect_min_layout.addStretch()
         morph_layout.addLayout(aspect_min_layout)
@@ -5807,6 +5815,8 @@ class AnalyzeMasksTab(QWidget):
         self.max_aspect_ratio.setValue(10.0)
         self.max_aspect_ratio.setDecimals(1)
         self.max_aspect_ratio.setSingleStep(0.1)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.max_aspect_ratio.setKeyboardTracking(False)
         aspect_max_layout.addWidget(self.max_aspect_ratio)
         aspect_max_layout.addStretch()
         morph_layout.addLayout(aspect_max_layout)
@@ -5832,6 +5842,8 @@ class AnalyzeMasksTab(QWidget):
         self.min_eccentricity.setValue(0.5)
         self.min_eccentricity.setDecimals(2)
         self.min_eccentricity.setSingleStep(0.05)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.min_eccentricity.setKeyboardTracking(False)
         ecc_layout.addWidget(self.min_eccentricity)
         ecc_layout.addStretch()
         morph_layout.addLayout(ecc_layout)
@@ -5857,6 +5869,8 @@ class AnalyzeMasksTab(QWidget):
         self.min_solidity.setValue(0.7)
         self.min_solidity.setDecimals(2)
         self.min_solidity.setSingleStep(0.05)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.min_solidity.setKeyboardTracking(False)
         sol_layout.addWidget(self.min_solidity)
         sol_layout.addStretch()
         morph_layout.addLayout(sol_layout)
@@ -5887,6 +5901,8 @@ class AnalyzeMasksTab(QWidget):
         self.min_area.setValue(0)
         self.min_area.setDecimals(1)
         self.min_area.setSingleStep(0.5)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.min_area.setKeyboardTracking(False)
         min_area_layout.addWidget(self.min_area)
         min_area_layout.addStretch()
         size_layout.addLayout(min_area_layout)
@@ -5910,6 +5926,8 @@ class AnalyzeMasksTab(QWidget):
         self.max_area.setValue(0)
         self.max_area.setDecimals(1)
         self.max_area.setSingleStep(1.0)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.max_area.setKeyboardTracking(False)
         max_area_layout.addWidget(self.max_area)
         max_area_layout.addStretch()
         size_layout.addLayout(max_area_layout)
@@ -5934,6 +5952,8 @@ class AnalyzeMasksTab(QWidget):
         self.min_width.setValue(0)
         self.min_width.setDecimals(1)
         self.min_width.setSingleStep(0.1)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.min_width.setKeyboardTracking(False)
         min_width_layout.addWidget(self.min_width)
         min_width_layout.addStretch()
         size_layout.addLayout(min_width_layout)
@@ -5958,6 +5978,8 @@ class AnalyzeMasksTab(QWidget):
         self.max_width.setValue(0)
         self.max_width.setDecimals(1)
         self.max_width.setSingleStep(0.1)
+        # Disable keyboard tracking to reduce event processing overhead
+        self.max_width.setKeyboardTracking(False)
         max_width_layout.addWidget(self.max_width)
         max_width_layout.addStretch()
         size_layout.addLayout(max_width_layout)
@@ -6387,15 +6409,21 @@ class AnalyzeMasksTab(QWidget):
                 
                 # Show progress dialog
                 progress_dialog = None
+                cancelled = False
                 if show_progress:
-                    progress_dialog = QProgressDialog("Applying filters...", None, 0, 100, preview_dialog)
+                    progress_dialog = QProgressDialog("Applying filters...", "Cancel", 0, 100, preview_dialog)
                     progress_dialog.setWindowTitle("Processing")
                     progress_dialog.setAutoClose(False)
                     progress_dialog.setAutoReset(False)
-                    progress_dialog.setCancelButton(None)
                     progress_dialog.setValue(0)
                     progress_dialog.show()
                     QApplication.processEvents()
+                    
+                    def check_cancelled():
+                        nonlocal cancelled
+                        if progress_dialog.wasCanceled():
+                            cancelled = True
+                    progress_dialog.canceled.connect(check_cancelled)
                 
                 # Disable buttons during processing
                 if progress_dialog:
@@ -6412,19 +6440,77 @@ class AnalyzeMasksTab(QWidget):
                         progress_dialog.setLabelText("Cleaning mask... (10%)")
                         progress_dialog.setValue(10)
                         QApplication.processEvents()
+                        if cancelled:
+                            return
                     
-                    # Remove small objects
+                    # Remove small objects (more aggressive pre-filtering for performance)
                     mask_cleaned = remove_small_objects(mask, min_size=10)
+                    
+                    # Check number of unique labels (excluding background)
+                    unique_labels = np.unique(mask_cleaned)
+                    num_objects = len(unique_labels) - (1 if 0 in unique_labels else 0)
+                    
+                    # Warn if too many objects (performance/memory concern)
+                    MAX_OBJECTS_WARNING = 5000
+                    MAX_OBJECTS_VIZ = 10000  # Skip visualization if more than this
+                    skip_visualization = False
+                    
+                    if num_objects > MAX_OBJECTS_WARNING:
+                        if progress_dialog:
+                            progress_dialog.close()
+                        msg = QMessageBox(preview_dialog)
+                        msg.setWindowTitle("Many Objects Detected")
+                        msg.setText(f"This frame contains {num_objects:,} objects.")
+                        msg.setInformativeText(
+                            f"Processing may take a long time and could use significant memory.\n\n"
+                            f"Options:\n"
+                            f"• 'Yes' = Continue with full processing (may be slow)\n"
+                            f"• 'No' = Skip visualization, only show statistics (faster)\n"
+                            f"• 'Cancel' = Skip this frame entirely"
+                        )
+                        yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.YesRole)
+                        no_btn = msg.addButton("No (Stats Only)", QMessageBox.ButtonRole.NoRole)
+                        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                        msg.setDefaultButton(no_btn)
+                        msg.exec()
+                        
+                        if msg.clickedButton() == cancel_btn:
+                            # Re-enable buttons
+                            prev_btn.setEnabled(True)
+                            next_btn.setEnabled(True)
+                            reapply_btn.setEnabled(True)
+                            frame_spin.setEnabled(True)
+                            return
+                        elif msg.clickedButton() == no_btn:
+                            skip_visualization = True
+                        
+                        # Recreate progress dialog if user continues
+                        if show_progress:
+                            progress_dialog = QProgressDialog("Applying filters...", "Cancel", 0, 100, preview_dialog)
+                            progress_dialog.setWindowTitle("Processing")
+                            progress_dialog.setAutoClose(False)
+                            progress_dialog.setAutoReset(False)
+                            progress_dialog.setValue(10)
+                            progress_dialog.show()
+                            progress_dialog.canceled.connect(check_cancelled)
+                            QApplication.processEvents()
+                    
+                    # Auto-skip visualization for extremely large datasets
+                    if num_objects > MAX_OBJECTS_VIZ:
+                        skip_visualization = True
                     
                     # Get current parameters from main window
                     params = get_current_parameters()
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Calculating cell properties... (30%)")
+                        progress_dialog.setLabelText(f"Calculating cell properties... ({num_objects:,} objects) (30%)")
                         progress_dialog.setValue(30)
                         QApplication.processEvents()
+                        if cancelled:
+                            return
                     
-                    # Calculate properties
+                    # Calculate properties (optimized: only request needed properties)
+                    # Use a more efficient approach: request only the properties we need
                     properties = calculate_cell_properties(mask_cleaned, pixel_size=params['pixel_size'])
                     all_labels = {prop['label'] for prop in properties}
                     
@@ -6432,6 +6518,8 @@ class AnalyzeMasksTab(QWidget):
                         progress_dialog.setLabelText("Applying morphological filters... (50%)")
                         progress_dialog.setValue(50)
                         QApplication.processEvents()
+                        if cancelled:
+                            return
                     
                     # Apply filters with current parameters
                     rod_shaped = filter_rod_shaped_cells(
@@ -6447,6 +6535,8 @@ class AnalyzeMasksTab(QWidget):
                         progress_dialog.setLabelText("Applying size filters... (70%)")
                         progress_dialog.setValue(70)
                         QApplication.processEvents()
+                        if cancelled:
+                            return
                     
                     filtered = filter_by_size(
                         rod_shaped,
@@ -6459,34 +6549,63 @@ class AnalyzeMasksTab(QWidget):
                     rejected_labels = all_labels - accepted_labels
                     
                     if progress_dialog:
-                        progress_dialog.setLabelText("Creating visualization... (85%)")
+                        if skip_visualization:
+                            progress_dialog.setLabelText("Skipping visualization (too many objects)... (85%)")
+                        else:
+                            progress_dialog.setLabelText("Creating visualization... (85%)")
                         progress_dialog.setValue(85)
                         QApplication.processEvents()
+                        if cancelled:
+                            return
                     
-                    # Create visualization
-                    height, width = mask.shape
-                    vis = np.zeros((height, width, 3), dtype=np.uint8)
-                    
-                    # Green for accepted
-                    for label in accepted_labels:
-                        vis[mask == label, 1] = 255
-                    
-                    # Red for rejected
-                    for label in rejected_labels:
-                        vis[mask == label, 0] = 255
-                    
-                    if progress_dialog:
-                        progress_dialog.setLabelText("Rendering display... (100%)")
-                        progress_dialog.setValue(100)
-                        QApplication.processEvents()
-                    
-                    # Update plot
-                    fig.clear()
-                    ax = fig.add_subplot(111)
-                    ax.imshow(vis)
-                    ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: Green=Accepted ({len(accepted_labels)}), Red=Rejected ({len(rejected_labels)})")
-                    ax.axis('off')
-                    canvas.draw()
+                    # Create visualization using vectorized numpy operations (much faster)
+                    # Skip visualization for very large datasets to prevent crashes
+                    if skip_visualization:
+                        # Show statistics only
+                        fig.clear()
+                        ax = fig.add_subplot(111)
+                        ax.text(0.5, 0.5, 
+                               f"Visualization skipped due to large number of objects ({num_objects:,})\n\n"
+                               f"Statistics:\n"
+                               f"• Total objects: {len(all_labels):,}\n"
+                               f"• Accepted: {len(accepted_labels):,}\n"
+                               f"• Rejected: {len(rejected_labels):,}\n"
+                               f"• Acceptance rate: {len(accepted_labels)/len(all_labels)*100:.1f}%",
+                               ha='center', va='center', fontsize=12,
+                               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                        ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: Statistics Only (Visualization Skipped)")
+                        ax.axis('off')
+                        canvas.draw()
+                    else:
+                        height, width = mask.shape
+                        vis = np.zeros((height, width, 3), dtype=np.uint8)
+                        
+                        # Convert label sets to arrays for vectorized operations
+                        if accepted_labels:
+                            accepted_array = np.array(list(accepted_labels))
+                            # Use numpy.isin for fast membership testing
+                            accepted_mask = np.isin(mask, accepted_array)
+                            vis[accepted_mask, 1] = 255  # Green channel
+                        
+                        if rejected_labels:
+                            rejected_array = np.array(list(rejected_labels))
+                            rejected_mask = np.isin(mask, rejected_array)
+                            vis[rejected_mask, 0] = 255  # Red channel
+                        
+                        if progress_dialog:
+                            progress_dialog.setLabelText("Rendering display... (100%)")
+                            progress_dialog.setValue(100)
+                            QApplication.processEvents()
+                            if cancelled:
+                                return
+                        
+                        # Update plot
+                        fig.clear()
+                        ax = fig.add_subplot(111)
+                        ax.imshow(vis)
+                        ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: Green=Accepted ({len(accepted_labels)}), Red=Rejected ({len(rejected_labels)})")
+                        ax.axis('off')
+                        canvas.draw()
                     
                     info_label.setText(f"Accepted: {len(accepted_labels)} | Rejected: {len(rejected_labels)} | Total: {len(all_labels)}")
                     

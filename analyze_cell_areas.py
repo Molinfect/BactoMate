@@ -44,6 +44,8 @@ def calculate_cell_properties(mask, pixel_size=0.108):
     props = []
     
     # Get region properties
+    # Note: regionprops calculates all properties by default, but we only use a subset
+    # This is a limitation of scikit-image - we can't selectively calculate properties
     regions = regionprops(mask)
     
     for region in regions:
