@@ -10147,6 +10147,8 @@ class SAM2SegmentWorker(QThread):
             from pathlib import Path
             import tifffile
             import torch
+            import numpy as np
+            from skimage.measure import label, regionprops
             
             self.progress.emit("Initializing SAM2 model...")
             
@@ -10169,25 +10171,139 @@ class SAM2SegmentWorker(QThread):
                 self.finished.emit(False, "SAM2 not installed. Please install with: pip install sam2")
                 return
             
-            # Build model
-            model_cfg = f"configs/{self.model_name.replace('sam2.1_', 'sam2.1/')}.yaml"
+            # Build model - try multiple approaches
+            model = None
+            predictor = None
+            
+            # Approach 1: Use checkpoint file if provided
             if self.checkpoint_path and Path(self.checkpoint_path).exists():
-                checkpoint = self.checkpoint_path
-            else:
-                # Try to use Hugging Face or default location
                 try:
-                    from sam2.sam2_image_predictor import SAM2ImagePredictor
-                    predictor = SAM2ImagePredictor.from_pretrained(f"facebook/{self.model_name.replace('sam2.1_', 'sam2-hiera-').replace('_', '-')}")
-                    # For now, use automatic mask generator approach
-                    checkpoint = None  # Will use from_pretrained
+                    self.progress.emit(f"Loading model from checkpoint: {self.checkpoint_path}")
+                    # Map model name to config path (try multiple possible locations)
+                    model_name_clean = self.model_name.replace('sam2.1_', '')
+                    config_name_map = {
+                        'hiera_tiny': 'sam2.1_hiera_t',
+                        'hiera_small': 'sam2.1_hiera_s',
+                        'hiera_base_plus': 'sam2.1_hiera_b+',
+                        'hiera_large': 'sam2.1_hiera_l',
+                    }
+                    config_name = config_name_map.get(model_name_clean, 'sam2.1_hiera_s')
+                    
+                    # Try different possible config paths
+                    possible_configs = [
+                        f"sam2/configs/{config_name}.yaml",
+                        f"configs/{config_name}.yaml",
+                        f"sam2/configs/sam2.1/{config_name}.yaml",
+                    ]
+                    
+                    config_path = None
+                    for possible_config in possible_configs:
+                        try:
+                            # Try to import and check if config exists
+                            import sam2
+                            sam2_path = Path(sam2.__file__).parent.parent
+                            full_config_path = sam2_path / possible_config
+                            if full_config_path.exists():
+                                config_path = str(full_config_path)
+                                break
+                        except:
+                            pass
+                    
+                    if config_path is None:
+                        # Use config name directly (build_sam2 may handle it)
+                        config_path = config_name
+                    
+                    model = build_sam2(config_path, self.checkpoint_path, device=device)
+                    self.progress.emit("Model loaded from checkpoint")
                 except Exception as e:
-                    self.finished.emit(False, f"Could not load model checkpoint. Please download from:\n"
-                                             f"https://github.com/facebookresearch/sam2#download-checkpoints\n\n"
-                                             f"Error: {str(e)}")
+                    self.progress.emit(f"Warning: Could not load from checkpoint: {e}")
+                    import traceback
+                    self.progress.emit(f"Traceback: {traceback.format_exc()}")
+            
+            # Approach 2: Try Hugging Face
+            if model is None:
+                try:
+                    self.progress.emit("Attempting to load from Hugging Face...")
+                    hf_model_name = f"facebook/{self.model_name.replace('sam2.1_', 'sam2-hiera-').replace('_', '-')}"
+                    predictor = SAM2ImagePredictor.from_pretrained(hf_model_name, device=device)
+                    # Build model from predictor for automatic mask generator
+                    model = predictor.model
+                    self.progress.emit("Model loaded from Hugging Face")
+                except Exception as e:
+                    self.progress.emit(f"Warning: Could not load from Hugging Face: {e}")
+            
+            # Approach 3: Try default checkpoint location
+            if model is None:
+                try:
+                    self.progress.emit("Attempting to find checkpoint in default location...")
+                    # Common default locations
+                    default_locations = [
+                        Path.home() / ".cache" / "sam2" / "checkpoints" / f"{self.model_name}.pt",
+                        Path("checkpoints") / f"{self.model_name}.pt",
+                        Path(".") / "checkpoints" / f"{self.model_name}.pt",
+                    ]
+                    
+                    checkpoint_found = None
+                    for loc in default_locations:
+                        if loc.exists():
+                            checkpoint_found = loc
+                            break
+                    
+                    if checkpoint_found:
+                        model_name_clean = self.model_name.replace('sam2.1_', '')
+                        config_name_map = {
+                            'hiera_tiny': 'sam2.1_hiera_t',
+                            'hiera_small': 'sam2.1_hiera_s',
+                            'hiera_base_plus': 'sam2.1_hiera_b+',
+                            'hiera_large': 'sam2.1_hiera_l',
+                        }
+                        config_name = config_name_map.get(model_name_clean, 'sam2.1_hiera_s')
+                        
+                        # Try to find config file
+                        try:
+                            import sam2
+                            sam2_path = Path(sam2.__file__).parent.parent
+                            possible_configs = [
+                                sam2_path / f"sam2/configs/{config_name}.yaml",
+                                sam2_path / f"configs/{config_name}.yaml",
+                                sam2_path / f"sam2/configs/sam2.1/{config_name}.yaml",
+                            ]
+                            config_path = None
+                            for possible_config in possible_configs:
+                                if possible_config.exists():
+                                    config_path = str(possible_config)
+                                    break
+                            if config_path is None:
+                                config_path = config_name
+                        except:
+                            config_path = config_name
+                        
+                        model = build_sam2(config_path, str(checkpoint_found), device=device)
+                        self.progress.emit(f"Model loaded from: {checkpoint_found}")
+                    else:
+                        raise FileNotFoundError("No checkpoint found")
+                except Exception as e:
+                    self.finished.emit(False, 
+                        f"Could not load SAM2 model. Please:\n\n"
+                        f"1. Download checkpoint from:\n"
+                        f"   https://github.com/facebookresearch/sam2#download-checkpoints\n\n"
+                        f"2. Specify checkpoint path in the UI, OR\n"
+                        f"3. Place checkpoint in: ~/.cache/sam2/checkpoints/\n\n"
+                        f"Error: {str(e)}")
                     return
             
-            # For now, implement basic structure - full implementation will follow
-            self.progress.emit("SAM2 segmentation architecture ready. Full implementation in progress...")
+            # Create automatic mask generator
+            self.progress.emit("Creating automatic mask generator...")
+            mask_generator = SAM2AutomaticMaskGenerator(
+                model=model,
+                points_per_side=self.points_per_side,
+                pred_iou_thresh=0.8,
+                stability_score_thresh=self.stability_score,
+                box_nms_thresh=0.7,
+                crop_n_layers=1,
+                crop_n_points_downscale_factor=2,
+                min_mask_region_area=100,  # Filter out very small masks
+            )
             
             # Get input files
             input_path = Path(self.input_path)
@@ -10202,6 +10318,97 @@ class SAM2SegmentWorker(QThread):
             
             self.progress.emit(f"Found {len(tiff_files)} TIFF file(s). Processing...")
             
+            # Process each file
+            all_masks = []
+            all_images = []
+            processed_count = 0
+            
+            for file_idx, tiff_file in enumerate(tiff_files):
+                self.progress.emit(f"Processing {tiff_file.name} ({file_idx + 1}/{len(tiff_files)})...")
+                
+                # Read image
+                image_data = tifffile.imread(str(tiff_file))
+                
+                # Handle different image formats
+                if image_data.ndim == 2:
+                    # Single 2D image
+                    images = [image_data]
+                elif image_data.ndim == 3:
+                    # Could be (T, Y, X) or (Y, X, C)
+                    if image_data.shape[-1] < 10:
+                        # Likely (T, Y, X) - time series
+                        images = [image_data[i] for i in range(image_data.shape[0])]
+                    else:
+                        # Likely (Y, X, C) - single image with channels
+                        images = [image_data[:, :, 0]]  # Take first channel
+                elif image_data.ndim == 4:
+                    # (T, C, Y, X) or (C, T, Y, X)
+                    if image_data.shape[1] < 10:
+                        # (T, C, Y, X)
+                        images = [image_data[i, 0] for i in range(image_data.shape[0])]
+                    else:
+                        # (C, T, Y, X)
+                        images = [image_data[0, i] for i in range(image_data.shape[1])]
+                else:
+                    self.progress.emit(f"Warning: Unsupported image format for {tiff_file.name}, skipping...")
+                    continue
+                
+                # Process each frame
+                file_masks = []
+                for frame_idx, image in enumerate(images):
+                    if len(images) > 1:
+                        self.progress.emit(f"  Frame {frame_idx + 1}/{len(images)}...")
+                    
+                    # Normalize image to 0-255 uint8 for SAM2
+                    img_min, img_max = image.min(), image.max()
+                    if img_max > img_min:
+                        image_norm = ((image - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                    else:
+                        image_norm = image.astype(np.uint8)
+                    
+                    # Convert to RGB if needed (SAM2 expects RGB)
+                    if len(image_norm.shape) == 2:
+                        image_rgb = np.stack([image_norm, image_norm, image_norm], axis=-1)
+                    elif image_norm.shape[-1] == 1:
+                        image_rgb = np.repeat(image_norm, 3, axis=-1)
+                    else:
+                        image_rgb = image_norm[:, :, :3]  # Take first 3 channels
+                    
+                    # Generate masks
+                    with torch.inference_mode():
+                        if device == "mps":
+                            # MPS doesn't support all operations, use autocast
+                            with torch.autocast(device_type="cpu", dtype=torch.float32):
+                                sam2_masks = mask_generator.generate(image_rgb)
+                        else:
+                            sam2_masks = mask_generator.generate(image_rgb)
+                    
+                    # Convert SAM2 masks to label mask (like Omnipose output)
+                    # SAM2 returns list of dicts with 'segmentation' key
+                    if not sam2_masks:
+                        # No masks found
+                        label_mask = np.zeros(image_norm.shape[:2], dtype=np.uint16)
+                    else:
+                        # Create label mask from SAM2 masks
+                        label_mask = np.zeros(image_norm.shape[:2], dtype=np.uint16)
+                        # Sort by area (largest first) for consistent labeling
+                        sam2_masks_sorted = sorted(sam2_masks, key=lambda x: x['area'], reverse=True)
+                        
+                        for mask_idx, mask_dict in enumerate(sam2_masks_sorted, start=1):
+                            mask = mask_dict['segmentation']
+                            label_mask[mask] = mask_idx
+                    
+                    file_masks.append(label_mask)
+                    if self.create_overlay:
+                        all_images.append(image_norm)
+                
+                all_masks.extend(file_masks)
+                processed_count += 1
+            
+            if not all_masks:
+                self.finished.emit(False, "No masks were generated. Try adjusting parameters.")
+                return
+            
             # Determine output directory
             if self.output_dir:
                 output_dir = Path(self.output_dir)
@@ -10209,21 +10416,84 @@ class SAM2SegmentWorker(QThread):
                 output_dir = input_path.parent if input_path.is_file() else input_path
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Process files (placeholder - full implementation needed)
-            processed_count = 0
-            for tiff_file in tiff_files:
-                self.progress.emit(f"Processing {tiff_file.name}...")
-                
-                # Read image
-                image = tifffile.imread(str(tiff_file))
-                
-                # TODO: Implement actual SAM2 segmentation here
-                # For now, just create placeholder
-                processed_count += 1
+            # Save masks
+            self.progress.emit("Saving masks...")
+            output_stem = input_path.stem if input_path.is_file() else input_path.name
+            masks_output = output_dir / f"{output_stem}_sam2_masks.tif"
+            masks_array = np.stack(all_masks, axis=0)
+            tifffile.imwrite(str(masks_output), masks_array.astype(np.uint16))
+            self.progress.emit(f"Masks saved to: {masks_output}")
             
-            self.finished.emit(True, f"Processed {processed_count} file(s).\n"
-                                    f"Output saved to: {output_dir}\n\n"
-                                    f"Note: Full SAM2 implementation in progress.")
+            # Create overlay if requested
+            if self.create_overlay and all_images:
+                self.progress.emit("Creating overlay visualization...")
+                try:
+                    from matplotlib import pyplot as plt
+                    from PIL import Image, ImageDraw, ImageFont
+                    
+                    overlay_output = output_dir / f"{output_stem}_sam2_overlay.tif"
+                    overlays = []
+                    
+                    num_frames = min(len(all_images), len(all_masks))
+                    for i in range(num_frames):
+                        img = all_images[i]
+                        mask = all_masks[i]
+                        
+                        # Convert grayscale to RGB
+                        if len(img.shape) == 2:
+                            img_rgb = np.stack([img, img, img], axis=-1)
+                        else:
+                            img_rgb = img[:, :, :3]
+                        
+                        # Create colored overlay
+                        cmap = plt.get_cmap('gist_ncar')
+                        num_labels = int(mask.max())
+                        if num_labels > 0:
+                            colors = cmap(np.linspace(0, 1, max(num_labels + 1, 100)))[:num_labels + 1]
+                            colors[0] = [0, 0, 0, 0]  # Background transparent
+                            mask_rgb = colors[mask][:, :, :3] * 255
+                            overlay = (img_rgb * 0.5 + mask_rgb * 0.5).astype(np.uint8)
+                        else:
+                            overlay = img_rgb.astype(np.uint8)
+                        
+                        # Add labels
+                        if num_labels > 0:
+                            try:
+                                pil_img = Image.fromarray(overlay)
+                                draw = ImageDraw.Draw(pil_img)
+                                try:
+                                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+                                except:
+                                    font = ImageFont.load_default()
+                                
+                                regions = regionprops(mask)
+                                for region in regions:
+                                    if region.label == 0:
+                                        continue
+                                    cy, cx = region.centroid
+                                    x, y = int(cx), int(cy)
+                                    label_str = str(region.label)
+                                    draw.text((x + 1, y + 1), label_str, fill=(0, 0, 0), font=font)
+                                    draw.text((x, y), label_str, fill=(255, 255, 255), font=font)
+                                
+                                overlay = np.array(pil_img)
+                            except:
+                                pass
+                        
+                        overlays.append(overlay)
+                    
+                    overlay_array = np.stack(overlays, axis=0)
+                    tifffile.imwrite(str(overlay_output), overlay_array)
+                    self.progress.emit(f"Overlay saved to: {overlay_output}")
+                except Exception as e:
+                    self.progress.emit(f"Warning: Could not create overlay: {e}")
+            
+            self.finished.emit(True, 
+                f"SAM2 segmentation completed!\n\n"
+                f"Processed: {processed_count} file(s)\n"
+                f"Total frames: {len(all_masks)}\n"
+                f"Masks saved to: {masks_output}\n"
+                f"{f'Overlay saved to: {overlay_output}' if self.create_overlay and all_images else ''}")
         
         except Exception as e:
             import traceback
