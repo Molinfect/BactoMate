@@ -4156,23 +4156,7 @@ class ProcessingTab(QWidget):
         
         # Process button
         self.process_btn = QPushButton("Process File or Folder")
-        self.process_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 10px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #34495E;"
-            "}"
-            "QPushButton:disabled {"
-            "background-color: #7F8C8D;"
-            "color: #BDC3C7;"
-            "}"
-        )
+        # Modern styling applied via global stylesheet
         self.process_btn.clicked.connect(self.process_file_or_folder)
         scroll_layout.addWidget(self.process_btn)
         
@@ -7362,24 +7346,8 @@ class TrackingTab(QWidget):
         tracking_group.setLayout(tracking_layout)
         scroll_layout.addWidget(tracking_group)
         
-        # Process button
+        # Process button - modern styling applied via global stylesheet
         process_btn = QPushButton("Run Tracking")
-        process_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 8px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #4A5A6B;"
-            "}"
-            "QPushButton:pressed {"
-            "background-color: #3A4A5B;"
-            "}"
-        )
         process_btn.clicked.connect(self.run_tracking)
         scroll_layout.addWidget(process_btn)
         
