@@ -597,7 +597,7 @@ Examples:
     if args.output is None:
         input_dir = os.path.dirname(os.path.abspath(args.input))
         input_basename = Path(args.input).stem
-        output_dir = os.path.join(input_dir, f"{input_basename}_omnipose")
+        output_dir = os.path.join(input_dir, f"{input_basename}_segmentation")
     else:
         output_dir = args.output
     

@@ -338,9 +338,10 @@ class ClickableTooltip(QLabel):
         tooltip = ClickableTooltip(text, parent_widget)
         tooltip.setText(text)
         
-        # Calculate position (to the right of the icon)
+        # Calculate position (to the right of the icon, closer to input boxes)
         icon_global_pos = icon_widget.mapToGlobal(QPoint(0, 0))
-        tooltip_pos = QPoint(icon_global_pos.x() + icon_widget.width() + 5, icon_global_pos.y())
+        # Position tooltip further to the right (closer to input boxes) with larger offset
+        tooltip_pos = QPoint(icon_global_pos.x() + icon_widget.width() + 20, icon_global_pos.y())
         
         # Set maximum width for word wrapping
         tooltip.setMaximumWidth(400)
@@ -768,6 +769,7 @@ def get_modern_stylesheet():
 def create_info_icon(info_text, parent_widget=None):
     """Create a small (?) info icon label that shows tooltip-style info on click"""
     info_label = QLabel("(?)")
+    info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     info_label.setStyleSheet(
         "QLabel {"
         "color: #7F8C8D;"
@@ -776,12 +778,12 @@ def create_info_icon(info_text, parent_widget=None):
         "text-decoration: none;"
         "background-color: #2d2d2d;"
         "border: 1px solid #4a4a4a;"
-        "border-radius: 8px;"
-        "padding: 1px 4px;"
-        "min-width: 16px;"
-        "min-height: 16px;"
-        "max-width: 16px;"
-        "max-height: 16px;"
+        "border-radius: 6px;"
+        "padding: 0px 3px;"
+        "min-width: 14px;"
+        "min-height: 14px;"
+        "max-width: 14px;"
+        "max-height: 14px;"
         "}"
         "QLabel:hover {"
         "color: #4a9eff;"
@@ -3913,9 +3915,14 @@ class ProcessingTab(QWidget):
         file_group.setLayout(file_layout)
         scroll_layout.addWidget(file_group)
         
-        # Segmentation parameters (same for both modes)
+        # Segmentation parameters (same for both modes) - side-by-side layout
         seg_group = QGroupBox("Segmentation Parameters")
-        seg_layout = QVBoxLayout()
+        seg_container_layout = QHBoxLayout()
+        
+        # Left column: Basic parameters
+        basic_params_group = QGroupBox("Basic Parameters")
+        basic_params_layout = QVBoxLayout()
+        seg_layout = basic_params_layout  # Use this for basic params
         
         # Model selection
         model_layout = QHBoxLayout()
@@ -3925,7 +3932,7 @@ class ProcessingTab(QWidget):
             "Default: 'bact_phase_omni'\n"
             "Source: Official Omnipose models (https://omnipose.readthedocs.io/models.html)\n\n"
             "Available Omnipose models:\n"
-            "- bact_phase_omni: Bacterial phase contrast (default, best for bacteria)\n"
+            "- bact_phase_omni: Bacterial phase contrast (recommended for bacteria)\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
             "- cyto2_omni: General cytoplasm segmentation\n"
             "- worm_omni: C. elegans and similar\n"
@@ -3939,20 +3946,24 @@ class ProcessingTab(QWidget):
         , parent_widget=self)
         model_layout.addWidget(model_label)
         model_layout.addWidget(model_info_icon)
-        self.model_combo = QComboBox()
-        # Only include models that actually exist according to official Omnipose documentation
-        self.model_combo.addItems([
-            'bact_phase_omni', 'bact_fluor_omni', 'cyto2_omni', 'worm_omni',
-            'plant_omni', 'bact_phase_affinity',
-            'cyto2', 'cyto', 'nuclei'  # Cellpose models
-        ])
-        self.model_combo.setCurrentText('bact_phase_omni')
-        
-        # Model status indicator
+        # Model status indicator (on the left, before combo box)
         self.model_status_label = QLabel("")
         self.model_status_label.setStyleSheet("color: #7F8C8D; font-size: 9pt; font-style: italic;")
-        model_layout.addWidget(self.model_combo)
+        self.model_status_label.setFixedWidth(150)  # Fixed width for status text
+        self.model_status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         model_layout.addWidget(self.model_status_label)
+        model_layout.addStretch()  # Add stretch before combo box to align to right
+        self.model_combo = QComboBox()
+        # Validate and add only available models
+        available_models = self._get_available_models()
+        self.model_combo.addItems(available_models)
+        if available_models:
+            # Set default to bact_phase_omni if available, otherwise first available
+            if 'bact_phase_omni' in available_models:
+                self.model_combo.setCurrentText('bact_phase_omni')
+            else:
+                self.model_combo.setCurrentText(available_models[0])
+        model_layout.addWidget(self.model_combo)
         
         # Check model availability when changed
         def check_model_availability():
@@ -3995,7 +4006,6 @@ class ProcessingTab(QWidget):
             "- cyto2/cyto: Cellpose models (no Omnipose)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         )
-        model_layout.addStretch()
         seg_layout.addLayout(model_layout)
         
         # Diameter
@@ -4015,13 +4025,14 @@ class ProcessingTab(QWidget):
         , parent_widget=self)
         diam_layout.addWidget(diam_label)
         diam_layout.addWidget(diam_info_icon)
+        diam_layout.addStretch()  # Add stretch before spin box to align to right
         self.diameter = QDoubleSpinBox()
         self.diameter.setRange(0, 1000)
         self.diameter.setValue(0)
         self.diameter.setDecimals(1)
+        self.diameter.setFixedWidth(100)  # Fixed width for uniform appearance
         # Tooltip removed - info available via (?) icon only
         diam_layout.addWidget(self.diameter)
-        diam_layout.addStretch()
         seg_layout.addLayout(diam_layout)
         
         # Flow threshold
@@ -4039,17 +4050,26 @@ class ProcessingTab(QWidget):
         , parent_widget=self)
         flow_layout.addWidget(flow_label)
         flow_layout.addWidget(flow_info_icon)
+        flow_layout.addStretch()  # Add stretch before spin box to align to right
         self.flow_threshold = QDoubleSpinBox()
         self.flow_threshold.setRange(0.0, 1.0)
         self.flow_threshold.setValue(0.4)
         self.flow_threshold.setSingleStep(0.1)
         self.flow_threshold.setDecimals(2)
+        self.flow_threshold.setFixedWidth(100)  # Fixed width for uniform appearance
         # Tooltip removed - info available via (?) icon only
         flow_layout.addWidget(self.flow_threshold)
-        flow_layout.addStretch()
         seg_layout.addLayout(flow_layout)
         
-        # Options
+        basic_params_group.setLayout(basic_params_layout)
+        basic_params_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        seg_container_layout.addWidget(basic_params_group)
+        
+        # Right column: Options
+        options_group = QGroupBox("Options")
+        options_layout = QVBoxLayout()
+        
+        # GPU option
         gpu_layout = QHBoxLayout()
         self.use_gpu = QCheckBox("Use GPU (if available)")
         self.use_gpu.setChecked(True)
@@ -4066,8 +4086,9 @@ class ProcessingTab(QWidget):
         gpu_layout.addWidget(self.use_gpu)
         gpu_layout.addWidget(gpu_info_icon)
         gpu_layout.addStretch()
-        seg_layout.addLayout(gpu_layout)
+        options_layout.addLayout(gpu_layout)
         
+        # DBSCAN clustering option
         cluster_layout = QHBoxLayout()
         self.cluster = QCheckBox("Use DBSCAN clustering")
         self.cluster.setChecked(False)
@@ -4086,7 +4107,7 @@ class ProcessingTab(QWidget):
         cluster_layout.addWidget(self.cluster)
         cluster_layout.addWidget(cluster_info_icon)
         cluster_layout.addStretch()
-        seg_layout.addLayout(cluster_layout)
+        options_layout.addLayout(cluster_layout)
         
         # Overlay visualization option
         overlay_layout = QHBoxLayout()
@@ -4105,7 +4126,11 @@ class ProcessingTab(QWidget):
         overlay_layout.addWidget(self.create_overlay)
         overlay_layout.addWidget(overlay_info_icon)
         overlay_layout.addStretch()
-        seg_layout.addLayout(overlay_layout)
+        options_layout.addLayout(overlay_layout)
+        
+        options_group.setLayout(options_layout)
+        options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        seg_container_layout.addWidget(options_group)
         
         # Connect file path changes to update overlay checkbox state
         self.file_path.textChanged.connect(self._update_overlay_checkbox_state)
@@ -4129,9 +4154,9 @@ class ProcessingTab(QWidget):
         )
         reset_seg_btn.setToolTip("Reset all segmentation parameters to their default values")
         reset_seg_btn.clicked.connect(self.reset_segmentation_defaults)
-        seg_layout.addWidget(reset_seg_btn)
+        seg_container_layout.addWidget(reset_seg_btn)
         
-        seg_group.setLayout(seg_layout)
+        seg_group.setLayout(seg_container_layout)
         scroll_layout.addWidget(seg_group)
         
         # Preview button - modern styling applied via global stylesheet
@@ -4252,9 +4277,40 @@ class ProcessingTab(QWidget):
         path = Path(self.file_path.text())
         return path.exists() and path.is_dir()
     
+    def _get_available_models(self):
+        """
+        Return list of available Omnipose models.
+        Based on user's confirmed list of functional models.
+        Only includes models that are known to exist and work.
+        """
+        # User's confirmed list of available/functional models
+        # These are the models that actually exist and work
+        confirmed_omnipose_models = [
+            'bact_phase_omni',  # Recommended for bacteria
+            'bact_fluor_omni',
+            'cyto2_omni',
+            'worm_omni',
+            'plant_omni',
+            'bact_phase_affinity'
+        ]
+        
+        # Cellpose models (always available, not Omnipose-specific)
+        cellpose_models = [
+            'cyto2',
+            'cyto',
+            'nuclei'
+        ]
+        
+        # Combine and return
+        return confirmed_omnipose_models + cellpose_models
+    
     def reset_segmentation_defaults(self):
         """Reset all segmentation parameters to their default values"""
-        self.model_combo.setCurrentText('bact_phase_omni')
+        # Set default model, fallback to first available if bact_phase_omni not available
+        if 'bact_phase_omni' in [self.model_combo.itemText(i) for i in range(self.model_combo.count())]:
+            self.model_combo.setCurrentText('bact_phase_omni')
+        elif self.model_combo.count() > 0:
+            self.model_combo.setCurrentIndex(0)
         self.diameter.setValue(0)
         self.flow_threshold.setValue(0.4)
         self.use_gpu.setChecked(True)
@@ -5667,8 +5723,19 @@ class ProcessingTab(QWidget):
         if not is_folder:
             # Single file mode
             script_path = str(script_dir / "batch_process_tiff_sequence.py")
+            input_file = Path(self.file_path.text())
+            
+            # Determine base directory (go up one level if input is in Tif_* folder)
+            base_dir = input_file.parent
+            if base_dir.name.startswith('Tif_'):
+                base_dir = base_dir.parent
+            
+            # Create output directory at base level with _segmentation suffix
+            output_dir = base_dir / f"{input_file.stem}_segmentation"
+            
             cmd_args = [
                 self.file_path.text(),
+                '--output', str(output_dir),
                 '--model', self.model_combo.currentText(),
                 '--diameter', str(self.diameter.value()),
                 '--flow-threshold', str(self.flow_threshold.value()),
@@ -5685,6 +5752,7 @@ class ProcessingTab(QWidget):
             self.process_btn.setEnabled(False)
             self.process_btn.setText("Processing...")
             self.parent_window.log_output(f"Starting single file processing: {self.file_path.text()}\n")
+            self.parent_window.log_output(f"Output directory: {output_dir}\n")
         else:
             # Folder mode - show file selection dialog first
             folder = Path(self.file_path.text())
@@ -5775,9 +5843,18 @@ class ProcessingTab(QWidget):
         tiff_file = self.folder_files[self.current_file_index]
         self.parent_window.log_output(f"\nProcessing file {self.current_file_index + 1}/{len(self.folder_files)}: {tiff_file.name}\n")
         
+        # Determine base directory (go up one level if input is in Tif_* folder)
+        base_dir = tiff_file.parent
+        if base_dir.name.startswith('Tif_'):
+            base_dir = base_dir.parent
+        
+        # Create output directory at base level with _segmentation suffix
+        output_dir = base_dir / f"{tiff_file.stem}_segmentation"
+        
         # Build command arguments for this file
         cmd_args = [
             str(tiff_file),
+            '--output', str(output_dir),
             '--model', self.model_combo.currentText(),
             '--diameter', str(self.diameter.value()),
             '--flow-threshold', str(self.flow_threshold.value()),
@@ -5790,6 +5867,8 @@ class ProcessingTab(QWidget):
             cmd_args.append('--cluster')
         if not self.create_overlay.isChecked():
             cmd_args.append('--no-overlay')
+        
+        self.parent_window.log_output(f"Output directory: {output_dir}\n")
         
         # Reset current file progress when starting a new file
         self.current_file_progress = 0.0
@@ -5986,9 +6065,13 @@ class AnalyzeMasksTab(QWidget):
         file_group.setLayout(file_layout)
         scroll_layout.addWidget(file_group)
         
-        # Analysis parameters
+        # Analysis parameters - side-by-side layout
         analysis_group = QGroupBox("Analysis Parameters")
-        analysis_layout = QVBoxLayout()
+        analysis_container_layout = QHBoxLayout()
+        
+        # First box: Basic and Morphological filters (fused into one)
+        morph_params_group = QGroupBox("Morphological Filters")
+        morph_params_layout = QVBoxLayout()
         
         pixel_layout = QHBoxLayout()
         pixel_label = QLabel("Pixel Size (µm):")
@@ -6006,27 +6089,32 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         pixel_layout.addWidget(pixel_label)
         pixel_layout.addWidget(pixel_info_icon)
+        # Add indicator label for auto-filled values or warning (before spin box, on the left)
+        self.pixel_size_indicator = QLabel("⚠ Check value!")
+        self.pixel_size_indicator.setStyleSheet("color: #FFA500; font-size: 9pt; font-weight: bold;")
+        self.pixel_size_indicator.setFixedWidth(100)  # Fixed width for warning text
+        self.pixel_size_indicator.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.pixel_size_indicator.setToolTip("Default value - verify this matches your metadata!")
+        pixel_layout.addWidget(self.pixel_size_indicator)
+        pixel_layout.addStretch()  # Add stretch before spin box to align to right
         self.pixel_size = QDoubleSpinBox()
         self.pixel_size.setRange(0.001, 10.0)
-        # Initialize with shared metadata if available, otherwise default to 0.108
-        pixel_size_from_meta = self.parent_window.shared_metadata.get('pixel_size')
-        default_pixel_size = pixel_size_from_meta if pixel_size_from_meta is not None else 0.108
-        self.pixel_size.setValue(default_pixel_size)
+        # Always default to 0.108 on initialization (metadata will update it if a file is loaded)
+        self.pixel_size.setValue(0.108)
         self.pixel_size.setDecimals(3)
         self.pixel_size.setSingleStep(0.001)
+        self.pixel_size.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         # valueChanged will only fire when user finishes editing (Enter or focus loss)
         self.pixel_size.setKeyboardTracking(False)
+        # Track if metadata was loaded to show warning
+        self.pixel_size_metadata_loaded = False
+        # Connect value change to hide warning when user manually changes value
+        self.pixel_size.valueChanged.connect(self._on_pixel_size_changed)
         pixel_layout.addWidget(self.pixel_size)
-        # Add indicator label for auto-filled values
-        self.pixel_size_indicator = QLabel("")
-        self.pixel_size_indicator.setStyleSheet("color: #4CAF50; font-size: 9pt;")
-        pixel_layout.addWidget(self.pixel_size_indicator)
-        pixel_layout.addStretch()
-        analysis_layout.addLayout(pixel_layout)
+        morph_params_layout.addLayout(pixel_layout)
         
-        # Morphological filters
-        morph_group = QGroupBox("Morphological Filters (Rod-Shaped Cells)")
+        # Morphological filters (now part of the same group)
         morph_layout = QVBoxLayout()
         
         aspect_min_layout = QHBoxLayout()
@@ -6046,15 +6134,16 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         aspect_min_layout.addWidget(aspect_min_label)
         aspect_min_layout.addWidget(aspect_min_info_icon)
+        aspect_min_layout.addStretch()  # Add stretch before spin box to align to right
         self.min_aspect_ratio = QDoubleSpinBox()
         self.min_aspect_ratio.setRange(1.0, 20.0)
         self.min_aspect_ratio.setValue(1.5)
         self.min_aspect_ratio.setDecimals(1)
         self.min_aspect_ratio.setSingleStep(0.1)
+        self.min_aspect_ratio.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.min_aspect_ratio.setKeyboardTracking(False)
         aspect_min_layout.addWidget(self.min_aspect_ratio)
-        aspect_min_layout.addStretch()
         morph_layout.addLayout(aspect_min_layout)
         
         aspect_max_layout = QHBoxLayout()
@@ -6069,15 +6158,16 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         aspect_max_layout.addWidget(aspect_max_label)
         aspect_max_layout.addWidget(aspect_max_info_icon)
+        aspect_max_layout.addStretch()  # Add stretch before spin box to align to right
         self.max_aspect_ratio = QDoubleSpinBox()
         self.max_aspect_ratio.setRange(1.0, 50.0)
         self.max_aspect_ratio.setValue(10.0)
         self.max_aspect_ratio.setDecimals(1)
         self.max_aspect_ratio.setSingleStep(0.1)
+        self.max_aspect_ratio.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.max_aspect_ratio.setKeyboardTracking(False)
         aspect_max_layout.addWidget(self.max_aspect_ratio)
-        aspect_max_layout.addStretch()
         morph_layout.addLayout(aspect_max_layout)
         
         ecc_layout = QHBoxLayout()
@@ -6096,15 +6186,16 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         ecc_layout.addWidget(ecc_label)
         ecc_layout.addWidget(ecc_info_icon)
+        ecc_layout.addStretch()  # Add stretch before spin box to align to right
         self.min_eccentricity = QDoubleSpinBox()
         self.min_eccentricity.setRange(0.0, 1.0)
         self.min_eccentricity.setValue(0.5)
         self.min_eccentricity.setDecimals(2)
         self.min_eccentricity.setSingleStep(0.05)
+        self.min_eccentricity.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.min_eccentricity.setKeyboardTracking(False)
         ecc_layout.addWidget(self.min_eccentricity)
-        ecc_layout.addStretch()
         morph_layout.addLayout(ecc_layout)
         
         sol_layout = QHBoxLayout()
@@ -6123,21 +6214,26 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         sol_layout.addWidget(sol_label)
         sol_layout.addWidget(sol_info_icon)
+        sol_layout.addStretch()  # Add stretch before spin box to align to right
         self.min_solidity = QDoubleSpinBox()
         self.min_solidity.setRange(0.0, 1.0)
         self.min_solidity.setValue(0.7)
         self.min_solidity.setDecimals(2)
         self.min_solidity.setSingleStep(0.05)
+        self.min_solidity.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.min_solidity.setKeyboardTracking(False)
         sol_layout.addWidget(self.min_solidity)
-        sol_layout.addStretch()
         morph_layout.addLayout(sol_layout)
         
-        morph_group.setLayout(morph_layout)
-        analysis_layout.addWidget(morph_group)
+        # Add morphological filters to the main layout
+        morph_params_layout.addLayout(morph_layout)
         
-        # Size filters
+        morph_params_group.setLayout(morph_params_layout)
+        morph_params_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        analysis_container_layout.addWidget(morph_params_group)
+        
+        # Second box: Size filters (side-by-side)
         size_group = QGroupBox("Size Filters")
         size_layout = QVBoxLayout()
         
@@ -6155,15 +6251,16 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         min_area_layout.addWidget(min_area_label)
         min_area_layout.addWidget(min_area_info_icon)
+        min_area_layout.addStretch()  # Add stretch before spin box to align to right
         self.min_area = QDoubleSpinBox()
         self.min_area.setRange(0, 10000)
         self.min_area.setValue(0)
         self.min_area.setDecimals(1)
         self.min_area.setSingleStep(0.5)
+        self.min_area.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.min_area.setKeyboardTracking(False)
         min_area_layout.addWidget(self.min_area)
-        min_area_layout.addStretch()
         size_layout.addLayout(min_area_layout)
         
         max_area_layout = QHBoxLayout()
@@ -6180,15 +6277,16 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         max_area_layout.addWidget(max_area_label)
         max_area_layout.addWidget(max_area_info_icon)
+        max_area_layout.addStretch()  # Add stretch before spin box to align to right
         self.max_area = QDoubleSpinBox()
         self.max_area.setRange(0, 10000)
         self.max_area.setValue(0)
         self.max_area.setDecimals(1)
         self.max_area.setSingleStep(1.0)
+        self.max_area.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.max_area.setKeyboardTracking(False)
         max_area_layout.addWidget(self.max_area)
-        max_area_layout.addStretch()
         size_layout.addLayout(max_area_layout)
         
         min_width_layout = QHBoxLayout()
@@ -6206,15 +6304,16 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         min_width_layout.addWidget(min_width_label)
         min_width_layout.addWidget(min_width_info_icon)
+        min_width_layout.addStretch()  # Add stretch before spin box to align to right
         self.min_width = QDoubleSpinBox()
         self.min_width.setRange(0, 100)
         self.min_width.setValue(0)
         self.min_width.setDecimals(1)
         self.min_width.setSingleStep(0.1)
+        self.min_width.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.min_width.setKeyboardTracking(False)
         min_width_layout.addWidget(self.min_width)
-        min_width_layout.addStretch()
         size_layout.addLayout(min_width_layout)
         
         max_width_layout = QHBoxLayout()
@@ -6232,21 +6331,77 @@ class AnalyzeMasksTab(QWidget):
         , parent_widget=self)
         max_width_layout.addWidget(max_width_label)
         max_width_layout.addWidget(max_width_info_icon)
+        max_width_layout.addStretch()  # Add stretch before spin box to align to right
         self.max_width = QDoubleSpinBox()
         self.max_width.setRange(0, 100)
         self.max_width.setValue(0)
         self.max_width.setDecimals(1)
         self.max_width.setSingleStep(0.1)
+        self.max_width.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         self.max_width.setKeyboardTracking(False)
         max_width_layout.addWidget(self.max_width)
-        max_width_layout.addStretch()
         size_layout.addLayout(max_width_layout)
         
-        size_group.setLayout(size_layout)
-        analysis_layout.addWidget(size_group)
+        # Min Length filter (5th size filter to match left side)
+        min_length_layout = QHBoxLayout()
+        min_length_label = QLabel("Min Length (µm, 0=no limit):")
+        min_length_info_icon = create_info_icon(
+            "Minimum cell length in micrometers (µm).\n\n"
+            "Default: 0 (no limit)\n"
+            "Source: Optional filter, disabled by default\n\n"
+            "Length is measured as the major axis (longest dimension).\n"
+            "Filters out cells shorter than this value (likely debris or noise).\n\n"
+            "Set to 0 to disable this filter.\n"
+            "Typical values for rod-shaped bacteria: 1.0-3.0 µm\n"
+            "Range: 0 to 100 µm\n\n"
+            "Tip: Use to filter out objects that are too short to be single cells.",
+            parent_widget=self
+        )
+        min_length_layout.addWidget(min_length_label)
+        min_length_layout.addWidget(min_length_info_icon)
+        min_length_layout.addStretch()  # Add stretch before spin box to align to right
+        self.min_length = QDoubleSpinBox()
+        self.min_length.setRange(0, 100)
+        self.min_length.setValue(0)
+        self.min_length.setDecimals(1)
+        self.min_length.setSingleStep(0.1)
+        self.min_length.setFixedWidth(100)  # Fixed width for uniform appearance
+        # Disable keyboard tracking to reduce event processing overhead
+        self.min_length.setKeyboardTracking(False)
+        min_length_layout.addWidget(self.min_length)
+        size_layout.addLayout(min_length_layout)
         
-        # Options
+        size_group.setLayout(size_layout)
+        size_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        analysis_container_layout.addWidget(size_group)
+        
+        # Reset to defaults button for analysis parameters (at end of horizontal row)
+        reset_analysis_btn = QPushButton("Reset to Default")
+        reset_analysis_btn.setStyleSheet(
+            "QPushButton {"
+            "background-color: #7D8C9E;"
+            "color: white;"
+            "font-weight: bold;"
+            "padding: 6px;"
+            "border: none;"
+            "border-radius: 4px;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #6C7B8C;"
+            "}"
+        )
+        reset_analysis_btn.setToolTip("Reset all analysis parameters to their default values")
+        reset_analysis_btn.clicked.connect(self.reset_analysis_defaults)
+        analysis_container_layout.addWidget(reset_analysis_btn)
+        
+        analysis_group.setLayout(analysis_container_layout)
+        scroll_layout.addWidget(analysis_group)
+        
+        # Options (below the parameters)
+        options_group = QGroupBox("Options")
+        options_layout = QHBoxLayout()
+        
         detailed_layout = QHBoxLayout()
         self.detailed = QCheckBox("Include detailed per-cell data")
         self.detailed.setChecked(False)
@@ -6264,7 +6419,7 @@ class AnalyzeMasksTab(QWidget):
         detailed_layout.addWidget(self.detailed)
         detailed_layout.addWidget(detailed_info_icon)
         detailed_layout.addStretch()
-        analysis_layout.addLayout(detailed_layout)
+        options_layout.addLayout(detailed_layout)
         
         vis_layout = QHBoxLayout()
         self.create_vis = QCheckBox("Create filter visualization")
@@ -6284,36 +6439,18 @@ class AnalyzeMasksTab(QWidget):
         vis_layout.addWidget(self.create_vis)
         vis_layout.addWidget(vis_info_icon)
         vis_layout.addStretch()
-        analysis_layout.addLayout(vis_layout)
+        options_layout.addLayout(vis_layout)
         
-        # Reset to defaults button for analysis parameters
-        reset_analysis_btn = QPushButton("Reset to Default")
-        reset_analysis_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #7D8C9E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 6px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #6C7B8C;"
-            "}"
-        )
-        reset_analysis_btn.setToolTip("Reset all analysis parameters to their default values")
-        reset_analysis_btn.clicked.connect(self.reset_analysis_defaults)
-        analysis_layout.addWidget(reset_analysis_btn)
+        options_group.setLayout(options_layout)
+        scroll_layout.addWidget(options_group)
         
-        analysis_group.setLayout(analysis_layout)
-        scroll_layout.addWidget(analysis_group)
-        
-        # Analyze button
+        # Preview and Analyze buttons
         # Preview button - modern styling applied via global stylesheet
-        preview_btn = QPushButton("Preview Filter Effects")
-        preview_btn.setToolTip("Preview how current filter parameters would affect the selected mask file")
-        preview_btn.clicked.connect(self.preview_filter_effects)
-        scroll_layout.addWidget(preview_btn)
+        self.preview_btn = QPushButton("Preview Filter Effects")
+        self.preview_btn.setToolTip("Preview how current filter parameters would affect the selected mask file")
+        self.preview_btn.setEnabled(False)  # Disabled until file/folder is selected
+        self.preview_btn.clicked.connect(self.preview_filter_effects)
+        scroll_layout.addWidget(self.preview_btn)
         
         self.analyze_btn = QPushButton("Analyze Masks")
         self.analyze_btn.setEnabled(False)  # Disabled until file/folder is selected
@@ -6333,10 +6470,12 @@ class AnalyzeMasksTab(QWidget):
         self.setLayout(layout)
     
     def _update_analyze_button_state(self):
-        """Update analyze button enabled state based on whether file/folder is selected"""
+        """Update analyze and preview button enabled state based on whether file/folder is selected"""
         has_path = bool(self.file_path.text() and self.file_path.text().strip())
         if hasattr(self, 'analyze_btn'):
             self.analyze_btn.setEnabled(has_path)
+        if hasattr(self, 'preview_btn'):
+            self.preview_btn.setEnabled(has_path)
     
     def select_file(self):
         """Open file dialog to select a mask TIFF file"""
@@ -6363,13 +6502,25 @@ class AnalyzeMasksTab(QWidget):
         path = Path(self.file_path.text())
         return path.exists() and path.is_dir()
     
+    def _on_pixel_size_changed(self):
+        """Hide warning when user manually changes pixel size (they've verified it)"""
+        if not self.pixel_size_metadata_loaded:
+            # User manually changed the value, hide the warning
+            self.pixel_size_indicator.setText("")
+            self.pixel_size_indicator.setFixedWidth(0)
+            self.pixel_size_indicator.hide()
+    
     def reset_analysis_defaults(self):
         """Reset all analysis parameters to their default values"""
-        # Pixel size: use shared metadata if available, otherwise 0.108
-        pixel_size_from_meta = self.parent_window.shared_metadata.get('pixel_size')
-        default_pixel_size = pixel_size_from_meta if pixel_size_from_meta is not None else 0.108
-        self.pixel_size.setValue(default_pixel_size)
-        self.pixel_size_indicator.setText("")  # Clear indicator
+        # Pixel size: always reset to 0.108 (default value)
+        self.pixel_size.setValue(0.108)
+        self.pixel_size_metadata_loaded = False  # Reset metadata flag
+        self.pixel_size_indicator.setText("⚠ Check value!")  # Show warning
+        self.pixel_size_indicator.setStyleSheet("color: #FFA500; font-size: 9pt; font-weight: bold;")
+        self.pixel_size_indicator.setFixedWidth(100)  # Keep width for warning
+        self.pixel_size_indicator.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.pixel_size_indicator.setToolTip("Default value - verify this matches your microscope settings!\n\nIf you converted an ND2 file, pixel size should be auto-filled.\nOtherwise, check your microscope/objective settings.")
+        self.pixel_size_indicator.show()
         
         # Morphological filters
         self.min_aspect_ratio.setValue(1.5)
@@ -6382,6 +6533,7 @@ class AnalyzeMasksTab(QWidget):
         self.max_area.setValue(0)
         self.min_width.setValue(0)
         self.max_width.setValue(0)
+        self.min_length.setValue(0)
         
         # Options
         self.detailed.setChecked(False)
@@ -7039,9 +7191,20 @@ class AnalyzeMasksTab(QWidget):
             self._process_next_folder_file(script_path)
         else:
             # Single file mode
+            input_file = Path(self.file_path.text())
+            
+            # Determine base directory (go up one level if input is in Tif_* or _segmentation folder)
+            base_dir = input_file.parent
+            if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
+                base_dir = base_dir.parent
+            
+            # Create output path at base level with _analysis suffix
+            output_path = base_dir / f"{input_file.stem}_analysis.xlsx"
+            
             # Build command arguments
             cmd_args = [
                 self.file_path.text(),
+                '--output', str(output_path),
                 '--pixel-size', str(self.pixel_size.value()),
                 '--min-aspect-ratio', str(self.min_aspect_ratio.value()),
                 '--max-aspect-ratio', str(self.max_aspect_ratio.value()),
@@ -7057,6 +7220,8 @@ class AnalyzeMasksTab(QWidget):
                 cmd_args.extend(['--min-width', str(self.min_width.value())])
             if self.max_width.value() > 0:
                 cmd_args.extend(['--max-width', str(self.max_width.value())])
+            if self.min_length.value() > 0:
+                cmd_args.extend(['--min-length', str(self.min_length.value())])
             if self.detailed.isChecked():
                 cmd_args.append('--detailed')
             if self.create_vis.isChecked():
@@ -7117,9 +7282,18 @@ class AnalyzeMasksTab(QWidget):
         mask_file = self.folder_files[self.current_file_index]
         self.parent_window.log_output(f"\nProcessing file {self.current_file_index + 1}/{len(self.folder_files)}: {mask_file.name}\n")
         
+        # Determine base directory (go up one level if input is in Tif_* or _segmentation folder)
+        base_dir = mask_file.parent
+        if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
+            base_dir = base_dir.parent
+        
+        # Create output path at base level with _analysis suffix
+        output_path = base_dir / f"{mask_file.stem}_analysis.xlsx"
+        
         # Build command arguments
         cmd_args = [
             str(mask_file),
+            '--output', str(output_path),
             '--pixel-size', str(self.pixel_size.value()),
             '--min-aspect-ratio', str(self.min_aspect_ratio.value()),
             '--max-aspect-ratio', str(self.max_aspect_ratio.value()),
@@ -7131,12 +7305,18 @@ class AnalyzeMasksTab(QWidget):
             cmd_args.extend(['--min-area', str(self.min_area.value())])
         if self.max_area.value() > 0:
             cmd_args.extend(['--max-area', str(self.max_area.value())])
+        if self.min_width.value() > 0:
+            cmd_args.extend(['--min-width', str(self.min_width.value())])
         if self.max_width.value() > 0:
             cmd_args.extend(['--max-width', str(self.max_width.value())])
+        if self.min_length.value() > 0:
+            cmd_args.extend(['--min-length', str(self.min_length.value())])
         if self.detailed.isChecked():
             cmd_args.append('--detailed')
         if self.create_vis.isChecked():
             cmd_args.append('--visualization')
+        
+        self.parent_window.log_output(f"Output file: {output_path}\n")
         
         # Update progress (for folder mode, show file progress)
         file_progress = int((self.current_file_index / len(self.folder_files)) * 100)
@@ -7242,33 +7422,34 @@ class TrackingTab(QWidget):
         self.excel_path.setMinimumWidth(500)
         self.excel_path.setFont(file_font)
         self.excel_path.setSizePolicy(size_policy)
-        excel_btn = QPushButton("Browse File...")
-        excel_btn.setFixedWidth(120)
-        excel_btn.clicked.connect(self.select_excel_file)
         excel_info_icon = create_info_icon(
             "Link to existing Excel analysis file containing cell measurements.\n\n"
             "This file should contain per-cell data from the Analyze Masks tab.\n"
-            "Example: 5_18771_NoPhage_2_masks_analysis.xlsx\n\n"
             "The tracking will link cell IDs across frames and preserve\n"
             "cell properties from the analysis file.",
             parent_widget=self
         )
         # Set size policy to prevent stretching
         excel_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        excel_btn = QPushButton("Browse File...")
+        excel_btn.setFixedWidth(120)
+        excel_btn.clicked.connect(self.select_excel_file)
         excel_layout.addWidget(self.excel_path, 0)
+        excel_layout.addWidget(excel_info_icon, 0)  # Info icon before button
         excel_layout.addWidget(excel_btn, 0)
-        excel_layout.addWidget(excel_info_icon, 0)  # No stretch - keep icon next to button
-        excel_layout.addStretch()  # Add stretch after to push everything left
         excel_group.setLayout(excel_layout)
         scroll_layout.addWidget(excel_group)
         
-        # Tracking parameters
+        # Tracking parameters (side-by-side layout, no redundant group box titles)
         tracking_group = QGroupBox("Tracking Parameters")
-        tracking_layout = QVBoxLayout()
+        tracking_container_layout = QHBoxLayout()
         
         # Model selection
         model_layout = QHBoxLayout()
         model_label = QLabel("Model:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(['general_2d', 'general_2d_w_SAM2_features'])
+        self.model_combo.setCurrentText('general_2d')
         model_info_icon = create_info_icon(
             "Pretrained Trackastra model for cell tracking.\n\n"
             "Default: 'general_2d'\n"
@@ -7287,18 +7468,19 @@ class TrackingTab(QWidget):
             "The models use transformer-based architecture for cell linking.",
             parent_widget=self
         )
+        model_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         model_layout.addWidget(model_label)
-        model_layout.addWidget(model_info_icon)
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(['general_2d', 'general_2d_w_SAM2_features'])
-        self.model_combo.setCurrentText('general_2d')
         model_layout.addWidget(self.model_combo)
+        model_layout.addWidget(model_info_icon)
         model_layout.addStretch()
-        tracking_layout.addLayout(model_layout)
+        tracking_container_layout.addLayout(model_layout)
         
         # Tracking mode
         mode_layout = QHBoxLayout()
-        mode_label = QLabel("Tracking Mode:")
+        mode_label = QLabel("Mode:")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(['greedy', 'greedy_nodiv', 'ilp'])
+        self.mode_combo.setCurrentText('greedy')
         mode_info_icon = create_info_icon(
             "Linking mode for connecting cells across time frames.\n\n"
             "Default: 'greedy'\n"
@@ -7324,14 +7506,12 @@ class TrackingTab(QWidget):
             "Tip: Start with 'greedy' for most cases. Use 'ilp' if you need maximum accuracy.",
             parent_widget=self
         )
+        mode_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         mode_layout.addWidget(mode_label)
-        mode_layout.addWidget(mode_info_icon)
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(['greedy', 'greedy_nodiv', 'ilp'])
-        self.mode_combo.setCurrentText('greedy')
         mode_layout.addWidget(self.mode_combo)
+        mode_layout.addWidget(mode_info_icon)
         mode_layout.addStretch()
-        tracking_layout.addLayout(mode_layout)
+        tracking_container_layout.addLayout(mode_layout)
         
         # Device selection
         device_layout = QHBoxLayout()
@@ -7364,16 +7544,17 @@ class TrackingTab(QWidget):
         device_info_text += "\nTip: Use GPU if available for faster processing."
         
         device_info_icon = create_info_icon(device_info_text, parent_widget=self)
-        device_layout.addWidget(device_label)
-        device_layout.addWidget(device_info_icon)
+        device_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.device_combo = QComboBox()
         self.device_combo.addItems(available_devices_display)
         self.device_combo.setCurrentText('CPU')
+        device_layout.addWidget(device_label)
         device_layout.addWidget(self.device_combo)
+        device_layout.addWidget(device_info_icon)
         device_layout.addStretch()
-        tracking_layout.addLayout(device_layout)
+        tracking_container_layout.addLayout(device_layout)
         
-        tracking_group.setLayout(tracking_layout)
+        tracking_group.setLayout(tracking_container_layout)
         scroll_layout.addWidget(tracking_group)
         
         # Process button - modern styling applied via global stylesheet
@@ -7983,7 +8164,14 @@ class TrackingWorker(QThread):
                 return
             
             # Save tracking results
-            output_dir = Path(self.mask_file).parent / f"{Path(self.mask_file).stem}_tracking"
+            # Determine base directory (go up one level if input is in Tif_*, _segmentation, or _analysis folder)
+            mask_path = Path(self.mask_file)
+            base_dir = mask_path.parent
+            if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name or '_analysis' in base_dir.name:
+                base_dir = base_dir.parent
+            
+            # Create output directory at base level with _tracking suffix
+            output_dir = base_dir / f"{mask_path.stem}_tracking"
             output_dir.mkdir(exist_ok=True)
             
             # Extract track information from the graph
@@ -8606,7 +8794,6 @@ class TrackingWorker(QThread):
             tifffile.imwrite(
                 str(output_path),
                 visualization,
-                compress=6,  # Zlib compression level (0-9, 6 is a good balance)
                 compression='zlib'  # Use zlib compression
             )
             debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (compressed)")
@@ -8615,6 +8802,694 @@ class TrackingWorker(QThread):
             debug_output.append(f"⚠ Compression failed, saving uncompressed: {str(e)}")
             tifffile.imwrite(str(output_path), visualization)
             debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (uncompressed)")
+
+
+class GrowthCurveVideoTab(QWidget):
+    """Tab for creating growth curve videos with side-by-side graph and video"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        
+        # TIFF sequence input (file or folder)
+        video_group = QGroupBox("Video Input (TIFF Sequence)")
+        video_layout = QVBoxLayout()
+        
+        # File/Folder selection
+        file_folder_layout = QHBoxLayout()
+        self.video_path = QLineEdit()
+        self.video_path.setPlaceholderText("Select TIFF file or folder containing TIFF sequence...")
+        self.video_path.setMinimumWidth(500)
+        file_font = QFont()
+        file_font.setPointSize(11)
+        self.video_path.setFont(file_font)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.video_path.setSizePolicy(size_policy)
+        
+        file_btn = QPushButton("Browse File...")
+        file_btn.setFixedWidth(120)
+        file_btn.clicked.connect(self.select_video_file)
+        
+        folder_btn = QPushButton("Browse Folder...")
+        folder_btn.setFixedWidth(120)
+        folder_btn.clicked.connect(self.select_video_folder)
+        
+        file_folder_layout.addWidget(self.video_path, 0)
+        file_folder_layout.addWidget(file_btn, 0)
+        file_folder_layout.addWidget(folder_btn, 0)
+        video_layout.addLayout(file_folder_layout)
+        
+        video_group.setLayout(video_layout)
+        scroll_layout.addWidget(video_group)
+        
+        # Excel file input
+        excel_group = QGroupBox("Excel Analysis File")
+        excel_layout = QHBoxLayout()
+        self.excel_path = QLineEdit()
+        self.excel_path.setPlaceholderText("Select Excel file from Analyze Masks tab (e.g., *_masks_analysis.xlsx)...")
+        self.excel_path.setMinimumWidth(500)
+        self.excel_path.setFont(file_font)
+        self.excel_path.setSizePolicy(size_policy)
+        excel_btn = QPushButton("Browse File...")
+        excel_btn.setFixedWidth(120)
+        excel_btn.clicked.connect(self.select_excel_file)
+        excel_info_icon = create_info_icon(
+            "Excel file from the Analyze Masks tab containing growth data.\n\n"
+            "Required columns:\n"
+            "- Frame: Frame number (1, 2, 3, ...)\n"
+            "- Total Cell Area (Relative): Normalized cell area (first frame = 1.0)",
+            parent_widget=self
+        )
+        excel_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        excel_layout.addWidget(self.excel_path, 0)
+        excel_layout.addWidget(excel_btn, 0)
+        excel_layout.addWidget(excel_info_icon, 0)
+        excel_group.setLayout(excel_layout)
+        
+        # Time interval input (next to Excel file)
+        time_group = QGroupBox("Time Settings")
+        time_layout = QHBoxLayout()
+        time_label = QLabel("Time per frame (min.):")
+        self.time_interval = QDoubleSpinBox()
+        self.time_interval.setMinimum(0.0)
+        self.time_interval.setMaximum(10000.0)
+        self.time_interval.setValue(10.0)
+        self.time_interval.setDecimals(2)
+        self.time_interval.setSuffix(" min")
+        time_info_icon = create_info_icon(
+            "Time difference between consecutive frames.\n\n"
+            "This is used to convert frame numbers to time (hours) for the x-axis of the growth curve.\n\n"
+            "Example: If images were taken every 10 minutes, enter 10.0",
+            parent_widget=self
+        )
+        time_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.time_interval.setFixedWidth(100)  # Fixed width for uniform appearance
+        time_layout.addWidget(time_label)
+        time_layout.addWidget(time_info_icon)
+        time_layout.addStretch()  # Add stretch before spin box to align to right
+        time_layout.addWidget(self.time_interval)
+        time_group.setLayout(time_layout)
+        
+        # Excel and Time Settings side-by-side
+        excel_time_container = QHBoxLayout()
+        excel_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        time_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        excel_time_container.addWidget(excel_group)
+        excel_time_container.addWidget(time_group)
+        excel_time_widget = QWidget()
+        excel_time_widget.setLayout(excel_time_container)
+        scroll_layout.addWidget(excel_time_widget)
+        
+        # Graph and Video settings side-by-side
+        settings_container_layout = QHBoxLayout()
+        
+        # Graph settings
+        graph_group = QGroupBox("Graph Settings")
+        graph_layout = QVBoxLayout()
+        
+        # Y-axis min/max
+        yaxis_layout = QHBoxLayout()
+        ymin_label = QLabel("Y-axis min:")
+        self.yaxis_min = QDoubleSpinBox()
+        self.yaxis_min.setMinimum(0.0)
+        self.yaxis_min.setMaximum(100.0)
+        self.yaxis_min.setValue(0.0)
+        self.yaxis_min.setDecimals(2)
+        self.yaxis_min.setSpecialValueText("Auto")
+        
+        ymax_label = QLabel("Y-axis max:")
+        self.yaxis_max = QDoubleSpinBox()
+        self.yaxis_max.setMinimum(0.0)
+        self.yaxis_max.setMaximum(100.0)
+        self.yaxis_max.setValue(0.0)
+        self.yaxis_max.setDecimals(2)
+        self.yaxis_max.setSpecialValueText("Auto")
+        
+        graph_info_icon = create_info_icon(
+            "Configure the Y-axis range for the growth curve graph.\n\n"
+            "Y-axis represents: Relative cell area (normalized to first frame = 1.0)\n\n"
+            "Y-axis min/max:\n"
+            "- Set to 'Auto' (0.0) to automatically scale based on data\n"
+            "- Set custom values to fix the Y-axis range\n"
+            "- Useful for comparing multiple videos with consistent scaling\n\n"
+            "Example: Set min=0.0, max=3.0 to show growth from 1x to 3x initial area",
+            parent_widget=self
+        )
+        graph_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        
+        yaxis_layout.addWidget(ymin_label)
+        yaxis_layout.addWidget(self.yaxis_min)
+        yaxis_layout.addWidget(ymax_label)
+        yaxis_layout.addWidget(self.yaxis_max)
+        yaxis_layout.addWidget(graph_info_icon)
+        yaxis_layout.addStretch()
+        graph_layout.addLayout(yaxis_layout)
+        
+        graph_group.setLayout(graph_layout)
+        graph_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        settings_container_layout.addWidget(graph_group)
+        
+        # Video settings
+        video_settings_group = QGroupBox("Video Settings")
+        video_settings_layout = QHBoxLayout()
+        fps_label = QLabel("Frames per second (FPS):")
+        self.fps = QDoubleSpinBox()
+        self.fps.setMinimum(0.1)
+        self.fps.setMaximum(60.0)
+        self.fps.setValue(5.0)
+        self.fps.setDecimals(1)
+        self.fps.setSuffix(" fps")
+        fps_info_icon = create_info_icon(
+            "Playback speed for the output video.\n\n"
+            "Higher values = faster playback\n"
+            "Lower values = slower playback\n\n"
+            "Default: 5.0 fps\n"
+            "Typical range: 1-10 fps for time-lapse videos",
+            parent_widget=self
+        )
+        fps_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        video_settings_layout.addWidget(fps_label)
+        video_settings_layout.addWidget(self.fps)
+        video_settings_layout.addWidget(fps_info_icon)
+        video_settings_layout.addStretch()
+        video_settings_group.setLayout(video_settings_layout)
+        video_settings_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        settings_container_layout.addWidget(video_settings_group)
+        
+        # Output format selection (in same row)
+        format_group = QGroupBox("Output Formats")
+        format_layout = QVBoxLayout()
+        
+        # Format checkboxes - all in a single row with "Select All" first
+        checkbox_layout = QHBoxLayout()
+        
+        # "Select All" checkbox first
+        self.format_all = QCheckBox("Select All")
+        self.format_all.stateChanged.connect(self._on_select_all_changed)
+        checkbox_layout.addWidget(self.format_all)
+        
+        # Add a separator (spacing) between "Select All" and format options
+        checkbox_layout.addSpacing(20)
+        
+        # Format checkboxes
+        self.format_tif = QCheckBox("TIFF")
+        self.format_tif.setChecked(True)  # Default enabled
+        self.format_avi = QCheckBox("AVI")
+        self.format_avi.setChecked(True)  # Default enabled
+        self.format_gif = QCheckBox("GIF")
+        self.format_mp4 = QCheckBox("MP4")
+        
+        # Connect format checkboxes to update "Select All" state
+        self.format_tif.stateChanged.connect(self._on_format_changed)
+        self.format_avi.stateChanged.connect(self._on_format_changed)
+        self.format_gif.stateChanged.connect(self._on_format_changed)
+        self.format_mp4.stateChanged.connect(self._on_format_changed)
+        
+        checkbox_layout.addWidget(self.format_tif)
+        checkbox_layout.addWidget(self.format_avi)
+        checkbox_layout.addWidget(self.format_gif)
+        checkbox_layout.addWidget(self.format_mp4)
+        checkbox_layout.addStretch()
+        format_layout.addLayout(checkbox_layout)
+        
+        format_group.setLayout(format_layout)
+        format_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        settings_container_layout.addWidget(format_group)
+        
+        # Add container to scroll layout
+        settings_container = QWidget()
+        settings_container.setLayout(settings_container_layout)
+        scroll_layout.addWidget(settings_container)
+        
+        # Process button
+        self.process_btn = QPushButton("Create Growth Curve Video")
+        self.process_btn.setEnabled(False)  # Disabled until inputs are selected
+        self.process_btn.clicked.connect(self.create_video)
+        scroll_layout.addWidget(self.process_btn)
+        
+        # Connect path changes to update button state
+        self.video_path.textChanged.connect(self._update_button_state)
+        self.excel_path.textChanged.connect(self._update_button_state)
+        
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        self.setLayout(layout)
+        
+        # Initial button state update
+        self._update_button_state()
+    
+    def _update_button_state(self):
+        """Update process button state based on input fields"""
+        has_video = bool(self.video_path.text())
+        has_excel = bool(self.excel_path.text())
+        has_format = (self.format_tif.isChecked() or self.format_avi.isChecked() or 
+                     self.format_gif.isChecked() or self.format_mp4.isChecked())
+        self.process_btn.setEnabled(has_video and has_excel and has_format)
+    
+    def _on_select_all_changed(self, state):
+        """Handle 'Select All' checkbox change"""
+        checked = state == 2  # Qt.Checked = 2
+        self.format_tif.setChecked(checked)
+        self.format_avi.setChecked(checked)
+        self.format_gif.setChecked(checked)
+        self.format_mp4.setChecked(checked)
+    
+    def _on_format_changed(self):
+        """Handle individual format checkbox change"""
+        all_checked = (self.format_tif.isChecked() and self.format_avi.isChecked() and 
+                      self.format_gif.isChecked() and self.format_mp4.isChecked())
+        self.format_all.blockSignals(True)
+        self.format_all.setChecked(all_checked)
+        self.format_all.blockSignals(False)
+        self._update_button_state()
+    
+    def select_video_file(self):
+        """Select TIFF file for video input"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select TIFF File",
+            "",
+            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)"
+        )
+        if file_path:
+            self.video_path.setText(file_path)
+    
+    def select_video_folder(self):
+        """Select folder containing TIFF sequence"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder with TIFF Sequence",
+            ""
+        )
+        if folder_path:
+            self.video_path.setText(folder_path)
+    
+    def select_excel_file(self):
+        """Select Excel file from Analyze Masks tab"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Excel Analysis File",
+            "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)"
+        )
+        if file_path:
+            self.excel_path.setText(file_path)
+    
+    def _is_folder_mode(self):
+        """Check if video input is a folder"""
+        path = Path(self.video_path.text())
+        return path.exists() and path.is_dir()
+    
+    def _get_available_models(self):
+        """
+        Return list of available Omnipose models.
+        Based on user's confirmed list of functional models.
+        Only includes models that are known to exist and work.
+        """
+        # User's confirmed list of available/functional models
+        # These are the models that actually exist and work
+        confirmed_omnipose_models = [
+            'bact_phase_omni',  # Recommended for bacteria
+            'bact_fluor_omni',
+            'cyto2_omni',
+            'worm_omni',
+            'plant_omni',
+            'bact_phase_affinity'
+        ]
+        
+        # Cellpose models (always available, not Omnipose-specific)
+        cellpose_models = [
+            'cyto2',
+            'cyto',
+            'nuclei'
+        ]
+        
+        # Combine and return
+        return confirmed_omnipose_models + cellpose_models
+    
+    def create_video(self):
+        """Create growth curve video with side-by-side graph and video"""
+        if not self.video_path.text() or not self.excel_path.text():
+            QMessageBox.warning(self, "Missing Input", "Please select both video input and Excel file.")
+            return
+        
+        video_path = Path(self.video_path.text())
+        excel_path = Path(self.excel_path.text())
+        
+        if not video_path.exists():
+            QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{video_path}")
+            return
+        
+        if not excel_path.exists():
+            QMessageBox.warning(self, "File Not Found", f"Excel file not found:\n{excel_path}")
+            return
+        
+        # Determine output directory (same as input)
+        if video_path.is_file():
+            output_base = video_path.parent
+            input_stem = video_path.stem
+        else:
+            output_base = video_path
+            input_stem = video_path.name
+        
+        # Create output directory
+        output_dir = output_base / f"{input_stem}_growth_curve_video"
+        output_dir.mkdir(exist_ok=True)
+        
+        # Show progress
+        self.process_btn.setEnabled(False)
+        self.process_btn.setText("Creating Video...")
+        self.parent_window.progress_bar.setVisible(True)
+        self.parent_window.progress_bar.setRange(0, 100)
+        self.parent_window.progress_bar.setValue(0)
+        
+        # Get selected formats
+        formats = []
+        if self.format_tif.isChecked():
+            formats.append('tif')
+        if self.format_avi.isChecked():
+            formats.append('avi')
+        if self.format_gif.isChecked():
+            formats.append('gif')
+        if self.format_mp4.isChecked():
+            formats.append('mp4')
+        
+        # Run in worker thread
+        self.worker = GrowthCurveVideoWorker(
+            video_path,
+            excel_path,
+            output_dir,
+            self.time_interval.value(),
+            self.yaxis_min.value() if self.yaxis_min.value() > 0 else None,
+            self.yaxis_max.value() if self.yaxis_max.value() > 0 else None,
+            self.fps.value(),
+            formats,
+            parent=self
+        )
+        self.worker.finished.connect(self.on_video_finished)
+        self.worker.progress.connect(self.on_video_progress)
+        self.worker.start()
+    
+    def on_video_progress(self, value, message):
+        """Handle progress updates"""
+        self.parent_window.progress_bar.setValue(value)
+        if message:
+            self.parent_window.log_output(message)
+    
+    def on_video_finished(self, success, message):
+        """Handle video creation completion"""
+        self.process_btn.setEnabled(True)
+        self.process_btn.setText("Create Growth Curve Video")
+        self.parent_window.progress_bar.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "Success", message)
+        else:
+            QMessageBox.warning(self, "Error", message)
+
+
+class GrowthCurveVideoWorker(QThread):
+    """Worker thread for creating growth curve videos"""
+    finished = pyqtSignal(bool, str)  # success, message
+    progress = pyqtSignal(int, str)  # value, message
+    
+    def __init__(self, video_path, excel_path, output_dir, time_interval, yaxis_min, yaxis_max, fps, formats, parent=None):
+        super().__init__(parent)
+        self.video_path = video_path
+        self.excel_path = excel_path
+        self.output_dir = output_dir
+        self.time_interval = time_interval
+        self.yaxis_min = yaxis_min
+        self.yaxis_max = yaxis_max
+        self.fps = fps  # Frames per second for video playback
+        self.formats = formats  # List of formats to save: ['tif', 'avi', 'gif', 'mp4']
+    
+    def run(self):
+        try:
+            import pandas as pd
+            import numpy as np
+            import tifffile
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+            import cv2
+            
+            self.progress.emit(5, "Loading Excel data...")
+            
+            # Load Excel data
+            df = pd.read_excel(self.excel_path, sheet_name='Summary')
+            
+            # Extract frame and relative area columns
+            if 'Frame' not in df.columns or 'Total Cell Area (Relative)' not in df.columns:
+                self.finished.emit(False, f"Excel file must contain 'Frame' and 'Total Cell Area (Relative)' columns.\n"
+                                        f"Found columns: {', '.join(df.columns)}")
+                return
+            
+            frames = df['Frame'].values
+            relative_areas = df['Total Cell Area (Relative)'].values
+            
+            # Convert frames to time (minutes)
+            time_minutes = (frames - 1) * self.time_interval
+            
+            self.progress.emit(10, "Loading video frames...")
+            
+            # Load video frames
+            if self.video_path.is_file():
+                # Single multi-page TIFF file
+                video_frames = tifffile.imread(str(self.video_path))
+                if len(video_frames.shape) == 2:
+                    # Single frame, add time dimension
+                    video_frames = video_frames[np.newaxis, ...]
+            else:
+                # Folder with TIFF sequence
+                tiff_files = sorted(self.video_path.glob("*.tif")) + sorted(self.video_path.glob("*.tiff")) + \
+                            sorted(self.video_path.glob("*.TIF")) + sorted(self.video_path.glob("*.TIFF"))
+                if not tiff_files:
+                    self.finished.emit(False, f"No TIFF files found in folder: {self.video_path}")
+                    return
+                
+                video_frames = []
+                for tiff_file in tiff_files:
+                    frame = tifffile.imread(str(tiff_file))
+                    if len(frame.shape) == 2:
+                        video_frames.append(frame)
+                    else:
+                        # Multi-page, take first page
+                        video_frames.append(frame[0] if len(frame.shape) == 3 else frame)
+                video_frames = np.array(video_frames)
+            
+            num_frames = min(len(video_frames), len(frames))
+            video_frames = video_frames[:num_frames]
+            frames = frames[:num_frames]
+            relative_areas = relative_areas[:num_frames]
+            time_minutes = time_minutes[:num_frames]
+            
+            self.progress.emit(20, f"Processing {num_frames} frames...")
+            
+            # Get video dimensions
+            if len(video_frames.shape) == 3:
+                frame_height, frame_width = video_frames.shape[1], video_frames.shape[2]
+            else:
+                frame_height, frame_width = video_frames.shape[0], video_frames.shape[1]
+            
+            # Graph and video share 50/50 of the space
+            graph_width = frame_width  # Graph gets same width as video (50/50 split)
+            video_width = frame_width
+            total_width = graph_width + video_width
+            
+            # Create output frames
+            output_frames = []
+            
+            # Determine y-axis limits
+            y_min = self.yaxis_min if self.yaxis_min is not None else max(0.0, relative_areas.min() * 0.9)
+            y_max = self.yaxis_max if self.yaxis_max is not None else relative_areas.max() * 1.1
+            
+            for frame_idx in range(num_frames):
+                if frame_idx % 10 == 0:
+                    progress = 20 + int((frame_idx / num_frames) * 70)
+                    self.progress.emit(progress, f"Processing frame {frame_idx + 1}/{num_frames}...")
+                
+                # Get current video frame
+                if len(video_frames.shape) == 3:
+                    video_frame = video_frames[frame_idx]
+                else:
+                    video_frame = video_frames
+                
+                # Normalize to 0-255 if needed
+                if video_frame.dtype != np.uint8:
+                    video_frame = ((video_frame - video_frame.min()) / (video_frame.max() - video_frame.min() + 1e-10) * 255).astype(np.uint8)
+                
+                # Convert to RGB if grayscale
+                if len(video_frame.shape) == 2:
+                    video_frame = np.stack([video_frame] * 3, axis=-1)
+                elif video_frame.shape[2] == 1:
+                    video_frame = np.repeat(video_frame, 3, axis=2)
+                
+                # Create graph
+                fig = Figure(figsize=(graph_width / 100, frame_height / 100), dpi=100)
+                canvas = FigureCanvasAgg(fig)
+                ax = fig.add_subplot(111)
+                
+                # Plot growth curve up to current frame
+                current_frames = frames[:frame_idx + 1]
+                current_areas = relative_areas[:frame_idx + 1]
+                current_times = time_minutes[:frame_idx + 1]
+                
+                ax.plot(current_times, current_areas, 'k-', linewidth=4, label='Growth Curve', color='black')
+                ax.scatter(current_times[-1], current_areas[-1], color='black', s=100, zorder=5, edgecolors='black', linewidths=1)
+                ax.set_xlabel('Time [min]', fontsize=14, fontweight='bold')
+                ax.set_ylabel('rel. cell area', fontsize=14, fontweight='bold')
+                ax.set_title('Growth Curve', fontsize=16, fontweight='bold')
+                ax.set_ylim(y_min, y_max)
+                ax.set_xlim(0, time_minutes.max() * 1.05)
+                ax.grid(True, alpha=0.4, linewidth=1.5)
+                ax.legend(fontsize=12, frameon=True, edgecolor='black', facecolor='white')
+                
+                # Set white background style (matching desired output)
+                fig.patch.set_facecolor('white')
+                ax.set_facecolor('white')
+                
+                # Make tick labels bigger and bolder
+                ax.tick_params(axis='both', which='major', labelsize=12, width=2, colors='black')
+                ax.tick_params(axis='both', which='minor', labelsize=10, colors='black')
+                ax.xaxis.label.set_color('black')
+                ax.yaxis.label.set_color('black')
+                ax.title.set_color('black')
+                # Make axis lines (spines) thicker and bolder
+                for spine in ax.spines.values():
+                    spine.set_color('black')
+                    spine.set_linewidth(2.5)
+                
+                # Render graph to numpy array
+                canvas.draw()
+                # Get buffer from canvas (works with both old and new matplotlib)
+                try:
+                    # Try new matplotlib API first (buffer_rgba)
+                    buf = canvas.buffer_rgba()
+                    graph_image = np.asarray(buf)
+                    # Convert RGBA to RGB
+                    if graph_image.shape[2] == 4:
+                        graph_image = graph_image[:, :, :3]
+                except AttributeError:
+                    # Fallback to old API (tostring_rgb)
+                    try:
+                        graph_image = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
+                        graph_image = graph_image.reshape(canvas.get_width_height()[::-1] + (3,))
+                    except AttributeError:
+                        # Alternative: use renderer buffer
+                        buf = np.array(canvas.renderer.buffer_rgba())
+                        graph_image = buf[:, :, :3]  # Convert RGBA to RGB
+                
+                # Resize graph to match video frame height
+                if graph_image.shape[0] != frame_height or graph_image.shape[1] != graph_width:
+                    graph_image = cv2.resize(graph_image, (graph_width, frame_height), interpolation=cv2.INTER_LINEAR)
+                
+                # Combine graph (left) and video (right)
+                combined_frame = np.hstack([graph_image, video_frame])
+                output_frames.append(combined_frame)
+            
+            self.progress.emit(95, "Saving output files...")
+            
+            output_files = []
+            output_frames_array = np.array(output_frames)
+            
+            # Save as multi-page TIFF
+            if 'tif' in self.formats:
+                try:
+                    output_tiff = self.output_dir / f"{self.output_dir.name}.tif"
+                    tifffile.imwrite(str(output_tiff), output_frames_array, compression='zlib')
+                    output_files.append(f"TIFF: {output_tiff.name}")
+                except Exception as e:
+                    output_files.append(f"TIFF: Error - {str(e)}")
+            
+            # Save as AVI
+            if 'avi' in self.formats:
+                try:
+                    output_avi = self.output_dir / f"{self.output_dir.name}.avi"
+                    # Try multiple codecs in order of preference
+                    codecs = ['MJPG', 'XVID', 'H264', 'mp4v']
+                    success = False
+                    for codec_name in codecs:
+                        try:
+                            fourcc = cv2.VideoWriter_fourcc(*codec_name)
+                            out = cv2.VideoWriter(str(output_avi), fourcc, self.fps, (total_width, frame_height))
+                            if out.isOpened():
+                                for frame in output_frames:
+                                    out.write(frame)
+                                out.release()
+                                output_files.append(f"AVI: {output_avi.name} (codec: {codec_name})")
+                                success = True
+                                break
+                        except Exception:
+                            continue
+                    if not success:
+                        output_files.append(f"AVI: Error - No compatible codec found")
+                except Exception as e:
+                    output_files.append(f"AVI: Error - {str(e)}")
+            
+            # Save as GIF
+            if 'gif' in self.formats:
+                try:
+                    output_gif = self.output_dir / f"{self.output_dir.name}.gif"
+                    import imageio
+                    # Convert frames to uint8 if needed
+                    gif_frames = []
+                    for frame in output_frames:
+                        if frame.dtype != np.uint8:
+                            frame = ((frame - frame.min()) / (frame.max() - frame.min() + 1e-10) * 255).astype(np.uint8)
+                        gif_frames.append(frame)
+                    imageio.mimsave(str(output_gif), gif_frames, fps=self.fps, loop=0)
+                    output_files.append(f"GIF: {output_gif.name}")
+                except Exception as e:
+                    output_files.append(f"GIF: Error - {str(e)}")
+            
+            # Save as MP4
+            if 'mp4' in self.formats:
+                try:
+                    output_mp4 = self.output_dir / f"{self.output_dir.name}.mp4"
+                    import imageio
+                    # Convert frames to uint8 if needed
+                    mp4_frames = []
+                    for frame in output_frames:
+                        if frame.dtype != np.uint8:
+                            frame = ((frame - frame.min()) / (frame.max() - frame.min() + 1e-10) * 255).astype(np.uint8)
+                        mp4_frames.append(frame)
+                    # Try imageio first (uses ffmpeg if available)
+                    try:
+                        imageio.mimsave(str(output_mp4), mp4_frames, fps=self.fps, codec='libx264', quality=8)
+                        output_files.append(f"MP4: {output_mp4.name}")
+                    except Exception:
+                        # Fallback to opencv
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        out = cv2.VideoWriter(str(output_mp4), fourcc, self.fps, (total_width, frame_height))
+                        if out.isOpened():
+                            for frame in mp4_frames:
+                                out.write(frame)
+                            out.release()
+                            output_files.append(f"MP4: {output_mp4.name}")
+                        else:
+                            output_files.append(f"MP4: Error - Could not create MP4 file")
+                except Exception as e:
+                    output_files.append(f"MP4: Error - {str(e)}")
+            
+            self.progress.emit(100, "Complete!")
+            output_summary = "\n".join(output_files)
+            self.finished.emit(True, f"Growth curve video created successfully!\n\n"
+                                   f"Output directory: {self.output_dir}\n\n"
+                                   f"Files created:\n{output_summary}")
+        
+        except Exception as e:
+            import traceback
+            error_msg = f"Error creating growth curve video:\n{str(e)}\n\n{traceback.format_exc()}"
+            self.finished.emit(False, error_msg)
 
 
 class MainWindow(QMainWindow):
@@ -8630,8 +9505,9 @@ class MainWindow(QMainWindow):
     
     def init_ui(self):
         self.setWindowTitle("BactiMate")  # Short title for window bar only
-        # Set minimum size for better usability on larger screens
-        self.setMinimumSize(1000, 700)
+        # Set minimum size to prevent horizontal scrollbars in tabs
+        # Minimum width ensures all content fits without horizontal scrolling
+        self.setMinimumSize(1200, 700)
         # Set default size (will be resizable)
         self.resize(1200, 900)
         # Center window on screen
@@ -8678,7 +9554,7 @@ class MainWindow(QMainWindow):
         title_text = QLabel("BactiMate - your mate for bacteria time-lapse data")
         title_text.setStyleSheet(
             "QLabel {"
-            "font-size: 18pt;"
+            "font-size: 20pt;"
             "font-weight: bold;"
             "color: #ECF0F1;"
             "background: transparent;"
@@ -8700,11 +9576,13 @@ class MainWindow(QMainWindow):
         self.processing_tab = ProcessingTab(self)
         self.analyze_tab = AnalyzeMasksTab(self)
         self.tracking_tab = TrackingTab(self)
+        self.growth_curve_tab = GrowthCurveVideoTab(self)
         
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.processing_tab, "Segmentation")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
+        tabs.addTab(self.growth_curve_tab, "Video Graph")
         
         main_layout.addWidget(tabs)
         
@@ -8801,6 +9679,11 @@ class MainWindow(QMainWindow):
                 # Show indicator that value was auto-filled
                 if hasattr(self.analyze_tab, 'pixel_size_indicator'):
                     self.analyze_tab.pixel_size_indicator.setText("(from metadata)")
+                    self.analyze_tab.pixel_size_indicator.setStyleSheet("color: #4CAF50; font-size: 9pt;")
+                    self.analyze_tab.pixel_size_indicator.setFixedWidth(100)  # Expand when content is added
+                    self.analyze_tab.pixel_size_indicator.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.analyze_tab.pixel_size_indicator.show()
+                    self.analyze_tab.pixel_size_metadata_loaded = True  # Mark that metadata was loaded
                 self.log_output(f"✓ Updated pixel size in Analyze Masks tab: {pixel_size:.4f} µm\n")
 
 

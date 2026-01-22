@@ -138,9 +138,9 @@ def filter_rod_shaped_cells(properties, min_aspect_ratio=1.5, max_aspect_ratio=1
     return filtered
 
 
-def filter_by_size(properties, min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None):
+def filter_by_size(properties, min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None):
     """
-    Filter cells by minimum/maximum area and width.
+    Filter cells by minimum/maximum area, width, and length.
     
     Parameters:
     -----------
@@ -154,6 +154,8 @@ def filter_by_size(properties, min_area_um2=None, max_area_um2=None, min_width_u
         Minimum cell width in µm
     max_width_um : float, optional
         Maximum cell width in µm
+    min_length_um : float, optional
+        Minimum cell length in µm (major axis)
         
     Returns:
     --------
@@ -174,13 +176,16 @@ def filter_by_size(properties, min_area_um2=None, max_area_um2=None, min_width_u
     if max_width_um is not None:
         filtered = [p for p in filtered if p['width_um'] <= max_width_um]
     
+    if min_length_um is not None:
+        filtered = [p for p in filtered if p['length_um'] >= min_length_um]
+    
     return filtered
 
 
 def analyze_masks(masks_path, pixel_size=0.108, 
                   min_aspect_ratio=1.5, max_aspect_ratio=10.0,
                   min_eccentricity=0.5, min_solidity=0.7,
-                  min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None,
+                  min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
                   remove_small=True, min_size_pixels=10):
     """
     Analyze masks and extract cell areas with morphological filtering.
@@ -207,6 +212,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
         Minimum cell width in µm
     max_width_um : float, optional
         Maximum cell width in µm
+    min_length_um : float, optional
+        Minimum cell length in µm (major axis)
     remove_small : bool
         Remove small objects before analysis
     min_size_pixels : int
@@ -266,7 +273,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
             min_area_um2=min_area_um2,
             max_area_um2=max_area_um2,
             min_width_um=min_width_um,
-            max_width_um=max_width_um
+            max_width_um=max_width_um,
+            min_length_um=min_length_um
         )
         accepted_labels = {cell['label'] for cell in filtered}
         
@@ -462,6 +470,8 @@ Examples:
                        help='Minimum cell width in µm (default: no limit)')
     parser.add_argument('--max-width', type=float, default=None,
                        help='Maximum cell width in µm (default: no limit)')
+    parser.add_argument('--min-length', type=float, default=None,
+                       help='Minimum cell length in µm (default: no limit)')
     
     # Debris removal
     parser.add_argument('--min-size', type=int, default=10,
@@ -501,6 +511,7 @@ Examples:
         max_area_um2=args.max_area,
         min_width_um=args.min_width,
         max_width_um=args.max_width,
+        min_length_um=args.min_length,
         remove_small=not args.no_remove_small,
         min_size_pixels=args.min_size
     )
