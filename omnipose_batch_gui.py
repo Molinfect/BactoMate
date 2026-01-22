@@ -315,7 +315,7 @@ class ClickableTooltip(QLabel):
             "padding: 10px;"
             "border: 1px solid #4a9eff;"
             "border-radius: 8px;"
-            "font-size: 10pt;"
+            "font-size: 11pt;"
             "}"
         )
         self.setWordWrap(True)
@@ -438,7 +438,7 @@ def get_modern_stylesheet():
         background-color: #1a1a1a;
         color: #ffffff;
         font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-        font-size: 10pt;
+        font-size: 11pt;
     }
     
     /* ===== MODERN TABS ===== */
@@ -458,7 +458,7 @@ def get_modern_stylesheet():
         border-top-left-radius: 6px;
         border-top-right-radius: 6px;
         font-weight: 500;
-        font-size: 10pt;
+        font-size: 11pt;
         min-width: 80px;
     }
     
@@ -486,7 +486,7 @@ def get_modern_stylesheet():
         padding-top: 14px;
         background-color: #1a1a1a;
         font-weight: 600;
-        font-size: 10pt;
+        font-size: 11pt;
         color: #e0e0e0;
     }
     
@@ -509,7 +509,7 @@ def get_modern_stylesheet():
         border-radius: 6px;
         padding: 6px 16px;
         font-weight: 600;
-        font-size: 10pt;
+        font-size: 11pt;
         min-height: 28px;
     }
     
@@ -546,7 +546,7 @@ def get_modern_stylesheet():
         border-radius: 6px;
         padding: 6px 10px;
         color: #ffffff;
-        font-size: 10pt;
+        font-size: 11pt;
         selection-background-color: #4a9eff;
     }
     
@@ -566,7 +566,7 @@ def get_modern_stylesheet():
         border-radius: 6px;
         padding: 6px 10px;
         color: #ffffff;
-        font-size: 10pt;
+        font-size: 11pt;
         min-height: 28px;
     }
     
@@ -602,7 +602,7 @@ def get_modern_stylesheet():
     /* ===== MODERN CHECKBOXES ===== */
     QCheckBox {
         color: #e0e0e0;
-        font-size: 10pt;
+        font-size: 11pt;
         spacing: 6px;
     }
     
@@ -628,7 +628,7 @@ def get_modern_stylesheet():
     /* ===== MODERN RADIO BUTTONS ===== */
     QRadioButton {
         color: #e0e0e0;
-        font-size: 10pt;
+        font-size: 11pt;
         spacing: 6px;
     }
     
@@ -657,7 +657,7 @@ def get_modern_stylesheet():
         text-align: center;
         color: #ffffff;
         font-weight: 600;
-        font-size: 9pt;
+        font-size: 10pt;
         background-color: #1f1f1f;
         height: 24px;
     }
@@ -750,7 +750,7 @@ def get_modern_stylesheet():
         border: 1px solid #4a9eff;
         border-radius: 6px;
         padding: 8px;
-        font-size: 10pt;
+        font-size: 11pt;
     }
     
     /* ===== MODERN LABELS ===== */
@@ -771,15 +771,17 @@ def create_info_icon(info_text, parent_widget=None):
     info_label.setStyleSheet(
         "QLabel {"
         "color: #7F8C8D;"
-        "font-size: 9pt;"
+        "font-size: 8pt;"
         "font-weight: 600;"
         "text-decoration: none;"
         "background-color: #2d2d2d;"
         "border: 1px solid #4a4a4a;"
-        "border-radius: 10px;"
-        "padding: 2px 6px;"
-        "min-width: 18px;"
-        "min-height: 18px;"
+        "border-radius: 8px;"
+        "padding: 1px 4px;"
+        "min-width: 16px;"
+        "min-height: 16px;"
+        "max-width: 16px;"
+        "max-height: 16px;"
         "}"
         "QLabel:hover {"
         "color: #4a9eff;"
@@ -998,7 +1000,7 @@ class ND2ConversionTab(QWidget):
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
-        file_font.setPointSize(11)
+        file_font.setPointSize(12)
         self.file_path.setFont(file_font)
         # Fix size to minimum - prevent expansion
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -1148,7 +1150,7 @@ class ND2ConversionTab(QWidget):
         self.output_dir.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         output_font = QFont()
-        output_font.setPointSize(11)
+        output_font.setPointSize(12)
         self.output_dir.setFont(output_font)
         # Fix size to minimum - prevent expansion
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -1174,7 +1176,7 @@ class ND2ConversionTab(QWidget):
         self.metadata_text.setPlaceholderText("Metadata will be displayed here after loading microscopy file...")
         # Set larger, more readable font
         metadata_font = QFont()
-        metadata_font.setPointSize(13)  # Increased font size for better readability
+        metadata_font.setPointSize(12)  # Increased font size for better readability
         self.metadata_text.setFont(metadata_font)
         # Prevent vertical expansion - only allow horizontal
         size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -3894,7 +3896,7 @@ class ProcessingTab(QWidget):
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
-        file_font.setPointSize(11)
+        file_font.setPointSize(12)
         self.file_path.setFont(file_font)
         # Fix size to minimum - prevent expansion
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -5967,7 +5969,7 @@ class AnalyzeMasksTab(QWidget):
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
-        file_font.setPointSize(11)
+        file_font.setPointSize(12)
         self.file_path.setFont(file_font)
         # Fix size to minimum - prevent expansion
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
