@@ -4107,10 +4107,12 @@ class ProcessingTab(QWidget):
         overlay_layout.addStretch()
         seg_layout.addLayout(overlay_layout)
         
-        # Connect file path changes to update overlay checkbox state
+        # Connect file path changes to update overlay checkbox state and button states
         self.file_path.textChanged.connect(self._update_overlay_checkbox_state)
+        self.file_path.textChanged.connect(self._update_button_states)
         # Initialize state
         self._update_overlay_checkbox_state()
+        self._update_button_states()
         
         # Reset to defaults button for segmentation parameters
         reset_seg_btn = QPushButton("Reset to Default")
@@ -4135,7 +4137,8 @@ class ProcessingTab(QWidget):
         scroll_layout.addWidget(seg_group)
         
         # Preview button - modern styling applied via global stylesheet
-        preview_btn = QPushButton("Preview Segmentation")
+        self.preview_btn = QPushButton("Preview Segmentation")
+        self.preview_btn.setEnabled(False)  # Disabled until file/folder is selected
         # Wrap preview_segmentation to catch all exceptions and prevent PyQt6 abort()
         def safe_preview_segmentation():
             try:
@@ -4151,11 +4154,12 @@ class ProcessingTab(QWidget):
                     # If showing dialog fails, at least print to console
                     print(f"CRITICAL ERROR: {error_msg}", file=sys.stderr)
                 # Don't re-raise - PyQt6 will abort if we do
-        preview_btn.clicked.connect(safe_preview_segmentation)
-        scroll_layout.addWidget(preview_btn)
+        self.preview_btn.clicked.connect(safe_preview_segmentation)
+        scroll_layout.addWidget(self.preview_btn)
         
         # Process button
         self.process_btn = QPushButton("Process File or Folder")
+        self.process_btn.setEnabled(False)  # Disabled until file/folder is selected
         # Modern styling applied via global stylesheet
         self.process_btn.clicked.connect(self.process_file_or_folder)
         scroll_layout.addWidget(self.process_btn)
@@ -4165,6 +4169,14 @@ class ProcessingTab(QWidget):
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
         self.setLayout(layout)
+    
+    def _update_button_states(self):
+        """Update button enabled states based on whether file/folder is selected"""
+        has_path = bool(self.file_path.text() and self.file_path.text().strip())
+        if hasattr(self, 'preview_btn'):
+            self.preview_btn.setEnabled(has_path)
+        if hasattr(self, 'process_btn'):
+            self.process_btn.setEnabled(has_path)
     
     def _update_overlay_checkbox_state(self):
         """Update overlay checkbox tooltip based on folder vs file mode"""
@@ -4228,6 +4240,7 @@ class ProcessingTab(QWidget):
         if folder_path:
             self.file_path.setText(folder_path)
             self._update_overlay_checkbox_state()
+            self._update_button_states()
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -6300,15 +6313,27 @@ class AnalyzeMasksTab(QWidget):
         scroll_layout.addWidget(preview_btn)
         
         self.analyze_btn = QPushButton("Analyze Masks")
+        self.analyze_btn.setEnabled(False)  # Disabled until file/folder is selected
         # Modern styling applied via global stylesheet
         self.analyze_btn.clicked.connect(self.analyze_masks)
         scroll_layout.addWidget(self.analyze_btn)
+        
+        # Connect file path changes to update button states
+        self.file_path.textChanged.connect(self._update_analyze_button_state)
+        # Initialize state
+        self._update_analyze_button_state()
         
         scroll_widget.setLayout(scroll_layout)
         scroll.setWidget(scroll_widget)
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
         self.setLayout(layout)
+    
+    def _update_analyze_button_state(self):
+        """Update analyze button enabled state based on whether file/folder is selected"""
+        has_path = bool(self.file_path.text() and self.file_path.text().strip())
+        if hasattr(self, 'analyze_btn'):
+            self.analyze_btn.setEnabled(has_path)
     
     def select_file(self):
         """Open file dialog to select a mask TIFF file"""
@@ -6317,6 +6342,7 @@ class AnalyzeMasksTab(QWidget):
         )
         if file_path:
             self.file_path.setText(file_path)
+            self._update_analyze_button_state()
     
     def select_folder(self):
         """Open folder dialog to select a folder"""
@@ -6325,6 +6351,7 @@ class AnalyzeMasksTab(QWidget):
         )
         if folder_path:
             self.file_path.setText(folder_path)
+            self._update_analyze_button_state()
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -7347,15 +7374,27 @@ class TrackingTab(QWidget):
         scroll_layout.addWidget(tracking_group)
         
         # Process button - modern styling applied via global stylesheet
-        process_btn = QPushButton("Run Tracking")
-        process_btn.clicked.connect(self.run_tracking)
-        scroll_layout.addWidget(process_btn)
+        self.process_btn = QPushButton("Run Tracking")
+        self.process_btn.setEnabled(False)  # Disabled until mask file is selected
+        self.process_btn.clicked.connect(self.run_tracking)
+        scroll_layout.addWidget(self.process_btn)
+        
+        # Connect mask path changes to update button state
+        self.mask_path.textChanged.connect(self._update_tracking_button_state)
+        # Initialize state
+        self._update_tracking_button_state()
         
         scroll_widget.setLayout(scroll_layout)
         scroll.setWidget(scroll_widget)
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
         self.setLayout(layout)
+    
+    def _update_tracking_button_state(self):
+        """Update tracking button enabled state based on whether mask file is selected"""
+        has_mask = bool(self.mask_path.text() and self.mask_path.text().strip())
+        if hasattr(self, 'process_btn'):
+            self.process_btn.setEnabled(has_mask)
     
     def select_mask_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -7364,6 +7403,7 @@ class TrackingTab(QWidget):
         )
         if file_path:
             self.mask_path.setText(file_path)
+            self._update_tracking_button_state()
     
     def select_original_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
