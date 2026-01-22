@@ -444,7 +444,7 @@ def get_modern_stylesheet():
     /* ===== MODERN TABS ===== */
     QTabWidget::pane {
         border: 1px solid #2d2d2d;
-        border-radius: 8px;
+        border-radius: 6px;
         background-color: #1f1f1f;
         top: -1px;
     }
@@ -453,12 +453,13 @@ def get_modern_stylesheet():
         background-color: #2d2d2d;
         color: #b0b0b0;
         border: none;
-        padding: 12px 24px;
-        margin-right: 4px;
-        border-top-left-radius: 8px;
-        border-top-right-radius: 8px;
+        padding: 8px 16px;
+        margin-right: 3px;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
         font-weight: 500;
-        min-width: 100px;
+        font-size: 10pt;
+        min-width: 80px;
     }
     
     QTabBar::tab:hover {
@@ -480,23 +481,23 @@ def get_modern_stylesheet():
     /* ===== MODERN GROUP BOXES (CARDS) ===== */
     QGroupBox {
         border: 1px solid #2d2d2d;
-        border-radius: 12px;
-        margin-top: 16px;
-        padding-top: 20px;
+        border-radius: 8px;
+        margin-top: 10px;
+        padding-top: 14px;
         background-color: #242424;
         font-weight: 600;
-        font-size: 12pt;
+        font-size: 11pt;
         color: #e0e0e0;
     }
     
     QGroupBox::title {
         subcontrol-origin: margin;
         subcontrol-position: top left;
-        left: 16px;
-        padding: 4px 12px;
+        left: 12px;
+        padding: 2px 8px;
         background-color: #242424;
         color: #4a9eff;
-        border-radius: 6px;
+        border-radius: 4px;
     }
     
     /* ===== MODERN BUTTONS ===== */
@@ -505,11 +506,11 @@ def get_modern_stylesheet():
             stop:0 #5a9eff, stop:1 #4a7fdd);
         color: #ffffff;
         border: none;
-        border-radius: 8px;
-        padding: 10px 20px;
+        border-radius: 6px;
+        padding: 6px 16px;
         font-weight: 600;
-        font-size: 11pt;
-        min-height: 36px;
+        font-size: 10pt;
+        min-height: 28px;
     }
     
     QPushButton:hover {
@@ -542,47 +543,47 @@ def get_modern_stylesheet():
     /* ===== MODERN INPUT FIELDS ===== */
     QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
         background-color: #2d2d2d;
-        border: 2px solid #3a3a3a;
-        border-radius: 8px;
-        padding: 8px 12px;
+        border: 1px solid #3a3a3a;
+        border-radius: 6px;
+        padding: 6px 10px;
         color: #ffffff;
-        font-size: 11pt;
+        font-size: 10pt;
         selection-background-color: #4a9eff;
     }
     
     QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-        border: 2px solid #4a9eff;
+        border: 1px solid #4a9eff;
         background-color: #252525;
     }
     
     QLineEdit:hover, QTextEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {
-        border: 2px solid #4a4a4a;
+        border: 1px solid #4a4a4a;
     }
     
     /* ===== MODERN COMBO BOXES ===== */
     QComboBox {
         background-color: #2d2d2d;
-        border: 2px solid #3a3a3a;
-        border-radius: 8px;
-        padding: 8px 12px;
+        border: 1px solid #3a3a3a;
+        border-radius: 6px;
+        padding: 6px 10px;
         color: #ffffff;
-        font-size: 11pt;
-        min-height: 36px;
+        font-size: 10pt;
+        min-height: 28px;
     }
     
     QComboBox:hover {
-        border: 2px solid #4a4a4a;
+        border: 1px solid #4a4a4a;
     }
     
     QComboBox:focus {
-        border: 2px solid #4a9eff;
+        border: 1px solid #4a9eff;
     }
     
     QComboBox::drop-down {
         border: none;
-        width: 30px;
-        border-top-right-radius: 8px;
-        border-bottom-right-radius: 8px;
+        width: 24px;
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
         background-color: #3a3a3a;
     }
     
@@ -592,36 +593,36 @@ def get_modern_stylesheet():
     
     QComboBox QAbstractItemView {
         background-color: #2d2d2d;
-        border: 2px solid #4a9eff;
-        border-radius: 8px;
+        border: 1px solid #4a9eff;
+        border-radius: 6px;
         selection-background-color: #4a9eff;
         selection-color: #ffffff;
-        padding: 4px;
+        padding: 2px;
     }
     
     /* ===== MODERN CHECKBOXES ===== */
     QCheckBox {
         color: #e0e0e0;
-        font-size: 11pt;
-        spacing: 8px;
+        font-size: 10pt;
+        spacing: 6px;
     }
     
     QCheckBox::indicator {
-        width: 20px;
-        height: 20px;
-        border: 2px solid #4a4a4a;
-        border-radius: 6px;
+        width: 18px;
+        height: 18px;
+        border: 1px solid #4a4a4a;
+        border-radius: 4px;
         background-color: #2d2d2d;
     }
     
     QCheckBox::indicator:hover {
-        border: 2px solid #4a9eff;
+        border: 1px solid #4a9eff;
     }
     
     QCheckBox::indicator:checked {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
             stop:0 #4a9eff, stop:1 #357abd);
-        border: 2px solid #4a9eff;
+        border: 1px solid #4a9eff;
     }
     
     QCheckBox::indicator:checked::after {
@@ -633,43 +634,44 @@ def get_modern_stylesheet():
     /* ===== MODERN RADIO BUTTONS ===== */
     QRadioButton {
         color: #e0e0e0;
-        font-size: 11pt;
-        spacing: 8px;
+        font-size: 10pt;
+        spacing: 6px;
     }
     
     QRadioButton::indicator {
-        width: 20px;
-        height: 20px;
-        border: 2px solid #4a4a4a;
-        border-radius: 10px;
+        width: 18px;
+        height: 18px;
+        border: 1px solid #4a4a4a;
+        border-radius: 9px;
         background-color: #2d2d2d;
     }
     
     QRadioButton::indicator:hover {
-        border: 2px solid #4a9eff;
+        border: 1px solid #4a9eff;
     }
     
     QRadioButton::indicator:checked {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
             stop:0 #4a9eff, stop:1 #357abd);
-        border: 2px solid #4a9eff;
+        border: 1px solid #4a9eff;
     }
     
     /* ===== MODERN PROGRESS BAR ===== */
     QProgressBar {
-        border: 2px solid #2d2d2d;
-        border-radius: 8px;
+        border: 1px solid #2d2d2d;
+        border-radius: 6px;
         text-align: center;
         color: #ffffff;
         font-weight: 600;
+        font-size: 9pt;
         background-color: #1f1f1f;
-        height: 28px;
+        height: 24px;
     }
     
     QProgressBar::chunk {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
             stop:0 #4a9eff, stop:0.5 #5aaeff, stop:1 #4a9eff);
-        border-radius: 6px;
+        border-radius: 5px;
     }
     
     /* ===== MODERN SCROLLBAR ===== */
@@ -720,16 +722,16 @@ def get_modern_stylesheet():
     /* ===== MODERN LIST WIDGET ===== */
     QListWidget {
         background-color: #1f1f1f;
-        border: 2px solid #2d2d2d;
-        border-radius: 8px;
-        padding: 4px;
+        border: 1px solid #2d2d2d;
+        border-radius: 6px;
+        padding: 3px;
         color: #ffffff;
     }
     
     QListWidget::item {
-        padding: 10px;
-        border-radius: 6px;
-        margin: 2px;
+        padding: 6px;
+        border-radius: 4px;
+        margin: 1px;
     }
     
     QListWidget::item:hover {
@@ -764,9 +766,8 @@ def get_modern_stylesheet():
     
     /* ===== MODERN TITLE BAR ===== */
     QWidget[class="title_bar"] {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-            stop:0 #2c3e50, stop:1 #34495e);
-        border-bottom: 2px solid #4a9eff;
+        background: transparent;
+        border-bottom: 1px solid #4a9eff;
     }
     """
     
@@ -8638,13 +8639,13 @@ class MainWindow(QMainWindow):
         title_bar.setProperty("class", "title_bar")
         title_bar.setStyleSheet(
             "QWidget[class='title_bar'] {"
-            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2c3e50, stop:1 #34495e);"
-            "padding: 12px;"
-            "border-bottom: 3px solid #4a9eff;"
+            "background: transparent;"
+            "padding: 8px;"
+            "border-bottom: 1px solid #4a9eff;"
             "}"
         )
         title_bar_layout = QHBoxLayout()
-        title_bar_layout.setContentsMargins(15, 10, 15, 10)
+        title_bar_layout.setContentsMargins(12, 6, 12, 6)
         
         # Add stretch to center content
         title_bar_layout.addStretch()
@@ -8654,13 +8655,14 @@ class MainWindow(QMainWindow):
         logo_path = Path(__file__).parent / "logo2.png"
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path))
-            # Scale logo to fit title bar (max height 50px, maintain aspect ratio)
-            if pixmap.height() > 100:
-                pixmap = pixmap.scaledToHeight(100, Qt.TransformationMode.SmoothTransformation)
+            # Scale logo to fit title bar (slimmer, max height 60px, maintain aspect ratio)
+            if pixmap.height() > 60:
+                pixmap = pixmap.scaledToHeight(60, Qt.TransformationMode.SmoothTransformation)
             logo_label.setPixmap(pixmap)
+            logo_label.setStyleSheet("background: transparent;")
         else:
             logo_label.setText("BactiMate")
-            logo_label.setStyleSheet("font-size: 20pt; font-weight: bold; color: #ECF0F1;")
+            logo_label.setStyleSheet("font-size: 18pt; font-weight: bold; color: #ECF0F1; background: transparent;")
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
         title_bar_layout.addWidget(logo_label)
         
@@ -8669,10 +8671,11 @@ class MainWindow(QMainWindow):
         title_text = QLabel("BactiMate - your mate for bacteria time-lapse data")
         title_text.setStyleSheet(
             "QLabel {"
-            "font-size: 22pt;"
+            "font-size: 18pt;"
             "font-weight: bold;"
             "color: #ECF0F1;"
-            "padding-left: 15px;"
+            "background: transparent;"
+            "padding-left: 12px;"
             "}"
         )
         title_text.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
