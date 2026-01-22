@@ -437,7 +437,7 @@ def get_modern_stylesheet():
     QWidget {
         background-color: #1a1a1a;
         color: #ffffff;
-        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-family: "Helvetica Neue", Helvetica, Arial;
         font-size: 11pt;
     }
     
