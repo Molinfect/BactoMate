@@ -437,8 +437,8 @@ def get_modern_stylesheet():
     QWidget {
         background-color: #1a1a1a;
         color: #ffffff;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        font-size: 11pt;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 10pt;
     }
     
     /* ===== MODERN TABS ===== */
@@ -484,9 +484,9 @@ def get_modern_stylesheet():
         border-radius: 8px;
         margin-top: 10px;
         padding-top: 14px;
-        background-color: #242424;
+        background-color: #1a1a1a;
         font-weight: 600;
-        font-size: 11pt;
+        font-size: 10pt;
         color: #e0e0e0;
     }
     
@@ -495,7 +495,7 @@ def get_modern_stylesheet():
         subcontrol-position: top left;
         left: 12px;
         padding: 2px 8px;
-        background-color: #242424;
+        background-color: #1a1a1a;
         color: #4a9eff;
         border-radius: 4px;
     }
@@ -516,7 +516,6 @@ def get_modern_stylesheet():
     QPushButton:hover {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
             stop:0 #6aaeff, stop:1 #5a8fed);
-        transform: translateY(-1px);
     }
     
     QPushButton:pressed {
@@ -542,7 +541,7 @@ def get_modern_stylesheet():
     
     /* ===== MODERN INPUT FIELDS ===== */
     QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
-        background-color: #2d2d2d;
+        background-color: #1f1f1f;
         border: 1px solid #3a3a3a;
         border-radius: 6px;
         padding: 6px 10px;
@@ -562,7 +561,7 @@ def get_modern_stylesheet():
     
     /* ===== MODERN COMBO BOXES ===== */
     QComboBox {
-        background-color: #2d2d2d;
+        background-color: #1f1f1f;
         border: 1px solid #3a3a3a;
         border-radius: 6px;
         padding: 6px 10px;
@@ -592,7 +591,7 @@ def get_modern_stylesheet():
     }
     
     QComboBox QAbstractItemView {
-        background-color: #2d2d2d;
+        background-color: #1f1f1f;
         border: 1px solid #4a9eff;
         border-radius: 6px;
         selection-background-color: #4a9eff;
@@ -625,11 +624,6 @@ def get_modern_stylesheet():
         border: 1px solid #4a9eff;
     }
     
-    QCheckBox::indicator:checked::after {
-        content: "✓";
-        color: #ffffff;
-        font-weight: bold;
-    }
     
     /* ===== MODERN RADIO BUTTONS ===== */
     QRadioButton {
@@ -777,15 +771,15 @@ def create_info_icon(info_text, parent_widget=None):
     info_label.setStyleSheet(
         "QLabel {"
         "color: #7F8C8D;"
-        "font-size: 11pt;"
+        "font-size: 9pt;"
         "font-weight: 600;"
         "text-decoration: none;"
         "background-color: #2d2d2d;"
         "border: 1px solid #4a4a4a;"
-        "border-radius: 12px;"
-        "padding: 4px 8px;"
-        "min-width: 24px;"
-        "min-height: 24px;"
+        "border-radius: 10px;"
+        "padding: 2px 6px;"
+        "min-width: 18px;"
+        "min-height: 18px;"
         "}"
         "QLabel:hover {"
         "color: #4a9eff;"
