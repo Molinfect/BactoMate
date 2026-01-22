@@ -310,11 +310,11 @@ class ClickableTooltip(QLabel):
         self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet(
             "QLabel {"
-            "background-color: #2b2b2b;"
+            "background-color: #2d2d2d;"
             "color: #ffffff;"
-            "padding: 8px;"
-            "border: 1px solid #555555;"
-            "border-radius: 4px;"
+            "padding: 10px;"
+            "border: 1px solid #4a9eff;"
+            "border-radius: 8px;"
             "font-size: 10pt;"
             "}"
         )
@@ -417,19 +417,379 @@ class TooltipClickFilter(QObject):
         return False
 
 
+def get_modern_stylesheet():
+    """
+    Returns a comprehensive modern stylesheet for BactiMate with:
+    - Modern color palette with gradients
+    - Card-based design with shadows
+    - Pill-shaped buttons with smooth transitions
+    - Modern tabs with rounded corners
+    - Enhanced input fields
+    - Modern progress bars
+    """
+    return """
+    /* ===== GLOBAL STYLES ===== */
+    QMainWindow {
+        background-color: #1a1a1a;
+        color: #ffffff;
+    }
+    
+    QWidget {
+        background-color: #1a1a1a;
+        color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-size: 11pt;
+    }
+    
+    /* ===== MODERN TABS ===== */
+    QTabWidget::pane {
+        border: 1px solid #2d2d2d;
+        border-radius: 8px;
+        background-color: #1f1f1f;
+        top: -1px;
+    }
+    
+    QTabBar::tab {
+        background-color: #2d2d2d;
+        color: #b0b0b0;
+        border: none;
+        padding: 12px 24px;
+        margin-right: 4px;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+        font-weight: 500;
+        min-width: 100px;
+    }
+    
+    QTabBar::tab:hover {
+        background-color: #3a3a3a;
+        color: #ffffff;
+    }
+    
+    QTabBar::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a9eff, stop:1 #357abd);
+        color: #ffffff;
+        font-weight: 600;
+    }
+    
+    QTabBar::tab:!selected {
+        margin-top: 2px;
+    }
+    
+    /* ===== MODERN GROUP BOXES (CARDS) ===== */
+    QGroupBox {
+        border: 1px solid #2d2d2d;
+        border-radius: 12px;
+        margin-top: 16px;
+        padding-top: 20px;
+        background-color: #242424;
+        font-weight: 600;
+        font-size: 12pt;
+        color: #e0e0e0;
+    }
+    
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 16px;
+        padding: 4px 12px;
+        background-color: #242424;
+        color: #4a9eff;
+        border-radius: 6px;
+    }
+    
+    /* ===== MODERN BUTTONS ===== */
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #5a9eff, stop:1 #4a7fdd);
+        color: #ffffff;
+        border: none;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-weight: 600;
+        font-size: 11pt;
+        min-height: 36px;
+    }
+    
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #6aaeff, stop:1 #5a8fed);
+        transform: translateY(-1px);
+    }
+    
+    QPushButton:pressed {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a8eef, stop:1 #3a6fcd);
+    }
+    
+    QPushButton:disabled {
+        background-color: #3a3a3a;
+        color: #666666;
+    }
+    
+    /* Secondary button style */
+    QPushButton[class="secondary"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a4a4a, stop:1 #3a3a3a);
+    }
+    
+    QPushButton[class="secondary"]:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #5a5a5a, stop:1 #4a4a4a);
+    }
+    
+    /* ===== MODERN INPUT FIELDS ===== */
+    QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
+        background-color: #2d2d2d;
+        border: 2px solid #3a3a3a;
+        border-radius: 8px;
+        padding: 8px 12px;
+        color: #ffffff;
+        font-size: 11pt;
+        selection-background-color: #4a9eff;
+    }
+    
+    QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+        border: 2px solid #4a9eff;
+        background-color: #252525;
+    }
+    
+    QLineEdit:hover, QTextEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {
+        border: 2px solid #4a4a4a;
+    }
+    
+    /* ===== MODERN COMBO BOXES ===== */
+    QComboBox {
+        background-color: #2d2d2d;
+        border: 2px solid #3a3a3a;
+        border-radius: 8px;
+        padding: 8px 12px;
+        color: #ffffff;
+        font-size: 11pt;
+        min-height: 36px;
+    }
+    
+    QComboBox:hover {
+        border: 2px solid #4a4a4a;
+    }
+    
+    QComboBox:focus {
+        border: 2px solid #4a9eff;
+    }
+    
+    QComboBox::drop-down {
+        border: none;
+        width: 30px;
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
+        background-color: #3a3a3a;
+    }
+    
+    QComboBox::drop-down:hover {
+        background-color: #4a4a4a;
+    }
+    
+    QComboBox QAbstractItemView {
+        background-color: #2d2d2d;
+        border: 2px solid #4a9eff;
+        border-radius: 8px;
+        selection-background-color: #4a9eff;
+        selection-color: #ffffff;
+        padding: 4px;
+    }
+    
+    /* ===== MODERN CHECKBOXES ===== */
+    QCheckBox {
+        color: #e0e0e0;
+        font-size: 11pt;
+        spacing: 8px;
+    }
+    
+    QCheckBox::indicator {
+        width: 20px;
+        height: 20px;
+        border: 2px solid #4a4a4a;
+        border-radius: 6px;
+        background-color: #2d2d2d;
+    }
+    
+    QCheckBox::indicator:hover {
+        border: 2px solid #4a9eff;
+    }
+    
+    QCheckBox::indicator:checked {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a9eff, stop:1 #357abd);
+        border: 2px solid #4a9eff;
+    }
+    
+    QCheckBox::indicator:checked::after {
+        content: "✓";
+        color: #ffffff;
+        font-weight: bold;
+    }
+    
+    /* ===== MODERN RADIO BUTTONS ===== */
+    QRadioButton {
+        color: #e0e0e0;
+        font-size: 11pt;
+        spacing: 8px;
+    }
+    
+    QRadioButton::indicator {
+        width: 20px;
+        height: 20px;
+        border: 2px solid #4a4a4a;
+        border-radius: 10px;
+        background-color: #2d2d2d;
+    }
+    
+    QRadioButton::indicator:hover {
+        border: 2px solid #4a9eff;
+    }
+    
+    QRadioButton::indicator:checked {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a9eff, stop:1 #357abd);
+        border: 2px solid #4a9eff;
+    }
+    
+    /* ===== MODERN PROGRESS BAR ===== */
+    QProgressBar {
+        border: 2px solid #2d2d2d;
+        border-radius: 8px;
+        text-align: center;
+        color: #ffffff;
+        font-weight: 600;
+        background-color: #1f1f1f;
+        height: 28px;
+    }
+    
+    QProgressBar::chunk {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 #4a9eff, stop:0.5 #5aaeff, stop:1 #4a9eff);
+        border-radius: 6px;
+    }
+    
+    /* ===== MODERN SCROLLBAR ===== */
+    QScrollBar:vertical {
+        border: none;
+        background-color: #1f1f1f;
+        width: 12px;
+        border-radius: 6px;
+    }
+    
+    QScrollBar::handle:vertical {
+        background-color: #4a4a4a;
+        border-radius: 6px;
+        min-height: 30px;
+        margin: 2px;
+    }
+    
+    QScrollBar::handle:vertical:hover {
+        background-color: #5a5a5a;
+    }
+    
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+    
+    QScrollBar:horizontal {
+        border: none;
+        background-color: #1f1f1f;
+        height: 12px;
+        border-radius: 6px;
+    }
+    
+    QScrollBar::handle:horizontal {
+        background-color: #4a4a4a;
+        border-radius: 6px;
+        min-width: 30px;
+        margin: 2px;
+    }
+    
+    QScrollBar::handle:horizontal:hover {
+        background-color: #5a5a5a;
+    }
+    
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+        width: 0px;
+    }
+    
+    /* ===== MODERN LIST WIDGET ===== */
+    QListWidget {
+        background-color: #1f1f1f;
+        border: 2px solid #2d2d2d;
+        border-radius: 8px;
+        padding: 4px;
+        color: #ffffff;
+    }
+    
+    QListWidget::item {
+        padding: 10px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    
+    QListWidget::item:hover {
+        background-color: #2d2d2d;
+    }
+    
+    QListWidget::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a9eff, stop:1 #357abd);
+        color: #ffffff;
+    }
+    
+    /* ===== MODERN DIALOG BUTTONS ===== */
+    QDialogButtonBox QPushButton {
+        min-width: 100px;
+    }
+    
+    /* ===== MODERN TOOLTIP ===== */
+    QToolTip {
+        background-color: #2d2d2d;
+        color: #ffffff;
+        border: 1px solid #4a9eff;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 10pt;
+    }
+    
+    /* ===== MODERN LABELS ===== */
+    QLabel {
+        color: #e0e0e0;
+    }
+    
+    /* ===== MODERN TITLE BAR ===== */
+    QWidget[class="title_bar"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 #2c3e50, stop:1 #34495e);
+        border-bottom: 2px solid #4a9eff;
+    }
+    """
+    
 def create_info_icon(info_text, parent_widget=None):
     """Create a small (?) info icon label that shows tooltip-style info on click"""
     info_label = QLabel("(?)")
     info_label.setStyleSheet(
         "QLabel {"
         "color: #7F8C8D;"
-        "font-size: 10pt;"
-        "font-weight: normal;"
+        "font-size: 11pt;"
+        "font-weight: 600;"
         "text-decoration: none;"
+        "background-color: #2d2d2d;"
+        "border: 1px solid #4a4a4a;"
+        "border-radius: 12px;"
+        "padding: 4px 8px;"
+        "min-width: 24px;"
+        "min-height: 24px;"
         "}"
         "QLabel:hover {"
-        "color: #3498DB;"
-        "text-decoration: underline;"
+        "color: #4a9eff;"
+        "background-color: #3a3a3a;"
+        "border: 1px solid #4a9eff;"
         "}"
     )
     info_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -480,60 +840,17 @@ def show_file_selection_dialog(parent, files, title="Select Files", message="Sel
     label.setStyleSheet("color: #ffffff; font-size: 11pt; padding: 10px;")
     layout.addWidget(label)
     
-    # Select All / Deselect All buttons
+    # Select All / Deselect All buttons - modern styling applied via global stylesheet
     button_layout = QHBoxLayout()
     select_all_btn = QPushButton("Select All")
-    select_all_btn.setStyleSheet(
-        "QPushButton {"
-        "background-color: #5D6D7E;"
-        "color: white;"
-        "font-weight: bold;"
-        "padding: 6px 12px;"
-        "border: none;"
-        "border-radius: 4px;"
-        "}"
-        "QPushButton:hover {"
-        "background-color: #34495E;"
-        "}"
-    )
     deselect_all_btn = QPushButton("Deselect All")
-    deselect_all_btn.setStyleSheet(
-        "QPushButton {"
-        "background-color: #5D6D7E;"
-        "color: white;"
-        "font-weight: bold;"
-        "padding: 6px 12px;"
-        "border: none;"
-        "border-radius: 4px;"
-        "}"
-        "QPushButton:hover {"
-        "background-color: #34495E;"
-        "}"
-    )
     button_layout.addWidget(select_all_btn)
     button_layout.addWidget(deselect_all_btn)
     button_layout.addStretch()
     layout.addLayout(button_layout)
     
-    # List widget with checkboxes
+    # List widget with checkboxes - modern styling applied via global stylesheet
     file_list = QListWidget()
-    file_list.setStyleSheet(
-        "QListWidget {"
-        "background-color: #2b2b2b;"
-        "color: #ffffff;"
-        "font-size: 11pt;"
-        "border: 1px solid #555555;"
-        "border-radius: 4px;"
-        "padding: 5px;"
-        "}"
-        "QListWidget::item {"
-        "padding: 8px;"
-        "border-bottom: 1px solid #3a3a3a;"
-        "}"
-        "QListWidget::item:hover {"
-        "background-color: #3a3a3a;"
-        "}"
-    )
     
     # Add files with checkboxes (all checked by default)
     file_items = []
@@ -558,24 +875,10 @@ def show_file_selection_dialog(parent, files, title="Select Files", message="Sel
     
     layout.addWidget(file_list)
     
-    # Buttons
+    # Buttons - modern styling applied via global stylesheet
     button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
     button_box.accepted.connect(dialog.accept)
     button_box.rejected.connect(dialog.reject)
-    button_box.setStyleSheet(
-        "QPushButton {"
-        "background-color: #5D6D7E;"
-        "color: white;"
-        "font-weight: bold;"
-        "padding: 8px 20px;"
-        "border: none;"
-        "border-radius: 4px;"
-        "min-width: 80px;"
-        "}"
-        "QPushButton:hover {"
-        "background-color: #34495E;"
-        "}"
-    )
     layout.addWidget(button_box)
     
     dialog.setLayout(layout)
@@ -888,42 +1191,14 @@ class ND2ConversionTab(QWidget):
         
         # Preview button (moved here to match Single File tab layout)
         self.preview_btn = QPushButton("Preview File")
-        self.preview_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 8px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #34495E;"
-            "}"
-        )
+        # Modern styling applied via global stylesheet
         self.preview_btn.clicked.connect(self.preview_file)
         self.preview_btn.setEnabled(False)
         scroll_layout.addWidget(self.preview_btn)
         
         # Convert button
         self.convert_btn = QPushButton("Convert to TIFF")
-        self.convert_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 10px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #34495E;"
-            "}"
-            "QPushButton:disabled {"
-            "background-color: #7F8C8D;"
-            "color: #BDC3C7;"
-            "}"
-        )
+        # Modern styling applied via global stylesheet
         self.convert_btn.clicked.connect(self.convert_nd2)
         self.convert_btn.setEnabled(False)
         scroll_layout.addWidget(self.convert_btn)
@@ -3862,21 +4137,8 @@ class ProcessingTab(QWidget):
         seg_group.setLayout(seg_layout)
         scroll_layout.addWidget(seg_group)
         
-        # Preview button
+        # Preview button - modern styling applied via global stylesheet
         preview_btn = QPushButton("Preview Segmentation")
-        preview_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 8px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #34495E;"
-            "}"
-        )
         # Wrap preview_segmentation to catch all exceptions and prevent PyQt6 abort()
         def safe_preview_segmentation():
             try:
@@ -6050,43 +6312,14 @@ class AnalyzeMasksTab(QWidget):
         scroll_layout.addWidget(analysis_group)
         
         # Analyze button
-        # Preview button
+        # Preview button - modern styling applied via global stylesheet
         preview_btn = QPushButton("Preview Filter Effects")
-        preview_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 8px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #5D6D7E;"
-            "}"
-        )
         preview_btn.setToolTip("Preview how current filter parameters would affect the selected mask file")
         preview_btn.clicked.connect(self.preview_filter_effects)
         scroll_layout.addWidget(preview_btn)
         
         self.analyze_btn = QPushButton("Analyze Masks")
-        self.analyze_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #5D6D7E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 10px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #34495E;"
-            "}"
-            "QPushButton:disabled {"
-            "background-color: #7F8C8D;"
-            "color: #BDC3C7;"
-            "}"
-        )
+        # Modern styling applied via global stylesheet
         self.analyze_btn.clicked.connect(self.analyze_masks)
         scroll_layout.addWidget(self.analyze_btn)
         
@@ -8402,11 +8635,12 @@ class MainWindow(QMainWindow):
         
         # Custom title bar with logo and text
         title_bar = QWidget()
+        title_bar.setProperty("class", "title_bar")
         title_bar.setStyleSheet(
-            "QWidget {"
-            "background-color: #34495E;"
-            "padding: 10px;"
-            "border-bottom: 2px solid #2C3E50;"
+            "QWidget[class='title_bar'] {"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2c3e50, stop:1 #34495e);"
+            "padding: 12px;"
+            "border-bottom: 3px solid #4a9eff;"
             "}"
         )
         title_bar_layout = QHBoxLayout()
@@ -8592,6 +8826,7 @@ def main():
         app = QApplication(sys.argv)
         
         app.setStyle('Fusion')  # Modern look
+        app.setStyleSheet(get_modern_stylesheet())  # Apply modern styling
         
         window = MainWindow()
         window.show()
