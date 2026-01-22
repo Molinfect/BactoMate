@@ -312,19 +312,159 @@ def analyze_masks(masks_path, pixel_size=0.108,
         for result in results:
             result['total_area_relative'] = 0.0
     
-    return results, all_frame_data, masks
+    # Assign persistent CellIDs to accepted cells across frames
+    print("\nAssigning persistent CellIDs to accepted cells...")
+    masks_with_cellids, cellid_mapping = assign_persistent_cell_ids(masks, all_frame_data, pixel_size)
+    
+    # Update all_frame_data with CellIDs
+    for frame_idx, frame_data in enumerate(all_frame_data):
+        for cell in frame_data['cells']:
+            original_label = cell['label']
+            # Find the CellID for this label in this frame
+            mapping_key = (frame_idx, original_label)
+            if mapping_key in cellid_mapping:
+                cell['cell_id'] = cellid_mapping[mapping_key]
+            else:
+                # Should not happen, but fallback
+                cell['cell_id'] = None
+    
+    return results, all_frame_data, masks_with_cellids
 
 
-def create_filter_visualization(masks, all_frame_data, output_path):
+def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_distance_um=5.0):
     """
-    Create visualization showing accepted (green) and rejected (red) cells.
+    Assign persistent CellIDs to accepted cells across frames using simple nearest-neighbor linking.
     
     Parameters:
     -----------
     masks : array
-        Mask array (T, Y, X)
+        Original mask array (T, Y, X) with frame-specific labels
     all_frame_data : list of dict
         Frame data with accepted/rejected labels
+    pixel_size : float
+        Pixel size in µm for distance calculations
+    max_distance_um : float
+        Maximum distance in µm to link cells between frames
+        
+    Returns:
+    --------
+    masks_with_cellids : array
+        Mask array with persistent CellIDs
+    cellid_mapping : dict
+        Mapping from (frame_idx, original_label) to cell_id
+    """
+    from scipy.spatial.distance import cdist
+    from skimage.measure import regionprops
+    
+    num_frames = masks.shape[0]
+    masks_with_cellids = np.zeros_like(masks)
+    cellid_mapping = {}  # {(frame_idx, original_label): cell_id}
+    next_cell_id = 1
+    
+    # Process first frame - assign initial CellIDs
+    frame_0_data = all_frame_data[0]
+    mask_0 = masks[0]
+    accepted_labels_0 = frame_0_data['accepted_labels']
+    
+    # Get centroids for accepted cells in frame 0
+    regions_0 = regionprops(mask_0)
+    centroids_0 = {}
+    for region in regions_0:
+        if region.label in accepted_labels_0:
+            centroids_0[region.label] = np.array(region.centroid) * pixel_size
+            cellid_mapping[(0, region.label)] = next_cell_id
+            # Update mask with CellID
+            masks_with_cellids[0][mask_0 == region.label] = next_cell_id
+            next_cell_id += 1
+    
+    # Link cells across subsequent frames
+    max_distance_pixels = max_distance_um / pixel_size
+    
+    for frame_idx in range(1, num_frames):
+        frame_data = all_frame_data[frame_idx]
+        mask = masks[frame_idx]
+        accepted_labels = frame_data['accepted_labels']
+        
+        # Get centroids for accepted cells in current frame
+        regions = regionprops(mask)
+        centroids_current = {}
+        for region in regions:
+            if region.label in accepted_labels:
+                centroids_current[region.label] = np.array(region.centroid) * pixel_size
+        
+        # Get centroids from previous frame with their CellIDs
+        centroids_prev = {}
+        cellids_prev = {}
+        for (prev_frame, prev_label), cell_id in cellid_mapping.items():
+            if prev_frame == frame_idx - 1:
+                # Find centroid for this label in previous frame
+                prev_mask = masks[prev_frame]
+                prev_regions = regionprops(prev_mask)
+                for prev_region in prev_regions:
+                    if prev_region.label == prev_label:
+                        centroids_prev[cell_id] = np.array(prev_region.centroid) * pixel_size
+                        cellids_prev[cell_id] = cell_id
+                        break
+        
+        # Link cells using nearest neighbor
+        if len(centroids_prev) > 0 and len(centroids_current) > 0:
+            # Build distance matrix
+            prev_points = np.array(list(centroids_prev.values()))
+            prev_cellids = np.array(list(centroids_prev.keys()))
+            current_points = np.array(list(centroids_current.values()))
+            current_labels = np.array(list(centroids_current.keys()))
+            
+            if len(prev_points) > 0 and len(current_points) > 0:
+                distances = cdist(prev_points, current_points)
+                
+                # Greedy assignment: assign each current cell to nearest previous cell
+                used_prev = set()
+                used_current = set()
+                
+                # Sort by distance and assign
+                assignments = []
+                for i in range(len(prev_cellids)):
+                    for j in range(len(current_labels)):
+                        if distances[i, j] <= max_distance_pixels:
+                            assignments.append((distances[i, j], prev_cellids[i], current_labels[j]))
+                
+                assignments.sort()  # Sort by distance
+                
+                for dist, prev_cellid, current_label in assignments:
+                    if prev_cellid not in used_prev and current_label not in used_current:
+                        # Link this cell
+                        cellid_mapping[(frame_idx, current_label)] = prev_cellid
+                        masks_with_cellids[frame_idx][mask == current_label] = prev_cellid
+                        used_prev.add(prev_cellid)
+                        used_current.add(current_label)
+                
+                # Assign new CellIDs to unlinked cells
+                for current_label in current_labels:
+                    if current_label not in used_current:
+                        cellid_mapping[(frame_idx, current_label)] = next_cell_id
+                        masks_with_cellids[frame_idx][mask == current_label] = next_cell_id
+                        next_cell_id += 1
+        else:
+            # No previous cells or no current cells - assign new IDs
+            for current_label in accepted_labels:
+                cellid_mapping[(frame_idx, current_label)] = next_cell_id
+                masks_with_cellids[frame_idx][mask == current_label] = next_cell_id
+                next_cell_id += 1
+    
+    print(f"  Assigned {next_cell_id - 1} unique CellIDs across {num_frames} frames")
+    return masks_with_cellids, cellid_mapping
+
+
+def create_filter_visualization(masks, all_frame_data, output_path):
+    """
+    Create visualization showing accepted (green) and rejected (red) cells with persistent CellIDs.
+    
+    Parameters:
+    -----------
+    masks : array
+        Mask array (T, Y, X) with persistent CellIDs
+    all_frame_data : list of dict
+        Frame data with cells containing cell_id
     output_path : str
         Path to save visualization TIFF
     """
@@ -333,26 +473,37 @@ def create_filter_visualization(masks, all_frame_data, output_path):
     num_frames = masks.shape[0]
     height, width = masks.shape[1], masks.shape[2]
     
-    # Create RGB visualization
+    # Create RGB visualization with CellID labels
     visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
     
+    # Try to import PIL for text rendering
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        PIL_AVAILABLE = True
+    except ImportError:
+        PIL_AVAILABLE = False
+        print("WARNING: PIL not available, CellID labels will not be displayed in visualization")
+    
     for frame_idx in tqdm(range(num_frames), desc="Creating visualization"):
-        mask = masks[frame_idx]
+        mask = masks[frame_idx]  # Mask now has persistent CellIDs
         frame_data = all_frame_data[frame_idx]
         
-        accepted_labels = frame_data['accepted_labels']
-        rejected_labels = frame_data['rejected_labels']
+        # Get accepted CellIDs from frame data
+        accepted_cellids = {cell.get('cell_id') for cell in frame_data['cells'] if cell.get('cell_id') is not None}
         
         # Create RGB channels
-        # Green channel (accepted cells)
+        # Green channel (accepted cells with CellIDs)
         green = np.zeros((height, width), dtype=np.uint8)
-        for label in accepted_labels:
-            green[mask == label] = 255
+        for cell_id in accepted_cellids:
+            if cell_id is not None:
+                green[mask == cell_id] = 255
         
-        # Red channel (rejected cells)
+        # Red channel (rejected cells - all non-zero labels that are not accepted CellIDs)
         red = np.zeros((height, width), dtype=np.uint8)
-        for label in rejected_labels:
-            red[mask == label] = 255
+        all_cellids_in_mask = set(np.unique(mask)) - {0}  # Exclude background
+        rejected_cellids = all_cellids_in_mask - accepted_cellids
+        for cell_id in rejected_cellids:
+            red[mask == cell_id] = 255
         
         # Blue channel (background, can be used for original image overlay if needed)
         blue = np.zeros((height, width), dtype=np.uint8)
@@ -361,6 +512,48 @@ def create_filter_visualization(masks, all_frame_data, output_path):
         visualization[frame_idx, :, :, 0] = red    # Red channel
         visualization[frame_idx, :, :, 1] = green  # Green channel
         visualization[frame_idx, :, :, 2] = blue   # Blue channel
+        
+        # Add CellID labels if PIL is available
+        if PIL_AVAILABLE and mask.max() > 0:
+            try:
+                # Convert to PIL Image
+                pil_img = Image.fromarray(visualization[frame_idx])
+                draw = ImageDraw.Draw(pil_img)
+                
+                # Try to use a nice font, fallback to default if not available
+                try:
+                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+                except:
+                    try:
+                        font = ImageFont.truetype("arial.ttf", 10)
+                    except:
+                        font = ImageFont.load_default()
+                
+                # Get cell centroids and CellIDs (masks now have persistent CellIDs)
+                from skimage.measure import regionprops
+                regions = regionprops(mask)
+                for region in regions:
+                    if region.label == 0:
+                        continue
+                    
+                    # Get centroid
+                    centroid_y, centroid_x = region.centroid
+                    x, y = int(centroid_x), int(centroid_y)
+                    
+                    # Draw CellID text with shadow for readability (label is now persistent CellID)
+                    cell_id_str = str(region.label)
+                    text_x, text_y = x + 2, y - 5
+                    
+                    # Draw text shadow (black)
+                    draw.text((text_x + 1, text_y + 1), cell_id_str, fill=(0, 0, 0), font=font)
+                    # Draw text (white)
+                    draw.text((text_x, text_y), cell_id_str, fill=(255, 255, 255), font=font)
+                
+                # Convert back to numpy array
+                visualization[frame_idx] = np.array(pil_img)
+            except Exception as e:
+                # If text rendering fails, continue without labels
+                pass
     
     # Save visualization
     print(f"Saving visualization to: {output_path}")
@@ -411,7 +604,8 @@ def save_to_excel(results, output_path, detailed_data=None):
                 for cell in frame_data['cells']:
                     row = {
                         'Frame': frame_num,
-                        'Cell Label': cell['label'],
+                        'Cell_ID': cell.get('cell_id', cell.get('label', None)),  # Use persistent CellID if available
+                        'Cell Label': cell['label'],  # Keep original label for reference
                         'Area (µm²)': cell['area_um2'],
                         'Length (µm)': cell['length_um'],
                         'Width (µm)': cell['width_um'],

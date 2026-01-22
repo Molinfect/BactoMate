@@ -511,10 +511,20 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
     colors = cmap(np.linspace(0, 1, max(num_cells + 1, 1000)))[:num_cells + 1]
     colors[0] = [0, 0, 0, 0]  # Background transparent
     
-    # Create overlay
+    # Create overlay with CellID labels
     overlays = []
     # Ensure we don't go out of bounds
     num_frames = min(len(images_norm), len(masks_array))
+    
+    # Try to import PIL for text rendering
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        from skimage.measure import regionprops
+        PIL_AVAILABLE = True
+    except ImportError:
+        PIL_AVAILABLE = False
+        print("WARNING: PIL not available, CellID labels will not be displayed in overlay")
+    
     for i in tqdm(range(num_frames), desc="Creating overlays", **tqdm_kwargs):
         img = images_norm[i]
         mask = masks_array[i]
@@ -527,6 +537,48 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
         
         # Blend
         overlay = (img_rgb * (1 - alpha) + mask_rgb * alpha).astype(np.uint8)
+        
+        # Add CellID labels if PIL is available
+        if PIL_AVAILABLE and mask.max() > 0:
+            try:
+                # Convert to PIL Image
+                pil_img = Image.fromarray(overlay)
+                draw = ImageDraw.Draw(pil_img)
+                
+                # Try to use a nice font, fallback to default if not available
+                try:
+                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+                except:
+                    try:
+                        font = ImageFont.truetype("arial.ttf", 10)
+                    except:
+                        font = ImageFont.load_default()
+                
+                # Get cell centroids and labels
+                regions = regionprops(mask)
+                for region in regions:
+                    if region.label == 0:
+                        continue
+                    
+                    # Get centroid
+                    centroid_y, centroid_x = region.centroid
+                    x, y = int(centroid_x), int(centroid_y)
+                    
+                    # Draw CellID text with shadow for readability
+                    cell_id_str = str(region.label)
+                    text_x, text_y = x + 2, y - 5
+                    
+                    # Draw text shadow (black)
+                    draw.text((text_x + 1, text_y + 1), cell_id_str, fill=(0, 0, 0), font=font)
+                    # Draw text (white)
+                    draw.text((text_x, text_y), cell_id_str, fill=(255, 255, 255), font=font)
+                
+                # Convert back to numpy array
+                overlay = np.array(pil_img)
+            except Exception as e:
+                # If text rendering fails, continue without labels
+                pass
+        
         overlays.append(overlay)
     
     overlay_array = np.stack(overlays, axis=0)

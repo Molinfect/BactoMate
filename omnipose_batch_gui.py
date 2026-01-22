@@ -8094,12 +8094,31 @@ class TrackingWorker(QThread):
             except:
                 pass
             
+            # Initialize trackid_to_cellid mapping (will be set if Excel file is provided)
+            trackid_to_cellid = None
+            
             try:
                 self.progress.emit(55, "Running tracking algorithm...")
                 debug_output.append("Calling model.track()...")
                 track_graph, masks_tracked = model.track(imgs, masks, mode=self.mode)
                 debug_output.append("✓ Tracking completed successfully")
                 self.progress.emit(70, "Tracking completed, processing results...")
+                
+                # Map track IDs back to analysis CellIDs if Excel file is provided
+                if self.excel_file and Path(self.excel_file).exists():
+                    self.progress.emit(72, "Mapping track IDs to analysis CellIDs...")
+                    debug_output.append("\nMapping track IDs to analysis CellIDs...")
+                    try:
+                        masks_tracked, trackid_to_cellid = self._map_track_ids_to_analysis_cellids(
+                            masks, masks_tracked, self.excel_file
+                        )
+                        debug_output.append(f"✓ Mapped {len(trackid_to_cellid)} track IDs to analysis CellIDs")
+                    except Exception as e:
+                        import traceback
+                        debug_output.append(f"⚠ Could not map track IDs to analysis CellIDs: {str(e)}")
+                        debug_output.append(f"  {traceback.format_exc()}")
+                        # Continue without mapping
+                        trackid_to_cellid = None
                 debug_output.append(f"  - Track graph type: {type(track_graph)}")
                 debug_output.append(f"  - Track graph nodes: {track_graph.number_of_nodes() if hasattr(track_graph, 'number_of_nodes') else 'N/A'}")
                 debug_output.append(f"  - Track graph edges: {track_graph.number_of_edges() if hasattr(track_graph, 'number_of_edges') else 'N/A'}")
@@ -8244,12 +8263,22 @@ class TrackingWorker(QThread):
                         debug_output.append(f"✗ All extraction methods failed: {str(e2)}")
                         tracks_df = pd.DataFrame(columns=['track_id', 'frame', 'y', 'x'])
             
+            # Update tracks_df with analysis CellIDs if mapping was created
+            if trackid_to_cellid is not None and len(trackid_to_cellid) > 0:
+                if 'track_id' in tracks_df.columns:
+                    tracks_df['Cell_ID'] = tracks_df['track_id'].map(trackid_to_cellid)
+                    # Fill NaN with original track_id for unmapped tracks
+                    tracks_df['Cell_ID'] = tracks_df['Cell_ID'].fillna(tracks_df['track_id']).astype(int)
+                    debug_output.append(f"✓ Updated tracks DataFrame with analysis CellIDs ({len(trackid_to_cellid)} mappings)")
+            
             # Add debug info about tracks
             debug_output.append(f"\nTrack DataFrame info:")
             debug_output.append(f"  - Shape: {tracks_df.shape}")
             debug_output.append(f"  - Columns: {list(tracks_df.columns)}")
             if len(tracks_df) > 0:
                 debug_output.append(f"  - Unique track IDs: {tracks_df['track_id'].nunique() if 'track_id' in tracks_df.columns else 'N/A'}")
+                if 'Cell_ID' in tracks_df.columns:
+                    debug_output.append(f"  - Unique Cell IDs: {tracks_df['Cell_ID'].nunique()}")
                 debug_output.append(f"  - Frame range: {tracks_df['frame'].min() if 'frame' in tracks_df.columns else 'N/A'} to {tracks_df['frame'].max() if 'frame' in tracks_df.columns else 'N/A'}")
             
             # Save tracks as CSV
@@ -8266,6 +8295,19 @@ class TrackingWorker(QThread):
             debug_output.append(f"  - Unique labels per frame: {[len(np.unique(masks_tracked[i])) for i in range(min(5, masks_tracked.shape[0]))]}")
             tifffile.imwrite(str(masks_tracked_file), masks_tracked)
             debug_output.append(f"✓ Saved tracked masks to: {masks_tracked_file}")
+            
+            # Create overlay with track IDs (consistent CellIDs across all outputs)
+            if self.original_file:
+                self.progress.emit(87, "Creating overlay with track IDs...")
+                debug_output.append("\nCreating overlay with track IDs...")
+                try:
+                    overlay_file = output_dir / f"{Path(self.mask_file).stem}_overlay_tracked.tif"
+                    self._create_overlay_with_track_ids(imgs, masks_tracked, overlay_file)
+                    debug_output.append(f"✓ Saved tracked overlay to: {overlay_file}")
+                except Exception as e:
+                    import traceback
+                    debug_output.append(f"⚠ Could not create tracked overlay: {str(e)}")
+                    debug_output.append(f"  {traceback.format_exc()}")
             
             # Create visualization with trajectories overlaid on original images
             if self.original_file:
@@ -8335,6 +8377,152 @@ class TrackingWorker(QThread):
             error_msg = f"Tracking error: {str(e)}\n\n"
             error_msg += "Debug information:\n" + "\n".join(debug_output)
             self.finished.emit(False, error_msg)
+    
+    def _map_track_ids_to_analysis_cellids(self, masks_original, masks_tracked, excel_file):
+        """
+        Map track IDs back to analysis CellIDs by matching cells between original and tracked masks.
+        
+        Parameters:
+        -----------
+        masks_original : array
+            Original masks (may have analysis CellIDs if from analyzed masks)
+        masks_tracked : array
+            Tracked masks with track IDs
+        excel_file : str
+            Path to Excel file with analysis data containing Cell_ID column
+            
+        Returns:
+        --------
+        masks_tracked_remapped : array
+            Tracked masks remapped to use analysis CellIDs
+        trackid_to_cellid : dict
+            Mapping from track_id to analysis CellID
+        """
+        import pandas as pd
+        import numpy as np
+        from skimage.measure import regionprops
+        from scipy.spatial.distance import cdist
+        
+        # Load Excel data to get Cell_IDs
+        try:
+            excel_data = pd.read_excel(excel_file, sheet_name='Per-Cell Data')
+        except:
+            # Try other sheet names
+            try:
+                excel_data = pd.read_excel(excel_file, sheet_name=0)
+            except:
+                return masks_tracked, {}
+        
+        # Find Cell_ID column
+        cell_id_col = None
+        for col in ['Cell_ID', 'cell_id', 'Cell ID', 'CellID']:
+            if col in excel_data.columns:
+                cell_id_col = col
+                break
+        
+        if cell_id_col is None:
+            # No Cell_ID column found, return original tracked masks
+            return masks_tracked, {}
+        
+        # Find frame column
+        frame_col = None
+        for col in ['Frame', 'frame', 't', 'time', 'Time']:
+            if col in excel_data.columns:
+                frame_col = col
+                break
+        
+        if frame_col is None:
+            return masks_tracked, {}
+        
+        # Build mapping: (frame, original_label) -> Cell_ID from Excel
+        excel_mapping = {}
+        for _, row in excel_data.iterrows():
+            frame = int(row[frame_col]) - 1  # Convert to 0-based
+            cell_id = row[cell_id_col]
+            # Try to find original label (might be in 'Cell Label' column)
+            if 'Cell Label' in excel_data.columns:
+                original_label = row['Cell Label']
+            else:
+                # Can't map without original label
+                continue
+            if pd.notna(cell_id) and pd.notna(original_label):
+                excel_mapping[(frame, int(original_label))] = int(cell_id)
+        
+        if not excel_mapping:
+            return masks_tracked, {}
+        
+        # Now map track IDs to analysis CellIDs by matching cells
+        # Strategy: Match cells in each frame between original and tracked masks
+        trackid_to_cellid = {}
+        num_frames = min(masks_original.shape[0], masks_tracked.shape[0])
+        max_distance = 10.0  # pixels
+        
+        for frame_idx in range(num_frames):
+            frame_original = masks_original[frame_idx]
+            frame_tracked = masks_tracked[frame_idx]
+            
+            # Get centroids for both
+            regions_original = regionprops(frame_original)
+            regions_tracked = regionprops(frame_tracked)
+            
+            # Build mapping for this frame: original_label -> CellID
+            orig_label_to_cellid = {}
+            for region in regions_original:
+                if region.label > 0:
+                    if (frame_idx, region.label) in excel_mapping:
+                        orig_label_to_cellid[region.label] = excel_mapping[(frame_idx, region.label)]
+            
+            if not orig_label_to_cellid:
+                continue
+            
+            # Match tracked cells to original cells by position
+            orig_centroids = {}
+            for region in regions_original:
+                if region.label > 0 and region.label in orig_label_to_cellid:
+                    orig_centroids[region.label] = np.array(region.centroid)
+            
+            tracked_centroids = {}
+            for region in regions_tracked:
+                if region.label > 0:
+                    tracked_centroids[region.label] = np.array(region.centroid)
+            
+            if len(orig_centroids) > 0 and len(tracked_centroids) > 0:
+                orig_points = np.array(list(orig_centroids.values()))
+                orig_labels = list(orig_centroids.keys())
+                tracked_points = np.array(list(tracked_centroids.values()))
+                tracked_labels = list(tracked_centroids.keys())
+                
+                distances = cdist(orig_points, tracked_points)
+                
+                # Greedy assignment
+                used_orig = set()
+                used_tracked = set()
+                assignments = []
+                for i, orig_label in enumerate(orig_labels):
+                    for j, track_id in enumerate(tracked_labels):
+                        if distances[i, j] <= max_distance:
+                            assignments.append((distances[i, j], orig_label, track_id))
+                
+                assignments.sort()
+                
+                for dist, orig_label, track_id in assignments:
+                    if orig_label not in used_orig and track_id not in used_tracked:
+                        # Map track_id to analysis CellID
+                        cell_id = orig_label_to_cellid[orig_label]
+                        trackid_to_cellid[track_id] = cell_id
+                        used_orig.add(orig_label)
+                        used_tracked.add(track_id)
+        
+        # Remap tracked masks to use analysis CellIDs
+        masks_tracked_remapped = np.zeros_like(masks_tracked)
+        for frame_idx in range(num_frames):
+            frame_tracked = masks_tracked[frame_idx]
+            frame_remapped = masks_tracked_remapped[frame_idx]
+            
+            for track_id, cell_id in trackid_to_cellid.items():
+                frame_remapped[frame_tracked == track_id] = cell_id
+        
+        return masks_tracked_remapped, trackid_to_cellid
     
     def _merge_tracking_with_analysis(self, tracks_df, cell_data, masks_tracked):
         """Merge tracking results with Excel analysis data"""
@@ -8802,6 +8990,109 @@ class TrackingWorker(QThread):
             debug_output.append(f"⚠ Compression failed, saving uncompressed: {str(e)}")
             tifffile.imwrite(str(output_path), visualization)
             debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (uncompressed)")
+    
+    def _create_overlay_with_track_ids(self, images, masks_tracked, output_path):
+        """Create overlay visualization with track IDs as CellIDs (consistent with tracking visualization)"""
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from tqdm import tqdm
+        import tifffile
+        
+        num_frames = images.shape[0]
+        height, width = images.shape[1], images.shape[2]
+        
+        # Normalize images
+        img_min = images.min(axis=(1, 2), keepdims=True)
+        img_max = images.max(axis=(1, 2), keepdims=True)
+        img_range = img_max - img_min
+        img_range[img_range == 0] = 1
+        images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
+        
+        # Get unique track IDs
+        unique_tracks = np.unique(masks_tracked)
+        unique_tracks = unique_tracks[unique_tracks > 0]  # Remove background
+        num_tracks = len(unique_tracks)
+        
+        # Generate colormap for tracks
+        cmap = plt.get_cmap('gist_ncar')
+        colors = cmap(np.linspace(0, 1, max(num_tracks + 1, 1000)))[:num_tracks + 1]
+        colors[0] = [0, 0, 0, 0]  # Background transparent
+        
+        # Create color mapping
+        track_colors = {}
+        for i, track_id in enumerate(unique_tracks):
+            track_colors[int(track_id)] = colors[i + 1]  # +1 because 0 is background
+        
+        # Try to import PIL for text rendering
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            from skimage.measure import regionprops
+            PIL_AVAILABLE = True
+        except ImportError:
+            PIL_AVAILABLE = False
+        
+        overlays = []
+        for frame_idx in tqdm(range(num_frames), desc="Creating tracked overlay"):
+            img = images_norm[frame_idx]
+            mask = masks_tracked[frame_idx]
+            
+            # Convert grayscale to RGB
+            img_rgb = np.stack([img, img, img], axis=-1)
+            
+            # Colorize mask using track IDs
+            mask_rgb = np.zeros((height, width, 3), dtype=np.float32)
+            for track_id, color in track_colors.items():
+                mask_rgb[mask == track_id] = color[:3]
+            mask_rgb = (mask_rgb * 255).astype(np.uint8)
+            
+            # Blend
+            overlay = (img_rgb * 0.5 + mask_rgb * 0.5).astype(np.uint8)
+            
+            # Add track ID labels if PIL is available
+            if PIL_AVAILABLE and mask.max() > 0:
+                try:
+                    # Convert to PIL Image
+                    pil_img = Image.fromarray(overlay)
+                    draw = ImageDraw.Draw(pil_img)
+                    
+                    # Try to use a nice font
+                    try:
+                        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+                    except:
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 10)
+                        except:
+                            font = ImageFont.load_default()
+                    
+                    # Get cell centroids and track IDs
+                    regions = regionprops(mask)
+                    for region in regions:
+                        if region.label == 0:
+                            continue
+                        
+                        # Get centroid
+                        centroid_y, centroid_x = region.centroid
+                        x, y = int(centroid_x), int(centroid_y)
+                        
+                        # Draw track ID text with shadow for readability
+                        track_id_str = str(region.label)
+                        text_x, text_y = x + 2, y - 5
+                        
+                        # Draw text shadow (black)
+                        draw.text((text_x + 1, text_y + 1), track_id_str, fill=(0, 0, 0), font=font)
+                        # Draw text (white)
+                        draw.text((text_x, text_y), track_id_str, fill=(255, 255, 255), font=font)
+                    
+                    # Convert back to numpy array
+                    overlay = np.array(pil_img)
+                except Exception:
+                    # If text rendering fails, continue without labels
+                    pass
+            
+            overlays.append(overlay)
+        
+        overlay_array = np.stack(overlays, axis=0)
+        tifffile.imwrite(str(output_path), overlay_array, compression='zlib')
 
 
 class GrowthCurveVideoTab(QWidget):
