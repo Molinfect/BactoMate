@@ -314,6 +314,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
     
     # Assign persistent CellIDs to accepted cells across frames
     print("\nAssigning persistent CellIDs to accepted cells...")
+    print(f"  Processing {len(all_frame_data)} frames...")
     masks_with_cellids, cellid_mapping = assign_persistent_cell_ids(masks, all_frame_data, pixel_size)
     
     # Update all_frame_data with CellIDs
@@ -334,6 +335,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
 def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_distance_um=5.0):
     """
     Assign persistent CellIDs to accepted cells across frames using simple nearest-neighbor linking.
+    Optimized version with centroid caching for better performance.
     
     Parameters:
     -----------
@@ -355,56 +357,75 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
     """
     from scipy.spatial.distance import cdist
     from skimage.measure import regionprops
+    import numpy as np
     
     num_frames = masks.shape[0]
-    masks_with_cellids = np.zeros_like(masks)
+    masks_with_cellids = np.zeros_like(masks, dtype=np.uint32)  # Use uint32 for more cell IDs
     cellid_mapping = {}  # {(frame_idx, original_label): cell_id}
     next_cell_id = 1
+    
+    # Cache for centroids and cellids per frame (to avoid recalculating regionprops)
+    frame_centroids_cache = {}  # {frame_idx: {label: centroid}}
+    frame_cellids_cache = {}  # {frame_idx: {label: cell_id}}
     
     # Process first frame - assign initial CellIDs
     frame_0_data = all_frame_data[0]
     mask_0 = masks[0]
-    accepted_labels_0 = frame_0_data['accepted_labels']
+    accepted_labels_0 = set(frame_0_data['accepted_labels'])
     
-    # Get centroids for accepted cells in frame 0
+    # Get centroids for accepted cells in frame 0 (cache them)
     regions_0 = regionprops(mask_0)
     centroids_0 = {}
+    frame_centroids_cache[0] = {}
+    frame_cellids_cache[0] = {}
+    
     for region in regions_0:
-        if region.label in accepted_labels_0:
-            centroids_0[region.label] = np.array(region.centroid) * pixel_size
-            cellid_mapping[(0, region.label)] = next_cell_id
-            # Update mask with CellID
-            masks_with_cellids[0][mask_0 == region.label] = next_cell_id
+        label = region.label
+        if label in accepted_labels_0:
+            centroid = np.array(region.centroid) * pixel_size
+            centroids_0[label] = centroid
+            frame_centroids_cache[0][label] = centroid
+            cellid_mapping[(0, label)] = next_cell_id
+            frame_cellids_cache[0][label] = next_cell_id
+            # Update mask efficiently using direct indexing
+            mask_indices = mask_0 == label
+            masks_with_cellids[0][mask_indices] = next_cell_id
             next_cell_id += 1
     
     # Link cells across subsequent frames
     max_distance_pixels = max_distance_um / pixel_size
     
+    # Progress indicator for large datasets
+    print_every = max(1, num_frames // 20)  # Print progress every 5%
+    
     for frame_idx in range(1, num_frames):
+        if frame_idx % print_every == 0:
+            print(f"  Processing frame {frame_idx + 1}/{num_frames}...")
         frame_data = all_frame_data[frame_idx]
         mask = masks[frame_idx]
-        accepted_labels = frame_data['accepted_labels']
+        accepted_labels = set(frame_data['accepted_labels'])
         
-        # Get centroids for accepted cells in current frame
+        # Get centroids for accepted cells in current frame (cache them)
         regions = regionprops(mask)
         centroids_current = {}
-        for region in regions:
-            if region.label in accepted_labels:
-                centroids_current[region.label] = np.array(region.centroid) * pixel_size
+        frame_centroids_cache[frame_idx] = {}
         
-        # Get centroids from previous frame with their CellIDs
+        for region in regions:
+            label = region.label
+            if label in accepted_labels:
+                centroid = np.array(region.centroid) * pixel_size
+                centroids_current[label] = centroid
+                frame_centroids_cache[frame_idx][label] = centroid
+        
+        # Get centroids from previous frame with their CellIDs (use cache!)
         centroids_prev = {}
-        cellids_prev = {}
-        for (prev_frame, prev_label), cell_id in cellid_mapping.items():
-            if prev_frame == frame_idx - 1:
-                # Find centroid for this label in previous frame
-                prev_mask = masks[prev_frame]
-                prev_regions = regionprops(prev_mask)
-                for prev_region in prev_regions:
-                    if prev_region.label == prev_label:
-                        centroids_prev[cell_id] = np.array(prev_region.centroid) * pixel_size
-                        cellids_prev[cell_id] = cell_id
-                        break
+        prev_frame_idx = frame_idx - 1
+        
+        # Use cached centroids and cellids from previous frame
+        if prev_frame_idx in frame_cellids_cache:
+            for prev_label, prev_cellid in frame_cellids_cache[prev_frame_idx].items():
+                if prev_label in frame_centroids_cache[prev_frame_idx]:
+                    centroids_prev[prev_cellid] = frame_centroids_cache[prev_frame_idx][prev_label]
         
         # Link cells using nearest neighbor
         if len(centroids_prev) > 0 and len(centroids_current) > 0:
@@ -421,20 +442,26 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
                 used_prev = set()
                 used_current = set()
                 
-                # Sort by distance and assign
+                # Create assignments list more efficiently (only within max_distance)
                 assignments = []
                 for i in range(len(prev_cellids)):
                     for j in range(len(current_labels)):
-                        if distances[i, j] <= max_distance_pixels:
-                            assignments.append((distances[i, j], prev_cellids[i], current_labels[j]))
+                        dist = distances[i, j]
+                        if dist <= max_distance_pixels:
+                            assignments.append((dist, prev_cellids[i], current_labels[j]))
                 
-                assignments.sort()  # Sort by distance
+                # Sort by distance and assign
+                assignments.sort()
                 
+                frame_cellids_cache[frame_idx] = {}
                 for dist, prev_cellid, current_label in assignments:
                     if prev_cellid not in used_prev and current_label not in used_current:
                         # Link this cell
                         cellid_mapping[(frame_idx, current_label)] = prev_cellid
-                        masks_with_cellids[frame_idx][mask == current_label] = prev_cellid
+                        frame_cellids_cache[frame_idx][current_label] = prev_cellid
+                        # Update mask efficiently
+                        mask_indices = mask == current_label
+                        masks_with_cellids[frame_idx][mask_indices] = prev_cellid
                         used_prev.add(prev_cellid)
                         used_current.add(current_label)
                 
@@ -442,14 +469,25 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
                 for current_label in current_labels:
                     if current_label not in used_current:
                         cellid_mapping[(frame_idx, current_label)] = next_cell_id
-                        masks_with_cellids[frame_idx][mask == current_label] = next_cell_id
+                        frame_cellids_cache[frame_idx][current_label] = next_cell_id
+                        # Update mask efficiently
+                        mask_indices = mask == current_label
+                        masks_with_cellids[frame_idx][mask_indices] = next_cell_id
                         next_cell_id += 1
         else:
             # No previous cells or no current cells - assign new IDs
+            frame_cellids_cache[frame_idx] = {}
             for current_label in accepted_labels:
                 cellid_mapping[(frame_idx, current_label)] = next_cell_id
-                masks_with_cellids[frame_idx][mask == current_label] = next_cell_id
+                frame_cellids_cache[frame_idx][current_label] = next_cell_id
+                # Update mask efficiently
+                mask_indices = mask == current_label
+                masks_with_cellids[frame_idx][mask_indices] = next_cell_id
                 next_cell_id += 1
+    
+    # Convert back to uint16 if needed (for compatibility)
+    if masks_with_cellids.max() < 65535:
+        masks_with_cellids = masks_with_cellids.astype(np.uint16)
     
     print(f"  Assigned {next_cell_id - 1} unique CellIDs across {num_frames} frames")
     return masks_with_cellids, cellid_mapping

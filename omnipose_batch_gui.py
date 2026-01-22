@@ -10148,7 +10148,7 @@ class SAM2SegmentWorker(QThread):
             import tifffile
             import torch
             import numpy as np
-            from skimage.measure import label, regionprops
+            from skimage.measure import regionprops
             
             self.progress.emit("Initializing SAM2 model...")
             
@@ -10162,11 +10162,11 @@ class SAM2SegmentWorker(QThread):
             
             self.progress.emit(f"Using device: {device}")
             
-            # Import SAM2
+            # Import SAM2 (optional dependency)
             try:
-                from sam2.build_sam import build_sam2
-                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-                from sam2.sam2_image_predictor import SAM2ImagePredictor
+                from sam2.build_sam import build_sam2  # type: ignore
+                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator  # type: ignore
+                from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore
             except ImportError:
                 self.finished.emit(False, "SAM2 not installed. Please install with: pip install sam2")
                 return
@@ -10200,7 +10200,7 @@ class SAM2SegmentWorker(QThread):
                     for possible_config in possible_configs:
                         try:
                             # Try to import and check if config exists
-                            import sam2
+                            import sam2  # type: ignore
                             sam2_path = Path(sam2.__file__).parent.parent
                             full_config_path = sam2_path / possible_config
                             if full_config_path.exists():
@@ -10261,7 +10261,7 @@ class SAM2SegmentWorker(QThread):
                         
                         # Try to find config file
                         try:
-                            import sam2
+                            import sam2  # type: ignore
                             sam2_path = Path(sam2.__file__).parent.parent
                             possible_configs = [
                                 sam2_path / f"sam2/configs/{config_name}.yaml",
@@ -10466,6 +10466,7 @@ class SAM2SegmentWorker(QThread):
                                 except:
                                     font = ImageFont.load_default()
                                 
+                                # regionprops is imported at the top of run() method
                                 regions = regionprops(mask)
                                 for region in regions:
                                     if region.label == 0:
@@ -10590,11 +10591,11 @@ class MainWindow(QMainWindow):
         
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.processing_tab, "Segmentation")
+        tabs.addTab(self.sam2_tab, "SAM2 Segment")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.growth_curve_tab, "Video Graph")
-        tabs.addTab(self.sam2_tab, "SAM2 Segment")
-        
+       
         main_layout.addWidget(tabs)
         
         # Log output area - smaller portion (10% of window)
