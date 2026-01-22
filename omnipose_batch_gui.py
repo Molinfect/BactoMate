@@ -4107,12 +4107,10 @@ class ProcessingTab(QWidget):
         overlay_layout.addStretch()
         seg_layout.addLayout(overlay_layout)
         
-        # Connect file path changes to update overlay checkbox state and button states
+        # Connect file path changes to update overlay checkbox state
         self.file_path.textChanged.connect(self._update_overlay_checkbox_state)
-        self.file_path.textChanged.connect(self._update_button_states)
         # Initialize state
         self._update_overlay_checkbox_state()
-        self._update_button_states()
         
         # Reset to defaults button for segmentation parameters
         reset_seg_btn = QPushButton("Reset to Default")
@@ -4163,6 +4161,11 @@ class ProcessingTab(QWidget):
         # Modern styling applied via global stylesheet
         self.process_btn.clicked.connect(self.process_file_or_folder)
         scroll_layout.addWidget(self.process_btn)
+        
+        # Connect file path changes to update button states (after buttons are created)
+        self.file_path.textChanged.connect(self._update_button_states)
+        # Initialize button states
+        self._update_button_states()
         
         scroll_widget.setLayout(scroll_layout)
         scroll.setWidget(scroll_widget)
