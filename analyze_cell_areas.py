@@ -329,7 +329,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
                 # Should not happen, but fallback
                 cell['cell_id'] = None
     
-    return results, all_frame_data, masks_with_cellids
+    # Return both masks_with_cellids (for tracking/analysis) and original masks (for visualization)
+    return results, all_frame_data, masks_with_cellids, masks
 
 
 def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_distance_um=5.0):
@@ -493,18 +494,21 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
     return masks_with_cellids, cellid_mapping
 
 
-def create_filter_visualization(masks, all_frame_data, output_path):
+def create_filter_visualization(masks, all_frame_data, output_path, masks_original=None):
     """
     Create visualization showing accepted (green) and rejected (red) cells with persistent CellIDs.
     
     Parameters:
     -----------
     masks : array
-        Mask array (T, Y, X) with persistent CellIDs
+        Mask array (T, Y, X) with persistent CellIDs (for accepted cells only)
     all_frame_data : list of dict
-        Frame data with cells containing cell_id
+        Frame data with cells containing cell_id and accepted/rejected labels
     output_path : str
         Path to save visualization TIFF
+    masks_original : array, optional
+        Original mask array (T, Y, X) with all labels (accepted + rejected) before CellID assignment
+        If provided, used to show rejected cells. If None, only accepted cells will be shown.
     """
     print(f"\nCreating filter visualization...")
     
@@ -523,11 +527,18 @@ def create_filter_visualization(masks, all_frame_data, output_path):
         print("WARNING: PIL not available, CellID labels will not be displayed in visualization")
     
     for frame_idx in tqdm(range(num_frames), desc="Creating visualization"):
-        mask = masks[frame_idx]  # Mask now has persistent CellIDs
+        mask = masks[frame_idx]  # Mask with persistent CellIDs (accepted cells only)
         frame_data = all_frame_data[frame_idx]
         
-        # Get accepted CellIDs from frame data
+        # Get accepted CellIDs and rejected labels from frame data
         accepted_cellids = {cell.get('cell_id') for cell in frame_data['cells'] if cell.get('cell_id') is not None}
+        rejected_labels = frame_data.get('rejected_labels', set())
+        
+        # Use original mask if provided to show rejected cells
+        if masks_original is not None:
+            mask_orig = masks_original[frame_idx]
+        else:
+            mask_orig = mask
         
         # Create RGB channels
         # Green channel (accepted cells with CellIDs)
@@ -536,12 +547,11 @@ def create_filter_visualization(masks, all_frame_data, output_path):
             if cell_id is not None:
                 green[mask == cell_id] = 255
         
-        # Red channel (rejected cells - all non-zero labels that are not accepted CellIDs)
+        # Red channel (rejected cells - use original labels from original mask)
         red = np.zeros((height, width), dtype=np.uint8)
-        all_cellids_in_mask = set(np.unique(mask)) - {0}  # Exclude background
-        rejected_cellids = all_cellids_in_mask - accepted_cellids
-        for cell_id in rejected_cellids:
-            red[mask == cell_id] = 255
+        for rejected_label in rejected_labels:
+            if rejected_label > 0:  # Skip background
+                red[mask_orig == rejected_label] = 255
         
         # Blue channel (background, can be used for original image overlay if needed)
         blue = np.zeros((height, width), dtype=np.uint8)
@@ -730,9 +740,12 @@ Examples:
         output_path = input_path.parent / f"{input_path.stem}_analysis.xlsx"
     else:
         output_path = Path(args.output)
+        # Ensure it has .xlsx extension
+        if not output_path.suffix:
+            output_path = output_path.with_suffix('.xlsx')
     
     # Analyze masks
-    results, detailed_data, masks = analyze_masks(
+    results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
         args.masks,
         pixel_size=args.pixel_size,
         min_aspect_ratio=args.min_aspect_ratio,
@@ -748,10 +761,19 @@ Examples:
         min_size_pixels=args.min_size
     )
     
+    # Create output folder for organized file storage
+    output_dir = output_path.parent / f"{output_path.stem}_analysis"
+    output_dir.mkdir(exist_ok=True)
+    
+    # Move Excel file to output folder
+    excel_in_folder = output_dir / output_path.name
+    # We'll save directly to the folder, so update output_path
+    output_path = excel_in_folder
+    
     # Create visualization if requested
     if args.visualization:
-        vis_output = output_path.parent / f"{output_path.stem}_filter_visualization.tif"
-        create_filter_visualization(masks, detailed_data, vis_output)
+        vis_output = output_dir / f"{output_path.stem}_filter_visualization.tif"
+        create_filter_visualization(masks_with_cellids, detailed_data, str(vis_output), masks_original=masks_original)
     
     # Print summary statistics
     print("\n" + "="*60)
@@ -775,6 +797,10 @@ Examples:
     save_to_excel(results, output_path, detailed_data if args.detailed else None)
     
     print("\n✓ Analysis complete!")
+    print(f"  Excel file saved to: {output_path}")
+    print(f"  All files saved in folder: {output_dir}")
+    if args.visualization:
+        print(f"  Visualization saved to: {vis_output}")
     return 0
 
 

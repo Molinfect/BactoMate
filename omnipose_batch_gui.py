@@ -6099,10 +6099,12 @@ class AnalyzeMasksTab(QWidget):
         pixel_layout.addStretch()  # Add stretch before spin box to align to right
         self.pixel_size = QDoubleSpinBox()
         self.pixel_size.setRange(0.001, 10.0)
-        # Always default to 0.108 on initialization (metadata will update it if a file is loaded)
-        self.pixel_size.setValue(0.108)
         self.pixel_size.setDecimals(3)
         self.pixel_size.setSingleStep(0.001)
+        # Always default to 0.108 on initialization (metadata will update it if a file is loaded)
+        # Use explicit float to avoid any precision issues
+        default_pixel_size = float(0.108)
+        self.pixel_size.setValue(default_pixel_size)
         self.pixel_size.setFixedWidth(100)  # Fixed width for uniform appearance
         # Disable keyboard tracking to reduce event processing overhead
         # valueChanged will only fire when user finishes editing (Enter or focus loss)
@@ -6111,6 +6113,8 @@ class AnalyzeMasksTab(QWidget):
         self.pixel_size_metadata_loaded = False
         # Connect value change to hide warning when user manually changes value
         self.pixel_size.valueChanged.connect(self._on_pixel_size_changed)
+        # Debug: Verify the value was set correctly (can be removed later)
+        # print(f"DEBUG: Pixel size set to: {self.pixel_size.value()}")
         pixel_layout.addWidget(self.pixel_size)
         morph_params_layout.addLayout(pixel_layout)
         
@@ -6513,7 +6517,8 @@ class AnalyzeMasksTab(QWidget):
     def reset_analysis_defaults(self):
         """Reset all analysis parameters to their default values"""
         # Pixel size: always reset to 0.108 (default value)
-        self.pixel_size.setValue(0.108)
+        default_pixel_size = float(0.108)
+        self.pixel_size.setValue(default_pixel_size)
         self.pixel_size_metadata_loaded = False  # Reset metadata flag
         self.pixel_size_indicator.setText("⚠ Check value!")  # Show warning
         self.pixel_size_indicator.setStyleSheet("color: #FFA500; font-size: 9pt; font-weight: bold;")

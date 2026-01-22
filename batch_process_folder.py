@@ -159,7 +159,7 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
                     print(f"WARNING: Could not create overlay: {e}")
         
         # Step 2: Analyze masks
-        results, detailed_data, masks_array = analyze_masks(
+        results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
             str(masks_path),
             pixel_size=pixel_size,
             min_aspect_ratio=min_aspect_ratio,
@@ -176,7 +176,7 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
         vis_path = None
         if create_visualization:
             vis_path = file_output_dir / f"{file_stem}_filter_visualization.tif"
-            create_filter_visualization(masks_array, detailed_data, str(vis_path))
+            create_filter_visualization(masks_with_cellids, detailed_data, str(vis_path), masks_original=masks_original)
         
         # Add filename and paths to results
         for result in results:
@@ -463,7 +463,7 @@ Examples:
                     continue
                 
                 # Analyze existing masks
-                results, detailed_data, masks_array = analyze_masks(
+                results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
                     str(masks_path),
                     pixel_size=args.pixel_size,
                     min_aspect_ratio=args.min_aspect_ratio,
@@ -480,7 +480,7 @@ Examples:
                 vis_path = None
                 if not args.no_visualization:
                     vis_path = masks_path.parent / f"{tiff_file.stem}_filter_visualization.tif"
-                    create_filter_visualization(masks_array, detailed_data, str(vis_path))
+                    create_filter_visualization(masks_with_cellids, detailed_data, str(vis_path), masks_original=masks_original)
                 
                 for result in results:
                     result['filename'] = tiff_file.name
