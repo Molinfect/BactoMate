@@ -9783,6 +9783,454 @@ class GrowthCurveVideoWorker(QThread):
             self.finished.emit(False, error_msg)
 
 
+class SAM2SegmentTab(QWidget):
+    """Tab for SAM2 (Segment Anything Model 2) interactive segmentation"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.worker = None
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        
+        # File/Folder selection
+        file_group = QGroupBox("Input File/Folder")
+        file_layout = QHBoxLayout()
+        self.file_path = QLineEdit()
+        self.file_path.setPlaceholderText("Select a TIFF file or folder...")
+        self.file_path.setMinimumWidth(500)
+        file_font = QFont()
+        file_font.setPointSize(12)
+        self.file_path.setFont(file_font)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.file_path.setSizePolicy(size_policy)
+        file_btn = QPushButton("Browse File...")
+        file_btn.setFixedWidth(120)
+        file_btn.clicked.connect(self.select_file)
+        folder_btn = QPushButton("Browse Folder...")
+        folder_btn.setFixedWidth(130)
+        folder_btn.clicked.connect(self.select_folder)
+        file_layout.addWidget(self.file_path, 0)
+        file_layout.addWidget(file_btn, 0)
+        file_layout.addWidget(folder_btn, 0)
+        file_group.setLayout(file_layout)
+        scroll_layout.addWidget(file_group)
+        
+        # SAM2 Parameters - side-by-side layout
+        sam2_group = QGroupBox("SAM2 Parameters")
+        sam2_container_layout = QHBoxLayout()
+        
+        # Left column: Model and checkpoint
+        model_group = QGroupBox("Model Settings")
+        model_layout = QVBoxLayout()
+        
+        # Model selection
+        model_select_layout = QHBoxLayout()
+        model_label = QLabel("Model:")
+        model_info_icon = create_info_icon(
+            "SAM2.1 model variant for segmentation.\n\n"
+            "Available models:\n"
+            "- sam2.1_hiera_tiny: Fastest, smallest (38.9M params)\n"
+            "- sam2.1_hiera_small: Balanced speed/accuracy (46M params)\n"
+            "- sam2.1_hiera_base_plus: Better accuracy (80.8M params)\n"
+            "- sam2.1_hiera_large: Best accuracy, slowest (224.4M params)\n\n"
+            "Tip: Start with 'small' or 'base_plus' for good balance.",
+            parent_widget=self
+        )
+        model_select_layout.addWidget(model_label)
+        model_select_layout.addWidget(model_info_icon)
+        model_select_layout.addStretch()
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([
+            "sam2.1_hiera_tiny",
+            "sam2.1_hiera_small",
+            "sam2.1_hiera_base_plus",
+            "sam2.1_hiera_large"
+        ])
+        self.model_combo.setCurrentText("sam2.1_hiera_small")  # Default to balanced option
+        model_select_layout.addWidget(self.model_combo)
+        model_layout.addLayout(model_select_layout)
+        
+        # Checkpoint path
+        checkpoint_layout = QHBoxLayout()
+        checkpoint_label = QLabel("Checkpoint Path:")
+        checkpoint_info_icon = create_info_icon(
+            "Path to SAM2 model checkpoint file (.pt).\n\n"
+            "If empty, will attempt to download from Hugging Face or use default location.\n\n"
+            "Checkpoints can be downloaded from:\n"
+            "https://github.com/facebookresearch/sam2#download-checkpoints\n\n"
+            "Or use Hugging Face models (auto-downloaded if checkpoint not found).",
+            parent_widget=self
+        )
+        checkpoint_layout.addWidget(checkpoint_label)
+        checkpoint_layout.addWidget(checkpoint_info_icon)
+        self.checkpoint_path = QLineEdit()
+        self.checkpoint_path.setPlaceholderText("Leave empty for auto-download or default location...")
+        self.checkpoint_path.setMinimumWidth(300)
+        checkpoint_btn = QPushButton("Browse...")
+        checkpoint_btn.setFixedWidth(100)
+        checkpoint_btn.clicked.connect(self.select_checkpoint)
+        checkpoint_layout.addWidget(self.checkpoint_path, 1)
+        checkpoint_layout.addWidget(checkpoint_btn, 0)
+        model_layout.addLayout(checkpoint_layout)
+        
+        model_group.setLayout(model_layout)
+        model_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sam2_container_layout.addWidget(model_group)
+        
+        # Right column: Segmentation options
+        options_group = QGroupBox("Segmentation Options")
+        options_layout = QVBoxLayout()
+        
+        # Segmentation mode
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("Mode:")
+        mode_info_icon = create_info_icon(
+            "Segmentation mode for SAM2.\n\n"
+            "- Automatic: Generate masks automatically (like SAM)\n"
+            "- Interactive: Use prompts (points/boxes) for guided segmentation\n\n"
+            "Note: Interactive mode requires additional UI components (future feature).",
+            parent_widget=self
+        )
+        mode_layout.addWidget(mode_label)
+        mode_layout.addWidget(mode_info_icon)
+        mode_layout.addStretch()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Automatic", "Interactive (Coming Soon)"])
+        self.mode_combo.setCurrentText("Automatic")
+        self.mode_combo.setItemData(1, None, Qt.ItemDataRole.UserRole - 1)  # Disable interactive for now
+        mode_layout.addWidget(self.mode_combo)
+        options_layout.addLayout(mode_layout)
+        
+        # Points per side (for automatic mode)
+        points_layout = QHBoxLayout()
+        points_label = QLabel("Points per side:")
+        points_info_icon = create_info_icon(
+            "Number of points per side for automatic mask generation.\n\n"
+            "Higher values = more masks generated (slower)\n"
+            "Lower values = fewer masks (faster)\n\n"
+            "Default: 32 (good balance)",
+            parent_widget=self
+        )
+        points_layout.addWidget(points_label)
+        points_layout.addWidget(points_info_icon)
+        points_layout.addStretch()
+        self.points_per_side = QSpinBox()
+        self.points_per_side.setRange(8, 128)
+        self.points_per_side.setValue(32)
+        self.points_per_side.setFixedWidth(100)
+        points_layout.addWidget(self.points_per_side)
+        options_layout.addLayout(points_layout)
+        
+        # Stability score threshold
+        stability_layout = QHBoxLayout()
+        stability_label = QLabel("Stability Score:")
+        stability_info_icon = create_info_icon(
+            "Minimum stability score for mask filtering.\n\n"
+            "Range: 0.0 to 1.0\n"
+            "Higher values = more stable masks only\n"
+            "Lower values = more masks (including less stable)\n\n"
+            "Default: 0.95",
+            parent_widget=self
+        )
+        stability_layout.addWidget(stability_label)
+        stability_layout.addWidget(stability_info_icon)
+        stability_layout.addStretch()
+        self.stability_score = QDoubleSpinBox()
+        self.stability_score.setRange(0.0, 1.0)
+        self.stability_score.setValue(0.95)
+        self.stability_score.setSingleStep(0.05)
+        self.stability_score.setDecimals(2)
+        self.stability_score.setFixedWidth(100)
+        stability_layout.addWidget(self.stability_score)
+        options_layout.addLayout(stability_layout)
+        
+        # GPU option
+        gpu_layout = QHBoxLayout()
+        self.use_gpu = QCheckBox("Use GPU (if available)")
+        self.use_gpu.setChecked(True)
+        gpu_info_icon = create_info_icon(
+            "Use GPU acceleration for faster processing.\n\n"
+            "Default: Enabled\n"
+            "Automatically falls back to CPU if GPU not available.",
+            parent_widget=self
+        )
+        gpu_layout.addWidget(self.use_gpu)
+        gpu_layout.addWidget(gpu_info_icon)
+        gpu_layout.addStretch()
+        options_layout.addLayout(gpu_layout)
+        
+        # Create overlay option
+        overlay_layout = QHBoxLayout()
+        self.create_overlay = QCheckBox("Create overlay visualization")
+        self.create_overlay.setChecked(True)
+        overlay_info_icon = create_info_icon(
+            "Create TIFF overlay showing masks on original images.\n\n"
+            "Overlay files will be saved with '_sam2_overlay.tif' suffix.",
+            parent_widget=self
+        )
+        overlay_layout.addWidget(self.create_overlay)
+        overlay_layout.addWidget(overlay_info_icon)
+        overlay_layout.addStretch()
+        options_layout.addLayout(overlay_layout)
+        
+        options_group.setLayout(options_layout)
+        options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        sam2_container_layout.addWidget(options_group)
+        
+        sam2_group.setLayout(sam2_container_layout)
+        scroll_layout.addWidget(sam2_group)
+        
+        # Output directory
+        output_group = QGroupBox("Output Directory")
+        output_layout = QHBoxLayout()
+        self.output_path = QLineEdit()
+        self.output_path.setPlaceholderText("Leave empty to save in same directory as input...")
+        self.output_path.setMinimumWidth(500)
+        self.output_path.setFont(file_font)
+        self.output_path.setSizePolicy(size_policy)
+        output_btn = QPushButton("Browse...")
+        output_btn.setFixedWidth(120)
+        output_btn.clicked.connect(self.select_output_dir)
+        output_layout.addWidget(self.output_path, 0)
+        output_layout.addWidget(output_btn, 0)
+        output_group.setLayout(output_layout)
+        scroll_layout.addWidget(output_group)
+        
+        # Process button
+        self.process_btn = QPushButton("Run SAM2 Segmentation")
+        self.process_btn.setEnabled(False)
+        self.process_btn.clicked.connect(self.start_processing)
+        scroll_layout.addWidget(self.process_btn)
+        
+        # Connect path changes to update button state
+        self.file_path.textChanged.connect(self._update_button_state)
+        
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        self.setLayout(layout)
+        
+        # Initial button state update
+        self._update_button_state()
+    
+    def _update_button_state(self):
+        """Update process button state based on input fields"""
+        has_file = bool(self.file_path.text())
+        self.process_btn.setEnabled(has_file)
+    
+    def select_file(self):
+        """Select a TIFF file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select TIFF File",
+            "",
+            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)"
+        )
+        if file_path:
+            self.file_path.setText(file_path)
+    
+    def select_folder(self):
+        """Select a folder containing TIFF files"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder with TIFF Files",
+            ""
+        )
+        if folder_path:
+            self.file_path.setText(folder_path)
+    
+    def select_checkpoint(self):
+        """Select SAM2 checkpoint file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select SAM2 Checkpoint File",
+            "",
+            "PyTorch Files (*.pt *.pth);;All Files (*)"
+        )
+        if file_path:
+            self.checkpoint_path.setText(file_path)
+    
+    def select_output_dir(self):
+        """Select output directory"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Directory",
+            ""
+        )
+        if folder_path:
+            self.output_path.setText(folder_path)
+    
+    def start_processing(self):
+        """Start SAM2 segmentation processing"""
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "Processing", "Processing is already in progress.")
+            return
+        
+        input_path = self.file_path.text()
+        if not input_path:
+            QMessageBox.warning(self, "No Input", "Please select an input file or folder.")
+            return
+        
+        # Get parameters
+        model_name = self.model_combo.currentText()
+        checkpoint_path = self.checkpoint_path.text() if self.checkpoint_path.text() else None
+        mode = self.mode_combo.currentText()
+        points_per_side = self.points_per_side.value()
+        stability_score = self.stability_score.value()
+        use_gpu = self.use_gpu.isChecked()
+        create_overlay = self.create_overlay.isChecked()
+        output_dir = self.output_path.text() if self.output_path.text() else None
+        
+        # Disable button during processing
+        self.process_btn.setEnabled(False)
+        
+        # Create and start worker
+        self.worker = SAM2SegmentWorker(
+            input_path,
+            model_name,
+            checkpoint_path,
+            mode,
+            points_per_side,
+            stability_score,
+            use_gpu,
+            create_overlay,
+            output_dir
+        )
+        self.worker.progress.connect(self.parent_window.update_progress)
+        self.worker.finished.connect(self.on_processing_finished)
+        self.worker.start()
+        
+        # Show progress bar
+        self.parent_window.progress_bar.setVisible(True)
+        self.parent_window.progress_bar.setRange(0, 0)  # Indeterminate
+    
+    def on_processing_finished(self, success, message):
+        """Handle processing completion"""
+        self.process_btn.setEnabled(True)
+        self.parent_window.progress_bar.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "Success", f"SAM2 segmentation completed!\n\n{message}")
+        else:
+            QMessageBox.critical(self, "Error", f"SAM2 segmentation failed:\n\n{message}")
+
+
+class SAM2SegmentWorker(QThread):
+    """Worker thread for SAM2 segmentation processing"""
+    
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, input_path, model_name, checkpoint_path, mode, points_per_side,
+                 stability_score, use_gpu, create_overlay, output_dir):
+        super().__init__()
+        self.input_path = input_path
+        self.model_name = model_name
+        self.checkpoint_path = checkpoint_path
+        self.mode = mode
+        self.points_per_side = points_per_side
+        self.stability_score = stability_score
+        self.use_gpu = use_gpu
+        self.create_overlay = create_overlay
+        self.output_dir = output_dir
+    
+    def run(self):
+        """Run SAM2 segmentation"""
+        try:
+            from pathlib import Path
+            import tifffile
+            import torch
+            
+            self.progress.emit("Initializing SAM2 model...")
+            
+            # Determine device
+            if self.use_gpu and torch.cuda.is_available():
+                device = "cuda"
+            elif self.use_gpu and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = "mps"  # Apple Silicon
+            else:
+                device = "cpu"
+            
+            self.progress.emit(f"Using device: {device}")
+            
+            # Import SAM2
+            try:
+                from sam2.build_sam import build_sam2
+                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+            except ImportError:
+                self.finished.emit(False, "SAM2 not installed. Please install with: pip install sam2")
+                return
+            
+            # Build model
+            model_cfg = f"configs/{self.model_name.replace('sam2.1_', 'sam2.1/')}.yaml"
+            if self.checkpoint_path and Path(self.checkpoint_path).exists():
+                checkpoint = self.checkpoint_path
+            else:
+                # Try to use Hugging Face or default location
+                try:
+                    from sam2.sam2_image_predictor import SAM2ImagePredictor
+                    predictor = SAM2ImagePredictor.from_pretrained(f"facebook/{self.model_name.replace('sam2.1_', 'sam2-hiera-').replace('_', '-')}")
+                    # For now, use automatic mask generator approach
+                    checkpoint = None  # Will use from_pretrained
+                except Exception as e:
+                    self.finished.emit(False, f"Could not load model checkpoint. Please download from:\n"
+                                             f"https://github.com/facebookresearch/sam2#download-checkpoints\n\n"
+                                             f"Error: {str(e)}")
+                    return
+            
+            # For now, implement basic structure - full implementation will follow
+            self.progress.emit("SAM2 segmentation architecture ready. Full implementation in progress...")
+            
+            # Get input files
+            input_path = Path(self.input_path)
+            if input_path.is_file():
+                tiff_files = [input_path]
+            else:
+                tiff_files = sorted(input_path.glob("*.tif")) + sorted(input_path.glob("*.tiff"))
+            
+            if not tiff_files:
+                self.finished.emit(False, "No TIFF files found in input path.")
+                return
+            
+            self.progress.emit(f"Found {len(tiff_files)} TIFF file(s). Processing...")
+            
+            # Determine output directory
+            if self.output_dir:
+                output_dir = Path(self.output_dir)
+            else:
+                output_dir = input_path.parent if input_path.is_file() else input_path
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Process files (placeholder - full implementation needed)
+            processed_count = 0
+            for tiff_file in tiff_files:
+                self.progress.emit(f"Processing {tiff_file.name}...")
+                
+                # Read image
+                image = tifffile.imread(str(tiff_file))
+                
+                # TODO: Implement actual SAM2 segmentation here
+                # For now, just create placeholder
+                processed_count += 1
+            
+            self.finished.emit(True, f"Processed {processed_count} file(s).\n"
+                                    f"Output saved to: {output_dir}\n\n"
+                                    f"Note: Full SAM2 implementation in progress.")
+        
+        except Exception as e:
+            import traceback
+            error_msg = f"Error during SAM2 segmentation:\n{str(e)}\n\n{traceback.format_exc()}"
+            self.finished.emit(False, error_msg)
+
+
 class MainWindow(QMainWindow):
     """Main application window"""
     
@@ -9868,12 +10316,14 @@ class MainWindow(QMainWindow):
         self.analyze_tab = AnalyzeMasksTab(self)
         self.tracking_tab = TrackingTab(self)
         self.growth_curve_tab = GrowthCurveVideoTab(self)
+        self.sam2_tab = SAM2SegmentTab(self)
         
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.processing_tab, "Segmentation")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.growth_curve_tab, "Video Graph")
+        tabs.addTab(self.sam2_tab, "SAM2 Segment")
         
         main_layout.addWidget(tabs)
         

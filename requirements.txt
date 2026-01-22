@@ -29,7 +29,7 @@ matplotlib>=3.4.0
 tqdm>=4.62.0
 natsort>=8.0.0
 
-# PyTorch (for Omnipose models and Trackastra tracking)
+# PyTorch (for Omnipose models, Trackastra tracking, and SAM2)
 # Default installation works for:
 #   - CPU processing (all systems)
 #   - Apple Silicon (M1/M2/M3) with MPS GPU acceleration
@@ -42,8 +42,18 @@ natsort>=8.0.0
 #
 # To check your CUDA version: nvidia-smi
 # Common CUDA versions: 11.8 (cu118), 12.1 (cu121), 12.4 (cu124)
+#
+# Note: SAM2 requires torch>=2.5.1 and torchvision>=0.20.1
+# If using SAM2, upgrade PyTorch: pip install torch>=2.5.1 torchvision>=0.20.1
 torch>=2.0.0
 torchvision>=0.15.0
 
 # Cell tracking
 trackastra>=0.1.0  # Cell tracking library for time-lapse data
+
+# SAM2 (Segment Anything Model 2) - Optional advanced segmentation
+# Requires Python >= 3.10, torch>=2.5.1, torchvision>=0.20.1
+# Installation: pip install sam2
+# Or from source: git clone https://github.com/facebookresearch/sam2.git && cd sam2 && pip install -e .
+# Model checkpoints: https://github.com/facebookresearch/sam2#download-checkpoints
+sam2>=0.1.0  # SAM2 for interactive and automatic segmentation
