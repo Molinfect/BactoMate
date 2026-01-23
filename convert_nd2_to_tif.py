@@ -217,6 +217,7 @@ def convert_nd2_to_tif(
     drift_correct: bool = False,
     bleach_correct: bool = False,
     pixel_size: Optional[float] = None,  # Pixel size in µm to save in metadata
+    max_z_projection: bool = False,  # Max intensity projection across Z-slices
 ) -> None:
     """
     Convert ND2 files to multi-page TIFF files.
@@ -336,9 +337,10 @@ def convert_nd2_to_tif(
                 ndim = len(shape)
                 
                 print(f"  Debug: Loaded array shape: {shape}, ndim: {ndim}, size: {all_frames.size}")
+                print(f"  Debug: Reported sizes - T={num_time}, C={num_channels}, Z={num_z}")
                 
                 # Determine which dimensions we have
-                # Common orders: TCYX, TZYX, TCZYX, TYX, etc.
+                # Common orders: TCYX, CTYX, TZYX, TCZYX, TYX, CYX (when T=1), etc.
                 if ndim < 2:
                     print(f"  ✗ Error: Unexpected array shape: {shape}, skipping")
                     continue
@@ -347,7 +349,72 @@ def convert_nd2_to_tif(
                     print(f"  ✗ Error: Loaded array is empty! Shape: {shape}")
                     continue
                 
-                # Extract time frames (first dimension is typically T)
+                # Detect dimension order by comparing shape with reported sizes
+                # Handle special case: when T=1, ND2 might return (C, Y, X) instead of (T, C, Y, X)
+                # IMPORTANT: Check 3D case FIRST and handle (C, Y, X) before any slicing to avoid losing channels
+                if ndim == 3:
+                    # 3D array - could be (T, Y, X), (C, Y, X), or (Z, Y, X)
+                    # Priority: Check if it's (C, Y, X) when we have multiple channels
+                    if num_channels > 1 and shape[0] == num_channels:
+                        # It's (C, Y, X) - channels first (common when T=1)
+                        print(f"  Debug: Detected (C, Y, X) format - C={num_channels}, reshaping to (T, C, Y, X)")
+                        # Reshape to (T, C, Y, X): add time dimension
+                        all_frames = all_frames[np.newaxis, :, :, :]  # (1, C, Y, X) or (T, C, Y, X)
+                        shape = all_frames.shape
+                        ndim = len(shape)
+                        print(f"  Debug: Reshaped to (T, C, Y, X), new shape: {shape}")
+                    elif num_time > 1 and num_channels == 1 and shape[0] == num_time:
+                        # (T, Y, X) format - single channel, multiple timepoints
+                        print(f"  Debug: Detected (T, Y, X) format")
+                        # Add channel dimension: (T, 1, Y, X)
+                        all_frames = all_frames[:, np.newaxis, :, :]
+                        shape = all_frames.shape
+                        ndim = len(shape)
+                    elif num_time == 1 and num_channels == 1:
+                        # Single frame, single channel: (Y, X) - add both dimensions
+                        print(f"  Debug: Detected single frame/channel, adding dimensions")
+                        all_frames = all_frames[np.newaxis, np.newaxis, :, :]  # (1, 1, Y, X)
+                        shape = all_frames.shape
+                        ndim = len(shape)
+                    else:
+                        # Try to infer from shape[0]
+                        print(f"  Debug: 3D array - shape[0]={shape[0]}, num_time={num_time}, num_channels={num_channels}")
+                        if shape[0] == num_channels and num_channels > 1:
+                            # Treat as (C, Y, X)
+                            print(f"  Debug: Inferring (C, Y, X) from shape[0]==num_channels")
+                            all_frames = all_frames[np.newaxis, :, :, :]
+                            shape = all_frames.shape
+                            ndim = len(shape)
+                        elif shape[0] == num_time and num_time > 1:
+                            # Treat as (T, Y, X)
+                            print(f"  Debug: Inferring (T, Y, X) from shape[0]==num_time")
+                            all_frames = all_frames[:, np.newaxis, :, :]
+                            shape = all_frames.shape
+                            ndim = len(shape)
+                        else:
+                            print(f"  Warning: Cannot determine 3D format, shape[0]={shape[0]}, defaulting to (C, Y, X) if num_channels>1")
+                            # Last resort: if num_channels > 1, assume (C, Y, X)
+                            if num_channels > 1:
+                                all_frames = all_frames[np.newaxis, :, :, :]
+                                shape = all_frames.shape
+                                ndim = len(shape)
+                                print(f"  Debug: Defaulted to (C, Y, X) -> (T, C, Y, X), new shape: {shape}")
+                elif ndim == 4:
+                    # 4D array - could be (T, C, Y, X), (C, T, Y, X), (T, Z, Y, X), etc.
+                    if shape[0] == num_channels and shape[1] == num_time and num_channels > 1:
+                        # Likely CTYX order (channels first)
+                        print(f"  Debug: Detected CTYX dimension order (channels first)")
+                        # Transpose to TCYX: CTYX -> TCYX
+                        all_frames = all_frames.transpose(1, 0, 2, 3)
+                        shape = all_frames.shape
+                        print(f"  Debug: Transposed to TCYX, new shape: {shape}")
+                    elif shape[0] == num_time:
+                        # Likely TCYX order (time first) - this is what we want
+                        print(f"  Debug: Detected TCYX dimension order (time first)")
+                    else:
+                        print(f"  Debug: Dimension order unclear, shape[0]={shape[0]}, num_time={num_time}, num_channels={num_channels}")
+                
+                # Extract time frames (first dimension should now be T after potential reshape/transpose)
                 # Always slice to ensure we have exactly frames_to_extract frames
                 if shape[0] > frames_to_extract:
                     all_frames = all_frames[:frames_to_extract]
@@ -368,19 +435,35 @@ def convert_nd2_to_tif(
                     print(f"  ✗ This should not happen - check frame extraction logic")
                     continue
                 
-                # Handle Z dimension first - take first Z slice if multiple exist
+                # Handle Z dimension first - take first Z slice or max projection if multiple exist
                 # This simplifies subsequent channel handling
                 if num_z > 1:
-                    if ndim == 5:  # TCZYX
-                        all_frames = all_frames[:, :, 0, :, :]  # Take first Z slice: TCYX
-                        shape = all_frames.shape
-                        ndim = len(shape)
-                        print(f"  Using first Z-slice (Z=1)")
-                    elif ndim == 4 and num_z > 1 and num_channels == 1:  # TZYX (no channels)
-                        all_frames = all_frames[:, 0, :, :]  # Take first Z slice: TYX
-                        shape = all_frames.shape
-                        ndim = len(shape)
-                        print(f"  Using first Z-slice (Z=1)")
+                    if max_z_projection:
+                        # Apply max intensity projection across Z-slices
+                        if ndim == 5:  # TCZYX
+                            print(f"  Applying max intensity projection across Z={num_z} slices...")
+                            all_frames = np.max(all_frames, axis=2)  # Max projection: TCYX
+                            shape = all_frames.shape
+                            ndim = len(shape)
+                            print(f"  ✓ Max Z-projection complete: {shape}")
+                        elif ndim == 4 and num_z > 1 and num_channels == 1:  # TZYX (no channels)
+                            print(f"  Applying max intensity projection across Z={num_z} slices...")
+                            all_frames = np.max(all_frames, axis=1)  # Max projection: TYX
+                            shape = all_frames.shape
+                            ndim = len(shape)
+                            print(f"  ✓ Max Z-projection complete: {shape}")
+                    else:
+                        # Use first Z slice only
+                        if ndim == 5:  # TCZYX
+                            all_frames = all_frames[:, :, 0, :, :]  # Take first Z slice: TCYX
+                            shape = all_frames.shape
+                            ndim = len(shape)
+                            print(f"  Using first Z-slice (Z=1)")
+                        elif ndim == 4 and num_z > 1 and num_channels == 1:  # TZYX (no channels)
+                            all_frames = all_frames[:, 0, :, :]  # Take first Z slice: TYX
+                            shape = all_frames.shape
+                            ndim = len(shape)
+                            print(f"  Using first Z-slice (Z=1)")
                 
                 # Handle channel selection
                 if channel_index is not None:
@@ -415,26 +498,60 @@ def convert_nd2_to_tif(
                 # 1. Save channels separately (default): Each file has T pages (timepoints)
                 # 2. Save as OME-TIFF: One file with T*C pages, but OME metadata groups them correctly
                 
+                # Debug: Print final shape before channel processing
+                print(f"  Debug: Final shape before channel processing: {all_frames.shape}, num_channels={num_channels}, separate_channels={separate_channels}")
+                
                 if num_channels > 1 and channel_index is None:
                     if separate_channels:
                         # Multi-channel: save each channel separately (default and recommended)
+                        # Check if we have TCYX format (4D) or need to reshape
                         if len(all_frames.shape) == 4:  # TCYX
-                            print(f"  Saving {num_channels} channels as separate files (each with {frames_to_extract} timepoints)")
-                            for ch_idx in range(num_channels):
-                                channel_data = all_frames[:, ch_idx, :, :]  # Extract channel: TYX
-                                channel_name = channel_names[ch_idx]
-                                
-                                # Generate output filename with channel
-                                output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                            # Verify the channel dimension matches
+                            if all_frames.shape[1] == num_channels:
+                                print(f"  Saving {num_channels} channels as separate files (each with {frames_to_extract} timepoints)")
+                                for ch_idx in range(num_channels):
+                                    channel_data = all_frames[:, ch_idx, :, :]  # Extract channel: TYX
+                                    channel_name = channel_names[ch_idx]
+                                    
+                                    # Generate output filename with channel
+                                    output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                    output_path = output_dir / output_filename
+                                    
+                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape})")
+                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
+                            else:
+                                print(f"  Warning: Shape mismatch - all_frames.shape[1]={all_frames.shape[1]} but num_channels={num_channels}")
+                                print(f"  Falling back to single file output")
+                                output_filename = nd2_file.stem + '.tif'
                                 output_path = output_dir / output_filename
-                                
-                                print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name}")
-                                _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
-                        else:
-                            # Single channel or already extracted
+                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
+                        elif len(all_frames.shape) == 3 and num_channels == 1:
+                            # Single channel already extracted
                             output_filename = nd2_file.stem + '.tif'
                             output_path = output_dir / output_filename
                             _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
+                        else:
+                            # Unexpected shape - try to handle it
+                            print(f"  Warning: Unexpected shape {all_frames.shape} for {num_channels} channels")
+                            print(f"  Attempting to save channels separately anyway...")
+                            # Try to reshape if possible
+                            if all_frames.shape[0] == num_channels and len(all_frames.shape) == 4:
+                                # Might be CTYX - transpose
+                                all_frames = all_frames.transpose(1, 0, 2, 3)
+                                print(f"  Transposed to TCYX, new shape: {all_frames.shape}")
+                            if len(all_frames.shape) == 4 and all_frames.shape[1] == num_channels:
+                                for ch_idx in range(num_channels):
+                                    channel_data = all_frames[:, ch_idx, :, :]
+                                    channel_name = channel_names[ch_idx]
+                                    output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                    output_path = output_dir / output_filename
+                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name}")
+                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
+                            else:
+                                # Fallback: save as single file
+                                output_filename = nd2_file.stem + '.tif'
+                                output_path = output_dir / output_filename
+                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
                     else:
                         # Save as single OME-TIFF file with all channels
                         output_filename = nd2_file.stem + '.tif'
@@ -671,6 +788,11 @@ def main() -> None:
         default=None,
         help='Pixel size in µm to save in TIFF metadata (if not provided, will try to extract from ND2)'
     )
+    parser.add_argument(
+        '--max-z-projection',
+        action='store_true',
+        help='Apply maximum intensity projection across Z-slices when Z > 1. If not set, only the first Z-slice (Z=1) is used.'
+    )
     
     args = parser.parse_args()
     
@@ -687,6 +809,7 @@ def main() -> None:
             drift_correct=args.drift_correct,
             bleach_correct=args.bleach_correct,
             pixel_size=args.pixel_size,
+            max_z_projection=args.max_z_projection,
         )
     except Exception as e:
         print(f"Error: {e}")

@@ -483,33 +483,71 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
     print(f"\nCreating overlay visualization...")
     
     # Normalize images to 0-255
-    if images.ndim == 4:
+    # Handle different input dimensions
+    if images.ndim == 2:
+        # Single 2D image (Y, X) - add time dimension
+        images = images[np.newaxis, ...]  # (1, Y, X)
+    elif images.ndim == 3:
+        # Could be (T, Y, X) or (Y, X, C) or (C, Y, X)
+        if images.shape[-1] < 10:  # Likely channels last (Y, X, C)
+            images = images.transpose(2, 0, 1)[np.newaxis, ...]  # (1, C, Y, X)
+            if images.shape[1] == 1:
+                images = images[:, 0, :, :]  # (1, Y, X)
+            else:
+                images = images[:, 0, :, :]  # Take first channel
+        elif images.shape[0] < 10:  # Likely channels first (C, Y, X)
+            images = images.transpose(1, 2, 0)[np.newaxis, ...]  # (1, Y, X, C)
+            if images.shape[-1] == 1:
+                images = images[:, :, :, 0]  # (1, Y, X)
+            else:
+                images = images[:, :, :, 0]  # Take first channel
+        # Otherwise assume (T, Y, X) - keep as is
+    elif images.ndim == 4:
         # (T, C, Y, X) - take first channel or convert to grayscale
         if images.shape[1] == 1:
             images = images[:, 0, :, :]  # (T, Y, X)
         else:
             # Convert to grayscale
             images = images[:, 0, :, :]  # Take first channel
+    else:
+        raise ValueError(f"Unsupported image dimension: {images.ndim}")
+    
+    # Ensure images are contiguous and have correct shape (T, Y, X)
+    images = np.ascontiguousarray(images)
+    
+    # Final check: ensure we have (T, Y, X) shape
+    if images.ndim != 3:
+        raise ValueError(f"After processing, images should be 3D (T, Y, X), got shape: {images.shape}")
     
     # Normalize images
     images_norm = []
     for img in images:
+        # Ensure each image is contiguous
+        img = np.ascontiguousarray(img)
         img_min, img_max = img.min(), img.max()
         if img_max > img_min:
             img_norm = ((img - img_min) / (img_max - img_min) * 255).astype(np.uint8)
         else:
             img_norm = img.astype(np.uint8)
+        # Ensure normalized image is contiguous
+        img_norm = np.ascontiguousarray(img_norm)
         images_norm.append(img_norm)
     images_norm = np.stack(images_norm)
     
     # Create colored masks
     masks_array = np.stack(masks, axis=0)
-    num_cells = masks_array.max()
+    # Ensure masks are contiguous
+    masks_array = np.ascontiguousarray(masks_array)
+    num_cells = int(masks_array.max())
     
     # Generate colormap
     cmap = plt.get_cmap(colormap)
-    colors = cmap(np.linspace(0, 1, max(num_cells + 1, 1000)))[:num_cells + 1]
+    # Ensure we have enough colors (add buffer to avoid index errors)
+    num_colors = max(num_cells + 1, 1000)
+    colors = cmap(np.linspace(0, 1, num_colors))[:num_cells + 1]
     colors[0] = [0, 0, 0, 0]  # Background transparent
+    # Ensure colors array is contiguous and properly formatted
+    colors = np.ascontiguousarray(colors)
     
     # Create overlay with CellID labels
     overlays = []
@@ -529,11 +567,68 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
         img = images_norm[i]
         mask = masks_array[i]
         
-        # Convert grayscale to RGB
-        img_rgb = np.stack([img, img, img], axis=-1)
+        # Ensure img is 2D (Y, X)
+        if img.ndim != 2:
+            print(f"Warning: Image at frame {i} has unexpected shape {img.shape}, expected 2D (Y, X)")
+            if img.ndim == 1:
+                # Try to reshape if it's 1D (shouldn't happen, but handle it)
+                print(f"Error: Image is 1D with shape {img.shape}, cannot create overlay")
+                continue
+            elif img.ndim == 3:
+                # Take first channel if it's (Y, X, C)
+                img = img[:, :, 0]
+            else:
+                print(f"Error: Cannot handle image with {img.ndim} dimensions")
+                continue
         
-        # Colorize mask
-        mask_rgb = colors[mask][:, :, :3] * 255
+        # Ensure mask is 2D (Y, X)
+        if mask.ndim != 2:
+            print(f"Warning: Mask at frame {i} has unexpected shape {mask.shape}, expected 2D (Y, X)")
+            if mask.ndim == 1:
+                print(f"Error: Mask is 1D with shape {mask.shape}, cannot create overlay")
+                continue
+            elif mask.ndim == 3:
+                # Take first channel if it's (Y, X, C)
+                mask = mask[:, :, 0]
+            else:
+                print(f"Error: Cannot handle mask with {mask.ndim} dimensions")
+                continue
+        
+        # Verify shapes match
+        if img.shape != mask.shape:
+            print(f"Warning: Image shape {img.shape} doesn't match mask shape {mask.shape} at frame {i}")
+            # Try to fix by resizing mask to match image
+            from skimage.transform import resize
+            mask = resize(mask, img.shape, order=0, preserve_range=True, anti_aliasing=False).astype(mask.dtype)
+            print(f"Resized mask to {mask.shape}")
+        
+        # Ensure mask values are within valid range for colormap indexing
+        mask_clipped = np.clip(mask, 0, num_cells).astype(np.int32)
+        # Ensure mask is contiguous
+        mask_clipped = np.ascontiguousarray(mask_clipped)
+        
+        # Convert grayscale to RGB - ensure img is 2D first
+        if img.ndim != 2:
+            print(f"Error: img must be 2D for RGB conversion, got shape {img.shape}")
+            continue
+        img_rgb = np.stack([img, img, img], axis=-1)
+        img_rgb = np.ascontiguousarray(img_rgb, dtype=np.uint8)
+        
+        # Colorize mask - use a more robust indexing method
+        # Flatten mask, index colors, then reshape
+        mask_flat = mask_clipped.flatten()
+        colors_flat = colors[mask_flat][:, :3] * 255
+        mask_rgb = colors_flat.reshape(mask_clipped.shape[0], mask_clipped.shape[1], 3)
+        mask_rgb = np.ascontiguousarray(mask_rgb.astype(np.uint8))
+        
+        # Verify img_rgb and mask_rgb have matching shapes
+        if img_rgb.shape != mask_rgb.shape:
+            print(f"Error: img_rgb shape {img_rgb.shape} doesn't match mask_rgb shape {mask_rgb.shape} at frame {i}")
+            # Force matching shapes
+            min_h = min(img_rgb.shape[0], mask_rgb.shape[0])
+            min_w = min(img_rgb.shape[1], mask_rgb.shape[1])
+            img_rgb = img_rgb[:min_h, :min_w, :]
+            mask_rgb = mask_rgb[:min_h, :min_w, :]
         
         # Blend
         overlay = (img_rgb * (1 - alpha) + mask_rgb * alpha).astype(np.uint8)
@@ -541,8 +636,12 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
         # Add CellID labels if PIL is available
         if PIL_AVAILABLE and mask.max() > 0:
             try:
-                # Convert to PIL Image
-                pil_img = Image.fromarray(overlay)
+                # Ensure overlay is contiguous and in correct format for PIL
+                # PIL expects uint8 RGB images
+                overlay_contiguous = np.ascontiguousarray(overlay, dtype=np.uint8)
+                
+                # Convert to PIL Image - explicitly specify mode to avoid issues
+                pil_img = Image.fromarray(overlay_contiguous, mode='RGB')
                 draw = ImageDraw.Draw(pil_img)
                 
                 # Try to use a nice font, fallback to default if not available
@@ -573,17 +672,33 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
                     # Draw text (white)
                     draw.text((text_x, text_y), cell_id_str, fill=(255, 255, 255), font=font)
                 
-                # Convert back to numpy array
-                overlay = np.array(pil_img)
+                # Convert back to numpy array - ensure it's contiguous and correct shape
+                overlay = np.ascontiguousarray(np.array(pil_img), dtype=np.uint8)
+                
+                # Verify shape matches original
+                if overlay.shape != img_rgb.shape:
+                    print(f"Warning: Overlay shape mismatch after PIL conversion: {overlay.shape} vs {img_rgb.shape}")
+                    # Try to fix by ensuring correct shape
+                    if overlay.shape[0] == img_rgb.shape[1] and overlay.shape[1] == img_rgb.shape[0]:
+                        # PIL might have transposed - transpose back
+                        overlay = overlay.transpose(1, 0, 2)
             except Exception as e:
                 # If text rendering fails, continue without labels
-                pass
+                import traceback
+                print(f"Warning: Could not add labels to overlay: {e}")
+                traceback.print_exc()
         
+        # Ensure overlay is contiguous before appending
+        overlay = np.ascontiguousarray(overlay, dtype=np.uint8)
         overlays.append(overlay)
     
     overlay_array = np.stack(overlays, axis=0)
+    # Ensure final array is contiguous
+    overlay_array = np.ascontiguousarray(overlay_array, dtype=np.uint8)
+    
     print(f"Saving overlay to: {output_path}")
-    tifffile.imwrite(output_path, overlay_array)
+    # Save with compression to avoid any strip-related issues
+    tifffile.imwrite(output_path, overlay_array, compression='lzw', photometric='rgb')
     print("✓ Overlay saved")
 
 

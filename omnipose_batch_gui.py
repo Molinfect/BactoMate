@@ -286,7 +286,7 @@ try:
         QProgressBar, QProgressDialog, QScrollArea, QDialog, QDialogButtonBox, QRadioButton, QListWidget, QListWidgetItem, QSizePolicy
     )
     
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize, QEvent
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QTimer, QRect, QObject, QCoreApplication, QSize, QEvent, QUrl
     from PyQt6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence, QShortcut, QCursor
 except ImportError as e:
     print(f"ERROR: Failed to import PyQt6: {e}", file=sys.stderr)
@@ -976,6 +976,46 @@ class WorkerThread(QThread):
             self.finished.emit(False, error_msg)
 
 
+class DragDropGroupBox(QGroupBox):
+    """QGroupBox with drag-and-drop support for files and folders"""
+    
+    def __init__(self, title, parent=None, on_drop_callback=None):
+        super().__init__(title, parent)
+        self.setAcceptDrops(True)
+        self.on_drop_callback = on_drop_callback
+        # Visual feedback when dragging over
+        self._drag_over = False
+    
+    def dragEnterEvent(self, event):
+        """Handle drag enter event"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            self._drag_over = True
+            # Optional: change appearance to show drag is active
+            self.setStyleSheet("QGroupBox { border: 2px dashed #2196F3; }")
+        else:
+            event.ignore()
+    
+    def dragLeaveEvent(self, event):
+        """Handle drag leave event"""
+        self._drag_over = False
+        self.setStyleSheet("")  # Reset to default style
+    
+    def dropEvent(self, event):
+        """Handle drop event"""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and self.on_drop_callback:
+                dropped_path = urls[0].toLocalFile()
+                if dropped_path:
+                    self.on_drop_callback(dropped_path)
+            event.acceptProposedAction()
+            self._drag_over = False
+            self.setStyleSheet("")  # Reset to default style
+        else:
+            event.ignore()
+
+
 class ND2ConversionTab(QWidget):
     """Tab for converting microscopy files (ND2, LIF, CZI) to TIFF with metadata extraction"""
     
@@ -992,13 +1032,17 @@ class ND2ConversionTab(QWidget):
         scroll_layout = QVBoxLayout()
         
         
-        # File selection
-        file_group = QGroupBox("Microscopy File Selection")
+        # File selection with drag-and-drop support
+        file_group = DragDropGroupBox(
+            "Microscopy File Selection",
+            parent=self,
+            on_drop_callback=self.handle_dropped_path
+        )
         file_layout = QVBoxLayout()
         
         file_select_layout = QHBoxLayout()
         self.file_path = QLineEdit()
-        self.file_path.setPlaceholderText("Select a microscopy file or folder...")
+        self.file_path.setPlaceholderText("Select a microscopy file or folder... (or drag and drop)")
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
@@ -1030,7 +1074,6 @@ class ND2ConversionTab(QWidget):
         frame_label = QLabel("Number of Frames:")
         frame_info_icon = create_info_icon(
             "Number of time frames to extract from the microscopy file.\n\n"
-            "Default: 100 frames\n"
             "Source: Hardcoded default value\n\n"
             "The value will automatically update to the maximum number of frames when a file is loaded.\n\n"
             "Note: Extracting more frames takes longer and uses more disk space.",
@@ -1048,44 +1091,33 @@ class ND2ConversionTab(QWidget):
         # Channel options
         channel_layout = QHBoxLayout()
         channel_label = QLabel("Channel Handling:")
-        channel_info_icon = create_info_icon(
-            "Save each channel as a separate TIFF file.\n\n"
-            "Default: Enabled (checked)\n"
-            "Source: Recommended approach for multi-channel data\n\n"
-            "When enabled: Each channel is saved as its own TIFF file with T timepoints.\n"
-            "When disabled: All channels saved in one OME-TIFF file (T×C pages).\n\n"
-            "Note: Standard TIFF cannot store multiple grayscale channels per page,\n"
-            "so separate files is the most compatible approach.",
-            parent_widget=self
-        )
         channel_layout.addWidget(channel_label)
-        channel_layout.addWidget(channel_info_icon)
         self.separate_channels = QCheckBox("Save channels separately (recommended)")
         self.separate_channels.setChecked(True)
-        self.separate_channels.setToolTip(
-            "Save each channel as a separate TIFF file.\n\n"
-            "Default: Enabled (checked)\n"
-            "Source: Recommended approach for multi-channel data\n\n"
-            "When enabled: Each channel is saved as its own TIFF file with T timepoints.\n"
-            "When disabled: All channels saved in one OME-TIFF file (T×C pages).\n\n"
-            "Note: Standard TIFF cannot store multiple grayscale channels per page,\n"
-            "so separate files is the most compatible approach."
-        )
         channel_layout.addWidget(self.separate_channels)
+        
+        # Max intensity projection for Z-stack
+        self.max_z_projection = QCheckBox("Max intensity projection for multiple Z stack")
+        self.max_z_projection.setChecked(False)
+        channel_layout.addWidget(self.max_z_projection)
+        
+        # Add info icon for Z-projection (click to show info, not hover)
+        z_projection_info_icon = create_info_icon(
+            "Apply maximum intensity projection across Z-slices when Z > 1.\n\n"
+            "Default: Disabled (unchecked)\n"
+            "Source: User selection\n\n"
+            "When enabled: For each pixel, takes the maximum intensity value across all Z-slices.\n"
+            "This creates a single 2D image from a 3D Z-stack.\n\n"
+            "When disabled: Uses only the first Z-slice (Z=1).\n\n"
+            "Use when: You have Z-stack data and want to combine all slices into one image.",
+            parent_widget=self
+        )
+        channel_layout.addWidget(z_projection_info_icon)
         channel_layout.addStretch()
         params_layout.addLayout(channel_layout)
         
         self.channel_select = QComboBox()
         self.channel_select.addItem("All channels")
-        self.channel_select.setToolTip(
-            "Select which channel(s) to extract from the microscopy file.\n\n"
-            "Default: 'All channels'\n"
-            "Source: User selection\n\n"
-            "Options:\n"
-            "- 'All channels': Extract all channels (saved separately if 'Save channels separately' is checked)\n"
-            "- 'Channel N: [name]': Extract only the specified channel\n\n"
-            "Note: Only enabled when the file has multiple channels."
-        )
         self.channel_select.setEnabled(False)
         params_layout.addWidget(self.channel_select)
         
@@ -1239,6 +1271,32 @@ class ND2ConversionTab(QWidget):
                 self.load_folder_info(folder_path, supported_files)
             else:
                 self.metadata_text.setText("No supported microscopy files (ND2, LIF, CZI, TIFF) found in selected folder")
+                self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
+    
+    def handle_dropped_path(self, dropped_path):
+        """Handle dropped file or folder path"""
+        path_obj = Path(dropped_path)
+        # Update file path
+        self.file_path.setText(dropped_path)
+        
+        # Check if it's a file or folder and load accordingly
+        if path_obj.is_file():
+            # Single file
+            self.load_file_info(dropped_path)
+        elif path_obj.is_dir():
+            # Folder - load folder info
+            folder = path_obj
+            supported_files = sorted(
+                list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
+                list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
+                list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
+                list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
+                list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
+            )
+            if supported_files:
+                self.load_folder_info(str(folder), supported_files)
+            else:
+                self.metadata_text.setText("No supported microscopy files (ND2, LIF, CZI, TIFF) found in dropped folder")
                 self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
     
     def select_output_dir(self):
@@ -1717,22 +1775,24 @@ class ND2ConversionTab(QWidget):
             
             with nd2.ND2File(file_path) as nd2_reader:
                 sizes = nd2_reader.sizes
-                # Verify actual frame count by checking shape
-                # This ensures we get the correct count (sometimes sizes.get('T') can be off by one)
-                try:
-                    shape = nd2_reader.shape
-                    # First dimension is typically T (time)
-                    if len(shape) > 0:
-                        actual_t = shape[0]
-                        num_time = actual_t
-                    else:
-                        num_time = sizes.get('T', 1)
-                except Exception:
-                    # Fallback to reported value
-                    num_time = sizes.get('T', 1)
-                
+                # Use sizes dictionary directly - it properly maps dimension names to counts
+                # Don't assume dimension order from shape[0] as ND2 files can have different orders
+                num_time = sizes.get('T', 1)
                 num_channels = sizes.get('C', 1)
                 num_z = sizes.get('Z', 1)
+                
+                # Verify by checking actual data if needed (but trust sizes first)
+                # Sometimes ND2 files report dimensions incorrectly, so double-check with shape
+                try:
+                    shape = nd2_reader.shape
+                    # Get dimension order from ND2 reader
+                    if hasattr(nd2_reader, 'sizes') and hasattr(nd2_reader.sizes, 'keys'):
+                        # Check if shape matches reported sizes
+                        # If shape[0] matches channels instead of time, sizes might be wrong
+                        # But we'll trust sizes.get() as it's the proper way
+                        pass
+                except Exception:
+                    pass
                 
                 # Get channel names
                 channel_names = []
@@ -2393,6 +2453,17 @@ class ND2ConversionTab(QWidget):
         next_btn = QPushButton("Next")
         nav_layout.addWidget(next_btn)
         
+        # Channel selection (if multiple channels)
+        if num_channels > 1:
+            nav_layout.addWidget(QLabel("Channel:"))
+            channel_spin = QSpinBox()
+            channel_spin.setRange(1, num_channels)
+            channel_spin.setValue(1)
+            channel_spin.setToolTip(f"Select channel to preview (1-{num_channels})")
+            nav_layout.addWidget(channel_spin)
+        else:
+            channel_spin = None
+        
         nav_layout.addStretch()
         
         # Frame info label
@@ -2598,7 +2669,8 @@ class ND2ConversionTab(QWidget):
                     canvas.draw()
                     
                     # Update frame info
-                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                    current_channel = (channel_spin.value() if channel_spin is not None else 1)
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
                     
                     # Update histogram lines
                     if hist_vmin_line is not None:
@@ -2632,24 +2704,59 @@ class ND2ConversionTab(QWidget):
         hist_canvas.mpl_connect('button_release_event', on_histogram_release)
         
         # Function to update displayed frame
-        def update_frame(frame_idx, vmin=None, vmax=None, update_sliders=True):
-            """Update the displayed frame (frame_idx is 0-indexed internally)"""
-            # Get frame at index (0-indexed)
-            if len(all_frames.shape) >= 3:
-                frame = all_frames[frame_idx]
+        def update_frame(frame_idx, channel_idx=0, vmin=None, vmax=None, update_sliders=True):
+            """Update the displayed frame (frame_idx is 0-indexed internally, channel_idx is 0-indexed)"""
+            # Get current channel selection if available
+            if channel_spin is not None:
+                channel_idx = channel_spin.value() - 1  # Convert to 0-indexed
             else:
-                frame = all_frames
+                channel_idx = 0  # Default to first channel
             
-            # Handle different shapes
-            if len(frame.shape) == 3:  # CYX or ZYX
-                if num_channels > 1:
-                    frame = frame[0]  # Take first channel
+            # Handle different all_frames shapes directly (more robust)
+            # ND2 files can have various shapes: (T, C, Z, Y, X), (T, C, Y, X), (T, Y, X), etc.
+            if len(all_frames.shape) == 5:  # TCZYX
+                # Extract frame, channel, and first Z-slice
+                if channel_idx < all_frames.shape[1]:
+                    frame = all_frames[frame_idx, channel_idx, 0, :, :]  # T=frame_idx, C=channel_idx, Z=0
                 else:
-                    frame = frame[0]  # Take first Z-slice
-            elif len(frame.shape) == 2:  # YX
-                pass
-            elif len(frame.shape) == 4:  # TCYX
-                frame = frame[0]  # Take first channel
+                    frame = all_frames[frame_idx, 0, 0, :, :]  # Fallback
+            elif len(all_frames.shape) == 4:
+                # Could be TCYX or TZYX
+                if num_channels > 1:
+                    # TCYX: extract frame and channel
+                    if channel_idx < all_frames.shape[1]:
+                        frame = all_frames[frame_idx, channel_idx, :, :]  # T=frame_idx, C=channel_idx
+                    else:
+                        frame = all_frames[frame_idx, 0, :, :]  # Fallback
+                else:
+                    # TZYX: extract frame and first Z-slice
+                    frame = all_frames[frame_idx, 0, :, :] if num_z > 1 else all_frames[frame_idx, :, :]
+            elif len(all_frames.shape) == 3:
+                # Could be TYX (single channel, single Z) or CYX (single frame, multi-channel)
+                if all_frames.shape[0] == num_time:
+                    # TYX: single channel, single Z
+                    frame = all_frames[frame_idx, :, :]
+                elif num_channels > 1:
+                    # CYX: single frame, multi-channel - extract channel
+                    if channel_idx < all_frames.shape[0]:
+                        frame = all_frames[channel_idx, :, :]
+                    else:
+                        frame = all_frames[0, :, :]
+                else:
+                    # Fallback: assume TYX
+                    frame = all_frames[frame_idx, :, :]
+            elif len(all_frames.shape) == 2:
+                # YX: single frame, single channel
+                frame = all_frames
+            else:
+                # Fallback: try to extract frame
+                frame = all_frames[frame_idx] if frame_idx < len(all_frames) else all_frames[0]
+                # If still multi-dimensional, try to extract channel
+                if len(frame.shape) > 2 and num_channels > 1:
+                    if channel_idx < frame.shape[0]:
+                        frame = frame[channel_idx]
+                    else:
+                        frame = frame[0]
             
             # Store frame data and actual min/max
             current_frame_data['frame'] = frame
@@ -2737,7 +2844,8 @@ class ND2ConversionTab(QWidget):
             canvas.draw()
             
             # Update frame info (1-indexed for display)
-            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+            current_channel = (channel_spin.value() if channel_spin is not None else 1)
+            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
         
         # Manual LUT adjustment from sliders
         def update_lut_from_sliders():
@@ -2771,7 +2879,8 @@ class ND2ConversionTab(QWidget):
                     canvas.draw()
                     
                     # Update frame info
-                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: 1 | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                    current_channel = (channel_spin.value() if channel_spin is not None else 1)
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
                     
                     # Store the current LUT values so they persist
                     current_frame_data['vmin'] = vmin
@@ -2851,6 +2960,19 @@ class ND2ConversionTab(QWidget):
         prev_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame - 1))
         next_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame + 1))
         
+        # Connect channel selection (if available)
+        if channel_spin is not None:
+            def on_channel_changed():
+                """Update frame when channel changes - auto-adjust LUT to new channel"""
+                if preview_dialog.current_frame is not None:
+                    # Reset LUT values so they recalculate for the new channel
+                    nonlocal current_vmin, current_vmax
+                    current_vmin = None
+                    current_vmax = None
+                    # This will auto-adjust min/max based on the new channel's intensity range
+                    update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
+            channel_spin.valueChanged.connect(on_channel_changed)
+        
         # Use editingFinished for when user finishes editing (presses Enter or leaves field)
         # and a debounced valueChanged for when using arrow keys
         def on_frame_changed():
@@ -2874,6 +2996,8 @@ class ND2ConversionTab(QWidget):
             close_shortcut_mac.activated.connect(preview_dialog.close)
         
         # Display first frame (with auto LUT applied by default)
+        # Initialize current_frame to ensure it's set before channel changes
+        preview_dialog.current_frame = 0
         update_frame(0)
         
         preview_dialog.setLayout(layout)
@@ -3153,6 +3277,23 @@ class ND2ConversionTab(QWidget):
     def _convert_nd2(self):
         """Convert file(s) to TIFF"""
         
+        # Check for Z-stack and prompt user if max projection is not enabled
+        if self.file_info and self.file_info.get('num_z', 1) > 1:
+            if not self.max_z_projection.isChecked():
+                reply = QMessageBox.information(
+                    self, 
+                    "Z-Stack Detected",
+                    f"This file has Z={self.file_info['num_z']} slices.\n\n"
+                    "By default, only the first Z-slice (Z=1) will be used.\n\n"
+                    "To combine all Z-slices into one image, please check:\n"
+                    "\"Max intensity projection for multiple Z stack\"\n\n"
+                    "Would you like to enable max Z-projection now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.max_z_projection.setChecked(True)
+        
         # Check if convert_nd2_to_tif.py exists
         script_dir = Path(__file__).parent
         convert_script = script_dir / "convert_nd2_to_tif.py"
@@ -3183,6 +3324,10 @@ class ND2ConversionTab(QWidget):
             cmd_args.append('--separate-channels')
         else:
             cmd_args.append('--combine-channels')
+        
+        # Max Z projection
+        if self.max_z_projection.isChecked():
+            cmd_args.append('--max-z-projection')
         
         # Channel selection
         selected_channel = self.channel_select.currentIndex() - 1  # -1 means all
@@ -3890,11 +4035,15 @@ class ProcessingTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
         
-        # File/Folder selection
-        file_group = QGroupBox("Input File/Folder")
+        # File/Folder selection with drag-and-drop support
+        file_group = DragDropGroupBox(
+            "Input File/Folder",
+            parent=self,
+            on_drop_callback=self.handle_dropped_path_segmentation
+        )
         file_layout = QHBoxLayout()
         self.file_path = QLineEdit()
-        self.file_path.setPlaceholderText("Select a TIFF file or folder...")
+        self.file_path.setPlaceholderText("Select a TIFF file or folder... (or drag and drop)")
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
@@ -4268,7 +4417,15 @@ class ProcessingTab(QWidget):
         if folder_path:
             self.file_path.setText(folder_path)
             self._update_overlay_checkbox_state()
-            self._update_button_states()
+    
+    def handle_dropped_path_segmentation(self, dropped_path):
+        """Handle dropped file or folder path for segmentation tab"""
+        path_obj = Path(dropped_path)
+        # Update file path
+        self.file_path.setText(dropped_path)
+        # Update overlay checkbox state
+        self._update_overlay_checkbox_state()
+        self._update_button_states()
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -6040,11 +6197,15 @@ class AnalyzeMasksTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
         
-        # File/Folder selection
-        file_group = QGroupBox("Mask File/Folder")
+        # File/Folder selection with drag-and-drop support
+        file_group = DragDropGroupBox(
+            "Mask File/Folder",
+            parent=self,
+            on_drop_callback=self.handle_dropped_path_analyze
+        )
         file_layout = QHBoxLayout()
         self.file_path = QLineEdit()
-        self.file_path.setPlaceholderText("Select a mask TIFF file or folder...")
+        self.file_path.setPlaceholderText("Select a mask TIFF file or folder... (or drag and drop)")
         self.file_path.setMinimumWidth(500)  # Increased for better visibility
         # Set larger font for better readability
         file_font = QFont()
@@ -6402,13 +6563,16 @@ class AnalyzeMasksTab(QWidget):
         analysis_group.setLayout(analysis_container_layout)
         scroll_layout.addWidget(analysis_group)
         
-        # Options (below the parameters)
+        # Options and Analyze FI (side by side)
+        options_container_layout = QHBoxLayout()
+        
+        # Left box: Options
         options_group = QGroupBox("Options")
         options_layout = QHBoxLayout()
         
         detailed_layout = QHBoxLayout()
         self.detailed = QCheckBox("Include detailed per-cell data")
-        self.detailed.setChecked(False)
+        self.detailed.setChecked(True)  # Default to checked
         detailed_info_icon = create_info_icon(
             "Include detailed per-cell measurements in the Excel output.\n\n"
             "Default: Disabled (unchecked)\n"
@@ -6446,7 +6610,60 @@ class AnalyzeMasksTab(QWidget):
         options_layout.addLayout(vis_layout)
         
         options_group.setLayout(options_layout)
-        scroll_layout.addWidget(options_group)
+        options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        options_container_layout.addWidget(options_group)
+        
+        # Right box: Analyze FI (with drag-and-drop support)
+        fi_group = DragDropGroupBox(
+            "Analyze FI",
+            parent=self,
+            on_drop_callback=self.handle_dropped_fi_file
+        )
+        fi_layout = QVBoxLayout()
+        
+        fi_checkbox_layout = QHBoxLayout()
+        self.analyze_fi = QCheckBox("Analyze FI")
+        self.analyze_fi.setChecked(False)
+        fi_info_icon = create_info_icon(
+            "Analyze fluorescence intensity (FI) from a separate FI channel image.\n\n"
+            "When enabled: Requires selecting an FI channel TIFF file.\n"
+            "The analysis will add three columns to the Excel output:\n"
+            "- Mean FI intensity (average pixel intensity within each cell)\n"
+            "- Contour FI intensity (average intensity at cell boundary)\n"
+            "- FI ratio (contour FI / mean FI)\n\n"
+            "Use when: You have a separate fluorescence channel image and want to quantify\n"
+            "fluorescence intensity per cell.",
+            parent_widget=self
+        )
+        fi_checkbox_layout.addWidget(self.analyze_fi)
+        fi_checkbox_layout.addWidget(fi_info_icon)
+        fi_checkbox_layout.addStretch()
+        fi_layout.addLayout(fi_checkbox_layout)
+        
+        # FI file browse (only enabled when checkbox is checked) with drag-and-drop
+        fi_file_layout = QHBoxLayout()
+        self.fi_file_path = QLineEdit()
+        self.fi_file_path.setPlaceholderText("Select FI channel TIFF file... (or drag and drop)")
+        self.fi_file_path.setMinimumWidth(400)  # Slightly smaller since it's in a side box
+        self.fi_file_path.setFont(file_font)
+        self.fi_file_path.setSizePolicy(size_policy)
+        self.fi_file_path.setEnabled(False)  # Disabled by default
+        self.fi_file_btn = QPushButton("Browse FI File...")
+        self.fi_file_btn.setFixedWidth(120)
+        self.fi_file_btn.setEnabled(False)  # Disabled by default
+        self.fi_file_btn.clicked.connect(self.select_fi_file)
+        fi_file_layout.addWidget(self.fi_file_path, 0)
+        fi_file_layout.addWidget(self.fi_file_btn, 0)
+        fi_layout.addLayout(fi_file_layout)
+        
+        # Connect checkbox to enable/disable FI file selection
+        self.analyze_fi.toggled.connect(self._update_fi_file_state)
+        
+        fi_group.setLayout(fi_layout)
+        fi_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        options_container_layout.addWidget(fi_group)
+        
+        scroll_layout.addLayout(options_container_layout)
         
         # Preview and Analyze buttons
         # Preview button - modern styling applied via global stylesheet
@@ -6498,6 +6715,42 @@ class AnalyzeMasksTab(QWidget):
         if folder_path:
             self.file_path.setText(folder_path)
             self._update_analyze_button_state()
+    
+    def handle_dropped_path_analyze(self, dropped_path):
+        """Handle dropped file or folder path for analyze masks tab"""
+        path_obj = Path(dropped_path)
+        # Update file path
+        self.file_path.setText(dropped_path)
+        # Update button states
+        self._update_analyze_button_state()
+    
+    def select_fi_file(self):
+        """Open file dialog to select an FI channel TIFF file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select FI Channel TIFF File", "", "TIFF Files (*.tif *.tiff);;All Files (*)"
+        )
+        if file_path:
+            self.fi_file_path.setText(file_path)
+    
+    def handle_dropped_fi_file(self, dropped_path):
+        """Handle dropped FI file for analyze masks tab"""
+        path_obj = Path(dropped_path)
+        # Check if it's a valid TIFF file
+        if path_obj.is_file() and path_obj.suffix.lower() in ['.tif', '.tiff']:
+            # Enable the analyze_fi checkbox if not already enabled
+            if not self.analyze_fi.isChecked():
+                self.analyze_fi.setChecked(True)
+            # Set the file path
+            self.fi_file_path.setText(dropped_path)
+        else:
+            QMessageBox.warning(self, "Invalid File", 
+                              "Please drop a valid TIFF file (.tif or .tiff).")
+    
+    def _update_fi_file_state(self, checked):
+        """Enable/disable FI file selection based on checkbox state"""
+        self.fi_file_path.setEnabled(checked)
+        if hasattr(self, 'fi_file_btn'):
+            self.fi_file_btn.setEnabled(checked)
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -7232,6 +7485,16 @@ class AnalyzeMasksTab(QWidget):
             if self.create_vis.isChecked():
                 cmd_args.append('--visualization')
             
+            # Add FI image path if FI analysis is enabled
+            if self.analyze_fi.isChecked() and self.fi_file_path.text():
+                fi_path = Path(self.fi_file_path.text())
+                if fi_path.exists():
+                    cmd_args.extend(['--fi-image', str(fi_path)])
+                else:
+                    QMessageBox.warning(self, "FI File Not Found", 
+                                      f"The selected FI file does not exist:\n{fi_path}")
+                    return
+            
             # Run in thread
             self.analyze_btn.setEnabled(False)
             self.analyze_btn.setText("Analyzing...")
@@ -7321,6 +7584,16 @@ class AnalyzeMasksTab(QWidget):
         if self.create_vis.isChecked():
             cmd_args.append('--visualization')
         
+        # Add FI image path if FI analysis is enabled
+        if self.analyze_fi.isChecked() and self.fi_file_path.text():
+            fi_path = Path(self.fi_file_path.text())
+            if fi_path.exists():
+                cmd_args.extend(['--fi-image', str(fi_path)])
+            else:
+                QMessageBox.warning(self, "FI File Not Found", 
+                                  f"The selected FI file does not exist:\n{fi_path}")
+                return
+        
         self.parent_window.log_output(f"Output file: {output_path}\n")
         
         # Update progress (for folder mode, show file progress)
@@ -7384,11 +7657,15 @@ class TrackingTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
         
-        # Mask file selection
-        mask_group = QGroupBox("Mask File")
+        # Mask file selection with drag-and-drop support
+        mask_group = DragDropGroupBox(
+            "Mask File",
+            parent=self,
+            on_drop_callback=self.handle_dropped_mask_file
+        )
         mask_layout = QHBoxLayout()
         self.mask_path = QLineEdit()
-        self.mask_path.setPlaceholderText("Select mask TIFF file (time series)...")
+        self.mask_path.setPlaceholderText("Select mask TIFF file (time series)... (or drag and drop)")
         self.mask_path.setMinimumWidth(500)
         file_font = QFont()
         file_font.setPointSize(11)
@@ -7403,11 +7680,15 @@ class TrackingTab(QWidget):
         mask_group.setLayout(mask_layout)
         scroll_layout.addWidget(mask_group)
         
-        # Original data file selection (optional)
-        original_group = QGroupBox("Original Data File (Optional)")
+        # Original data file selection (optional) with drag-and-drop support
+        original_group = DragDropGroupBox(
+            "Original Data File (Optional)",
+            parent=self,
+            on_drop_callback=self.handle_dropped_original_file
+        )
         original_layout = QHBoxLayout()
         self.original_path = QLineEdit()
-        self.original_path.setPlaceholderText("Select original TIFF file for visualization (optional)...")
+        self.original_path.setPlaceholderText("Select original TIFF file for visualization (optional)... (or drag and drop)")
         self.original_path.setMinimumWidth(500)
         self.original_path.setFont(file_font)
         self.original_path.setSizePolicy(size_policy)
@@ -7419,11 +7700,15 @@ class TrackingTab(QWidget):
         original_group.setLayout(original_layout)
         scroll_layout.addWidget(original_group)
         
-        # Excel analysis file selection (for linking cell data)
-        excel_group = QGroupBox("Excel Analysis File (Optional)")
+        # Excel analysis file selection (for linking cell data) with drag-and-drop support
+        excel_group = DragDropGroupBox(
+            "Excel Analysis File (Optional)",
+            parent=self,
+            on_drop_callback=self.handle_dropped_excel_file
+        )
         excel_layout = QHBoxLayout()
         self.excel_path = QLineEdit()
-        self.excel_path.setPlaceholderText("Select Excel file with cell analysis data (e.g., *_masks_analysis.xlsx)...")
+        self.excel_path.setPlaceholderText("Select Excel file with cell analysis data (e.g., *_masks_analysis.xlsx)... (or drag and drop)")
         self.excel_path.setMinimumWidth(500)
         self.excel_path.setFont(file_font)
         self.excel_path.setSizePolicy(size_policy)
@@ -7609,6 +7894,34 @@ class TrackingTab(QWidget):
         )
         if file_path:
             self.excel_path.setText(file_path)
+    
+    def handle_dropped_mask_file(self, dropped_path):
+        """Handle dropped mask file for tracking tab"""
+        path_obj = Path(dropped_path)
+        if path_obj.is_file() and path_obj.suffix.lower() in ['.tif', '.tiff']:
+            self.mask_path.setText(dropped_path)
+            self._update_tracking_button_state()
+        else:
+            QMessageBox.warning(self, "Invalid File", 
+                              "Please drop a valid TIFF mask file.")
+    
+    def handle_dropped_original_file(self, dropped_path):
+        """Handle dropped original data file for tracking tab"""
+        path_obj = Path(dropped_path)
+        if path_obj.is_file() and path_obj.suffix.lower() in ['.tif', '.tiff']:
+            self.original_path.setText(dropped_path)
+        else:
+            QMessageBox.warning(self, "Invalid File", 
+                              "Please drop a valid TIFF file.")
+    
+    def handle_dropped_excel_file(self, dropped_path):
+        """Handle dropped Excel file for tracking tab"""
+        path_obj = Path(dropped_path)
+        if path_obj.is_file() and path_obj.suffix.lower() in ['.xlsx', '.xls']:
+            self.excel_path.setText(dropped_path)
+        else:
+            QMessageBox.warning(self, "Invalid File", 
+                              "Please drop a valid Excel file (.xlsx or .xls).")
     
     def run_tracking(self):
         if not self.mask_path.text():
@@ -9114,14 +9427,18 @@ class GrowthCurveVideoTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
         
-        # TIFF sequence input (file or folder)
-        video_group = QGroupBox("Video Input (TIFF Sequence)")
+        # TIFF sequence input (file or folder) with drag-and-drop support
+        video_group = DragDropGroupBox(
+            "Video Input (TIFF Sequence)",
+            parent=self,
+            on_drop_callback=self.handle_dropped_video_path
+        )
         video_layout = QVBoxLayout()
         
         # File/Folder selection
         file_folder_layout = QHBoxLayout()
         self.video_path = QLineEdit()
-        self.video_path.setPlaceholderText("Select TIFF file or folder containing TIFF sequence...")
+        self.video_path.setPlaceholderText("Select TIFF file or folder containing TIFF sequence... (or drag and drop)")
         self.video_path.setMinimumWidth(500)
         file_font = QFont()
         file_font.setPointSize(11)
@@ -9389,6 +9706,12 @@ class GrowthCurveVideoTab(QWidget):
         if folder_path:
             self.video_path.setText(folder_path)
     
+    def handle_dropped_video_path(self, dropped_path):
+        """Handle dropped file or folder path for growth curve video tab"""
+        path_obj = Path(dropped_path)
+        # Update video path
+        self.video_path.setText(dropped_path)
+    
     def select_excel_file(self):
         """Select Excel file from Analyze Masks tab"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -9449,16 +9772,20 @@ class GrowthCurveVideoTab(QWidget):
             QMessageBox.warning(self, "File Not Found", f"Excel file not found:\n{excel_path}")
             return
         
-        # Determine output directory (same as input)
+        # Determine output directory (go up one level if input is in Tif_* or _segmentation folder)
         if video_path.is_file():
-            output_base = video_path.parent
+            base_dir = video_path.parent
             input_stem = video_path.stem
         else:
-            output_base = video_path
+            base_dir = video_path
             input_stem = video_path.name
         
-        # Create output directory
-        output_dir = output_base / f"{input_stem}_growth_curve_video"
+        # Go up one level if in segmentation or Tif_ folder (same logic as other tabs)
+        if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
+            base_dir = base_dir.parent
+        
+        # Create output directory at base level
+        output_dir = base_dir / f"{input_stem}_growth_curve_video"
         output_dir.mkdir(exist_ok=True)
         
         # Show progress
@@ -9508,7 +9835,8 @@ class GrowthCurveVideoTab(QWidget):
         self.parent_window.progress_bar.setVisible(False)
         
         if success:
-            QMessageBox.information(self, "Success", message)
+            # Just log the message instead of showing a popup
+            self.parent_window.log_output(f"\n✓ {message}\n")
         else:
             QMessageBox.warning(self, "Error", message)
 
@@ -9639,30 +9967,30 @@ class GrowthCurveVideoWorker(QThread):
                 current_areas = relative_areas[:frame_idx + 1]
                 current_times = time_minutes[:frame_idx + 1]
                 
-                ax.plot(current_times, current_areas, 'k-', linewidth=4, label='Growth Curve', color='black')
-                ax.scatter(current_times[-1], current_areas[-1], color='black', s=100, zorder=5, edgecolors='black', linewidths=1)
-                ax.set_xlabel('Time [min]', fontsize=14, fontweight='bold')
-                ax.set_ylabel('rel. cell area', fontsize=14, fontweight='bold')
-                ax.set_title('Growth Curve', fontsize=16, fontweight='bold')
+                ax.plot(current_times, current_areas, 'k-', linewidth=8)
+                ax.scatter(current_times[-1], current_areas[-1], color='black', s=200, zorder=5, edgecolors='black', linewidths=2)
+                ax.set_xlabel('Time [min]', fontsize=36, fontweight='bold')
+                ax.set_ylabel('rel. cell area', fontsize=36, fontweight='bold')
                 ax.set_ylim(y_min, y_max)
                 ax.set_xlim(0, time_minutes.max() * 1.05)
                 ax.grid(True, alpha=0.4, linewidth=1.5)
-                ax.legend(fontsize=12, frameon=True, edgecolor='black', facecolor='white')
                 
                 # Set white background style (matching desired output)
                 fig.patch.set_facecolor('white')
                 ax.set_facecolor('white')
                 
                 # Make tick labels bigger and bolder
-                ax.tick_params(axis='both', which='major', labelsize=12, width=2, colors='black')
-                ax.tick_params(axis='both', which='minor', labelsize=10, colors='black')
+                ax.tick_params(axis='both', which='major', labelsize=24, width=2, colors='black')
+                ax.tick_params(axis='both', which='minor', labelsize=24, colors='black')
+                # Make tick labels bold by setting font weight on the label objects
+                for label in ax.get_xticklabels() + ax.get_yticklabels():
+                    label.set_fontweight('bold')
                 ax.xaxis.label.set_color('black')
                 ax.yaxis.label.set_color('black')
-                ax.title.set_color('black')
                 # Make axis lines (spines) thicker and bolder
                 for spine in ax.spines.values():
                     spine.set_color('black')
-                    spine.set_linewidth(2.5)
+                    spine.set_linewidth(3.5)
                 
                 # Render graph to numpy array
                 canvas.draw()
@@ -9701,7 +10029,12 @@ class GrowthCurveVideoWorker(QThread):
             if 'tif' in self.formats:
                 try:
                     output_tiff = self.output_dir / f"{self.output_dir.name}.tif"
-                    tifffile.imwrite(str(output_tiff), output_frames_array, compression='zlib')
+                    # Ensure uint8 for smaller file size
+                    if output_frames_array.dtype != np.uint8:
+                        output_frames_array = ((output_frames_array - output_frames_array.min()) / 
+                                             (output_frames_array.max() - output_frames_array.min() + 1e-10) * 255).astype(np.uint8)
+                    # Use LZW compression for better compression ratio
+                    tifffile.imwrite(str(output_tiff), output_frames_array, compression='lzw', photometric='rgb')
                     output_files.append(f"TIFF: {output_tiff.name}")
                 except Exception as e:
                     output_files.append(f"TIFF: Error - {str(e)}")
@@ -9736,16 +10069,35 @@ class GrowthCurveVideoWorker(QThread):
                 try:
                     output_gif = self.output_dir / f"{self.output_dir.name}.gif"
                     import imageio
-                    # Convert frames to uint8 if needed
+                    from PIL import Image
+                    # Convert frames to uint8 if needed and optimize
                     gif_frames = []
                     for frame in output_frames:
                         if frame.dtype != np.uint8:
                             frame = ((frame - frame.min()) / (frame.max() - frame.min() + 1e-10) * 255).astype(np.uint8)
-                        gif_frames.append(frame)
-                    imageio.mimsave(str(output_gif), gif_frames, fps=self.fps, loop=0)
+                        # Convert to PIL Image for better GIF optimization
+                        if len(frame.shape) == 3:
+                            pil_frame = Image.fromarray(frame)
+                            # Quantize to reduce colors (256 colors for better compression)
+                            pil_frame = pil_frame.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+                            gif_frames.append(pil_frame)
+                        else:
+                            gif_frames.append(frame)
+                    # Save with optimization
+                    imageio.mimsave(str(output_gif), gif_frames, fps=self.fps, loop=0, subrectangles=True)
                     output_files.append(f"GIF: {output_gif.name}")
                 except Exception as e:
-                    output_files.append(f"GIF: Error - {str(e)}")
+                    # Fallback to simple save if PIL optimization fails
+                    try:
+                        gif_frames = []
+                        for frame in output_frames:
+                            if frame.dtype != np.uint8:
+                                frame = ((frame - frame.min()) / (frame.max() - frame.min() + 1e-10) * 255).astype(np.uint8)
+                            gif_frames.append(frame)
+                        imageio.mimsave(str(output_gif), gif_frames, fps=self.fps, loop=0)
+                        output_files.append(f"GIF: {output_gif.name}")
+                    except Exception as e2:
+                        output_files.append(f"GIF: Error - {str(e2)}")
             
             # Save as MP4
             if 'mp4' in self.formats:
@@ -9803,11 +10155,15 @@ class SAM2SegmentTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
         
-        # File/Folder selection
-        file_group = QGroupBox("Input File/Folder")
+        # File/Folder selection with drag-and-drop support
+        file_group = DragDropGroupBox(
+            "Input File/Folder",
+            parent=self,
+            on_drop_callback=self.handle_dropped_path_sam2
+        )
         file_layout = QHBoxLayout()
         self.file_path = QLineEdit()
-        self.file_path.setPlaceholderText("Select a TIFF file or folder...")
+        self.file_path.setPlaceholderText("Select a TIFF file or folder... (or drag and drop)")
         self.file_path.setMinimumWidth(500)
         file_font = QFont()
         file_font.setPointSize(12)
@@ -10050,6 +10406,14 @@ class SAM2SegmentTab(QWidget):
         )
         if folder_path:
             self.file_path.setText(folder_path)
+    
+    def handle_dropped_path_sam2(self, dropped_path):
+        """Handle dropped file or folder path for SAM2 segmentation tab"""
+        path_obj = Path(dropped_path)
+        # Update file path
+        self.file_path.setText(dropped_path)
+        # Update button state
+        self._update_button_state()
     
     def select_checkpoint(self):
         """Select SAM2 checkpoint file"""

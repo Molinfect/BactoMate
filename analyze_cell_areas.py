@@ -21,6 +21,7 @@ import pandas as pd
 from tqdm import tqdm
 from skimage.measure import regionprops, label
 from skimage.morphology import remove_small_objects
+from skimage.segmentation import find_boundaries
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -97,6 +98,79 @@ def calculate_cell_properties(mask, pixel_size=0.108):
         })
     
     return props
+
+
+def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None):
+    """
+    Calculate fluorescence intensity metrics for a single cell.
+    
+    Parameters:
+    -----------
+    mask : array
+        Labeled mask image (0 = background, 1,2,3... = cell IDs)
+    fi_image : array
+        FI channel image (2D, same shape as mask)
+    cell_label : int
+        Label ID of the cell to analyze
+    boundaries : array, optional
+        Pre-computed boundary map from find_boundaries(). If None, will compute it.
+        Pass this to avoid redundant computation when processing multiple cells.
+        
+    Returns:
+    --------
+    mean_fi : float
+        Mean pixel intensity within the cell
+    contour_fi : float
+        Mean pixel intensity at the cell contour/boundary
+    fi_ratio : float
+        Ratio of contour FI to mean FI (contour_fi / mean_fi)
+    """
+    # Create binary mask for this cell
+    cell_mask = (mask == cell_label)
+    
+    if not np.any(cell_mask):
+        return np.nan, np.nan, np.nan
+    
+    # Ensure FI image is 2D and matches mask shape
+    if fi_image.ndim > 2:
+        # Take first channel if multi-channel
+        fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
+    
+    if fi_image.shape != mask.shape:
+        # Try to match shapes
+        if fi_image.shape[0] == mask.shape[0] and fi_image.shape[1] == mask.shape[1]:
+            pass  # Shapes match
+        else:
+            print(f"Warning: FI image shape {fi_image.shape} doesn't match mask shape {mask.shape}")
+            return np.nan, np.nan, np.nan
+    
+    # Calculate mean FI intensity within the cell
+    cell_pixels = fi_image[cell_mask]
+    mean_fi = np.mean(cell_pixels) if len(cell_pixels) > 0 else np.nan
+    
+    # Find contour/boundary pixels
+    # Use pre-computed boundaries if provided, otherwise compute them
+    if boundaries is None:
+        # find_boundaries returns True for pixels on the boundary between regions
+        boundaries = find_boundaries(mask, mode='inner')
+    # Get boundary pixels that belong to this cell
+    cell_contour = boundaries & cell_mask
+    
+    # Calculate mean FI intensity at contour
+    if np.any(cell_contour):
+        contour_pixels = fi_image[cell_contour]
+        contour_fi = np.mean(contour_pixels) if len(contour_pixels) > 0 else np.nan
+    else:
+        # If no contour found (very small cell), use mean FI
+        contour_fi = mean_fi
+    
+    # Calculate ratio
+    if not np.isnan(mean_fi) and mean_fi > 0:
+        fi_ratio = contour_fi / mean_fi
+    else:
+        fi_ratio = np.nan
+    
+    return mean_fi, contour_fi, fi_ratio
 
 
 def filter_rod_shaped_cells(properties, min_aspect_ratio=1.5, max_aspect_ratio=10.0,
@@ -186,7 +260,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   min_aspect_ratio=1.5, max_aspect_ratio=10.0,
                   min_eccentricity=0.5, min_solidity=0.7,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
-                  remove_small=True, min_size_pixels=10):
+                  remove_small=True, min_size_pixels=10, fi_image_path=None):
     """
     Analyze masks and extract cell areas with morphological filtering.
     
@@ -218,6 +292,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
         Remove small objects before analysis
     min_size_pixels : int
         Minimum size in pixels for objects to keep
+    fi_image_path : str, optional
+        Path to FI channel TIFF file for fluorescence intensity analysis
         
     Returns:
     --------
@@ -236,6 +312,40 @@ def analyze_masks(masks_path, pixel_size=0.108,
     
     num_frames = masks.shape[0]
     print(f"Found {num_frames} frames")
+    
+    # Load FI image if provided
+    fi_images = None
+    if fi_image_path:
+        print(f"Loading FI image from: {fi_image_path}")
+        fi_images = tifffile.imread(fi_image_path)
+        # Handle different dimensions
+        if fi_images.ndim == 2:
+            fi_images = fi_images[np.newaxis, ...]  # Add time dimension
+        elif fi_images.ndim == 4:
+            # (T, C, Y, X) - take first channel
+            fi_images = fi_images[:, 0, :, :]
+        elif fi_images.ndim == 3:
+            # Could be (T, Y, X) or (Y, X, C)
+            if fi_images.shape[-1] < 10:  # Likely channels last
+                fi_images = fi_images.transpose(2, 0, 1)[np.newaxis, ...]  # (1, C, Y, X)
+                fi_images = fi_images[:, 0, :, :]  # (1, Y, X)
+            # Otherwise assume (T, Y, X)
+        
+        # Ensure FI images match mask frames
+        if fi_images.shape[0] != num_frames:
+            print(f"Warning: FI image has {fi_images.shape[0]} frames but masks have {num_frames} frames")
+            if fi_images.shape[0] == 1:
+                # Single FI frame - use for all mask frames
+                fi_images = np.repeat(fi_images, num_frames, axis=0)
+            else:
+                # Use minimum number of frames
+                min_frames = min(fi_images.shape[0], num_frames)
+                fi_images = fi_images[:min_frames]
+                masks = masks[:min_frames]
+                num_frames = min_frames
+                print(f"Using first {min_frames} frames from both images")
+        
+        print(f"✓ FI image loaded: {fi_images.shape}")
     
     results = []
     all_frame_data = []  # Store detailed data for each frame
@@ -277,6 +387,22 @@ def analyze_masks(masks_path, pixel_size=0.108,
             min_length_um=min_length_um
         )
         accepted_labels = {cell['label'] for cell in filtered}
+        
+        # Step 3: Calculate FI intensities if FI image is provided
+        if fi_images is not None:
+            fi_image = fi_images[frame_idx]
+            # Pre-compute boundaries once per frame (major performance optimization)
+            # This avoids calling find_boundaries() 100+ times per frame
+            boundaries = find_boundaries(mask_cleaned, mode='inner')
+            
+            for cell in filtered:
+                cell_label = cell['label']
+                mean_fi, contour_fi, fi_ratio = calculate_fi_intensities(
+                    mask_cleaned, fi_image, cell_label, boundaries=boundaries
+                )
+                cell['mean_fi'] = mean_fi
+                cell['contour_fi'] = contour_fi
+                cell['fi_ratio'] = fi_ratio
         
         # Determine rejected labels
         rejected_labels = all_labels - accepted_labels
@@ -617,6 +743,86 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
     print(f"  Acceptance rate: {100*total_accepted/(total_accepted+total_rejected):.1f}%" if (total_accepted+total_rejected) > 0 else "  Acceptance rate: 0%")
 
 
+def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_path, masks_original=None):
+    """
+    Create visualization showing cell masks with FI contours highlighted.
+    
+    Parameters:
+    -----------
+    masks : array
+        Mask array (T, Y, X) with persistent CellIDs (for accepted cells only)
+    all_frame_data : list of dict
+        Frame data with cells containing cell_id and accepted/rejected labels
+    fi_images : array
+        FI channel images (T, Y, X)
+    output_path : str
+        Path to save visualization TIFF
+    masks_original : array, optional
+        Original mask array before CellID assignment (for showing all cells)
+    """
+    print(f"\nCreating FI contour visualization...")
+    
+    num_frames = masks.shape[0]
+    height, width = masks.shape[1], masks.shape[2]
+    
+    # Create RGB visualization
+    visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
+    
+    # Normalize FI images for background display
+    fi_images_norm = []
+    for fi_img in fi_images:
+        fi_min, fi_max = fi_img.min(), fi_img.max()
+        if fi_max > fi_min:
+            fi_norm = ((fi_img - fi_min) / (fi_max - fi_min) * 255).astype(np.uint8)
+        else:
+            fi_norm = fi_img.astype(np.uint8)
+        fi_images_norm.append(fi_norm)
+    fi_images_norm = np.stack(fi_images_norm)
+    
+    for frame_idx in tqdm(range(num_frames), desc="Creating contour visualization"):
+        mask = masks[frame_idx]  # Mask with persistent CellIDs (accepted cells only)
+        frame_data = all_frame_data[frame_idx]
+        fi_image = fi_images_norm[frame_idx]
+        
+        # Get accepted CellIDs
+        accepted_cellids = {cell.get('cell_id') for cell in frame_data['cells'] if cell.get('cell_id') is not None}
+        
+        # Use original mask if provided to show all cells
+        if masks_original is not None:
+            mask_orig = masks_original[frame_idx]
+        else:
+            mask_orig = mask
+        
+        # Start with FI image as background (grayscale in all channels)
+        visualization[frame_idx, :, :, 0] = fi_image  # Red channel
+        visualization[frame_idx, :, :, 1] = fi_image  # Green channel
+        visualization[frame_idx, :, :, 2] = fi_image  # Blue channel
+        
+        # Draw cell masks in green (semi-transparent overlay)
+        for cell_id in accepted_cellids:
+            if cell_id is not None:
+                cell_mask = (mask == cell_id)
+                # Blend green with background (50% opacity)
+                visualization[frame_idx, :, :, 1][cell_mask] = np.clip(
+                    visualization[frame_idx, :, :, 1][cell_mask] * 0.5 + 255 * 0.5, 0, 255
+                ).astype(np.uint8)
+        
+        # Find and draw contours in bright yellow/cyan
+        # Find boundaries for all accepted cells
+        boundaries = find_boundaries(mask, mode='inner')
+        
+        # Draw contours in bright yellow (red + green channels)
+        contour_mask = boundaries & (mask > 0)
+        visualization[frame_idx, :, :, 0][contour_mask] = 255  # Red channel
+        visualization[frame_idx, :, :, 1][contour_mask] = 255  # Green channel
+        visualization[frame_idx, :, :, 2][contour_mask] = 0     # Blue channel (yellow = red+green)
+    
+    # Save visualization
+    print(f"Saving FI contour visualization to: {output_path}")
+    tifffile.imwrite(output_path, visualization)
+    print("✓ FI contour visualization saved")
+
+
 def save_to_excel(results, output_path, detailed_data=None):
     """
     Save results to Excel file.
@@ -661,6 +867,11 @@ def save_to_excel(results, output_path, detailed_data=None):
                         'Eccentricity': cell['eccentricity'],
                         'Solidity': cell['solidity']
                     }
+                    # Add FI columns if available
+                    if 'mean_fi' in cell:
+                        row['Mean FI Intensity'] = cell['mean_fi']
+                        row['Contour FI Intensity'] = cell['contour_fi']
+                        row['FI Ratio (Contour/Mean)'] = cell['fi_ratio']
                     detailed_rows.append(row)
             
             if detailed_rows:
@@ -727,6 +938,10 @@ Examples:
     parser.add_argument('--visualization', action='store_true',
                        help='Create visualization TIFF showing accepted (green) and rejected (red) cells')
     
+    # FI analysis
+    parser.add_argument('--fi-image', type=str, default=None,
+                       help='Path to FI channel TIFF file for fluorescence intensity analysis')
+    
     args = parser.parse_args()
     
     # Check input file
@@ -744,6 +959,14 @@ Examples:
         if not output_path.suffix:
             output_path = output_path.with_suffix('.xlsx')
     
+    # Check FI image if provided
+    fi_image_path = None
+    if args.fi_image:
+        if not Path(args.fi_image).exists():
+            print(f"ERROR: FI image file not found: {args.fi_image}")
+            return 1
+        fi_image_path = args.fi_image
+    
     # Analyze masks
     results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
         args.masks,
@@ -758,11 +981,15 @@ Examples:
         max_width_um=args.max_width,
         min_length_um=args.min_length,
         remove_small=not args.no_remove_small,
-        min_size_pixels=args.min_size
+        min_size_pixels=args.min_size,
+        fi_image_path=fi_image_path
     )
     
+    # Get input mask filename stem for output naming
+    input_mask_stem = Path(args.masks).stem
+    
     # Create output folder for organized file storage
-    output_dir = output_path.parent / f"{output_path.stem}_analysis"
+    output_dir = output_path.parent / f"{input_mask_stem}_analysis"
     output_dir.mkdir(exist_ok=True)
     
     # Move Excel file to output folder
@@ -772,8 +999,34 @@ Examples:
     
     # Create visualization if requested
     if args.visualization:
-        vis_output = output_dir / f"{output_path.stem}_filter_visualization.tif"
+        vis_output = output_dir / f"{input_mask_stem}_filter_visualization.tif"
         create_filter_visualization(masks_with_cellids, detailed_data, str(vis_output), masks_original=masks_original)
+    
+    # Create FI contour visualization if FI analysis was performed
+    if args.fi_image:
+        # Reload FI images for visualization (they were already loaded in analyze_masks, but we need them here)
+        fi_images = tifffile.imread(args.fi_image)
+        # Handle different dimensions (same logic as in analyze_masks)
+        if fi_images.ndim == 2:
+            fi_images = fi_images[np.newaxis, ...]
+        elif fi_images.ndim == 4:
+            fi_images = fi_images[:, 0, :, :]
+        elif fi_images.ndim == 3:
+            if fi_images.shape[-1] < 10:
+                fi_images = fi_images.transpose(2, 0, 1)[np.newaxis, ...]
+                fi_images = fi_images[:, 0, :, :]
+        
+        # Ensure FI images match mask frames
+        num_frames = masks_with_cellids.shape[0]
+        if fi_images.shape[0] != num_frames:
+            if fi_images.shape[0] == 1:
+                fi_images = np.repeat(fi_images, num_frames, axis=0)
+            else:
+                min_frames = min(fi_images.shape[0], num_frames)
+                fi_images = fi_images[:min_frames]
+        
+        fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
+        create_fi_contour_visualization(masks_with_cellids, detailed_data, fi_images, str(fi_contour_output), masks_original=masks_original)
     
     # Print summary statistics
     print("\n" + "="*60)
@@ -801,6 +1054,9 @@ Examples:
     print(f"  All files saved in folder: {output_dir}")
     if args.visualization:
         print(f"  Visualization saved to: {vis_output}")
+    if args.fi_image:
+        fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
+        print(f"  FI contour visualization saved to: {fi_contour_output}")
     return 0
 
 
