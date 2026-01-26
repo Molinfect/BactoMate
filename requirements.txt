@@ -7,6 +7,7 @@ numpy>=1.21.0
 scipy>=1.7.0
 scikit-image>=0.18.0
 tifffile>=2021.7.2
+Pillow>=9.0.0  # For NumPy 2.0 compatibility when reading TIFF files (fallback for tifffile)
 
 # Microscopy file support (for converting ND2, LIF, CZI to TIFF)
 nd2>=0.7.0
@@ -57,3 +58,4 @@ trackastra>=0.1.0  # Cell tracking library for time-lapse data
 # Or from source: git clone https://github.com/facebookresearch/sam2.git && cd sam2 && pip install -e .
 # Model checkpoints: https://github.com/facebookresearch/sam2#download-checkpoints
 sam2>=0.1.0  # SAM2 for interactive and automatic segmentation
+huggingface_hub>=0.16.0  # For automatic SAM2 checkpoint download from Hugging Face

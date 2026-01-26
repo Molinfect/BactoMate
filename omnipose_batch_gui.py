@@ -298,6 +298,51 @@ except ImportError as e:
 import subprocess
 import threading
 import numpy as np
+import tifffile
+
+# Compatibility wrapper for NumPy 2.0
+def safe_imread(file_path):
+    """
+    Safely read TIFF file with NumPy 2.0 compatibility.
+    Handles the newbyteorder() issue with tifffile.
+    """
+    try:
+        # Try standard reading first
+        return tifffile.imread(file_path)
+    except (AttributeError, TypeError) as e:
+        if 'newbyteorder' in str(e):
+            # NumPy 2.0 compatibility issue - use PIL as fallback
+            try:
+                from PIL import Image
+                # Use PIL to read TIFF (handles NumPy 2.0 fine)
+                img = Image.open(file_path)
+                frames = []
+                try:
+                    while True:
+                        frames.append(np.array(img))
+                        img.seek(img.tell() + 1)
+                except EOFError:
+                    pass
+                
+                if len(frames) == 1:
+                    return frames[0]
+                elif len(frames) > 1:
+                    return np.stack(frames, axis=0)
+                else:
+                    # Single frame case
+                    img.seek(0)
+                    return np.array(img)
+            except ImportError:
+                # PIL not available - raise original error with helpful message
+                raise RuntimeError(
+                    f"NumPy 2.0 compatibility issue reading TIFF file. "
+                    f"Please install Pillow: pip install Pillow"
+                ) from e
+            except Exception as pil_error:
+                # If PIL also fails, raise original error
+                raise e from pil_error
+        else:
+            raise
 
 
 class ClickableTooltip(QLabel):
@@ -3173,7 +3218,7 @@ class ND2ConversionTab(QWidget):
             layout = QVBoxLayout()
             
             # Load TIFF file
-            all_frames = tifffile.imread(file_path)
+            all_frames = safe_imread(file_path)
             
             # Determine dimensions
             ndim = len(all_frames.shape)
@@ -4660,7 +4705,7 @@ class ProcessingTab(QWidget):
             from cellpose_omni.io import imread
             import numpy as np
             
-            images = tifffile.imread(file_path)
+            images = safe_imread(file_path)
             
             loading_progress.setLabelText("Processing image data...")
             QApplication.processEvents()
@@ -6637,6 +6682,26 @@ class AnalyzeMasksTab(QWidget):
         )
         fi_checkbox_layout.addWidget(self.analyze_fi)
         fi_checkbox_layout.addWidget(fi_info_icon)
+        
+        # Contour thickness parameter (on same line as Analyze FI checkbox)
+        contour_thickness_label = QLabel("Contour thickness (pixels):")
+        contour_thickness_info_icon = create_info_icon(
+            "Thickness of the contour region used for FI intensity calculation.\n\n"
+            "Default: 1 pixel (single-pixel boundary)\n"
+            "Range: 1-10 pixels\n\n"
+            "The contour is the region at the cell boundary.\n"
+            "Increasing thickness includes more pixels near the boundary.\n\n"
+            "Note: This affects both the preview visualization and the final analysis.",
+            parent_widget=self
+        )
+        fi_checkbox_layout.addWidget(contour_thickness_label)
+        fi_checkbox_layout.addWidget(contour_thickness_info_icon)
+        self.fi_contour_thickness = QSpinBox()
+        self.fi_contour_thickness.setRange(1, 10)
+        self.fi_contour_thickness.setValue(1)  # Default: 1 pixel (current behavior)
+        self.fi_contour_thickness.setEnabled(False)  # Disabled by default
+        self.fi_contour_thickness.setFixedWidth(80)
+        fi_checkbox_layout.addWidget(self.fi_contour_thickness)
         fi_checkbox_layout.addStretch()
         fi_layout.addLayout(fi_checkbox_layout)
         
@@ -6656,7 +6721,7 @@ class AnalyzeMasksTab(QWidget):
         fi_file_layout.addWidget(self.fi_file_btn, 0)
         fi_layout.addLayout(fi_file_layout)
         
-        # Connect checkbox to enable/disable FI file selection
+        # Connect checkbox to enable/disable FI file selection and contour thickness
         self.analyze_fi.toggled.connect(self._update_fi_file_state)
         
         fi_group.setLayout(fi_layout)
@@ -6747,10 +6812,12 @@ class AnalyzeMasksTab(QWidget):
                               "Please drop a valid TIFF file (.tif or .tiff).")
     
     def _update_fi_file_state(self, checked):
-        """Enable/disable FI file selection based on checkbox state"""
+        """Enable/disable FI file selection and contour thickness based on checkbox state"""
         self.fi_file_path.setEnabled(checked)
         if hasattr(self, 'fi_file_btn'):
             self.fi_file_btn.setEnabled(checked)
+        if hasattr(self, 'fi_contour_thickness'):
+            self.fi_contour_thickness.setEnabled(checked)
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -6956,13 +7023,14 @@ class AnalyzeMasksTab(QWidget):
             
             import tifffile
             from skimage.measure import regionprops
-            from skimage.morphology import remove_small_objects
+            from skimage.morphology import remove_small_objects, binary_dilation
+            from skimage.segmentation import find_boundaries
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
             from matplotlib.figure import Figure
             
             # Load masks
-            masks = tifffile.imread(mask_path)
+            masks = safe_imread(mask_path)
             
             loading_progress.setLabelText("Processing mask data... (50%)")
             loading_progress.setValue(50)
@@ -6970,6 +7038,37 @@ class AnalyzeMasksTab(QWidget):
             if masks.ndim == 2:
                 masks = masks[np.newaxis, :, :]
             num_frames = masks.shape[0]
+            
+            # Load FI images if FI analysis is enabled
+            fi_images = None
+            fi_contour_thickness = 1
+            if self.analyze_fi.isChecked() and self.fi_file_path.text():
+                try:
+                    fi_path = Path(self.fi_file_path.text())
+                    if fi_path.exists():
+                        loading_progress.setLabelText("Loading FI images... (60%)")
+                        loading_progress.setValue(60)
+                        QApplication.processEvents()
+                        fi_images = safe_imread(str(fi_path))
+                        # Handle different dimensions (same logic as in analyze_cell_areas.py)
+                        if fi_images.ndim == 2:
+                            fi_images = fi_images[np.newaxis, :, :]
+                        elif fi_images.ndim == 3 and fi_images.shape[0] != num_frames:
+                            # Might be (C, Y, X) or (Y, X, C) - try to handle
+                            if fi_images.shape[2] < 10:  # Likely (Y, X, C)
+                                fi_images = fi_images[np.newaxis, :, :, 0]  # Take first channel
+                            else:  # Likely (C, Y, X)
+                                fi_images = fi_images[0, np.newaxis, :, :]  # Take first channel
+                        # Ensure frame count matches
+                        if fi_images.shape[0] != num_frames:
+                            QMessageBox.warning(preview_dialog, "Frame Mismatch", 
+                                              f"FI image has {fi_images.shape[0]} frames but mask has {num_frames} frames.")
+                            fi_images = None
+                        fi_contour_thickness = self.fi_contour_thickness.value()
+                except Exception as e:
+                    QMessageBox.warning(preview_dialog, "FI Load Error", 
+                                      f"Could not load FI image:\n{str(e)}")
+                    fi_images = None
             
             loading_progress.setLabelText("Initializing preview dialog... (80%)")
             loading_progress.setValue(80)
@@ -7054,12 +7153,40 @@ class AnalyzeMasksTab(QWidget):
                     'max_area': self.max_area.value() if self.max_area.value() > 0 else None,
                     'min_width': self.min_width.value() if self.min_width.value() > 0 else None,
                     'max_width': self.max_width.value() if self.max_width.value() > 0 else None,
+                    'fi_contour_thickness': self.fi_contour_thickness.value() if hasattr(self, 'fi_contour_thickness') else 1,
                 }
             
             # Function to update preview
             def update_preview(frame_idx, show_progress=True):
                 if frame_idx < 0 or frame_idx >= num_frames:
                     return
+                
+                # Get current FI contour thickness (may have changed)
+                nonlocal fi_contour_thickness
+                if hasattr(self, 'fi_contour_thickness'):
+                    fi_contour_thickness = self.fi_contour_thickness.value()
+                
+                # Reload FI images if FI file path changed or wasn't loaded before
+                nonlocal fi_images
+                if self.analyze_fi.isChecked() and self.fi_file_path.text():
+                    fi_path = Path(self.fi_file_path.text())
+                    if fi_path.exists() and (fi_images is None or str(fi_path) != str(Path(mask_path).parent / "fi_temp")):
+                        try:
+                            fi_images = safe_imread(str(fi_path))
+                            # Handle different dimensions (same logic as above)
+                            if fi_images.ndim == 2:
+                                fi_images = fi_images[np.newaxis, :, :]
+                            elif fi_images.ndim == 3 and fi_images.shape[0] != num_frames:
+                                if fi_images.shape[2] < 10:
+                                    fi_images = fi_images[np.newaxis, :, :, 0]
+                                else:
+                                    fi_images = fi_images[0, np.newaxis, :, :]
+                            if fi_images.shape[0] != num_frames:
+                                fi_images = None
+                        except Exception:
+                            fi_images = None
+                elif not self.analyze_fi.isChecked():
+                    fi_images = None
                 
                 # Show progress dialog
                 progress_dialog = None
@@ -7246,6 +7373,44 @@ class AnalyzeMasksTab(QWidget):
                             rejected_mask = np.isin(mask, rejected_array)
                             vis[rejected_mask, 0] = 255  # Red channel
                         
+                        # Add FI contours if FI analysis is enabled
+                        if fi_images is not None and self.analyze_fi.isChecked():
+                            try:
+                                # Get FI image for this frame
+                                fi_image = fi_images[frame_idx]
+                                # Handle multi-channel FI images
+                                if fi_image.ndim > 2:
+                                    fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
+                                
+                                # Create mask with only accepted cells
+                                accepted_mask_full = np.zeros_like(mask, dtype=bool)
+                                if accepted_labels:
+                                    accepted_array = np.array(list(accepted_labels))
+                                    accepted_mask_full = np.isin(mask, accepted_array)
+                                
+                                # Find boundaries for accepted cells only
+                                if np.any(accepted_mask_full):
+                                    # Create a temporary mask with only accepted cells
+                                    temp_mask = np.zeros_like(mask)
+                                    temp_mask[accepted_mask_full] = mask[accepted_mask_full]
+                                    # Find boundaries
+                                    boundaries = find_boundaries(temp_mask, mode='inner')
+                                    
+                                    # Apply thickness using dilation
+                                    if fi_contour_thickness > 1:
+                                        # Dilate the boundaries to create thicker contours
+                                        for _ in range(fi_contour_thickness - 1):
+                                            boundaries = binary_dilation(boundaries)
+                                    
+                                    # Draw contours in bright yellow (red + green channels)
+                                    contour_mask = boundaries & accepted_mask_full
+                                    vis[contour_mask, 0] = 255  # Red channel
+                                    vis[contour_mask, 1] = 255  # Green channel
+                                    vis[contour_mask, 2] = 0     # Blue channel (yellow = red+green)
+                            except Exception as e:
+                                # If contour drawing fails, continue without contours
+                                print(f"Warning: Could not draw FI contours: {str(e)}")
+                        
                         if progress_dialog:
                             progress_dialog.setLabelText("Rendering display... (100%)")
                             progress_dialog.setValue(100)
@@ -7257,7 +7422,10 @@ class AnalyzeMasksTab(QWidget):
                         fig.clear()
                         ax = fig.add_subplot(111)
                         ax.imshow(vis)
-                        ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: Green=Accepted ({len(accepted_labels)}), Red=Rejected ({len(rejected_labels)})")
+                        title = f"Frame {frame_idx + 1}/{num_frames}: Green=Accepted ({len(accepted_labels)}), Red=Rejected ({len(rejected_labels)})"
+                        if fi_images is not None and self.analyze_fi.isChecked():
+                            title += f", Yellow=FI Contours (thickness={fi_contour_thickness})"
+                        ax.set_title(title)
                         ax.axis('off')
                         canvas.draw()
                     
@@ -7322,19 +7490,6 @@ class AnalyzeMasksTab(QWidget):
             reapply_btn.setToolTip(
                 "Re-apply filters on the current frame using the current parameters from the main window.\n"
                 "You can change filter parameters in the main window (it stays accessible) and click this button to see the effect."
-            )
-            reapply_btn.setStyleSheet(
-                "QPushButton {"
-                "background-color: #5D6D7E;"
-                "color: white;"
-                "font-weight: bold;"
-                "padding: 6px;"
-                "border: none;"
-                "border-radius: 4px;"
-                "}"
-                "QPushButton:hover {"
-                "background-color: #34495E;"
-                "}"
             )
             def on_reapply():
                 update_preview(preview_dialog.current_frame, show_progress=True)
@@ -7490,6 +7645,9 @@ class AnalyzeMasksTab(QWidget):
                 fi_path = Path(self.fi_file_path.text())
                 if fi_path.exists():
                     cmd_args.extend(['--fi-image', str(fi_path)])
+                    # Add contour thickness parameter
+                    fi_contour_thickness = self.fi_contour_thickness.value()
+                    cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
                 else:
                     QMessageBox.warning(self, "FI File Not Found", 
                                       f"The selected FI file does not exist:\n{fi_path}")
@@ -7589,6 +7747,9 @@ class AnalyzeMasksTab(QWidget):
             fi_path = Path(self.fi_file_path.text())
             if fi_path.exists():
                 cmd_args.extend(['--fi-image', str(fi_path)])
+                # Add contour thickness parameter
+                fi_contour_thickness = self.fi_contour_thickness.value()
+                cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
             else:
                 QMessageBox.warning(self, "FI File Not Found", 
                                   f"The selected FI file does not exist:\n{fi_path}")
@@ -10363,6 +10524,13 @@ class SAM2SegmentTab(QWidget):
         output_group.setLayout(output_layout)
         scroll_layout.addWidget(output_group)
         
+        # Preview button
+        self.preview_btn = QPushButton("Preview File")
+        self.preview_btn.setEnabled(False)
+        self.preview_btn.setToolTip("Preview the selected TIFF file before processing")
+        self.preview_btn.clicked.connect(self.preview_file)
+        scroll_layout.addWidget(self.preview_btn)
+        
         # Process button
         self.process_btn = QPushButton("Run SAM2 Segmentation")
         self.process_btn.setEnabled(False)
@@ -10382,9 +10550,10 @@ class SAM2SegmentTab(QWidget):
         self._update_button_state()
     
     def _update_button_state(self):
-        """Update process button state based on input fields"""
+        """Update process and preview button states based on input fields"""
         has_file = bool(self.file_path.text())
         self.process_btn.setEnabled(has_file)
+        self.preview_btn.setEnabled(has_file)
     
     def select_file(self):
         """Select a TIFF file"""
@@ -10436,6 +10605,146 @@ class SAM2SegmentTab(QWidget):
         if folder_path:
             self.output_path.setText(folder_path)
     
+    def preview_file(self):
+        """Preview the selected TIFF file"""
+        if not self.file_path.text():
+            QMessageBox.warning(self, "No Selection", "Please select a TIFF file first.")
+            return
+        
+        file_path = Path(self.file_path.text())
+        if not file_path.exists():
+            QMessageBox.warning(self, "Not Found", "The selected file does not exist.")
+            return
+        
+        if file_path.is_dir():
+            QMessageBox.warning(self, "Folder Selected", "Please select a specific TIFF file for preview, not a folder.")
+            return
+        
+        try:
+            import tifffile
+            import numpy as np
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+            from matplotlib.figure import Figure
+            
+            # Load TIFF file
+            images = safe_imread(str(file_path))
+            
+            # Handle different dimensions
+            if images.ndim == 2:
+                images = images[np.newaxis, ...]
+            elif images.ndim == 3:
+                if images.shape[-1] < 10:  # Likely channels last
+                    images = images.transpose(2, 0, 1)
+                    images = images[np.newaxis, ...]
+            elif images.ndim == 4:
+                if images.shape[-1] < 10:  # Channels last
+                    images = images.transpose(0, 3, 1, 2)
+                elif images.shape[0] < 10:  # Channels first
+                    images = images.transpose(1, 0, 2, 3)
+            
+            num_frames = images.shape[0]
+            
+            # Create preview dialog
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle(f"File Preview: {file_path.name}")
+            preview_dialog.setMinimumSize(900, 700)
+            preview_dialog.setModal(False)
+            
+            layout = QVBoxLayout()
+            
+            # Matplotlib figure
+            fig = Figure(figsize=(10, 8))
+            canvas = FigureCanvas(fig)
+            toolbar = NavigationToolbar(canvas, preview_dialog)
+            toolbar.setStyleSheet(
+                "QToolButton {"
+                "color: white;"
+                "background-color: #5D6D7E;"
+                "border: 1px solid #34495E;"
+                "border-radius: 3px;"
+                "padding: 4px;"
+                "}"
+                "QToolButton:hover {"
+                "background-color: #34495E;"
+                "}"
+            )
+            
+            layout.addWidget(toolbar)
+            
+            # Frame navigation
+            nav_layout = QHBoxLayout()
+            prev_btn = QPushButton("Previous")
+            nav_layout.addWidget(prev_btn)
+            
+            nav_layout.addWidget(QLabel("Frame:"))
+            frame_spin = QSpinBox()
+            frame_spin.setRange(1, num_frames)
+            frame_spin.setValue(1)
+            nav_layout.addWidget(frame_spin)
+            nav_layout.addWidget(QLabel(f"of {num_frames}"))
+            
+            next_btn = QPushButton("Next")
+            nav_layout.addWidget(next_btn)
+            nav_layout.addStretch()
+            
+            layout.addLayout(nav_layout)
+            layout.addWidget(canvas)
+            
+            preview_dialog.current_frame = 0
+            
+            def update_display(frame_idx):
+                if frame_idx < 0 or frame_idx >= num_frames:
+                    return
+                
+                preview_dialog.current_frame = frame_idx
+                frame = images[frame_idx]
+                
+                # Handle multi-channel: use first channel if needed
+                if frame.ndim == 3:
+                    frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                
+                fig.clear()
+                ax = fig.add_subplot(111)
+                ax.imshow(frame, cmap='gray')
+                ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: {file_path.name}")
+                ax.axis('off')
+                canvas.draw()
+                
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(frame_idx + 1)
+                frame_spin.blockSignals(False)
+            
+            def go_to_frame(idx):
+                if 0 <= idx < num_frames:
+                    update_display(idx)
+            
+            prev_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame - 1))
+            next_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame + 1))
+            
+            def on_frame_changed():
+                frame_num = frame_spin.value() - 1
+                if 0 <= frame_num < num_frames:
+                    go_to_frame(frame_num)
+            
+            frame_spin.editingFinished.connect(on_frame_changed)
+            frame_spin._change_timer = QTimer()
+            frame_spin._change_timer.setSingleShot(True)
+            frame_spin._change_timer.timeout.connect(on_frame_changed)
+            frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
+            
+            preview_dialog.setLayout(layout)
+            
+            # Show first frame
+            update_display(0)
+            
+            preview_dialog.exec()
+            
+        except Exception as e:
+            import traceback
+            QMessageBox.critical(self, "Preview Error", 
+                              f"Could not preview file:\n{str(e)}\n\n{traceback.format_exc()}")
+    
     def start_processing(self):
         """Start SAM2 segmentation processing"""
         if self.worker and self.worker.isRunning():
@@ -10472,22 +10781,58 @@ class SAM2SegmentTab(QWidget):
             create_overlay,
             output_dir
         )
-        self.worker.progress.connect(self.parent_window.update_progress)
+        self.worker.progress.connect(self._parse_sam2_progress)
         self.worker.finished.connect(self.on_processing_finished)
         self.worker.start()
         
         # Show progress bar
         self.parent_window.progress_bar.setVisible(True)
-        self.parent_window.progress_bar.setRange(0, 0)  # Indeterminate
+        self.parent_window.progress_bar.setRange(0, 100)
+        self.parent_window.progress_bar.setValue(0)
+    
+    def _parse_sam2_progress(self, message):
+        """Parse progress messages from SAM2 worker and update progress bar"""
+        import re
+        # Log the message
+        self.parent_window.log_output(message)
+        
+        # Try to parse percentage from message
+        progress_match = re.search(r'(\d+)%', message)
+        if progress_match:
+            try:
+                progress_pct = int(progress_match.group(1))
+                progress_pct = max(0, min(100, progress_pct))
+                self.parent_window.progress_bar.setValue(progress_pct)
+            except:
+                pass
+        # Check for file processing progress (e.g., "Processing file 2/5")
+        file_match = re.search(r'file\s+(\d+)/(\d+)', message, re.IGNORECASE)
+        if file_match:
+            try:
+                current_file = int(file_match.group(1))
+                total_files = int(file_match.group(2))
+                if total_files > 0:
+                    progress_pct = int((current_file / total_files) * 100)
+                    self.parent_window.progress_bar.setValue(progress_pct)
+            except:
+                pass
+        # Increment slightly for other progress messages
+        elif any(keyword in message.lower() for keyword in ['processing', 'loading', 'creating', 'saving']):
+            current = self.parent_window.progress_bar.value()
+            if current < 95:
+                self.parent_window.progress_bar.setValue(min(95, current + 1))
     
     def on_processing_finished(self, success, message):
         """Handle processing completion"""
         self.process_btn.setEnabled(True)
+        self.parent_window.progress_bar.setValue(100)
         self.parent_window.progress_bar.setVisible(False)
         
         if success:
+            self.parent_window.log_output(f"✓ SAM2 segmentation completed!\n{message}\n")
             QMessageBox.information(self, "Success", f"SAM2 segmentation completed!\n\n{message}")
         else:
+            self.parent_window.log_output(f"✗ SAM2 segmentation failed:\n{message}\n")
             QMessageBox.critical(self, "Error", f"SAM2 segmentation failed:\n\n{message}")
 
 
@@ -10544,10 +10889,103 @@ class SAM2SegmentWorker(QThread):
             model = None
             predictor = None
             
-            # Approach 1: Use checkpoint file if provided
-            if self.checkpoint_path and Path(self.checkpoint_path).exists():
+            # Map model names to Hugging Face model IDs
+            hf_model_map = {
+                'sam2.1_hiera_tiny': 'facebook/sam2-hiera-tiny',
+                'sam2.1_hiera_small': 'facebook/sam2-hiera-small',
+                'sam2.1_hiera_base_plus': 'facebook/sam2-hiera-base-plus',
+                'sam2.1_hiera_large': 'facebook/sam2-hiera-large',
+            }
+            hf_model_name = hf_model_map.get(self.model_name, 'facebook/sam2-hiera-small')
+            
+            # Approach 1: Try Hugging Face first (automatic download)
+            if model is None:
                 try:
-                    self.progress.emit(f"Loading model from checkpoint: {self.checkpoint_path}")
+                    self.progress.emit(f"Attempting to load from Hugging Face: {hf_model_name}")
+                    self.progress.emit("This will automatically download the model if not already cached...")
+                    # Try using SAM2ImagePredictor.from_pretrained (recommended method)
+                    predictor = SAM2ImagePredictor.from_pretrained(hf_model_name, device=device)
+                    # Build model from predictor for automatic mask generator
+                    model = predictor.model
+                    self.progress.emit(f"✓ Model loaded from Hugging Face: {hf_model_name}")
+                except Exception as e:
+                    self.progress.emit(f"Warning: Could not load from Hugging Face: {e}")
+                    import traceback
+                    self.progress.emit(f"Traceback: {traceback.format_exc()}")
+                    # Try alternative: download checkpoint and load manually
+                    try:
+                        self.progress.emit("Trying alternative: downloading checkpoint from Hugging Face...")
+                        try:
+                            from huggingface_hub import hf_hub_download
+                        except ImportError:
+                            self.progress.emit("huggingface_hub not installed. Install with: pip install huggingface_hub")
+                            raise
+                        
+                        # Map to checkpoint filename
+                        checkpoint_map = {
+                            'sam2.1_hiera_tiny': 'sam2_hiera_tiny.pt',
+                            'sam2.1_hiera_small': 'sam2_hiera_small.pt',
+                            'sam2.1_hiera_base_plus': 'sam2_hiera_base_plus.pt',
+                            'sam2.1_hiera_large': 'sam2_hiera_large.pt',
+                        }
+                        checkpoint_filename = checkpoint_map.get(self.model_name, 'sam2_hiera_small.pt')
+                        
+                        # Download checkpoint
+                        cache_dir = Path.home() / ".cache" / "sam2" / "checkpoints"
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        checkpoint_path = cache_dir / checkpoint_filename
+                        
+                        if not checkpoint_path.exists():
+                            self.progress.emit(f"Downloading checkpoint: {checkpoint_filename}...")
+                            downloaded_path = hf_hub_download(
+                                repo_id=hf_model_name,
+                                filename=checkpoint_filename,
+                                local_dir=str(cache_dir),
+                                local_dir_use_symlinks=False
+                            )
+                            checkpoint_path = Path(downloaded_path)
+                            self.progress.emit(f"✓ Checkpoint downloaded to: {checkpoint_path}")
+                        else:
+                            self.progress.emit(f"Using cached checkpoint: {checkpoint_path}")
+                        
+                        # Load using build_sam2
+                        model_name_clean = self.model_name.replace('sam2.1_', '')
+                        config_name_map = {
+                            'hiera_tiny': 'sam2.1_hiera_t',
+                            'hiera_small': 'sam2.1_hiera_s',
+                            'hiera_base_plus': 'sam2.1_hiera_b+',
+                            'hiera_large': 'sam2.1_hiera_l',
+                        }
+                        config_name = config_name_map.get(model_name_clean, 'sam2.1_hiera_s')
+                        
+                        # Try to find config file
+                        try:
+                            import sam2  # type: ignore
+                            sam2_path = Path(sam2.__file__).parent.parent
+                            possible_configs = [
+                                sam2_path / f"sam2/configs/{config_name}.yaml",
+                                sam2_path / f"configs/{config_name}.yaml",
+                                sam2_path / f"sam2/configs/sam2.1/{config_name}.yaml",
+                            ]
+                            config_path = None
+                            for possible_config in possible_configs:
+                                if possible_config.exists():
+                                    config_path = str(possible_config)
+                                    break
+                            if config_path is None:
+                                config_path = config_name
+                        except:
+                            config_path = config_name
+                        
+                        model = build_sam2(config_path, str(checkpoint_path), device=device)
+                        self.progress.emit(f"✓ Model loaded from downloaded checkpoint")
+                    except Exception as e2:
+                        self.progress.emit(f"Alternative method also failed: {e2}")
+            
+            # Approach 2: Use checkpoint file if provided by user
+            if model is None and self.checkpoint_path and Path(self.checkpoint_path).exists():
+                try:
+                    self.progress.emit(f"Loading model from user-specified checkpoint: {self.checkpoint_path}")
                     # Map model name to config path (try multiple possible locations)
                     model_name_clean = self.model_name.replace('sam2.1_', '')
                     config_name_map = {
@@ -10583,32 +11021,32 @@ class SAM2SegmentWorker(QThread):
                         config_path = config_name
                     
                     model = build_sam2(config_path, self.checkpoint_path, device=device)
-                    self.progress.emit("Model loaded from checkpoint")
+                    self.progress.emit("✓ Model loaded from user checkpoint")
                 except Exception as e:
                     self.progress.emit(f"Warning: Could not load from checkpoint: {e}")
                     import traceback
                     self.progress.emit(f"Traceback: {traceback.format_exc()}")
             
-            # Approach 2: Try Hugging Face
-            if model is None:
-                try:
-                    self.progress.emit("Attempting to load from Hugging Face...")
-                    hf_model_name = f"facebook/{self.model_name.replace('sam2.1_', 'sam2-hiera-').replace('_', '-')}"
-                    predictor = SAM2ImagePredictor.from_pretrained(hf_model_name, device=device)
-                    # Build model from predictor for automatic mask generator
-                    model = predictor.model
-                    self.progress.emit("Model loaded from Hugging Face")
-                except Exception as e:
-                    self.progress.emit(f"Warning: Could not load from Hugging Face: {e}")
-            
-            # Approach 3: Try default checkpoint location
+            # Approach 3: Try default checkpoint location (if Hugging Face failed)
             if model is None:
                 try:
                     self.progress.emit("Attempting to find checkpoint in default location...")
+                    # Map to checkpoint filename
+                    checkpoint_map = {
+                        'sam2.1_hiera_tiny': 'sam2_hiera_tiny.pt',
+                        'sam2.1_hiera_small': 'sam2_hiera_small.pt',
+                        'sam2.1_hiera_base_plus': 'sam2_hiera_base_plus.pt',
+                        'sam2.1_hiera_large': 'sam2_hiera_large.pt',
+                    }
+                    checkpoint_filename = checkpoint_map.get(self.model_name, 'sam2_hiera_small.pt')
+                    
                     # Common default locations
                     default_locations = [
+                        Path.home() / ".cache" / "sam2" / "checkpoints" / checkpoint_filename,
                         Path.home() / ".cache" / "sam2" / "checkpoints" / f"{self.model_name}.pt",
+                        Path("checkpoints") / checkpoint_filename,
                         Path("checkpoints") / f"{self.model_name}.pt",
+                        Path(".") / "checkpoints" / checkpoint_filename,
                         Path(".") / "checkpoints" / f"{self.model_name}.pt",
                     ]
                     
@@ -10648,16 +11086,21 @@ class SAM2SegmentWorker(QThread):
                             config_path = config_name
                         
                         model = build_sam2(config_path, str(checkpoint_found), device=device)
-                        self.progress.emit(f"Model loaded from: {checkpoint_found}")
+                        self.progress.emit(f"✓ Model loaded from: {checkpoint_found}")
                     else:
-                        raise FileNotFoundError("No checkpoint found")
+                        raise FileNotFoundError("No checkpoint found in default locations")
                 except Exception as e:
                     self.finished.emit(False, 
-                        f"Could not load SAM2 model. Please:\n\n"
-                        f"1. Download checkpoint from:\n"
-                        f"   https://github.com/facebookresearch/sam2#download-checkpoints\n\n"
-                        f"2. Specify checkpoint path in the UI, OR\n"
-                        f"3. Place checkpoint in: ~/.cache/sam2/checkpoints/\n\n"
+                        f"Could not load SAM2 model. Tried:\n\n"
+                        f"1. Hugging Face automatic download (failed)\n"
+                        f"2. User-specified checkpoint path (not provided or failed)\n"
+                        f"3. Default checkpoint locations (not found)\n\n"
+                        f"Solutions:\n"
+                        f"• Install huggingface_hub: pip install huggingface_hub\n"
+                        f"• Download checkpoint manually from:\n"
+                        f"  https://github.com/facebookresearch/sam2#download-checkpoints\n"
+                        f"• Place checkpoint in: ~/.cache/sam2/checkpoints/\n"
+                        f"• Or specify checkpoint path in the UI\n\n"
                         f"Error: {str(e)}")
                     return
             
@@ -10696,7 +11139,7 @@ class SAM2SegmentWorker(QThread):
                 self.progress.emit(f"Processing {tiff_file.name} ({file_idx + 1}/{len(tiff_files)})...")
                 
                 # Read image
-                image_data = tifffile.imread(str(tiff_file))
+                image_data = safe_imread(str(tiff_file))
                 
                 # Handle different image formats
                 if image_data.ndim == 2:

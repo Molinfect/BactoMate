@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 from skimage.measure import regionprops, label
-from skimage.morphology import remove_small_objects
+from skimage.morphology import remove_small_objects, binary_dilation, binary_erosion
 from skimage.segmentation import find_boundaries
 import warnings
 warnings.filterwarnings('ignore')
@@ -100,7 +100,7 @@ def calculate_cell_properties(mask, pixel_size=0.108):
     return props
 
 
-def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None):
+def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contour_thickness=1):
     """
     Calculate fluorescence intensity metrics for a single cell.
     
@@ -115,6 +115,9 @@ def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None):
     boundaries : array, optional
         Pre-computed boundary map from find_boundaries(). If None, will compute it.
         Pass this to avoid redundant computation when processing multiple cells.
+    contour_thickness : int, default=1
+        Thickness of the contour region in pixels. 1 = single-pixel boundary.
+        Values > 1 will dilate the boundary to include more pixels.
         
     Returns:
     --------
@@ -144,29 +147,58 @@ def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None):
             print(f"Warning: FI image shape {fi_image.shape} doesn't match mask shape {mask.shape}")
             return np.nan, np.nan, np.nan
     
-    # Calculate mean FI intensity within the cell
-    cell_pixels = fi_image[cell_mask]
-    mean_fi = np.mean(cell_pixels) if len(cell_pixels) > 0 else np.nan
-    
-    # Find contour/boundary pixels
-    # Use pre-computed boundaries if provided, otherwise compute them
+    # Find contour/boundary pixels using morphological edge detection
+    # This method gets the actual edge pixels by eroding the cell mask
+    # The difference between original and eroded mask gives us the edge
     if boundaries is None:
-        # find_boundaries returns True for pixels on the boundary between regions
-        boundaries = find_boundaries(mask, mode='inner')
-    # Get boundary pixels that belong to this cell
-    cell_contour = boundaries & cell_mask
+        # Use erosion-based edge detection for more accurate membrane detection
+        # This gets the actual outermost pixels of the cell
+        cell_mask_eroded = binary_erosion(cell_mask)
+        # Edge pixels = pixels in cell_mask but not in eroded version
+        cell_contour = cell_mask & (~cell_mask_eroded)
+        
+        # Apply thickness using dilation if thickness > 1
+        if contour_thickness > 1:
+            # Dilate the contour to include more pixels near the edge
+            for _ in range(contour_thickness - 1):
+                cell_contour = binary_dilation(cell_contour) & cell_mask  # Keep only within cell
+    else:
+        # Use pre-computed boundaries if provided (legacy support)
+        # Get boundary pixels that belong to this cell
+        cell_contour = boundaries & cell_mask
+        
+        # Apply thickness if needed (though boundaries should already be at right thickness)
+        if contour_thickness > 1:
+            for _ in range(contour_thickness - 1):
+                cell_contour = binary_dilation(cell_contour) & cell_mask
     
-    # Calculate mean FI intensity at contour
+    # Calculate mean FI intensity at contour (yellow pixels)
     if np.any(cell_contour):
         contour_pixels = fi_image[cell_contour]
         contour_fi = np.mean(contour_pixels) if len(contour_pixels) > 0 else np.nan
     else:
-        # If no contour found (very small cell), use mean FI
-        contour_fi = mean_fi
+        # If no contour found (very small cell), set to NaN
+        contour_fi = np.nan
     
-    # Calculate ratio
-    if not np.isnan(mean_fi) and mean_fi > 0:
-        fi_ratio = contour_fi / mean_fi
+    # Calculate interior pixels (green mask MINUS yellow contour)
+    cell_interior = cell_mask & (~cell_contour)
+    
+    # Calculate mean FI intensity of interior pixels only (excluding contour)
+    if np.any(cell_interior):
+        interior_pixels = fi_image[cell_interior]
+        interior_fi = np.mean(interior_pixels) if len(interior_pixels) > 0 else np.nan
+    else:
+        # If no interior (cell is all contour), use contour FI
+        interior_fi = contour_fi
+    
+    # Calculate mean FI intensity of entire cell (for reference, but not used in ratio)
+    cell_pixels = fi_image[cell_mask]
+    mean_fi = np.mean(cell_pixels) if len(cell_pixels) > 0 else np.nan
+    
+    # Calculate ratio: contour FI / interior FI (this is the meaningful comparison)
+    # This compares membrane (yellow) to cytoplasm (green interior)
+    if not np.isnan(interior_fi) and interior_fi > 0:
+        fi_ratio = contour_fi / interior_fi
     else:
         fi_ratio = np.nan
     
@@ -260,7 +292,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   min_aspect_ratio=1.5, max_aspect_ratio=10.0,
                   min_eccentricity=0.5, min_solidity=0.7,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
-                  remove_small=True, min_size_pixels=10, fi_image_path=None):
+                  remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1):
     """
     Analyze masks and extract cell areas with morphological filtering.
     
@@ -294,6 +326,9 @@ def analyze_masks(masks_path, pixel_size=0.108,
         Minimum size in pixels for objects to keep
     fi_image_path : str, optional
         Path to FI channel TIFF file for fluorescence intensity analysis
+    fi_contour_thickness : int, default=1
+        Thickness of the contour region in pixels for FI intensity calculation.
+        1 = single-pixel boundary, >1 dilates the boundary to include more pixels.
         
     Returns:
     --------
@@ -391,14 +426,14 @@ def analyze_masks(masks_path, pixel_size=0.108,
         # Step 3: Calculate FI intensities if FI image is provided
         if fi_images is not None:
             fi_image = fi_images[frame_idx]
-            # Pre-compute boundaries once per frame (major performance optimization)
-            # This avoids calling find_boundaries() 100+ times per frame
-            boundaries = find_boundaries(mask_cleaned, mode='inner')
+            # Don't pre-compute boundaries - use per-cell erosion method for better accuracy
+            # This gives us the actual edge pixels, not just pixels near the edge
+            boundaries = None  # Will be computed per-cell using erosion method
             
             for cell in filtered:
                 cell_label = cell['label']
                 mean_fi, contour_fi, fi_ratio = calculate_fi_intensities(
-                    mask_cleaned, fi_image, cell_label, boundaries=boundaries
+                    mask_cleaned, fi_image, cell_label, boundaries=None, contour_thickness=fi_contour_thickness
                 )
                 cell['mean_fi'] = mean_fi
                 cell['contour_fi'] = contour_fi
@@ -941,6 +976,8 @@ Examples:
     # FI analysis
     parser.add_argument('--fi-image', type=str, default=None,
                        help='Path to FI channel TIFF file for fluorescence intensity analysis')
+    parser.add_argument('--fi-contour-thickness', type=int, default=1,
+                       help='Thickness of contour region in pixels for FI intensity calculation (default: 1)')
     
     args = parser.parse_args()
     
@@ -982,7 +1019,8 @@ Examples:
         min_length_um=args.min_length,
         remove_small=not args.no_remove_small,
         min_size_pixels=args.min_size,
-        fi_image_path=fi_image_path
+        fi_image_path=fi_image_path,
+        fi_contour_thickness=args.fi_contour_thickness
     )
     
     # Get input mask filename stem for output naming

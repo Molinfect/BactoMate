@@ -24,6 +24,50 @@ from tqdm import tqdm
 import tempfile
 import shutil
 
+# Compatibility wrapper for NumPy 2.0
+def safe_imread(file_path):
+    """
+    Safely read TIFF file with NumPy 2.0 compatibility.
+    Handles the newbyteorder() issue with tifffile.
+    """
+    try:
+        # Try standard reading first
+        return tifffile.imread(file_path)
+    except (AttributeError, TypeError) as e:
+        if 'newbyteorder' in str(e):
+            # NumPy 2.0 compatibility issue - use PIL as fallback
+            try:
+                from PIL import Image
+                # Use PIL to read TIFF (handles NumPy 2.0 fine)
+                img = Image.open(file_path)
+                frames = []
+                try:
+                    while True:
+                        frames.append(np.array(img))
+                        img.seek(img.tell() + 1)
+                except EOFError:
+                    pass
+                
+                if len(frames) == 1:
+                    return frames[0]
+                elif len(frames) > 1:
+                    return np.stack(frames, axis=0)
+                else:
+                    # Single frame case
+                    img.seek(0)
+                    return np.array(img)
+            except ImportError:
+                # PIL not available - raise original error with helpful message
+                raise RuntimeError(
+                    f"NumPy 2.0 compatibility issue reading TIFF file. "
+                    f"Please install Pillow: pip install Pillow"
+                ) from e
+            except Exception as pil_error:
+                # If PIL also fails, raise original error
+                raise e from pil_error
+        else:
+            raise
+
 # Configure tqdm to work better when output is redirected (not a terminal)
 # Disable tqdm progress bars when output is redirected to avoid cluttering logs
 import sys
@@ -71,7 +115,7 @@ def split_multipage_tiff(input_path, output_dir=None, prefix="frame"):
         Temporary directory created (if any), for cleanup
     """
     print(f"Loading multipage TIFF: {input_path}")
-    images = tifffile.imread(input_path)
+    images = safe_imread(input_path)
     
     # Handle different input formats
     if images.ndim == 2:
@@ -802,7 +846,7 @@ Examples:
         # Step 4: Create overlay (optional)
         if not args.no_overlay:
             # Reload original images for overlay
-            images = tifffile.imread(args.input)
+            images = safe_imread(args.input)
             # Handle different formats
             if images.ndim == 3:
                 if images.shape[-1] < 10:
