@@ -11,9 +11,14 @@ Usage:
 
 import sys
 import os
+import json
 from pathlib import Path
+from datetime import datetime
 import traceback
 import warnings
+
+# Session log storage: Logs folder next to the app
+LOGS_DIR = Path(__file__).resolve().parent / "Logs"
 
 # Suppress deprecation warnings from omnipose/pkg_resources
 # This is harmless - omnipose uses pkg_resources which is deprecated in newer setuptools
@@ -4064,6 +4069,32 @@ class ND2ConversionTab(QWidget):
             self.convert_btn.setEnabled(True)
             self.convert_btn.setText("Convert to TIFF")
             self.parent_window.progress_bar.setVisible(False)
+    
+    def get_session_params(self):
+        """Return current parameter values for session log (parameters only, no paths)."""
+        return {
+            "max_frames": self.max_frames.value(),
+            "separate_channels": self.separate_channels.isChecked(),
+            "max_z_projection": self.max_z_projection.isChecked(),
+            "drift_correct": self.drift_correct.isChecked(),
+            "bleach_correct": self.bleach_correct.isChecked(),
+        }
+    
+    def set_session_params(self, data):
+        """Apply saved parameter values (parameters only)."""
+        if not isinstance(data, dict):
+            return
+        if "max_frames" in data and hasattr(self, "max_frames"):
+            try:
+                self.max_frames.setValue(int(data["max_frames"]))
+            except (TypeError, ValueError):
+                pass
+        for k, w in [
+            ("separate_channels", self.separate_channels), ("max_z_projection", self.max_z_projection),
+            ("drift_correct", self.drift_correct), ("bleach_correct", self.bleach_correct),
+        ]:
+            if k in data and hasattr(w, "setChecked"):
+                w.setChecked(bool(data[k]))
 
 
 class ProcessingTab(QWidget):
@@ -4518,6 +4549,39 @@ class ProcessingTab(QWidget):
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
+    
+    def get_session_params(self):
+        """Return current parameter values for session log (parameters only, no paths)."""
+        return {
+            "model": self.model_combo.currentText(),
+            "diameter": self.diameter.value(),
+            "flow_threshold": self.flow_threshold.value(),
+            "use_gpu": self.use_gpu.isChecked(),
+            "cluster": self.cluster.isChecked(),
+            "create_overlay": self.create_overlay.isChecked(),
+        }
+    
+    def set_session_params(self, data):
+        """Apply saved parameter values (parameters only)."""
+        if not isinstance(data, dict):
+            return
+        if "model" in data:
+            idx = self.model_combo.findText(str(data["model"]))
+            if idx >= 0:
+                self.model_combo.setCurrentIndex(idx)
+        for k, w in [
+            ("diameter", self.diameter), ("flow_threshold", self.flow_threshold),
+        ]:
+            if k in data and hasattr(w, "setValue"):
+                try:
+                    w.setValue(float(data[k]))
+                except (TypeError, ValueError):
+                    pass
+        for k, w in [
+            ("use_gpu", self.use_gpu), ("cluster", self.cluster), ("create_overlay", self.create_overlay),
+        ]:
+            if k in data and hasattr(w, "setChecked"):
+                w.setChecked(bool(data[k]))
     
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
@@ -6248,32 +6312,54 @@ class AnalyzeMasksTab(QWidget):
             parent=self,
             on_drop_callback=self.handle_dropped_path_analyze
         )
+        file_font = QFont()
+        file_font.setPointSize(12)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        # Mask File/Folder row: same layout as Segmentation tab (path + buttons, no stretch)
         file_layout = QHBoxLayout()
         self.file_path = QLineEdit()
         self.file_path.setPlaceholderText("Select a mask TIFF file or folder... (or drag and drop)")
-        self.file_path.setMinimumWidth(500)  # Increased for better visibility
-        # Set larger font for better readability
-        file_font = QFont()
-        file_font.setPointSize(12)
+        self.file_path.setMinimumWidth(500)
         self.file_path.setFont(file_font)
-        # Fix size to minimum - prevent expansion
-        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.file_path.setSizePolicy(size_policy)
         file_btn = QPushButton("Browse File...")
-        file_btn.setFixedWidth(120)  # Fixed width for buttons
+        file_btn.setFixedWidth(120)
         file_btn.clicked.connect(self.select_file)
         folder_btn = QPushButton("Browse Folder...")
-        folder_btn.setFixedWidth(130)  # Fixed width for buttons
+        folder_btn.setFixedWidth(130)
         folder_btn.clicked.connect(self.select_folder)
-        file_layout.addWidget(self.file_path, 0)  # No stretch - keep at minimum size
-        file_layout.addWidget(file_btn, 0)  # No stretch for buttons
-        file_layout.addWidget(folder_btn, 0)  # No stretch for buttons
+        file_layout.addWidget(self.file_path, 0)
+        file_layout.addWidget(file_btn, 0)
+        file_layout.addWidget(folder_btn, 0)
         file_group.setLayout(file_layout)
         scroll_layout.addWidget(file_group)
         
-        # Analysis parameters - side-by-side layout
+        # Combine row: same layout as Mask File/Folder (path left-aligned, buttons adjacent, no stretch)
+        combine_group = QGroupBox("Combine existing summaries from folder")
+        combine_layout = QHBoxLayout()
+        self.combine_folder_path = QLineEdit()
+        self.combine_folder_path.setPlaceholderText("Folder with *_analysis.xlsx (subfolders)...")
+        self.combine_folder_path.setMinimumWidth(500)
+        self.combine_folder_path.setFont(file_font)
+        self.combine_folder_path.setSizePolicy(size_policy)
+        combine_browse_btn = QPushButton("Browse...")
+        combine_browse_btn.setFixedWidth(120)
+        combine_browse_btn.clicked.connect(self._browse_combine_folder)
+        combine_btn = QPushButton("Combine")
+        combine_btn.setFixedWidth(130)
+        combine_btn.setToolTip("Read all Summary sheets from analysis Excel files in the selected folder and its subfolders, combine into one wide-format table, and save as {folder_name}_combined_summary.xlsx in the selected folder.")
+        combine_btn.clicked.connect(self._combine_summaries_from_folder)
+        combine_layout.addWidget(self.combine_folder_path, 0)
+        combine_layout.addWidget(combine_browse_btn, 0)
+        combine_layout.addWidget(combine_btn, 0)
+        combine_group.setLayout(combine_layout)
+        scroll_layout.addWidget(combine_group)
+        
+        # Analysis parameters - side-by-side layout (compact to avoid horizontal scroll)
         analysis_group = QGroupBox("Analysis Parameters")
         analysis_container_layout = QHBoxLayout()
+        analysis_container_layout.setSpacing(8)
+        analysis_container_layout.setContentsMargins(6, 6, 6, 6)
         
         # First box: Basic and Morphological filters (fused into one)
         morph_params_group = QGroupBox("Morphological Filters")
@@ -6440,7 +6526,8 @@ class AnalyzeMasksTab(QWidget):
         morph_params_layout.addLayout(morph_layout)
         
         morph_params_group.setLayout(morph_params_layout)
-        morph_params_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        morph_params_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        morph_params_group.setContentsMargins(4, 6, 4, 6)
         analysis_container_layout.addWidget(morph_params_group)
         
         # Second box: Size filters (side-by-side)
@@ -6583,7 +6670,8 @@ class AnalyzeMasksTab(QWidget):
         size_layout.addLayout(min_length_layout)
         
         size_group.setLayout(size_layout)
-        size_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        size_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        size_group.setContentsMargins(4, 6, 4, 6)
         analysis_container_layout.addWidget(size_group)
         
         # Reset to defaults button for analysis parameters (at end of horizontal row)
@@ -6613,14 +6701,16 @@ class AnalyzeMasksTab(QWidget):
         
         # Left box: Options
         options_group = QGroupBox("Options")
-        options_layout = QHBoxLayout()
+        options_layout = QVBoxLayout()
         
+        # Row 1: Include detailed per-cell data + Create filter visualization
+        options_row1 = QHBoxLayout()
         detailed_layout = QHBoxLayout()
         self.detailed = QCheckBox("Include detailed per-cell data")
         self.detailed.setChecked(True)  # Default to checked
         detailed_info_icon = create_info_icon(
             "Include detailed per-cell measurements in the Excel output.\n\n"
-            "Default: Disabled (unchecked)\n"
+            "Default: Enabled (checked)\n"
             "Source: Optional output mode\n\n"
             "When enabled: Excel file includes a separate sheet with measurements for each cell:\n"
             "- Cell ID, area, width, length, aspect ratio, eccentricity, solidity, etc.\n\n"
@@ -6632,7 +6722,7 @@ class AnalyzeMasksTab(QWidget):
         detailed_layout.addWidget(self.detailed)
         detailed_layout.addWidget(detailed_info_icon)
         detailed_layout.addStretch()
-        options_layout.addLayout(detailed_layout)
+        options_row1.addLayout(detailed_layout)
         
         vis_layout = QHBoxLayout()
         self.create_vis = QCheckBox("Create filter visualization")
@@ -6652,7 +6742,24 @@ class AnalyzeMasksTab(QWidget):
         vis_layout.addWidget(self.create_vis)
         vis_layout.addWidget(vis_info_icon)
         vis_layout.addStretch()
-        options_layout.addLayout(vis_layout)
+        options_row1.addLayout(vis_layout)
+        options_layout.addLayout(options_row1)
+        
+        # Row 2: Create combined summary (below Include per-cell data)
+        combined_summary_layout = QHBoxLayout()
+        self.create_combined_summary = QCheckBox("Create combined summary")
+        self.create_combined_summary.setChecked(False)
+        combined_summary_info_icon = create_info_icon(
+            "When analyzing a folder of mask files, create one extra Excel that combines all Summary sheets.\n\n"
+            "Output: {folder_name}_combined_summary.xlsx with one sheet:\n"
+            "- 'Combined Summary (wide)': one row per frame, one set of columns per file.\n\n"
+            "Use for: Downstream plotting, stats, or comparing many samples in one table.",
+            parent_widget=self
+        )
+        combined_summary_layout.addWidget(self.create_combined_summary)
+        combined_summary_layout.addWidget(combined_summary_info_icon)
+        combined_summary_layout.addStretch()
+        options_layout.addLayout(combined_summary_layout)
         
         options_group.setLayout(options_layout)
         options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -6826,6 +6933,87 @@ class AnalyzeMasksTab(QWidget):
         path = Path(self.file_path.text())
         return path.exists() and path.is_dir()
     
+    def _browse_combine_folder(self):
+        """Open folder dialog for 'Combine summaries from folder' path."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select Folder Containing Analysis Excel Files", ""
+        )
+        if folder_path:
+            self.combine_folder_path.setText(folder_path)
+    
+    def _build_combined_summary_excel(self, excel_paths, output_path):
+        """Build long + wide combined summary from a list of analysis Excel paths. Returns True on success."""
+        import pandas as pd
+        if not excel_paths:
+            return False
+        frames_long = []
+        for p in excel_paths:
+            p = Path(p)
+            if not p.exists():
+                continue
+            try:
+                df = pd.read_excel(p, sheet_name="Summary")
+            except Exception:
+                continue
+            if df is None or df.empty:
+                continue
+            df = df.copy()
+            df["File"] = p.stem.replace("_analysis", "").replace("_masks_analysis", "")
+            frames_long.append(df)
+        if not frames_long:
+            return False
+        long_df = pd.concat(frames_long, ignore_index=True)
+        # Ensure column order: File, Frame, then rest
+        cols = [c for c in ["File", "Frame"] if c in long_df.columns]
+        cols += [c for c in long_df.columns if c not in cols]
+        long_df = long_df[cols]
+        # Wide format: one row per frame, one set of columns per file
+        wide_df = None
+        try:
+            frames = sorted(long_df["Frame"].dropna().unique().astype(int).tolist())
+            wide_data = {"Frame": frames}
+            for f in long_df["File"].unique().tolist():
+                sub = long_df[long_df["File"] == f].set_index("Frame")
+                for col in ["Total Cell Area (µm²)", "Total Cell Area (Relative)", "Number of Cells"]:
+                    if col in sub.columns:
+                        wide_data[f"{f}_{col}"] = sub.reindex(frames)[col].values
+            wide_df = pd.DataFrame(wide_data)
+        except Exception:
+            wide_df = None
+        if wide_df is None or wide_df.empty:
+            return False
+        try:
+            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+                wide_df.to_excel(writer, sheet_name="Combined Summary (wide)", index=False)
+        except Exception:
+            return False
+        return True
+    
+    def _combine_summaries_from_folder(self):
+        """Combine Summary sheets from all analysis Excel files in the folder given by combine_folder_path."""
+        path_text = self.combine_folder_path.text().strip()
+        if not path_text:
+            QMessageBox.warning(self, "No Folder", "Please select a folder (Browse...) that contains analysis Excel files.")
+            return
+        folder = Path(path_text)
+        if not folder.exists() or not folder.is_dir():
+            QMessageBox.warning(self, "Invalid Folder", "The selected path is not an existing folder.")
+            return
+        # Search in folder and all subfolders (one Excel per subfolder layout)
+        excel_paths = list(folder.rglob("*_analysis.xlsx")) + list(folder.rglob("*_masks_analysis.xlsx"))
+        excel_paths = sorted(set(excel_paths), key=lambda p: (str(p).lower(), p.name.lower()))
+        if not excel_paths:
+            QMessageBox.warning(self, "No Analysis Files", 
+                "No *_analysis.xlsx or *_masks_analysis.xlsx files found in the selected folder or its subfolders.")
+            return
+        out_path = folder / f"{folder.name}_combined_summary.xlsx"
+        if self._build_combined_summary_excel([str(p) for p in excel_paths], str(out_path)):
+            self.parent_window.log_output(f"Combined summary saved to: {out_path}\n")
+            QMessageBox.information(self, "Combine Complete", 
+                f"Combined {len(excel_paths)} Summary sheet(s) into:\n{out_path.name}\n\nSheet: 'Combined Summary (wide)'.")
+        else:
+            QMessageBox.warning(self, "Combine Failed", "Could not read any Summary sheets from the Excel files in the selected folder.")
+    
     def _on_pixel_size_changed(self):
         """Hide warning when user manually changes pixel size (they've verified it)"""
         if not self.pixel_size_metadata_loaded:
@@ -6860,9 +7048,65 @@ class AnalyzeMasksTab(QWidget):
         self.max_width.setValue(0)
         self.min_length.setValue(0)
         
-        # Options
-        self.detailed.setChecked(False)
+        # Options: "Include detailed per-cell data" stays checked by default (user must actively deselect)
+        self.detailed.setChecked(True)
         self.create_vis.setChecked(True)
+        if hasattr(self, "create_combined_summary"):
+            self.create_combined_summary.setChecked(False)
+    
+    def get_session_params(self):
+        """Return current parameter values for session log (parameters only, no paths)."""
+        d = {
+            "pixel_size": self.pixel_size.value(),
+            "min_aspect_ratio": self.min_aspect_ratio.value(),
+            "max_aspect_ratio": self.max_aspect_ratio.value(),
+            "min_eccentricity": self.min_eccentricity.value(),
+            "min_solidity": self.min_solidity.value(),
+            "min_area": self.min_area.value(),
+            "max_area": self.max_area.value(),
+            "min_width": self.min_width.value(),
+            "max_width": self.max_width.value(),
+            "min_length": self.min_length.value(),
+            "detailed": self.detailed.isChecked(),
+            "create_vis": self.create_vis.isChecked(),
+        }
+        if hasattr(self, "create_combined_summary"):
+            d["create_combined_summary"] = self.create_combined_summary.isChecked()
+        if hasattr(self, "analyze_fi"):
+            d["analyze_fi"] = self.analyze_fi.isChecked()
+        if hasattr(self, "fi_contour_thickness"):
+            d["fi_contour_thickness"] = self.fi_contour_thickness.value()
+        return d
+    
+    def set_session_params(self, data):
+        """Apply saved parameter values (parameters only). Ignores unknown keys."""
+        if not isinstance(data, dict):
+            return
+        for k, v in [
+            ("pixel_size", self.pixel_size), ("min_aspect_ratio", self.min_aspect_ratio),
+            ("max_aspect_ratio", self.max_aspect_ratio), ("min_eccentricity", self.min_eccentricity),
+            ("min_solidity", self.min_solidity), ("min_area", self.min_area),
+            ("max_area", self.max_area), ("min_width", self.min_width),
+            ("max_width", self.max_width), ("min_length", self.min_length),
+        ]:
+            if k in data and hasattr(v, "setValue"):
+                try:
+                    v.setValue(float(data[k]))
+                except (TypeError, ValueError):
+                    pass
+        if "detailed" in data and hasattr(self, "detailed"):
+            self.detailed.setChecked(bool(data["detailed"]))
+        if "create_vis" in data and hasattr(self, "create_vis"):
+            self.create_vis.setChecked(bool(data["create_vis"]))
+        if "create_combined_summary" in data and hasattr(self, "create_combined_summary"):
+            self.create_combined_summary.setChecked(bool(data["create_combined_summary"]))
+        if "analyze_fi" in data and hasattr(self, "analyze_fi"):
+            self.analyze_fi.setChecked(bool(data["analyze_fi"]))
+        if "fi_contour_thickness" in data and hasattr(self, "fi_contour_thickness"):
+            try:
+                self.fi_contour_thickness.setValue(int(data["fi_contour_thickness"]))
+            except (TypeError, ValueError):
+                pass
     
     def preview_filter_effects(self):
         """Preview how current filter parameters would affect mask segmentation"""
@@ -7105,6 +7349,11 @@ class AnalyzeMasksTab(QWidget):
             
             layout.addWidget(toolbar)
             
+            # Filename label
+            filename_label = QLabel(f"File: {Path(mask_path).name}")
+            filename_label.setStyleSheet("font-weight: bold; font-size: 11pt; padding: 5px; color: #2C3E50;")
+            layout.addWidget(filename_label)
+            
             # Frame navigation (moved to top, below toolbar, to match segmentation preview)
             nav_layout = QHBoxLayout()
             prev_btn = QPushButton("Previous")
@@ -7156,10 +7405,18 @@ class AnalyzeMasksTab(QWidget):
                     'fi_contour_thickness': self.fi_contour_thickness.value() if hasattr(self, 'fi_contour_thickness') else 1,
                 }
             
+            # Track if we're currently showing the warning dialog to prevent duplicates
+            preview_dialog._showing_warning = False
+            
             # Function to update preview
             def update_preview(frame_idx, show_progress=True):
                 if frame_idx < 0 or frame_idx >= num_frames:
                     return
+                
+                # Prevent multiple simultaneous calls
+                if hasattr(preview_dialog, '_updating_preview') and preview_dialog._updating_preview:
+                    return
+                preview_dialog._updating_preview = True
                 
                 # Get current FI contour thickness (may have changed)
                 nonlocal fi_contour_thickness
@@ -7237,23 +7494,36 @@ class AnalyzeMasksTab(QWidget):
                     skip_visualization = False
                     
                     if num_objects > MAX_OBJECTS_WARNING:
-                        if progress_dialog:
-                            progress_dialog.close()
-                        msg = QMessageBox(preview_dialog)
-                        msg.setWindowTitle("Many Objects Detected")
-                        msg.setText(f"This frame contains {num_objects:,} objects.")
-                        msg.setInformativeText(
-                            f"Processing may take a long time and could use significant memory.\n\n"
-                            f"Options:\n"
-                            f"• 'Yes' = Continue with full processing (may be slow)\n"
-                            f"• 'No' = Skip visualization, only show statistics (faster)\n"
-                            f"• 'Cancel' = Skip this frame entirely"
-                        )
-                        yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.YesRole)
-                        no_btn = msg.addButton("No (Stats Only)", QMessageBox.ButtonRole.NoRole)
-                        cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-                        msg.setDefaultButton(no_btn)
-                        msg.exec()
+                        # Prevent showing multiple warning dialogs simultaneously
+                        if hasattr(preview_dialog, '_showing_warning') and preview_dialog._showing_warning:
+                            # Already showing a warning, skip this one
+                            skip_visualization = True
+                        else:
+                            if progress_dialog:
+                                progress_dialog.close()
+                            # Mark that we're showing a warning
+                            preview_dialog._showing_warning = True
+                            
+                            # Use modal message box to prevent multiple instances
+                            msg = QMessageBox(preview_dialog)
+                            msg.setWindowTitle("Many Objects Detected")
+                            msg.setModal(True)  # Make it modal to prevent multiple instances
+                            msg.setText(f"This frame contains {num_objects:,} objects.")
+                            msg.setInformativeText(
+                                f"Processing may take a long time and could use significant memory.\n\n"
+                                f"Options:\n"
+                                f"• 'Yes' = Continue with full processing (may be slow)\n"
+                                f"• 'No' = Skip visualization, only show statistics (faster)\n"
+                                f"• 'Cancel' = Skip this frame entirely"
+                            )
+                            yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.YesRole)
+                            no_btn = msg.addButton("No (Stats Only)", QMessageBox.ButtonRole.NoRole)
+                            cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                            msg.setDefaultButton(no_btn)
+                            msg.exec()
+                            
+                            # Clear the flag after dialog is closed
+                            preview_dialog._showing_warning = False
                         
                         if msg.clickedButton() == cancel_btn:
                             # Re-enable buttons
@@ -7443,6 +7713,9 @@ class AnalyzeMasksTab(QWidget):
                         next_btn.setEnabled(True)
                         reapply_btn.setEnabled(True)
                         frame_spin.setEnabled(True)
+                    
+                    # Clear the updating flag
+                    preview_dialog._updating_preview = False
                 except Exception as e:
                     if progress_dialog:
                         progress_dialog.close()
@@ -7451,17 +7724,31 @@ class AnalyzeMasksTab(QWidget):
                     next_btn.setEnabled(True)
                     reapply_btn.setEnabled(True)
                     frame_spin.setEnabled(True)
+                    # Clear flags on error
+                    if hasattr(preview_dialog, '_updating_preview'):
+                        preview_dialog._updating_preview = False
+                    if hasattr(preview_dialog, '_showing_warning'):
+                        preview_dialog._showing_warning = False
                     QMessageBox.warning(preview_dialog, "Preview Error", f"Could not update preview:\n{str(e)}")
             
             def go_to_frame(idx):
                 if 0 <= idx < num_frames:
+                    # Stop any pending timer to prevent conflicts
+                    if hasattr(frame_spin, '_change_timer'):
+                        frame_spin._change_timer.stop()
                     preview_dialog.current_frame = idx
+                    # Update spinbox without triggering signals (to avoid recursion)
                     frame_spin.blockSignals(True)
-                    frame_spin.setValue(idx + 1)
+                    frame_spin.setValue(idx + 1)  # Display is 1-based, index is 0-based
                     frame_spin.blockSignals(False)
                     try:
                         # Only show progress if it's a new frame (not cached)
                         update_preview(idx, show_progress=False)  # Filter preview is usually fast
+                        # Ensure spinbox still shows correct value after update_preview
+                        if preview_dialog.current_frame == idx:
+                            frame_spin.blockSignals(True)
+                            frame_spin.setValue(idx + 1)
+                            frame_spin.blockSignals(False)
                     except Exception as e:
                         QMessageBox.warning(preview_dialog, "Preview Error", 
                                           f"Could not display frame {idx + 1}:\n{str(e)}")
@@ -7472,16 +7759,36 @@ class AnalyzeMasksTab(QWidget):
             # Use editingFinished for when user finishes editing (presses Enter or leaves field)
             # and a debounced valueChanged for when using arrow keys
             def on_frame_changed():
-                frame_num = frame_spin.value() - 1
+                # Cancel any pending timer updates to prevent multiple calls
+                if hasattr(frame_spin, '_change_timer'):
+                    frame_spin._change_timer.stop()
+                frame_num = frame_spin.value() - 1  # Convert from 1-based display to 0-based index
                 if 0 <= frame_num < num_frames:
-                    go_to_frame(frame_num)
+                    # Only go to frame if it's different from current to avoid unnecessary updates
+                    if frame_num != preview_dialog.current_frame:
+                        go_to_frame(frame_num)
+                else:
+                    # Invalid frame - reset to current
+                    frame_spin.blockSignals(True)
+                    frame_spin.setValue(preview_dialog.current_frame + 1)
+                    frame_spin.blockSignals(False)
             
             frame_spin.editingFinished.connect(on_frame_changed)
             # Debounce valueChanged to avoid triggering while typing
             frame_spin._change_timer = QTimer()
             frame_spin._change_timer.setSingleShot(True)
             frame_spin._change_timer.timeout.connect(on_frame_changed)
-            frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
+            # Only start timer if value is valid
+            def on_value_changed(v):
+                if 1 <= v <= num_frames:
+                    frame_spin._change_timer.start(300)
+                else:
+                    # Invalid value - cancel timer and reset
+                    frame_spin._change_timer.stop()
+                    frame_spin.blockSignals(True)
+                    frame_spin.setValue(preview_dialog.current_frame + 1)
+                    frame_spin.blockSignals(False)
+            frame_spin.valueChanged.connect(on_value_changed)
             
             nav_layout.addStretch()
             
@@ -7595,10 +7902,11 @@ class AnalyzeMasksTab(QWidget):
             self.parent_window.progress_bar.setRange(0, len(selected_files))
             self.parent_window.progress_bar.setValue(0)
             
-            # Store files and current index
+            # Store files, current index, and output paths (for combined summary)
             self.folder_files = selected_files
             self.current_file_index = 0
             self.folder_results = []
+            self.folder_output_paths = []
             
             # Process first file
             self._process_next_folder_file(script_path)
@@ -7701,6 +8009,18 @@ class AnalyzeMasksTab(QWidget):
             self.analyze_btn.setText("Analyze Masks")
             self.parent_window.progress_bar.setVisible(False)
             self.parent_window.log_output(f"\n✓ Analysis complete for all {len(self.folder_files)} file(s)!\n")
+            # Create combined summary if option was enabled and we have output paths
+            if getattr(self, "create_combined_summary", None) and getattr(self, "create_combined_summary").isChecked():
+                paths = getattr(self, "folder_output_paths", [])
+                if paths and self.folder_files:
+                    folder = self.folder_files[0].parent
+                    out_path = folder / f"{folder.name}_combined_summary.xlsx"
+                    if self._build_combined_summary_excel(paths, str(out_path)):
+                        self.parent_window.log_output(f"Combined summary saved to: {out_path}\n")
+                        QMessageBox.information(self, "Analysis Complete", 
+                            f"Successfully analyzed {len(self.folder_files)} mask file(s).\n\n"
+                            f"Combined summary saved to:\n{out_path.name}")
+                        return
             QMessageBox.information(self, "Analysis Complete", 
                                   f"Successfully analyzed {len(self.folder_files)} mask file(s).")
             return
@@ -7715,6 +8035,7 @@ class AnalyzeMasksTab(QWidget):
         
         # Create output path at base level with _analysis suffix
         output_path = base_dir / f"{mask_file.stem}_analysis.xlsx"
+        self.folder_output_paths.append(str(output_path))
         
         # Build command arguments
         cmd_args = [
@@ -8413,6 +8734,31 @@ class TrackingTab(QWidget):
         # Hide progress bar after a short delay
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
+    
+    def get_session_params(self):
+        """Return current parameter values for session log (parameters only, no paths)."""
+        return {
+            "model": self.model_combo.currentText(),
+            "mode": self.mode_combo.currentText(),
+            "device": self.device_combo.currentText(),
+        }
+    
+    def set_session_params(self, data):
+        """Apply saved parameter values (parameters only)."""
+        if not isinstance(data, dict):
+            return
+        if "model" in data:
+            idx = self.model_combo.findText(str(data["model"]))
+            if idx >= 0:
+                self.model_combo.setCurrentIndex(idx)
+        if "mode" in data:
+            idx = self.mode_combo.findText(str(data["mode"]))
+            if idx >= 0:
+                self.mode_combo.setCurrentIndex(idx)
+        if "device" in data:
+            idx = self.device_combo.findText(str(data["device"]))
+            if idx >= 0:
+                self.device_combo.setCurrentIndex(idx)
 
 
 class TrackingWorker(QThread):
@@ -10000,6 +10346,39 @@ class GrowthCurveVideoTab(QWidget):
             self.parent_window.log_output(f"\n✓ {message}\n")
         else:
             QMessageBox.warning(self, "Error", message)
+    
+    def get_session_params(self):
+        """Return current parameter values for session log (parameters only, no paths)."""
+        return {
+            "time_interval": self.time_interval.value(),
+            "yaxis_min": self.yaxis_min.value(),
+            "yaxis_max": self.yaxis_max.value(),
+            "fps": self.fps.value(),
+            "format_tif": self.format_tif.isChecked(),
+            "format_avi": self.format_avi.isChecked(),
+            "format_gif": self.format_gif.isChecked(),
+            "format_mp4": self.format_mp4.isChecked(),
+        }
+    
+    def set_session_params(self, data):
+        """Apply saved parameter values (parameters only)."""
+        if not isinstance(data, dict):
+            return
+        for k, w in [
+            ("time_interval", self.time_interval), ("yaxis_min", self.yaxis_min),
+            ("yaxis_max", self.yaxis_max), ("fps", self.fps),
+        ]:
+            if k in data and hasattr(w, "setValue"):
+                try:
+                    w.setValue(float(data[k]))
+                except (TypeError, ValueError):
+                    pass
+        for k, w in [
+            ("format_tif", self.format_tif), ("format_avi", self.format_avi),
+            ("format_gif", self.format_gif), ("format_mp4", self.format_mp4),
+        ]:
+            if k in data and hasattr(w, "setChecked"):
+                w.setChecked(bool(data[k]))
 
 
 class GrowthCurveVideoWorker(QThread):
@@ -10834,6 +11213,41 @@ class SAM2SegmentTab(QWidget):
         else:
             self.parent_window.log_output(f"✗ SAM2 segmentation failed:\n{message}\n")
             QMessageBox.critical(self, "Error", f"SAM2 segmentation failed:\n\n{message}")
+    
+    def get_session_params(self):
+        """Return current parameter values for session log (parameters only, no paths)."""
+        return {
+            "model": self.model_combo.currentText(),
+            "mode": self.mode_combo.currentText(),
+            "points_per_side": self.points_per_side.value(),
+            "stability_score": self.stability_score.value(),
+            "use_gpu": self.use_gpu.isChecked(),
+            "create_overlay": self.create_overlay.isChecked(),
+        }
+    
+    def set_session_params(self, data):
+        """Apply saved parameter values (parameters only)."""
+        if not isinstance(data, dict):
+            return
+        if "model" in data:
+            idx = self.model_combo.findText(str(data["model"]))
+            if idx >= 0:
+                self.model_combo.setCurrentIndex(idx)
+        if "mode" in data:
+            idx = self.mode_combo.findText(str(data["mode"]))
+            if idx >= 0:
+                self.mode_combo.setCurrentIndex(idx)
+        for k, w in [
+            ("points_per_side", self.points_per_side), ("stability_score", self.stability_score),
+        ]:
+            if k in data and hasattr(w, "setValue"):
+                try:
+                    w.setValue(float(data[k]))
+                except (TypeError, ValueError):
+                    pass
+        for k, w in [("use_gpu", self.use_gpu), ("create_overlay", self.create_overlay)]:
+            if k in data and hasattr(w, "setChecked"):
+                w.setChecked(bool(data[k]))
 
 
 class SAM2SegmentWorker(QThread):
@@ -11314,6 +11728,161 @@ class SAM2SegmentWorker(QThread):
             self.finished.emit(False, error_msg)
 
 
+# Tab label to log key mapping for session logs (order matches main window tabs)
+TAB_LOG_KEYS = [
+    ("nd2", "TIFF Conversion"),
+    ("segmentation", "Segmentation"),
+    ("sam2", "SAM2 Segment"),
+    ("analyze_masks", "Analyze Masks"),
+    ("tracking", "Tracking"),
+    ("growth_curve_video", "Video Graph"),
+]
+
+
+class SessionLogsTab(QWidget):
+    """Tab to list session log files, show overview of saved settings, and apply them."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self._selected_path = None
+        self._loaded_data = None
+        self.init_ui()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout()
+        
+        # List of last 10 session log files
+        list_group = QGroupBox("Recent session logs (last 10)")
+        list_layout = QVBoxLayout()
+        self.log_list = QListWidget()
+        self.log_list.setMinimumHeight(120)
+        self.log_list.itemSelectionChanged.connect(self._on_selection_changed)
+        list_layout.addWidget(self.log_list)
+        load_other_btn = QPushButton("Load other...")
+        load_other_btn.setToolTip("Open a session log file that is not in the list above")
+        load_other_btn.clicked.connect(self._load_other)
+        list_layout.addWidget(load_other_btn)
+        list_group.setLayout(list_layout)
+        scroll_layout.addWidget(list_group)
+        
+        # Overview of what was used (params only)
+        overview_group = QGroupBox("Overview of selected session")
+        overview_layout = QVBoxLayout()
+        self.overview_text = QTextEdit()
+        self.overview_text.setReadOnly(True)
+        self.overview_text.setMinimumHeight(200)
+        self.overview_text.setPlaceholderText("Select a log file above or click 'Load other...' to see parameters.")
+        overview_layout.addWidget(self.overview_text)
+        overview_group.setLayout(overview_layout)
+        scroll_layout.addWidget(overview_group)
+        
+        # Apply button
+        self.apply_btn = QPushButton("Apply now to current session")
+        self.apply_btn.setToolTip("Apply the parameters from the selected log to all tabs (parameters only; file paths are not changed).")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._apply_now)
+        scroll_layout.addWidget(self.apply_btn)
+        
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        self.setLayout(layout)
+        
+        self._refresh_list()
+    
+    def _refresh_list(self):
+        """Refresh the list of last 10 log files."""
+        self.log_list.clear()
+        self._selected_path = None
+        self._loaded_data = None
+        self.overview_text.clear()
+        self.apply_btn.setEnabled(False)
+        if not LOGS_DIR.exists():
+            return
+        files = sorted(LOGS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files[:10]:
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime)
+                label = f"{mtime.strftime('%Y-%m-%d %H:%M:%S')} — {p.name}"
+            except Exception:
+                label = p.name
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
+            self.log_list.addItem(item)
+    
+    def _on_selection_changed(self):
+        """When user selects an item, load that file and show overview."""
+        items = self.log_list.selectedItems()
+        if not items:
+            self._selected_path = None
+            self._loaded_data = None
+            self.overview_text.clear()
+            self.apply_btn.setEnabled(False)
+            return
+        path = items[0].data(Qt.ItemDataRole.UserRole)
+        self._load_and_show(path)
+    
+    def _load_other(self):
+        """Open file dialog to load a session log file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open session log",
+            str(LOGS_DIR) if LOGS_DIR.exists() else "",
+            "JSON (*.json);;All files (*)"
+        )
+        if path:
+            self._load_and_show(path)
+    
+    def _load_and_show(self, path):
+        """Load JSON at path, store in _loaded_data, and show overview."""
+        self._selected_path = path
+        self._loaded_data = None
+        self.overview_text.clear()
+        self.apply_btn.setEnabled(False)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            self.overview_text.setPlainText(f"Could not load file:\n{e}")
+            return
+        self._loaded_data = data
+        # Build overview: group by tab, param: value
+        lines = []
+        schema = data.get("schema_version", "?")
+        ts = data.get("timestamp", "?")
+        lines.append(f"Schema version: {schema}  |  Saved: {ts}\n")
+        tabs_data = data.get("tabs", data)
+        if not isinstance(tabs_data, dict):
+            tabs_data = {}
+        for key, tab_label in TAB_LOG_KEYS:
+            if key not in tabs_data or not isinstance(tabs_data[key], dict):
+                continue
+            lines.append(f"\n——— {tab_label} ———")
+            for k, v in sorted(tabs_data[key].items()):
+                lines.append(f"  {k}: {v}")
+        self.overview_text.setPlainText("\n".join(lines) if lines else "(No tab data)")
+        self.apply_btn.setEnabled(True)
+    
+    def _apply_now(self):
+        """Apply the currently loaded session params to the main window."""
+        if not self._loaded_data or not self.parent_window:
+            return
+        tabs_data = self._loaded_data.get("tabs", self._loaded_data)
+        if isinstance(tabs_data, dict):
+            self.parent_window.apply_session_params(tabs_data)
+        QMessageBox.information(self, "Applied", "Parameters from the selected session have been applied to the current session (parameters only).")
+    
+    def showEvent(self, event):
+        """Refresh list when tab is shown."""
+        super().showEvent(event)
+        self._refresh_list()
+
+
 class MainWindow(QMainWindow):
     """Main application window"""
     
@@ -11400,6 +11969,7 @@ class MainWindow(QMainWindow):
         self.tracking_tab = TrackingTab(self)
         self.growth_curve_tab = GrowthCurveVideoTab(self)
         self.sam2_tab = SAM2SegmentTab(self)
+        self.logs_tab = SessionLogsTab(self)
         
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.processing_tab, "Segmentation")
@@ -11407,6 +11977,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.growth_curve_tab, "Video Graph")
+        tabs.addTab(self.logs_tab, "Session Logs")
        
         main_layout.addWidget(tabs)
         
@@ -11452,6 +12023,60 @@ class MainWindow(QMainWindow):
         
         self.log_output("Omnipose Batch Processing GUI started.\n")
         self.log_output("Select a tab and configure parameters to begin.\n\n")
+    
+    def closeEvent(self, event):
+        """Save session log on exit (per-session, Option B)."""
+        self._save_session_log()
+        super().closeEvent(event)
+    
+    def _save_session_log(self):
+        """Write current session parameters to Logs/ with timestamp in filename: YYYY-MM-DD_HH-MM-SS_session.json."""
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            now = datetime.now()
+            # Filename includes date and time so every session gets a unique file
+            timestamp_in_filename = now.strftime("%Y-%m-%d_%H-%M-%S")
+            ts_display = now.strftime("%Y-%m-%d %H:%M:%S")
+            path = LOGS_DIR / f"{timestamp_in_filename}_session.json"
+            data = {
+                "schema_version": 1,
+                "timestamp": ts_display,
+                "tabs": self.gather_session_params(),
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass  # avoid blocking exit on any error
+    
+    def gather_session_params(self):
+        """Collect parameters from all tabs (no paths). Returns dict keyed by tab id."""
+        out = {}
+        for key, tab in [
+            ("nd2", self.nd2_tab),
+            ("segmentation", self.processing_tab),
+            ("analyze_masks", self.analyze_tab),
+            ("tracking", self.tracking_tab),
+            ("growth_curve_video", self.growth_curve_tab),
+            ("sam2", self.sam2_tab),
+        ]:
+            if hasattr(tab, "get_session_params"):
+                out[key] = tab.get_session_params()
+        return out
+    
+    def apply_session_params(self, data):
+        """Apply saved parameters to tabs (parameters only; file paths unchanged)."""
+        if not isinstance(data, dict):
+            return
+        for key, tab in [
+            ("nd2", self.nd2_tab),
+            ("segmentation", self.processing_tab),
+            ("analyze_masks", self.analyze_tab),
+            ("tracking", self.tracking_tab),
+            ("growth_curve_video", self.growth_curve_tab),
+            ("sam2", self.sam2_tab),
+        ]:
+            if key in data and hasattr(tab, "set_session_params"):
+                tab.set_session_params(data[key])
     
     def _center_window(self):
         """Center the window on the screen (PyQt6: use QScreen instead of QDesktopWidget)"""
