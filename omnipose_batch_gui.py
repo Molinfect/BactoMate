@@ -1171,12 +1171,11 @@ class ND2ConversionTab(QWidget):
         self.channel_select.setEnabled(False)
         params_layout.addWidget(self.channel_select)
         
-        # Corrections
+        # Corrections (one row to save vertical space)
         corrections_group = QGroupBox("Image Corrections")
-        corrections_layout = QVBoxLayout()
+        corrections_layout = QHBoxLayout()
         
         # Drift correction with info icon
-        drift_layout = QHBoxLayout()
         self.drift_correct = QCheckBox("Apply drift correction (X,Y registration)")
         self.drift_correct.setChecked(False)
         drift_info_icon = create_info_icon(
@@ -1194,13 +1193,10 @@ class ND2ConversionTab(QWidget):
             "The first frame remains unchanged; subsequent frames are incrementally aligned.",
             parent_widget=self
         )
-        drift_layout.addWidget(self.drift_correct)
-        drift_layout.addWidget(drift_info_icon)
-        drift_layout.addStretch()
-        corrections_layout.addLayout(drift_layout)
+        corrections_layout.addWidget(self.drift_correct)
+        corrections_layout.addWidget(drift_info_icon)
         
         # Photobleaching correction with info icon
-        bleach_layout = QHBoxLayout()
         self.bleach_correct = QCheckBox("Apply photobleaching correction")
         self.bleach_correct.setChecked(False)
         bleach_info_icon = create_info_icon(
@@ -1213,10 +1209,9 @@ class ND2ConversionTab(QWidget):
             "Note: Only affects fluorescence channels, not phase contrast.",
             parent_widget=self
         )
-        bleach_layout.addWidget(self.bleach_correct)
-        bleach_layout.addWidget(bleach_info_icon)
-        bleach_layout.addStretch()
-        corrections_layout.addLayout(bleach_layout)
+        corrections_layout.addWidget(self.bleach_correct)
+        corrections_layout.addWidget(bleach_info_icon)
+        corrections_layout.addStretch()
         
         corrections_group.setLayout(corrections_layout)
         params_layout.addWidget(corrections_group)

@@ -114,8 +114,10 @@ fi
 # Set PATH to prioritize venv binaries
 export PATH="$SCRIPT_DIR/venv/bin:$PATH"
 
-# Detect Python version from venv (for matching framework version)
-PYTHON_MAJOR_MINOR=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.11")
+# Detect Python version from venv in one call (for framework and Qt paths)
+PYINFO=$("$PYTHON_CMD" -c "import sys; print(sys.version_info.major, sys.version_info.minor)" 2>/dev/null || echo "3 11")
+PYTHON_MAJOR_MINOR=$(echo "$PYINFO" | tr ' ' '.')
+PYTHON_VERSION="python${PYTHON_MAJOR_MINOR}"
 
 # Only set PYTHONHOME for app bundles (when running from .app bundle)
 # Note: PYTHONHOME is already unset at the start of this script
@@ -290,27 +292,23 @@ else
     echo "$(date): [DEBUG] PYTHONHOME check before exec: ${PYTHONHOME:-<unset>}" >> "$LOG_FILE"
 fi
 
-# Verify patches are applied (quick check, auto-apply if needed)
+# Verify patches are applied (fast file check, no Python import of cellpose/torch)
 # Note: SCRIPT_DIR is already set above
 if [ -f "$SCRIPT_DIR/apply_all_patches.py" ]; then
-    # Quick check: verify cellpose_omni has the model_type fix
-    "$PYTHON_CMD" -c "
-import sys
-try:
-    from cellpose_omni import models
-    import inspect
-    src = inspect.getsourcefile(models)
-    content = open(src).read()
-    has_fix = 'model_type=model_type' in content and 'self.cp = CellposeModel' in content
-    has_github = 'raw.githubusercontent.com/kevinjohncutler/omnipose-models/main' in content
-    if not has_fix or not has_github:
-        sys.exit(1)
-except Exception:
-    sys.exit(1)
-" 2>> "$LOG_FILE" || {
+    PATCH_FILE=""
+    for f in "$SCRIPT_DIR/venv/lib/python"*"/site-packages/cellpose_omni/models.py"; do
+        [ -f "$f" ] && PATCH_FILE="$f" && break
+    done 2>/dev/null
+    NEED_PATCH=false
+    if [ -n "$PATCH_FILE" ]; then
+        grep -q 'model_type=model_type' "$PATCH_FILE" 2>/dev/null && grep -q 'raw.githubusercontent.com/kevinjohncutler/omnipose-models/main' "$PATCH_FILE" 2>/dev/null || NEED_PATCH=true
+    else
+        NEED_PATCH=true
+    fi
+    if [ "$NEED_PATCH" = true ]; then
         echo "$(date): Applying compatibility patches..." >> "$LOG_FILE"
         "$PYTHON_CMD" "$SCRIPT_DIR/apply_all_patches.py" >> "$LOG_FILE" 2>&1 || true
-    }
+    fi
 fi
 
 # Set Qt environment variables for macOS
@@ -327,9 +325,7 @@ export QT_AUTO_SCREEN_SCALE_FACTOR=1
 # We address these by: code signing Qt libs, removing quarantine, setting paths correctly,
 # and filtering system Qt paths. The repair_pyqt6.sh script handles runtime fixes.
 # SCRIPT_DIR is already set above
-
-# Detect Python version dynamically using venv Python (works with 3.10, 3.11, etc.)
-PYTHON_VERSION=$("$PYTHON_CMD" -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>> "$LOG_FILE" || echo "python3.11")
+# PYTHON_VERSION was set earlier (one call with PYTHON_MAJOR_MINOR)
 
 QT_LIB_DIR="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/lib"
 if [ -d "$QT_LIB_DIR" ]; then
