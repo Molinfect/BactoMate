@@ -14,14 +14,23 @@ if not exist "omnipose_batch_gui.py" (
 echo [1/4] Ensuring Nuitka...
 pip install nuitka ordered-set --quiet
 
-echo [2/4] Running Nuitka standalone build (this can take 30-90+ min on CI)...
-REM Include heavy libraries as bytecode (do not compile) to avoid Nuitka crashes / huge C files
+echo [2/4] Running Nuitka standalone build (target: under 6h on CI)...
+REM Include heavy/slow packages as bytecode so C compilation finishes within job timeout
 python -m nuitka ^
   --standalone ^
   --plugin-enable=pyqt6 ^
   --include-data-files=logo2.png=logo2.png ^
   --nofollow-import-to=torch ^
   --nofollow-import-to=colour ^
+  --nofollow-import-to=numpy ^
+  --nofollow-import-to=scipy ^
+  --nofollow-import-to=matplotlib ^
+  --nofollow-import-to=pandas ^
+  --nofollow-import-to=skimage ^
+  --nofollow-import-to=dask ^
+  --nofollow-import-to=numba ^
+  --nofollow-import-to=xarray ^
+  --nofollow-import-to=wandb ^
   --assume-yes-for-downloads ^
   --output-dir=build ^
   omnipose_batch_gui.py
