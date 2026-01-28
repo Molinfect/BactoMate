@@ -15,10 +15,12 @@ echo [1/4] Ensuring Nuitka...
 pip install nuitka ordered-set --quiet
 
 echo [2/4] Running Nuitka standalone build (this can take 15-45 min)...
+REM Include torch as bytecode (do not compile) to avoid Nuitka crash in torch._dynamo.pgo
 python -m nuitka ^
   --standalone ^
   --plugin-enable=pyqt6 ^
   --include-data-files=logo2.png=logo2.png ^
+  --nofollow-import-to=torch ^
   --assume-yes-for-downloads ^
   --output-dir=build ^
   omnipose_batch_gui.py
