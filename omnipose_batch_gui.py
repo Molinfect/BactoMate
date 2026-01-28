@@ -10790,6 +10790,27 @@ class SAM2SegmentTab(QWidget):
         file_group.setLayout(file_layout)
         scroll_layout.addWidget(file_group)
         
+        # How SAM2 works (short info)
+        sam2_info_layout = QHBoxLayout()
+        sam2_info_icon = create_info_icon(
+            "How SAM2 works:\n\n"
+            "SAM2 (Segment Anything Model 2) is a general-purpose segmentation model. It places a regular grid of "
+            "points on the image and segments whatever it finds at each point (automatic mode). It was trained on "
+            "diverse natural images and works best when objects have clear boundaries and good contrast.\n\n"
+            "Why results can be poor on bacteria:\n"
+            "• Bacteria are small, rod-shaped, and often low contrast; SAM2 was not trained specifically for them.\n"
+            "• For bacteria and time-lapse data, the Omnipose model (Segmentation tab) is usually better suited.\n\n"
+            "When to use SAM2: diverse objects, high contrast, or when you want to try a different approach. "
+            "Use the Preview button to check segmentation on one frame before processing.",
+            parent_widget=self
+        )
+        sam2_info_label = QLabel("SAM2 is a general-purpose segment-anything model. For bacteria, prefer the Segmentation (Omnipose) tab.")
+        sam2_info_label.setWordWrap(True)
+        sam2_info_label.setStyleSheet("color: #9aa; font-style: italic; padding: 4px;")
+        sam2_info_layout.addWidget(sam2_info_icon)
+        sam2_info_layout.addWidget(sam2_info_label, 1)
+        scroll_layout.addLayout(sam2_info_layout)
+        
         # SAM2 Parameters - side-by-side layout
         sam2_group = QGroupBox("SAM2 Parameters")
         sam2_container_layout = QHBoxLayout()
@@ -10955,27 +10976,14 @@ class SAM2SegmentTab(QWidget):
         sam2_group.setLayout(sam2_container_layout)
         scroll_layout.addWidget(sam2_group)
         
-        # Output directory
-        output_group = QGroupBox("Output Directory")
-        output_layout = QHBoxLayout()
-        self.output_path = QLineEdit()
-        self.output_path.setPlaceholderText("Leave empty to save in same directory as input...")
-        self.output_path.setMinimumWidth(500)
-        self.output_path.setFont(file_font)
-        self.output_path.setSizePolicy(size_policy)
-        output_btn = QPushButton("Browse...")
-        output_btn.setFixedWidth(120)
-        output_btn.clicked.connect(self.select_output_dir)
-        output_layout.addWidget(self.output_path, 0)
-        output_layout.addWidget(output_btn, 0)
-        output_group.setLayout(output_layout)
-        scroll_layout.addWidget(output_group)
-        
-        # Preview button
-        self.preview_btn = QPushButton("Preview File")
+        # Preview SAM2 segmentation (runs SAM2 on first frame and shows overlay)
+        self.preview_btn = QPushButton("Preview SAM2 Segmentation")
         self.preview_btn.setEnabled(False)
-        self.preview_btn.setToolTip("Preview the selected TIFF file before processing")
-        self.preview_btn.clicked.connect(self.preview_file)
+        self.preview_btn.setToolTip(
+            "Run SAM2 on the selected TIFF (first frame) and show the segmentation overlay.\n"
+            "Uses current model and parameters. May take a minute to load the model."
+        )
+        self.preview_btn.clicked.connect(self.preview_sam2_segmentation)
         scroll_layout.addWidget(self.preview_btn)
         
         # Process button
@@ -11042,18 +11050,8 @@ class SAM2SegmentTab(QWidget):
         if file_path:
             self.checkpoint_path.setText(file_path)
     
-    def select_output_dir(self):
-        """Select output directory"""
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "Select Output Directory",
-            ""
-        )
-        if folder_path:
-            self.output_path.setText(folder_path)
-    
-    def preview_file(self):
-        """Preview the selected TIFF file"""
+    def preview_sam2_segmentation(self):
+        """Run SAM2 on the first frame of the selected TIFF and show segmentation overlay."""
         if not self.file_path.text():
             QMessageBox.warning(self, "No Selection", "Please select a TIFF file first.")
             return
@@ -11067,130 +11065,156 @@ class SAM2SegmentTab(QWidget):
             QMessageBox.warning(self, "Folder Selected", "Please select a specific TIFF file for preview, not a folder.")
             return
         
+        progress = QProgressDialog("Loading SAM2 model and running segmentation...", None, 0, 100, self)
+        progress.setWindowTitle("SAM2 Preview")
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        progress.show()
+        QApplication.processEvents()
+        
         try:
-            import tifffile
             import numpy as np
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-            from matplotlib.figure import Figure
+            import torch
+            progress.setLabelText("Loading image...")
+            progress.setValue(10)
+            QApplication.processEvents()
             
-            # Load TIFF file
-            images = safe_imread(str(file_path))
+            image_data = safe_imread(str(file_path))
+            if image_data.ndim == 2:
+                first_frame = image_data
+            elif image_data.ndim == 3:
+                first_frame = image_data[0] if image_data.shape[0] < 1000 else image_data[:, :, 0]
+            elif image_data.ndim == 4:
+                first_frame = image_data[0, 0] if image_data.shape[1] < 10 else image_data[0, :, :, 0]
+            else:
+                progress.close()
+                QMessageBox.warning(self, "Unsupported", "Unsupported image dimensions for preview.")
+                return
             
-            # Handle different dimensions
-            if images.ndim == 2:
-                images = images[np.newaxis, ...]
-            elif images.ndim == 3:
-                if images.shape[-1] < 10:  # Likely channels last
-                    images = images.transpose(2, 0, 1)
-                    images = images[np.newaxis, ...]
-            elif images.ndim == 4:
-                if images.shape[-1] < 10:  # Channels last
-                    images = images.transpose(0, 3, 1, 2)
-                elif images.shape[0] < 10:  # Channels first
-                    images = images.transpose(1, 0, 2, 3)
+            img_min, img_max = first_frame.min(), first_frame.max()
+            if img_max > img_min:
+                image_norm = ((first_frame - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+            else:
+                image_norm = first_frame.astype(np.uint8)
+            if len(image_norm.shape) == 2:
+                image_rgb = np.stack([image_norm, image_norm, image_norm], axis=-1)
+            else:
+                image_rgb = np.repeat(image_norm[:, :, np.newaxis], 3, axis=-1)
             
-            num_frames = images.shape[0]
+            progress.setLabelText("Loading SAM2 model...")
+            progress.setValue(20)
+            QApplication.processEvents()
             
-            # Create preview dialog
-            preview_dialog = QDialog(self)
-            preview_dialog.setWindowTitle(f"File Preview: {file_path.name}")
-            preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)
+            device = "cuda" if (self.use_gpu.isChecked() and torch.cuda.is_available()) else "cpu"
+            if self.use_gpu.isChecked() and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                device = "mps"
             
-            layout = QVBoxLayout()
+            try:
+                from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+            except ImportError:
+                progress.close()
+                QMessageBox.critical(self, "SAM2 Not Found", "SAM2 not installed. pip install sam2")
+                return
             
-            # Matplotlib figure
-            fig = Figure(figsize=(10, 8))
-            canvas = FigureCanvas(fig)
-            toolbar = NavigationToolbar(canvas, preview_dialog)
-            toolbar.setStyleSheet(
-                "QToolButton {"
-                "color: white;"
-                "background-color: #5D6D7E;"
-                "border: 1px solid #34495E;"
-                "border-radius: 3px;"
-                "padding: 4px;"
-                "}"
-                "QToolButton:hover {"
-                "background-color: #34495E;"
-                "}"
+            model_name = self.model_combo.currentText()
+            hf_map = {
+                'sam2.1_hiera_tiny': 'facebook/sam2-hiera-tiny',
+                'sam2.1_hiera_small': 'facebook/sam2-hiera-small',
+                'sam2.1_hiera_base_plus': 'facebook/sam2-hiera-base-plus',
+                'sam2.1_hiera_large': 'facebook/sam2-hiera-large',
+            }
+            hf_name = hf_map.get(model_name, 'facebook/sam2-hiera-small')
+            
+            try:
+                predictor = SAM2ImagePredictor.from_pretrained(hf_name, device=device)
+                model = predictor.model
+            except Exception as e:
+                progress.close()
+                QMessageBox.critical(self, "Model Load Failed", f"Could not load SAM2 model:\n{str(e)}")
+                return
+            
+            progress.setLabelText("Running SAM2 segmentation on first frame...")
+            progress.setValue(50)
+            QApplication.processEvents()
+            
+            mask_generator = SAM2AutomaticMaskGenerator(
+                model=model,
+                points_per_side=self.points_per_side.value(),
+                pred_iou_thresh=0.8,
+                stability_score_thresh=self.stability_score.value(),
+                box_nms_thresh=0.7,
+                crop_n_layers=1,
+                crop_n_points_downscale_factor=2,
+                min_mask_region_area=100,
             )
             
-            layout.addWidget(toolbar)
+            with torch.inference_mode():
+                if device == "mps":
+                    with torch.autocast(device_type="cpu", dtype=torch.float32):
+                        sam2_masks = mask_generator.generate(image_rgb)
+                else:
+                    sam2_masks = mask_generator.generate(image_rgb)
             
-            # Frame navigation
-            nav_layout = QHBoxLayout()
-            prev_btn = QPushButton("Previous")
-            nav_layout.addWidget(prev_btn)
+            progress.setValue(80)
+            QApplication.processEvents()
             
-            nav_layout.addWidget(QLabel("Frame:"))
-            frame_spin = QSpinBox()
-            frame_spin.setRange(1, num_frames)
-            frame_spin.setValue(1)
-            nav_layout.addWidget(frame_spin)
-            nav_layout.addWidget(QLabel(f"of {num_frames}"))
+            if not sam2_masks:
+                label_mask = np.zeros(image_norm.shape[:2], dtype=np.uint16)
+            else:
+                label_mask = np.zeros(image_norm.shape[:2], dtype=np.uint16)
+                for mask_idx, mask_dict in enumerate(sorted(sam2_masks, key=lambda x: x['area'], reverse=True), start=1):
+                    label_mask[mask_dict['segmentation']] = mask_idx
             
-            next_btn = QPushButton("Next")
-            nav_layout.addWidget(next_btn)
-            nav_layout.addStretch()
+            progress.setLabelText("Building overlay...")
+            progress.setValue(90)
+            QApplication.processEvents()
             
-            layout.addLayout(nav_layout)
+            from matplotlib import pyplot as plt
+            if len(image_norm.shape) == 2:
+                img_rgb = np.stack([image_norm, image_norm, image_norm], axis=-1)
+            else:
+                img_rgb = np.repeat(image_norm[:, :, np.newaxis], 3, axis=-1)
+            cmap = plt.get_cmap('gist_ncar')
+            num_labels = int(label_mask.max())
+            if num_labels > 0:
+                colors = cmap(np.linspace(0, 1, max(num_labels + 1, 100)))[:num_labels + 1]
+                colors[0] = [0, 0, 0, 0]
+                mask_rgb = (colors[label_mask][:, :, :3] * 255).astype(np.uint8)
+                overlay = (img_rgb.astype(np.float32) * 0.5 + mask_rgb.astype(np.float32) * 0.5).astype(np.uint8)
+            else:
+                overlay = img_rgb
+            
+            progress.setValue(100)
+            progress.close()
+            
+            # Show overlay in dialog
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle(f"SAM2 Preview: {file_path.name} (frame 1)")
+            preview_dialog.setMinimumSize(900, 700)
+            preview_dialog.setModal(False)
+            layout = QVBoxLayout()
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            fig = Figure(figsize=(10, 8))
+            canvas = FigureCanvas(fig)
+            ax = fig.add_subplot(111)
+            ax.imshow(overlay)
+            ax.set_title(f"SAM2 segmentation (frame 1) — {num_labels} regions. Model: {model_name}")
+            ax.axis('off')
+            fig.tight_layout()
             layout.addWidget(canvas)
-            
-            preview_dialog.current_frame = 0
-            
-            def update_display(frame_idx):
-                if frame_idx < 0 or frame_idx >= num_frames:
-                    return
-                
-                preview_dialog.current_frame = frame_idx
-                frame = images[frame_idx]
-                
-                # Handle multi-channel: use first channel if needed
-                if frame.ndim == 3:
-                    frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
-                
-                fig.clear()
-                ax = fig.add_subplot(111)
-                ax.imshow(frame, cmap='gray')
-                ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: {file_path.name}")
-                ax.axis('off')
-                canvas.draw()
-                
-                frame_spin.blockSignals(True)
-                frame_spin.setValue(frame_idx + 1)
-                frame_spin.blockSignals(False)
-            
-            def go_to_frame(idx):
-                if 0 <= idx < num_frames:
-                    update_display(idx)
-            
-            prev_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame - 1))
-            next_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame + 1))
-            
-            def on_frame_changed():
-                frame_num = frame_spin.value() - 1
-                if 0 <= frame_num < num_frames:
-                    go_to_frame(frame_num)
-            
-            frame_spin.editingFinished.connect(on_frame_changed)
-            frame_spin._change_timer = QTimer()
-            frame_spin._change_timer.setSingleShot(True)
-            frame_spin._change_timer.timeout.connect(on_frame_changed)
-            frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
-            
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(preview_dialog.close)
+            layout.addWidget(close_btn)
             preview_dialog.setLayout(layout)
-            
-            # Show first frame
-            update_display(0)
-            
-            preview_dialog.exec()
+            preview_dialog.show()
             
         except Exception as e:
+            progress.close()
             import traceback
-            QMessageBox.critical(self, "Preview Error", 
-                              f"Could not preview file:\n{str(e)}\n\n{traceback.format_exc()}")
+            QMessageBox.critical(self, "Preview Error",
+                f"Could not run SAM2 preview:\n{str(e)}\n\n{traceback.format_exc()}")
     
     def start_processing(self):
         """Start SAM2 segmentation processing"""
@@ -11211,7 +11235,8 @@ class SAM2SegmentTab(QWidget):
         stability_score = self.stability_score.value()
         use_gpu = self.use_gpu.isChecked()
         create_overlay = self.create_overlay.isChecked()
-        output_dir = self.output_path.text() if self.output_path.text() else None
+        # Output saved next to input (same dir or input folder); no separate output field
+        output_dir = None
         
         # Disable button during processing
         self.process_btn.setEnabled(False)
@@ -11703,11 +11728,15 @@ class SAM2SegmentWorker(QThread):
                 self.finished.emit(False, "No masks were generated. Try adjusting parameters.")
                 return
             
-            # Determine output directory
+            # Determine output directory (same logic as Segmentation tab: subfolder next to input)
             if self.output_dir:
                 output_dir = Path(self.output_dir)
             else:
-                output_dir = input_path.parent if input_path.is_file() else input_path
+                if input_path.is_file():
+                    base_dir = input_path.parent
+                    output_dir = base_dir / f"{input_path.stem}_sam2"
+                else:
+                    output_dir = input_path
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Save masks
