@@ -100,7 +100,7 @@ def calculate_cell_properties(mask, pixel_size=0.108):
     return props
 
 
-def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contour_thickness=1):
+def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contour_thickness=1, do_contour=True):
     """
     Calculate fluorescence intensity metrics for a single cell.
     
@@ -147,6 +147,13 @@ def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contou
             print(f"Warning: FI image shape {fi_image.shape} doesn't match mask shape {mask.shape}")
             return np.nan, np.nan, np.nan
     
+    # Calculate mean FI intensity of entire cell (always available)
+    cell_pixels = fi_image[cell_mask]
+    mean_fi = np.mean(cell_pixels) if len(cell_pixels) > 0 else np.nan
+
+    if not do_contour:
+        return mean_fi, np.nan, np.nan
+
     # Find contour/boundary pixels using morphological edge detection
     # This method gets the actual edge pixels by eroding the cell mask
     # The difference between original and eroded mask gives us the edge
@@ -190,10 +197,6 @@ def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contou
     else:
         # If no interior (cell is all contour), use contour FI
         interior_fi = contour_fi
-    
-    # Calculate mean FI intensity of entire cell (for reference, but not used in ratio)
-    cell_pixels = fi_image[cell_mask]
-    mean_fi = np.mean(cell_pixels) if len(cell_pixels) > 0 else np.nan
     
     # Calculate ratio: contour FI / interior FI (this is the meaningful comparison)
     # This compares membrane (yellow) to cytoplasm (green interior)
@@ -292,7 +295,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   min_aspect_ratio=1.5, max_aspect_ratio=10.0,
                   min_eccentricity=0.5, min_solidity=0.7,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
-                  remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1):
+                  remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True):
     """
     Analyze masks and extract cell areas with morphological filtering.
     
@@ -432,12 +435,28 @@ def analyze_masks(masks_path, pixel_size=0.108,
             
             for cell in filtered:
                 cell_label = cell['label']
-                mean_fi, contour_fi, fi_ratio = calculate_fi_intensities(
-                    mask_cleaned, fi_image, cell_label, boundaries=None, contour_thickness=fi_contour_thickness
-                )
-                cell['mean_fi'] = mean_fi
-                cell['contour_fi'] = contour_fi
-                cell['fi_ratio'] = fi_ratio
+                if fi_do_contour:
+                    mean_fi, contour_fi, fi_ratio = calculate_fi_intensities(
+                        mask_cleaned,
+                        fi_image,
+                        cell_label,
+                        boundaries=None,
+                        contour_thickness=fi_contour_thickness,
+                        do_contour=True,
+                    )
+                    cell['mean_fi'] = mean_fi
+                    cell['contour_fi'] = contour_fi
+                    cell['fi_ratio'] = fi_ratio
+                else:
+                    mean_fi, _, _ = calculate_fi_intensities(
+                        mask_cleaned,
+                        fi_image,
+                        cell_label,
+                        boundaries=None,
+                        contour_thickness=fi_contour_thickness,
+                        do_contour=False,
+                    )
+                    cell['mean_fi'] = mean_fi
         
         # Determine rejected labels
         rejected_labels = all_labels - accepted_labels
@@ -902,10 +921,12 @@ def save_to_excel(results, output_path, detailed_data=None):
                         'Eccentricity': cell['eccentricity'],
                         'Solidity': cell['solidity']
                     }
-                    # Add FI columns if available
+                    # Add FI columns if available (contour metrics may be disabled)
                     if 'mean_fi' in cell:
                         row['Mean FI Intensity'] = cell['mean_fi']
+                    if 'contour_fi' in cell:
                         row['Contour FI Intensity'] = cell['contour_fi']
+                    if 'fi_ratio' in cell:
                         row['FI Ratio (Contour/Mean)'] = cell['fi_ratio']
                     detailed_rows.append(row)
             
@@ -978,6 +999,8 @@ Examples:
                        help='Path to FI channel TIFF file for fluorescence intensity analysis')
     parser.add_argument('--fi-contour-thickness', type=int, default=1,
                        help='Thickness of contour region in pixels for FI intensity calculation (default: 1)')
+    parser.add_argument('--no-fi-contour', action='store_true',
+                       help='Disable contour-based FI metrics (only compute Mean FI Intensity)')
     
     args = parser.parse_args()
     
@@ -1020,7 +1043,8 @@ Examples:
         remove_small=not args.no_remove_small,
         min_size_pixels=args.min_size,
         fi_image_path=fi_image_path,
-        fi_contour_thickness=args.fi_contour_thickness
+        fi_contour_thickness=args.fi_contour_thickness,
+        fi_do_contour=not args.no_fi_contour,
     )
     
     # Get input mask filename stem for output naming
@@ -1040,8 +1064,8 @@ Examples:
         vis_output = output_dir / f"{input_mask_stem}_filter_visualization.tif"
         create_filter_visualization(masks_with_cellids, detailed_data, str(vis_output), masks_original=masks_original)
     
-    # Create FI contour visualization if FI analysis was performed
-    if args.fi_image:
+    # Create FI contour visualization only if contour FI was computed
+    if args.fi_image and (not args.no_fi_contour):
         # Reload FI images for visualization (they were already loaded in analyze_masks, but we need them here)
         fi_images = tifffile.imread(args.fi_image)
         # Handle different dimensions (same logic as in analyze_masks)
@@ -1092,7 +1116,7 @@ Examples:
     print(f"  All files saved in folder: {output_dir}")
     if args.visualization:
         print(f"  Visualization saved to: {vis_output}")
-    if args.fi_image:
+    if args.fi_image and (not args.no_fi_contour):
         fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
         print(f"  FI contour visualization saved to: {fi_contour_output}")
     return 0

@@ -609,6 +609,32 @@ def get_modern_stylesheet():
     QLineEdit:hover, QTextEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {
         border: 1px solid #4a4a4a;
     }
+
+    /* ===== SPINBOX ARROWS (BETTER CONTRAST) ===== */
+    QSpinBox::up-button, QDoubleSpinBox::up-button {
+        subcontrol-origin: border;
+        subcontrol-position: top right;
+        width: 20px;
+        border-left: 1px solid #3a3a3a;
+        border-top-right-radius: 6px;
+        background-color: #5a9eff;
+    }
+    QSpinBox::down-button, QDoubleSpinBox::down-button {
+        subcontrol-origin: border;
+        subcontrol-position: bottom right;
+        width: 20px;
+        border-left: 1px solid #3a3a3a;
+        border-bottom-right-radius: 6px;
+        background-color: #5a9eff;
+    }
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+        background-color: #6aaeff;
+    }
+    QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+    QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+        background-color: #4a8eef;
+    }
     
     /* ===== MODERN COMBO BOXES ===== */
     QComboBox {
@@ -6774,8 +6800,9 @@ class AnalyzeMasksTab(QWidget):
         fi_info_icon = create_info_icon(
             "Analyze fluorescence intensity (FI) from a separate FI channel image.\n\n"
             "When enabled: Requires selecting an FI channel TIFF file.\n"
-            "The analysis will add three columns to the Excel output:\n"
-            "- Mean FI intensity (average pixel intensity within each cell)\n"
+            "The analysis will always add:\n"
+            "- Mean FI intensity (average pixel intensity within each cell)\n\n"
+            "Optional (if 'Contour FI' is enabled):\n"
             "- Contour FI intensity (average intensity at cell boundary)\n"
             "- FI ratio (contour FI / mean FI)\n\n"
             "Use when: You have a separate fluorescence channel image and want to quantify\n"
@@ -6785,7 +6812,20 @@ class AnalyzeMasksTab(QWidget):
         fi_checkbox_layout.addWidget(self.analyze_fi)
         fi_checkbox_layout.addWidget(fi_info_icon)
         
-        # Contour thickness parameter (on same line as Analyze FI checkbox)
+        # Optional contour FI analysis toggle + contour thickness (same line)
+        self.analyze_fi_contour = QCheckBox("Contour FI")
+        # Keep it OFF until Analyze FI is enabled (prevents confusing "checked but disabled" state)
+        self.analyze_fi_contour.setChecked(False)
+        self.analyze_fi_contour.setEnabled(False)  # Disabled until Analyze FI is enabled
+        contour_fi_info_icon = create_info_icon(
+            "Compute contour-based FI metrics (boundary intensity + FI ratio).\n\n"
+            "When disabled: Only Mean FI Intensity will be calculated.\n"
+            "Contour thickness is ignored.",
+            parent_widget=self
+        )
+        fi_checkbox_layout.addWidget(self.analyze_fi_contour)
+        fi_checkbox_layout.addWidget(contour_fi_info_icon)
+
         contour_thickness_label = QLabel("Contour thickness (pixels):")
         contour_thickness_info_icon = create_info_icon(
             "Thickness of the contour region used for FI intensity calculation.\n\n"
@@ -6823,8 +6863,9 @@ class AnalyzeMasksTab(QWidget):
         fi_file_layout.addWidget(self.fi_file_btn, 0)
         fi_layout.addLayout(fi_file_layout)
         
-        # Connect checkbox to enable/disable FI file selection and contour thickness
+        # Connect checkbox(es) to enable/disable FI file selection and contour options
         self.analyze_fi.toggled.connect(self._update_fi_file_state)
+        self.analyze_fi_contour.toggled.connect(self._update_fi_contour_state)
         
         fi_group.setLayout(fi_layout)
         fi_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -6918,8 +6959,25 @@ class AnalyzeMasksTab(QWidget):
         self.fi_file_path.setEnabled(checked)
         if hasattr(self, 'fi_file_btn'):
             self.fi_file_btn.setEnabled(checked)
+        if hasattr(self, 'analyze_fi_contour'):
+            self.analyze_fi_contour.setEnabled(checked)
+            # When FI is disabled, force contour FI off to avoid a confusing checked state
+            if not checked:
+                self.analyze_fi_contour.setChecked(False)
+            # When FI is enabled, default contour FI to ON only if user hasn't chosen yet
+            elif checked and not self.analyze_fi_contour.isChecked() and not getattr(self, "_fi_contour_user_set", False):
+                self.analyze_fi_contour.setChecked(True)
+        self._update_fi_contour_state()
+
+    def _update_fi_contour_state(self, *_args):
+        """Enable/disable contour thickness based on Analyze FI + Contour FI toggles."""
+        # Track explicit user interaction so we don't re-force the default later
+        if getattr(self, "analyze_fi_contour", None) is not None:
+            self._fi_contour_user_set = True
+        is_fi_enabled = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+        is_contour_enabled = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
         if hasattr(self, 'fi_contour_thickness'):
-            self.fi_contour_thickness.setEnabled(checked)
+            self.fi_contour_thickness.setEnabled(is_fi_enabled and is_contour_enabled)
     
     def _is_folder_mode(self):
         """Check if current path is a folder"""
@@ -7069,6 +7127,8 @@ class AnalyzeMasksTab(QWidget):
             d["create_combined_summary"] = self.create_combined_summary.isChecked()
         if hasattr(self, "analyze_fi"):
             d["analyze_fi"] = self.analyze_fi.isChecked()
+        if hasattr(self, "analyze_fi_contour"):
+            d["analyze_fi_contour"] = self.analyze_fi_contour.isChecked()
         if hasattr(self, "fi_contour_thickness"):
             d["fi_contour_thickness"] = self.fi_contour_thickness.value()
         return d
@@ -7097,6 +7157,8 @@ class AnalyzeMasksTab(QWidget):
             self.create_combined_summary.setChecked(bool(data["create_combined_summary"]))
         if "analyze_fi" in data and hasattr(self, "analyze_fi"):
             self.analyze_fi.setChecked(bool(data["analyze_fi"]))
+        if "analyze_fi_contour" in data and hasattr(self, "analyze_fi_contour"):
+            self.analyze_fi_contour.setChecked(bool(data["analyze_fi_contour"]))
         if "fi_contour_thickness" in data and hasattr(self, "fi_contour_thickness"):
             try:
                 self.fi_contour_thickness.setValue(int(data["fi_contour_thickness"]))
@@ -7281,6 +7343,7 @@ class AnalyzeMasksTab(QWidget):
             # Load FI images if FI analysis is enabled
             fi_images = None
             fi_contour_thickness = 1
+            do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
             if self.analyze_fi.isChecked() and self.fi_file_path.text():
                 try:
                     fi_path = Path(self.fi_file_path.text())
@@ -7303,7 +7366,8 @@ class AnalyzeMasksTab(QWidget):
                             QMessageBox.warning(preview_dialog, "Frame Mismatch", 
                                               f"FI image has {fi_images.shape[0]} frames but mask has {num_frames} frames.")
                             fi_images = None
-                        fi_contour_thickness = self.fi_contour_thickness.value()
+                        if do_fi_contour:
+                            fi_contour_thickness = self.fi_contour_thickness.value()
                 except Exception as e:
                     QMessageBox.warning(preview_dialog, "FI Load Error", 
                                       f"Could not load FI image:\n{str(e)}")
@@ -7415,7 +7479,8 @@ class AnalyzeMasksTab(QWidget):
                 
                 # Get current FI contour thickness (may have changed)
                 nonlocal fi_contour_thickness
-                if hasattr(self, 'fi_contour_thickness'):
+                do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                if do_fi_contour and hasattr(self, 'fi_contour_thickness'):
                     fi_contour_thickness = self.fi_contour_thickness.value()
                 
                 # Reload FI images if FI file path changed or wasn't loaded before
@@ -7638,8 +7703,9 @@ class AnalyzeMasksTab(QWidget):
                             rejected_mask = np.isin(mask, rejected_array)
                             vis[rejected_mask, 0] = 255  # Red channel
                         
-                        # Add FI contours if FI analysis is enabled
-                        if fi_images is not None and self.analyze_fi.isChecked():
+                        # Add FI contours if enabled
+                        do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                        if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
                             try:
                                 # Get FI image for this frame
                                 fi_image = fi_images[frame_idx]
@@ -7688,7 +7754,8 @@ class AnalyzeMasksTab(QWidget):
                         ax = fig.add_subplot(111)
                         ax.imshow(vis)
                         title = f"Frame {frame_idx + 1}/{num_frames}: Green=Accepted ({len(accepted_labels)}), Red=Rejected ({len(rejected_labels)})"
-                        if fi_images is not None and self.analyze_fi.isChecked():
+                        do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                        if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
                             title += f", Yellow=FI Contours (thickness={fi_contour_thickness})"
                         ax.set_title(title)
                         ax.axis('off')
@@ -7948,9 +8015,12 @@ class AnalyzeMasksTab(QWidget):
                 fi_path = Path(self.fi_file_path.text())
                 if fi_path.exists():
                     cmd_args.extend(['--fi-image', str(fi_path)])
-                    # Add contour thickness parameter
-                    fi_contour_thickness = self.fi_contour_thickness.value()
-                    cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
+                    do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                    if do_fi_contour:
+                        fi_contour_thickness = self.fi_contour_thickness.value()
+                        cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
+                    else:
+                        cmd_args.append('--no-fi-contour')
                 else:
                     QMessageBox.warning(self, "FI File Not Found", 
                                       f"The selected FI file does not exist:\n{fi_path}")
@@ -8063,9 +8133,12 @@ class AnalyzeMasksTab(QWidget):
             fi_path = Path(self.fi_file_path.text())
             if fi_path.exists():
                 cmd_args.extend(['--fi-image', str(fi_path)])
-                # Add contour thickness parameter
-                fi_contour_thickness = self.fi_contour_thickness.value()
-                cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
+                do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                if do_fi_contour:
+                    fi_contour_thickness = self.fi_contour_thickness.value()
+                    cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
+                else:
+                    cmd_args.append('--no-fi-contour')
             else:
                 QMessageBox.warning(self, "FI File Not Found", 
                                   f"The selected FI file does not exist:\n{fi_path}")
