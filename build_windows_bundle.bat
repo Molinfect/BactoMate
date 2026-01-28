@@ -42,10 +42,9 @@ python -m nuitka ^
   --nofollow-import-to=nd2 ^
   --nofollow-import-to=cellpose ^
   --nofollow-import-to=omnipose ^
-  --jobs=auto ^
+  --jobs=4 ^
   --lto=no ^
   --low-memory ^
-  --no-pyi-file ^
   --disable-ccache ^
   --no-progressbar ^
   --assume-yes-for-downloads ^
