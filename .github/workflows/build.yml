@@ -32,7 +32,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11'  # Must be 3.11 (see requirements.txt / README)
+      
+      - name: Verify Python version
+        run: python --version
       
       - name: Create virtual environment
         run: |
@@ -44,7 +47,13 @@ jobs:
       - name: Build Windows bundle
         shell: cmd
         run: |
-          build_windows_bundle.bat
+          call venv\Scripts\activate.bat
+          if not exist "build_windows_bundle.bat" (
+            echo ERROR: build_windows_bundle.bat not found in current directory
+            dir /b
+            exit /b 1
+          )
+          .\build_windows_bundle.bat
       
       - name: Create zip archive
         run: |

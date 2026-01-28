@@ -11919,9 +11919,9 @@ class MainWindow(QMainWindow):
         # Add stretch to center content
         title_bar_layout.addStretch()
         
-        # Logo
+        # Logo (use base_path when frozen/Nuitka so logo next to exe is found)
         logo_label = QLabel()
-        logo_path = Path(__file__).parent / "logo2.png"
+        logo_path = Path(base_path) / "logo2.png" if (getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')) else Path(__file__).parent / "logo2.png"
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path))
             # Scale logo to fit title bar (slimmer, max height 60px, maintain aspect ratio)
