@@ -16,6 +16,7 @@ pip install nuitka ordered-set --quiet
 
 echo [2/4] Running Nuitka standalone build (target: under 6h on CI)...
 REM Include heavy/slow packages as bytecode so C compilation finishes within job timeout
+REM Optimizations: parallel jobs, no LTO (slow), more exclusions, no progress bar overhead
 python -m nuitka ^
   --standalone ^
   --plugin-enable=pyqt6 ^
@@ -31,6 +32,15 @@ python -m nuitka ^
   --nofollow-import-to=numba ^
   --nofollow-import-to=xarray ^
   --nofollow-import-to=wandb ^
+  --nofollow-import-to=IPython ^
+  --nofollow-import-to=ipywidgets ^
+  --nofollow-import-to=jupyter ^
+  --nofollow-import-to=notebook ^
+  --nofollow-import-to=networkx ^
+  --nofollow-import-to=trackastra ^
+  --jobs=4 ^
+  --lto=no ^
+  --no-progressbar ^
   --assume-yes-for-downloads ^
   --output-dir=build ^
   omnipose_batch_gui.py
