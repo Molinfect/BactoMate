@@ -4176,7 +4176,8 @@ class ProcessingTab(QWidget):
         model_info_icon = create_info_icon(
             "Omnipose model type for cell segmentation.\n\n"
             "Default: 'bact_phase_omni'\n"
-            "Source: Official Omnipose models (https://omnipose.readthedocs.io/models.html)\n\n"
+            "Models are downloaded from: https://github.com/kevinjohncutler/omnipose-models\n"
+            "Documentation: https://omnipose.readthedocs.io/models.html\n\n"
             "Available Omnipose models:\n"
             "- bact_phase_omni: Bacterial phase contrast (recommended for bacteria)\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
@@ -4184,10 +4185,6 @@ class ProcessingTab(QWidget):
             "- worm_omni: C. elegans and similar\n"
             "- plant_omni: Plant cells (3D)\n"
             "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
-            "Cellpose models (no Omnipose):\n"
-            "- cyto2: General cytoplasm (Cellpose)\n"
-            "- cyto: Original cytoplasm (Cellpose)\n"
-            "- nuclei: Nucleus segmentation (Cellpose)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         , parent_widget=self)
         model_layout.addWidget(model_label)
@@ -4239,17 +4236,14 @@ class ProcessingTab(QWidget):
         check_model_availability()
         self.model_combo.setToolTip(
             "Omnipose model type for cell segmentation.\n\n"
-            "Default: 'bact_phase_omni'\n"
-            "Source: Optimized for bacterial phase contrast images\n\n"
+            "Default: 'bact_phase_omni'\n\n"
             "Available models:\n"
             "- bact_phase_omni: Bacterial phase contrast (default, best for bacteria)\n"
-            "- cyto2_omni: General cytoplasm segmentation\n"
-            "- cyto_omni: Original cytoplasm model\n"
-            "- bact_omni: General bacterial cells\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
+            "- cyto2_omni: General cytoplasm segmentation\n"
             "- worm_omni: C. elegans and similar\n"
-            "- nuclei: Nucleus segmentation only\n"
-            "- cyto2/cyto: Cellpose models (no Omnipose)\n\n"
+            "- plant_omni: Plant cells (3D)\n"
+            "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         )
         seg_layout.addLayout(model_layout)
@@ -4533,13 +4527,9 @@ class ProcessingTab(QWidget):
     
     def _get_available_models(self):
         """
-        Return list of available Omnipose models.
-        Based on user's confirmed list of functional models.
-        Only includes models that are known to exist and work.
+        Return list of available Omnipose models only (no Cellpose-only models).
         """
-        # User's confirmed list of available/functional models
-        # These are the models that actually exist and work
-        confirmed_omnipose_models = [
+        return [
             'bact_phase_omni',  # Recommended for bacteria
             'bact_fluor_omni',
             'cyto2_omni',
@@ -4547,16 +4537,6 @@ class ProcessingTab(QWidget):
             'plant_omni',
             'bact_phase_affinity'
         ]
-        
-        # Cellpose models (always available, not Omnipose-specific)
-        cellpose_models = [
-            'cyto2',
-            'cyto',
-            'nuclei'
-        ]
-        
-        # Combine and return
-        return confirmed_omnipose_models + cellpose_models
     
     def reset_segmentation_defaults(self):
         """Reset all segmentation parameters to their default values"""
@@ -10305,13 +10285,9 @@ class GrowthCurveVideoTab(QWidget):
     
     def _get_available_models(self):
         """
-        Return list of available Omnipose models.
-        Based on user's confirmed list of functional models.
-        Only includes models that are known to exist and work.
+        Return list of available Omnipose models only (no Cellpose-only models).
         """
-        # User's confirmed list of available/functional models
-        # These are the models that actually exist and work
-        confirmed_omnipose_models = [
+        return [
             'bact_phase_omni',  # Recommended for bacteria
             'bact_fluor_omni',
             'cyto2_omni',
@@ -10319,16 +10295,6 @@ class GrowthCurveVideoTab(QWidget):
             'plant_omni',
             'bact_phase_affinity'
         ]
-        
-        # Cellpose models (always available, not Omnipose-specific)
-        cellpose_models = [
-            'cyto2',
-            'cyto',
-            'nuclei'
-        ]
-        
-        # Combine and return
-        return confirmed_omnipose_models + cellpose_models
     
     def create_video(self):
         """Create growth curve video with side-by-side graph and video"""
