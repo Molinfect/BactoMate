@@ -11,10 +11,10 @@ if not exist "omnipose_batch_gui.py" (
     exit /b 1
 )
 
-echo [1/4] Ensuring Nuitka...
+echo [1/5] Ensuring Nuitka...
 pip install nuitka ordered-set --quiet
 
-echo [2/4] Running Nuitka standalone build (target: under 6h on CI)...
+echo [2/5] Running Nuitka standalone build (target: under 6h on CI)...
 REM Include heavy/slow packages as bytecode so C compilation finishes within job timeout
 REM Aggressive optimizations: max parallel jobs, low-memory mode, no LTO, disable ccache, exclude heavy packages
 python -m nuitka ^
@@ -81,8 +81,14 @@ REM [Option A] Copy nofollow packages from site-packages into dist so exe can im
 REM Build stays fast (no compile of numpy/torch/etc); packages are present at runtime.
 echo [4/5] Copying heavy packages from site-packages into BactiMate-Windows...
 for /f "delims=" %%i in ('python -c "import site; print(site.getsitepackages()[0])"') do set SITEPACKAGES=%%i
+if not defined SITEPACKAGES if defined VIRTUAL_ENV set SITEPACKAGES=%VIRTUAL_ENV%\Lib\site-packages
 if not defined SITEPACKAGES (
-    echo WARNING: Could not get site-packages path. Skipping package copy.
+    echo ERROR: Could not get site-packages path. Set VIRTUAL_ENV or run from activated venv.
+    exit /b 1
+)
+if not exist "%SITEPACKAGES%\numpy" (
+    echo ERROR: site-packages has no numpy. Install requirements (pip install -r requirements.txt) and retry.
+    exit /b 1
 ) else (
     echo Using site-packages: %SITEPACKAGES%
     REM Copy each nofollow package (and .libs if present) into BactiMate-Windows
@@ -110,6 +116,36 @@ if not defined SITEPACKAGES (
     echo Heavy packages copied.
 )
 
-echo [5/5] Done. BactiMate-Windows\ is ready.
+REM [5/5] Post-build verification - fail early with clear message if something is missing
+echo [5/5] Verifying build...
+set EXE_OK=0
+if exist "BactiMate-Windows\BactiMate.exe" set EXE_OK=1
+if exist "BactiMate-Windows\omnipose_batch_gui.exe" set EXE_OK=1
+if %EXE_OK%==0 (
+    echo ERROR: Build produced no executable. Expected BactiMate-Windows\BactiMate.exe or omnipose_batch_gui.exe.
+    exit /b 1
+)
+if not exist "BactiMate-Windows\numpy" (
+    echo ERROR: BactiMate-Windows\numpy missing after copy. Build would fail at runtime; failing now.
+    exit /b 1
+)
+if not exist "BactiMate-Windows\omnipose" (
+    echo WARNING: BactiMate-Windows\omnipose not found. Segmentation tab may fail at runtime.
+)
+REM Run exe once to prove it starts and can import numpy/PyQt6/tifffile (fail build if it crashes)
+echo Running smoke test (exe --smoke-test)...
+cd BactiMate-Windows
+if exist "BactiMate.exe" (
+    BactiMate.exe --smoke-test
+) else (
+    omnipose_batch_gui.exe --smoke-test
+)
+if errorlevel 1 (
+    cd ..
+    echo ERROR: Smoke test failed. The exe did not run or could not import required packages.
+    exit /b 1
+)
+cd ..
+echo Smoke test passed. BactiMate-Windows\ is ready.
 echo Artifacts: BactiMate-Windows\BactiMate.exe (or omnipose_batch_gui.exe) and dependencies.
 endlocal

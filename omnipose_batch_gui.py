@@ -17,6 +17,24 @@ from datetime import datetime
 import traceback
 import warnings
 
+# --version / --smoke-test: exit before loading GUI or heavy deps (used by CI to verify Windows exe runs)
+if len(sys.argv) >= 2 and sys.argv[1] in ("--version", "-v"):
+    print("BactiMate 1.0")
+    sys.exit(0)
+if len(sys.argv) >= 2 and sys.argv[1] == "--smoke-test":
+    try:
+        import numpy as np
+        from PyQt6.QtCore import QCoreApplication
+        import tifffile
+        _ = np.zeros((1, 1))
+        _ = QCoreApplication  # ensure Qt is loadable
+        print("Smoke test OK")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Smoke test failed: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+
 # Session log storage: Logs folder next to the app
 LOGS_DIR = Path(__file__).resolve().parent / "Logs"
 

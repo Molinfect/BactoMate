@@ -23,6 +23,7 @@ jobs:
   build-windows:
     name: Build Windows Bundle
     runs-on: windows-latest
+    timeout-minutes: 360
     if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_windows == 'true' || github.event.inputs.build_windows == '') || github.event_name != 'workflow_dispatch'
     
     steps:
@@ -67,6 +68,14 @@ jobs:
             exit /b 1
           )
           .\build_windows_bundle.bat
+      
+      - name: Smoke test Windows exe
+        shell: cmd
+        run: |
+          cd BactiMate-Windows
+          if exist BactiMate.exe ( BactiMate.exe --smoke-test ) else ( omnipose_batch_gui.exe --smoke-test )
+          if errorlevel 1 exit /b 1
+          cd ..
       
       - name: Create zip archive
         run: |
