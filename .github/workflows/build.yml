@@ -44,6 +44,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
+      - name: Pre-download Nuitka Dependency Walker (workaround for CI download failure)
+        shell: pwsh
+        run: |
+          $dir = "$env:LOCALAPPDATA\Nuitka\Nuitka\Cache\downloads\depends\x86_64"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $url = "https://dependencywalker.com/depends22_x64.zip"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile "$dir\depends22_x64.zip" -UseBasicParsing
+          } catch {
+            Invoke-WebRequest -Uri "http://dependencywalker.com/depends22_x64.zip" -OutFile "$dir\depends22_x64.zip" -UseBasicParsing
+          }
+          if (-not (Test-Path "$dir\depends22_x64.zip")) { throw "Failed to download Dependency Walker" }
+      
       - name: Build Windows bundle
         shell: cmd
         run: |
