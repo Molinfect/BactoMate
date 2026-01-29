@@ -4301,6 +4301,31 @@ class ProcessingTab(QWidget):
         flow_layout.addWidget(self.flow_threshold)
         seg_layout.addLayout(flow_layout)
         
+        # Mask threshold
+        mask_layout = QHBoxLayout()
+        mask_label = QLabel("Mask threshold:")
+        mask_info_icon = create_info_icon(
+            "Mask probability threshold for cell detection.\n\n"
+            "Default: 0.0\n"
+            "Source: Omnipose/Cellpose default\n\n"
+            "Lower values: More permissive (more cells, possible false positives).\n"
+            "Higher values: Stricter (fewer cells).\n\n"
+            "Range: 0.0 to 1.0\n"
+            "Tip: Usually 0.0 is fine; increase if masks look too loose.",
+            parent_widget=self
+        )
+        mask_layout.addWidget(mask_label)
+        mask_layout.addWidget(mask_info_icon)
+        mask_layout.addStretch()
+        self.mask_threshold = QDoubleSpinBox()
+        self.mask_threshold.setRange(0.0, 1.0)
+        self.mask_threshold.setValue(0.0)
+        self.mask_threshold.setSingleStep(0.1)
+        self.mask_threshold.setDecimals(2)
+        self.mask_threshold.setFixedWidth(100)
+        mask_layout.addWidget(self.mask_threshold)
+        seg_layout.addLayout(mask_layout)
+        
         basic_params_group.setLayout(basic_params_layout)
         basic_params_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         seg_container_layout.addWidget(basic_params_group)
@@ -4547,6 +4572,7 @@ class ProcessingTab(QWidget):
             self.model_combo.setCurrentIndex(0)
         self.diameter.setValue(0)
         self.flow_threshold.setValue(0.4)
+        self.mask_threshold.setValue(0.0)
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
@@ -4557,6 +4583,7 @@ class ProcessingTab(QWidget):
             "model": self.model_combo.currentText(),
             "diameter": self.diameter.value(),
             "flow_threshold": self.flow_threshold.value(),
+            "mask_threshold": self.mask_threshold.value(),
             "use_gpu": self.use_gpu.isChecked(),
             "cluster": self.cluster.isChecked(),
             "create_overlay": self.create_overlay.isChecked(),
@@ -4571,7 +4598,7 @@ class ProcessingTab(QWidget):
             if idx >= 0:
                 self.model_combo.setCurrentIndex(idx)
         for k, w in [
-            ("diameter", self.diameter), ("flow_threshold", self.flow_threshold),
+            ("diameter", self.diameter), ("flow_threshold", self.flow_threshold), ("mask_threshold", self.mask_threshold),
         ]:
             if k in data and hasattr(w, "setValue"):
                 try:
@@ -5359,12 +5386,13 @@ class ProcessingTab(QWidget):
                 return {
                     'diameter': diameter_value if diameter_value > 0 else 0,  # Use 0 instead of None
                     'flow_threshold': self.flow_threshold.value(),
+                    'mask_threshold': self.mask_threshold.value(),
                     'cluster': self.cluster.isChecked(),
                     'model_type': model_type,
                     'use_gpu': self.use_gpu.isChecked(),
                 }
             
-            # Cache for segmentation results: key = (frame_idx, diameter, flow_threshold, cluster, model_type, use_gpu)
+            # Cache for segmentation results: key = (frame_idx, diameter, flow_threshold, mask_threshold, cluster, model_type, use_gpu)
             preview_dialog.segmentation_cache = {}
             
             def get_cache_key(frame_idx, params):
@@ -5379,8 +5407,12 @@ class ProcessingTab(QWidget):
                 if flow_threshold is None or not isinstance(flow_threshold, (int, float)):
                     flow_threshold = 0.4
                 flow_threshold = float(flow_threshold)
+                mask_threshold = params.get('mask_threshold', 0.0)
+                if mask_threshold is None or not isinstance(mask_threshold, (int, float)):
+                    mask_threshold = 0.0
+                mask_threshold = float(mask_threshold)
                 
-                return (frame_idx, diameter, flow_threshold, 
+                return (frame_idx, diameter, flow_threshold, mask_threshold,
                        bool(params.get('cluster', False)), 
                        str(params.get('model_type', 'bact_phase_omni')), 
                        bool(params.get('use_gpu', True)))
@@ -5389,12 +5421,13 @@ class ProcessingTab(QWidget):
             class SegmentationWorker(QThread):
                 finished = pyqtSignal(object, object)  # mask, error
                 
-                def __init__(self, model, frame, diameter, flow_threshold, cluster):
+                def __init__(self, model, frame, diameter, flow_threshold, mask_threshold, cluster):
                     super().__init__()
                     self.model = model
                     self.frame = frame
                     self.diameter = diameter
                     self.flow_threshold = flow_threshold
+                    self.mask_threshold = mask_threshold
                     self.cluster = cluster
                 
                 def run(self):
@@ -5410,13 +5443,17 @@ class ProcessingTab(QWidget):
                         if flow_threshold is None or not isinstance(flow_threshold, (int, float)):
                             flow_threshold = 0.4
                         flow_threshold = float(flow_threshold)
+                        mask_threshold = self.mask_threshold
+                        if mask_threshold is None or not isinstance(mask_threshold, (int, float)):
+                            mask_threshold = 0.0
+                        mask_threshold = float(mask_threshold)
                         
                         mask, flows, styles, diams = self.model.eval(
                             self.frame,
                             channels=[0, 0],
                             diameter=diameter,
                             flow_threshold=flow_threshold,
-                            mask_threshold=0.0,  # Explicitly set mask_threshold
+                            mask_threshold=mask_threshold,
                             cellprob_threshold=0.0,
                             do_3D=False,
                             omni=True,
@@ -5445,6 +5482,10 @@ class ProcessingTab(QWidget):
                     params['flow_threshold'] = 0.4
                 else:
                     params['flow_threshold'] = float(params['flow_threshold'])
+                if params.get('mask_threshold') is None or not isinstance(params.get('mask_threshold'), (int, float)):
+                    params['mask_threshold'] = 0.0
+                else:
+                    params['mask_threshold'] = float(params['mask_threshold'])
                 
                 # Now generate cache key with clean parameters
                 cache_key = get_cache_key(frame_idx, params)
@@ -5475,6 +5516,7 @@ class ProcessingTab(QWidget):
                 # Extract parameters (already validated and converted above)
                 diameter = params['diameter']
                 flow_threshold = params['flow_threshold']
+                mask_threshold = params['mask_threshold']
                 cluster = params['cluster']
                 
                 try:
@@ -5482,6 +5524,7 @@ class ProcessingTab(QWidget):
                     # Double-check all parameters are valid numbers (defensive programming)
                     assert isinstance(diameter, (int, float)) and diameter is not None, f"Invalid diameter: {diameter}"
                     assert isinstance(flow_threshold, (int, float)) and flow_threshold is not None, f"Invalid flow_threshold: {flow_threshold}"
+                    assert isinstance(mask_threshold, (int, float)) and mask_threshold is not None, f"Invalid mask_threshold: {mask_threshold}"
                     
                     # Run segmentation (synchronously for now, but we can make it async later)
                     # Pass all parameters explicitly to match working batch_process_tiff_sequence.py
@@ -5499,7 +5542,7 @@ class ProcessingTab(QWidget):
                                     channels=[0, 0],
                                     diameter=diameter if diameter > 0 else 30.0,  # Never use 0 in frozen builds
                                     flow_threshold=flow_threshold,
-                                    mask_threshold=0.0,
+                                    mask_threshold=mask_threshold,
                                     cellprob_threshold=0.0,
                                     do_3D=False,
                                     omni=True,
@@ -5528,7 +5571,7 @@ class ProcessingTab(QWidget):
                             channels=[0, 0],
                             diameter=diameter,
                             flow_threshold=flow_threshold,
-                            mask_threshold=0.0,
+                            mask_threshold=mask_threshold,
                             cellprob_threshold=0.0,
                             do_3D=False,
                             omni=True,
@@ -5576,7 +5619,7 @@ class ProcessingTab(QWidget):
                                         channels=[0, 0],
                                         diameter=retry_diameter,
                                         flow_threshold=flow_threshold,
-                                        mask_threshold=0.0,
+                                        mask_threshold=mask_threshold,
                                         cellprob_threshold=0.0,
                                         do_3D=False,
                                         omni=True,
@@ -5586,8 +5629,8 @@ class ProcessingTab(QWidget):
                                         verbose=False
                                     )
                                     # Cache the result with the new diameter
-                                    cache_key_retry = get_cache_key(frame_idx, {'diameter': retry_diameter, 'flow_threshold': flow_threshold, 
-                                                                              'cluster': cluster, 'model_type': params.get('model_type'), 
+                                    cache_key_retry = get_cache_key(frame_idx, {'diameter': retry_diameter, 'flow_threshold': flow_threshold,
+                                                                              'mask_threshold': mask_threshold, 'cluster': cluster, 'model_type': params.get('model_type'),
                                                                               'use_gpu': params.get('use_gpu')})
                                     preview_dialog.segmentation_cache[cache_key_retry] = mask
                                     return mask
@@ -6006,6 +6049,7 @@ class ProcessingTab(QWidget):
                 '--model', self.model_combo.currentText(),
                 '--diameter', str(self.diameter.value()),
                 '--flow-threshold', str(self.flow_threshold.value()),
+                '--mask-threshold', str(self.mask_threshold.value()),
                 '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
             ]
             
@@ -6125,6 +6169,7 @@ class ProcessingTab(QWidget):
             '--model', self.model_combo.currentText(),
             '--diameter', str(self.diameter.value()),
             '--flow-threshold', str(self.flow_threshold.value()),
+            '--mask-threshold', str(self.mask_threshold.value()),
             '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
         ]
         
