@@ -492,7 +492,13 @@ def convert_nd2_to_tif(
                             shape = all_frames.shape
                             ndim = len(shape)
                             print(f"  Using first Z-slice (Z=1)")
-                
+                elif ndim == 5 and num_z == 1:
+                    # 5D TCZYX with single Z – reduce to TCYX so downstream sees 4D
+                    all_frames = all_frames[:, :, 0, :, :]  # Take first Z slice: TCYX
+                    shape = all_frames.shape
+                    ndim = len(shape)
+                    print(f"  Debug: Reduced 5D (T,C,Z,Y,X) to 4D (T,C,Y,X), new shape: {shape}")
+
                 # Handle channel selection
                 if channel_index is not None:
                     # Extract specific channel
@@ -609,9 +615,12 @@ def convert_nd2_to_tif(
                     output_filename = nd2_file.stem + channel_suffix + '.tif'
                     output_path = output_dir / output_filename
                     
-                    # Extract single channel if needed
-                    if len(all_frames.shape) == 4:  # TCYX but channel_index specified
-                        all_frames = all_frames[:, channel_index, :, :]  # Extract to TYX
+                    # Normalize to TYX: squeeze singleton C and Z so _save_tiff gets (T, Y, X)
+                    if len(all_frames.shape) == 5:  # TCZYX
+                        all_frames = all_frames[:, 0, 0, :, :]  # TYX (single C, single Z)
+                    elif len(all_frames.shape) == 4:  # TCYX
+                        ch_idx = 0 if channel_index is None else channel_index
+                        all_frames = all_frames[:, ch_idx, :, :]  # TYX
                     
                     _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
             
@@ -707,13 +716,25 @@ def _save_tiff_with_metadata(output_path: Path, frames: np.ndarray, num_frames: 
     if frames.size == 0:
         raise ValueError(f"Cannot save empty frames array! Shape: {frames.shape}")
     
-    # Ensure frames are in correct shape (T, Y, X)
+    # Ensure frames are in correct shape (T, Y, X); accept 4D/5D with singleton C/Z and squeeze
     if len(frames.shape) == 2:
         # Single frame - add time dimension
         frames = frames[np.newaxis, :, :]
     elif len(frames.shape) == 3:
         # Already TYX
         pass
+    elif len(frames.shape) == 4:
+        # (T, C, Y, X) – take first channel to get TYX
+        if frames.shape[1] == 1:
+            frames = frames[:, 0, :, :]
+        else:
+            raise ValueError(f"Unexpected frame shape: {frames.shape}, expected (T, Y, X) or (Y, X) or (T, 1, Y, X)")
+    elif len(frames.shape) == 5:
+        # (T, C, Z, Y, X) – take first C and Z to get TYX
+        if frames.shape[1] == 1 and frames.shape[2] == 1:
+            frames = frames[:, 0, 0, :, :]
+        else:
+            raise ValueError(f"Unexpected frame shape: {frames.shape}, expected (T, Y, X) or (Y, X) or (T, 1, 1, Y, X)")
     else:
         raise ValueError(f"Unexpected frame shape: {frames.shape}, expected (T, Y, X) or (Y, X)")
     

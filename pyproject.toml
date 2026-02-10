@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bactimate"
+version = "1.0"
+description = "Batch processing and analysis GUI for microscopy (Omnipose, tracking, SAM2)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "BactiMate" }]
+keywords = ["microscopy", "omnipose", "segmentation", "tracking", "nd2", "gui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+# Optional extras for install: pip install -e .[sam2] or pip install -e .[cuda]
+# Base install remains: pip install -r requirements.txt (or pip install -e .)
+[project.optional-dependencies]
+sam2 = [
+    "sam2>=0.1.0",
+    "huggingface_hub>=0.16.0",
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+]
+cuda = [
+    "torch",
+    "torchvision",
+]
+# Install CUDA-built PyTorch manually, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# Base workflow: install from repo with pip install -r requirements.txt
+# Optional: pip install -e .[sam2] to add SAM2 extra deps (sam2, huggingface_hub, torch>=2.5.1).
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gui*"]
+exclude = ["tests*", "Logs*"]

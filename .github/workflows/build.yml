@@ -1,145 +1,62 @@
-name: Build BactiMate Executables
+name: Build BactiMate (macOS)
 
 on:
-  workflow_dispatch:  # Manual trigger
-    inputs:
-      build_windows:
-        description: 'Build Windows executable'
-        required: false
-        default: true
-        type: boolean
-      build_macos:
-        description: 'Build macOS application'
-        required: false
-        default: true
-        type: boolean
+  workflow_dispatch:
   push:
     tags:
-      - 'v*'  # Trigger on version tags like v1.0.0
+      - 'v*'
   release:
     types: [created]
 
 jobs:
-  build-windows:
-    name: Build Windows Bundle
-    runs-on: windows-latest
-    timeout-minutes: 360
-    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_windows == 'true' || github.event.inputs.build_windows == '') || github.event_name != 'workflow_dispatch'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'  # Must be 3.11 (see requirements.txt / README)
-      
-      - name: Verify Python version
-        run: python --version
-      
-      - name: Create virtual environment
-        run: |
-          python -m venv --copies venv
-          venv\Scripts\activate
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Pre-download Nuitka Dependency Walker (workaround for CI download failure)
-        shell: pwsh
-        run: |
-          $dir = "$env:LOCALAPPDATA\Nuitka\Nuitka\Cache\downloads\depends\x86_64"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $url = "https://dependencywalker.com/depends22_x64.zip"
-          try {
-            Invoke-WebRequest -Uri $url -OutFile "$dir\depends22_x64.zip" -UseBasicParsing
-          } catch {
-            Invoke-WebRequest -Uri "http://dependencywalker.com/depends22_x64.zip" -OutFile "$dir\depends22_x64.zip" -UseBasicParsing
-          }
-          if (-not (Test-Path "$dir\depends22_x64.zip")) { throw "Failed to download Dependency Walker" }
-      
-      - name: Build Windows bundle
-        shell: cmd
-        run: |
-          call venv\Scripts\activate.bat
-          if not exist "build_windows_bundle.bat" (
-            echo ERROR: build_windows_bundle.bat not found in current directory
-            dir /b
-            exit /b 1
-          )
-          .\build_windows_bundle.bat
-      
-      - name: Smoke test Windows exe
-        shell: cmd
-        run: |
-          cd BactiMate-Windows
-          if exist BactiMate.exe ( BactiMate.exe --smoke-test ) else ( omnipose_batch_gui.exe --smoke-test )
-          if errorlevel 1 exit /b 1
-          cd ..
-      
-      - name: Create zip archive
-        run: |
-          if (-not (Test-Path dist)) { New-Item -ItemType Directory -Path dist }
-          Compress-Archive -Path BactiMate-Windows -DestinationPath dist\BactiMate-Windows.zip -Force
-      
-      - name: Upload Windows bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: BactiMate-Windows
-          path: dist/BactiMate-Windows.zip
-          retention-days: 30
-      
-      - name: Upload Windows bundle (release)
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/BactiMate-Windows.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   build-macos:
     name: Build macOS Application
     runs-on: macos-latest
-    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.build_macos == 'true' || github.event.inputs.build_macos == '') || github.event_name != 'workflow_dispatch'
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Create virtual environment
         run: |
           python3 -m venv --copies venv
           source venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
+
+      - name: Smoke test (before build)
+        run: |
+          source venv/bin/activate
+          python main.py --version
+          python main.py --smoke-test
+
       - name: Create icons
         run: |
-          chmod +x create_icons.sh
-          ./create_icons.sh || echo "Icons already exist or creation failed"
-      
+          chmod +x build/create_icons.sh
+          ./build/create_icons.sh || echo "Icons already exist or creation failed"
+
       - name: Build macOS application bundle
         run: |
-          chmod +x build_app_bundle.sh
-          ./build_app_bundle.sh
-      
+          chmod +x build/build_app_bundle.sh
+          ./build/build_app_bundle.sh
+
       - name: Create DMG
         run: |
-          chmod +x create_dmg.sh
-          ./create_dmg.sh
-      
+          chmod +x build/create_dmg.sh
+          ./build/create_dmg.sh
+
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v4
         with:
           name: BactiMate-macOS
           path: dist/BactiMate.dmg
           retention-days: 30
-      
+
       - name: Upload macOS DMG (release)
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1

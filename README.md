@@ -33,13 +33,13 @@ This opens the BactiMate GUI with three main tabs:
 
 ```bash
 source venv/bin/activate
-python batch_process_tiff_sequence.py your_sequence.tif --diameter 30
+python -m scripts.batch_process_tiff_sequence your_sequence.tif --diameter 30
 ```
 
 ### Process All Files in a Folder
 
 ```bash
-python batch_process_folder.py /path/to/folder \
+python -m scripts.batch_process_folder /path/to/folder \
     --model bact_phase_omni \
     --diameter 30 \
     --pixel-size 0.108 \
@@ -69,14 +69,17 @@ python batch_process_folder.py /path/to/folder \
    ```
    
    **For NVIDIA GPU (CUDA) support (optional):**
-   - **macOS/Linux:** Run `./install_cuda_pytorch.sh` after installing requirements
-   - **Windows:** Run `install_cuda_pytorch.bat` after installing requirements
+   - **macOS/Linux:** Run `./setup/install_cuda_pytorch.sh` after installing requirements
    - Or manually: `pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118`
    - Replace `cu118` with your CUDA version (check with `nvidia-smi` or `nvcc --version`)
 
-3. **For fresh setup (optional):**
+3. **Optional extras (pyproject.toml):**
+   - Install with SAM2 extra (e.g. newer torch): `pip install -e .[sam2]`
+   - Key dependencies in `requirements.txt` are pinned for reproducible builds (e.g. PyQt6, numpy).
+
+4. **For fresh setup (optional):**
    ```bash
-   ./setup_fresh_env.sh
+   ./setup/setup_fresh_env.sh
    ```
 
 ### Installation Details
@@ -97,7 +100,7 @@ python batch_process_folder.py /path/to/folder \
 Or manually:
 ```bash
 source venv/bin/activate
-python omnipose_batch_gui.py
+python main.py
 ```
 
 ### GUI Tabs
@@ -211,22 +214,22 @@ Analyze existing mask files with morphological filtering.
 
 ```bash
 # Basic usage
-python batch_process_tiff_sequence.py input.tif --diameter 30
+python -m scripts.batch_process_tiff_sequence input.tif --diameter 30
 
 # With specific model
-python batch_process_tiff_sequence.py input.tif --model bact_phase_omni --diameter 30
+python -m scripts.batch_process_tiff_sequence input.tif --model bact_phase_omni --diameter 30
 
 # With channels
-python batch_process_tiff_sequence.py input.tif --channels 0 1 --diameter 25
+python -m scripts.batch_process_tiff_sequence input.tif --channels 0 1 --diameter 25
 
 # Adjust sensitivity
-python batch_process_tiff_sequence.py input.tif --flow-threshold 0.3 --mask-threshold -2
+python -m scripts.batch_process_tiff_sequence input.tif --flow-threshold 0.3 --mask-threshold -2
 
 # Use CPU instead of GPU
-python batch_process_tiff_sequence.py input.tif --no-gpu
+python -m scripts.batch_process_tiff_sequence input.tif --no-gpu
 
 # Skip overlay creation (faster)
-python batch_process_tiff_sequence.py input.tif --no-overlay
+python -m scripts.batch_process_tiff_sequence input.tif --no-overlay
 ```
 
 ### Command Line Options
@@ -260,7 +263,7 @@ python batch_process_tiff_sequence.py input.tif --no-overlay
 ### Process Multiple Files in a Folder
 
 ```bash
-python batch_process_folder.py /path/to/folder \
+python -m scripts.batch_process_folder /path/to/folder \
     --model bact_phase_omni \
     --diameter 30 \
     --pixel-size 0.108 \
@@ -315,13 +318,13 @@ For multi-time-point TIFF sequences:
 
 ```bash
 # Analyze masks with default parameters
-python analyze_cell_areas.py masks.tif
+python -m scripts.analyze_cell_areas masks.tif
 
 # Specify pixel size
-python analyze_cell_areas.py masks.tif --pixel-size 0.108
+python -m scripts.analyze_cell_areas masks.tif --pixel-size 0.108
 
 # Adjust morphological filters
-python analyze_cell_areas.py masks.tif \
+python -m scripts.analyze_cell_areas masks.tif \
     --min-aspect-ratio 2.0 \
     --min-eccentricity 0.7 \
     --min-solidity 0.8 \
@@ -358,7 +361,7 @@ The script filters for rod-shaped cells using:
 
 **Bacterial Cells (Typical Settings):**
 ```bash
-python analyze_cell_areas.py masks.tif \
+python -m scripts.analyze_cell_areas masks.tif \
     --pixel-size 0.108 \
     --min-aspect-ratio 2.0 \
     --max-aspect-ratio 8.0 \
@@ -371,10 +374,10 @@ python analyze_cell_areas.py masks.tif \
 **Complete Workflow:**
 ```bash
 # Step 1: Process images
-python batch_process_tiff_sequence.py input.tif --model bact_phase_omni --diameter 30
+python -m scripts.batch_process_tiff_sequence input.tif --model bact_phase_omni --diameter 30
 
 # Step 2: Analyze results
-python analyze_cell_areas.py input_masks.tif --pixel-size 0.108 --max-area 50 --max-width 2.0
+python -m scripts.analyze_cell_areas input_masks.tif --pixel-size 0.108 --max-area 50 --max-width 2.0
 ```
 
 ## Building App Bundles
@@ -395,7 +398,7 @@ Instead of compiling with Nuitka (which has PyQt6 compatibility issues on macOS)
 
 1. **Set up the environment:**
    ```bash
-   ./setup_fresh_env.sh
+   ./setup/setup_fresh_env.sh
    ```
 
 2. **For macOS DMG creation (optional):**
@@ -407,12 +410,12 @@ Instead of compiling with Nuitka (which has PyQt6 compatibility issues on macOS)
 
 1. **Create icons (first time only):**
    ```bash
-   ./create_icons.sh
+   ./build/create_icons.sh
    ```
 
 2. **Build the app bundle:**
    ```bash
-   ./build_app_bundle.sh
+   ./build/build_app_bundle.sh
    ```
    
    This will create `BactiMate.app` in the project root directory.
@@ -426,7 +429,7 @@ Instead of compiling with Nuitka (which has PyQt6 compatibility issues on macOS)
 
 4. **Create a DMG for distribution (optional):**
    ```bash
-   ./create_dmg.sh
+   ./build/create_dmg.sh
    ```
    
    This creates `dist/BactiMate.dmg` that users can mount and drag to Applications.
@@ -444,7 +447,7 @@ BactiMate.app/
 │   │   └── BactiMate          # Launcher executable (runs launch_gui.sh)
 │   ├── Resources/             # All project files
 │   │   ├── venv/              # Python virtual environment
-│   │   ├── omnipose_batch_gui.py
+│   │   ├── main.py
 │   │   ├── launch_gui.sh      # Main launch script
 │   │   └── ... (all other project files)
 │   └── Info.plist             # macOS app metadata
@@ -472,7 +475,7 @@ tar -cjf BactiMate-macOS.tar.bz2 BactiMate.app
 
 Or use the DMG method:
 ```bash
-./create_dmg.sh
+./build/create_dmg.sh
 ```
 
 ### Cross-Machine Compatibility
@@ -510,24 +513,11 @@ Total size is typically 500MB-1.5GB, which is reasonable for a scientific applic
 ### Building on Different Platforms
 
 **macOS Bundle:**
-- Run `./build_app_bundle.sh` on macOS
+- Run `./build/build_app_bundle.sh` on macOS
 - Creates `BactiMate.app` that can be distributed to other Macs
 - No compilation needed - just bundles the venv and files
 
-**Windows Bundle:**
-- Run `./build_windows_bundle.sh` (on any platform) or `build_windows_bundle.bat` (on Windows)
-- Creates `BactiMate-Windows` folder with launcher `BactiMate.bat`
-- No compilation needed - just bundles the venv and files
-- Users run `BactiMate.bat` to launch the application
-- Can be zipped and distributed
-
-**Both approaches:**
-- ✅ No compilation (no PyInstaller, Nuitka, etc.)
-- ✅ Just bundle the venv and project files
-- ✅ Self-contained and distributable
-- ✅ Works across different machines (same OS)
-
-**Note:** Windows bundle must be created on Windows (or transferred there) because the venv contains platform-specific binaries. The bundle script can be run on macOS/Linux to prepare the structure, but the venv needs to be created on Windows.
+**macOS-only:** This repo focuses on the macOS app bundle. Windows build scripts have been removed.
 
 ## Troubleshooting
 
@@ -538,6 +528,7 @@ Total size is typically 500MB-1.5GB, which is reasonable for a scientific applic
 1. Check that `launch_gui.sh` is executable:
    ```bash
    chmod +x BactiMate.app/Contents/Resources/launch_gui.sh
+   chmod +x BactiMate.app/Contents/Resources/setup/launch_gui.sh
    ```
 
 2. Check console logs:
@@ -595,7 +586,7 @@ Common issues:
 If you see "Could not find the Qt platform plugin 'cocoa'":
 
 ```bash
-./repair_pyqt6.sh
+./setup/repair_pyqt6.sh
 ```
 
 **Why this happens:**
@@ -611,8 +602,8 @@ If you see "Could not find the Qt platform plugin 'cocoa'":
 
 1. Make sure venv is activated: `source venv/bin/activate`
 2. Check PyQt6 is installed: `pip show PyQt6`
-3. Run repair script: `./repair_pyqt6.sh`
-4. Try fresh setup: `./setup_fresh_env.sh`
+3. Run repair script: `./setup/repair_pyqt6.sh`
+4. Try fresh setup: `./setup/setup_fresh_env.sh`
 
 ### Processing Fails
 
@@ -625,10 +616,10 @@ If you see "Could not find the Qt platform plugin 'cocoa'":
 
 ```bash
 # Reduce batch size
-python batch_process_tiff_sequence.py input.tif --batch-size 4
+python -m scripts.batch_process_tiff_sequence input.tif --batch-size 4
 
 # Or use CPU (slower but uses less memory)
-python batch_process_tiff_sequence.py input.tif --no-gpu
+python -m scripts.batch_process_tiff_sequence input.tif --no-gpu
 ```
 
 ### Poor Segmentation
@@ -643,7 +634,7 @@ python batch_process_tiff_sequence.py input.tif --no-gpu
 Models are downloaded at runtime to `~/.cellpose/models`. If corrupted:
 
 ```bash
-./clear_models.sh
+./setup/clear_models.sh
 ```
 
 Models will be re-downloaded on next use.
@@ -652,21 +643,36 @@ Models will be re-downloaded on next use.
 
 Check TIFF format:
 ```bash
-python check_tiff_format.py your_file.tif
+python -m scripts.check_tiff_format your_file.tif
 ```
 
 Reshape if needed:
 ```bash
-python check_tiff_format.py input.tif output.tif
+python -m scripts.check_tiff_format input.tif output.tif
 ```
 
 ## Testing
+
+### Automated tests
+
+Optional unit tests (no Qt required for session_params; safe_imread needs numpy/tifffile):
+
+```bash
+pip install pytest   # optional, or use plain python
+python tests/test_session_params.py
+python tests/test_safe_imread.py
+# Or with pytest:
+pytest tests/ -v
+```
+
+- **tests/test_session_params.py** – session param get/apply round-trip with mock widgets
+- **tests/test_safe_imread.py** – TIFF reading via `gui.utils.safe_imread`
 
 ### Pre-Build Setup
 
 - [ ] Ensure virtual environment is activated
 - [ ] All dependencies installed (`pip install -r requirements.txt`)
-- [ ] All patches applied (`./apply_all_patches.py`)
+- [ ] All patches applied (`python3 setup/apply_all_patches.py` or run via launch_gui.sh)
 
 ### Basic Functionality Tests
 
@@ -756,22 +762,35 @@ python check_tiff_format.py input.tif output.tif
 
 ## Available Scripts
 
-### Main Scripts
-- `omnipose_batch_gui.py` - Batch processing GUI
-- `batch_process_tiff_sequence.py` - Process single multipage TIFF file
-- `batch_process_folder.py` - Process all TIFF files in a folder
-- `analyze_cell_areas.py` - Analyze masks and extract cell areas with filtering
-- `check_tiff_format.py` - Verify/reshape TIFF format
-- `convert_nd2_to_tif.py` - Convert ND2 files to TIFF
+### Project layout
+- `main.py` - Application entrypoint (run from project root)
+- `gui/` - GUI code (tabs, workers, widgets)
+- `scripts/` - Backend Python scripts (run as `python -m scripts.analyze_cell_areas ...`, etc.)
+- `setup/` - Setup and maintenance scripts
+- `tests/` - Automated tests
+- `docs/` - Documentation
+- `Logs/` - Session log files
 
-### Utility Scripts
-- `launch_gui.sh` - Launch Batch Processing GUI
-- `setup_fresh_env.sh` - Setup fresh virtual environment
-- `repair_pyqt6.sh` - Repair PyQt6 installation
-- `clear_models.sh` - Clear corrupted model cache
-- `build_app_bundle.sh` - Build macOS application bundle
-- `create_dmg.sh` - Create macOS DMG file
-- `create_icons.sh` - Create application icons
+### Main entrypoints
+- `main.py` - Batch processing GUI
+- `launch_gui.sh` - Launch GUI (creates venv, applies patches, runs main.py)
+
+### Scripts (run from project root)
+- `python -m scripts.analyze_cell_areas` - Analyze masks and extract cell areas
+- `python -m scripts.batch_process_tiff_sequence` - Process single multipage TIFF with Omnipose
+- `python -m scripts.batch_process_folder` - Process folder: segment + analyze
+- `python -m scripts.convert_nd2_to_tif` - Convert ND2/LIF/CZI to TIFF
+- `python -m scripts.check_tiff_format` - Verify/reshape TIFF format
+
+### Setup and utilities
+- `setup/setup_fresh_env.sh` - Setup fresh virtual environment
+- `setup/apply_all_patches.py` - Compatibility patches (run automatically by launch_gui)
+- `setup/repair_pyqt6.sh` - Repair PyQt6 installation
+- `setup/install_cuda_pytorch.sh` - Install PyTorch with CUDA
+- `setup/clear_models.sh` - Clear corrupted model cache
+- `build/build_app_bundle.sh` - Build macOS application bundle
+- `build/create_dmg.sh` - Create macOS DMG file
+- `build/create_icons.sh` - Create application icons from `img/logo2.png`
 
 ## Technical Notes
 

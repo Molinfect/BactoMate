@@ -28,17 +28,17 @@ import subprocess
 # Suppress FutureWarning from omnipose about deprecated area_threshold parameter
 warnings.filterwarnings('ignore', category=FutureWarning, message='.*area_threshold.*')
 
-# Import functions from other scripts
-from batch_process_tiff_sequence import (
-    split_multipage_tiff, 
-    process_frames_with_omnipose, 
+# Import functions from other scripts in this package
+from scripts.batch_process_tiff_sequence import (
+    split_multipage_tiff,
+    process_frames_with_omnipose,
     concatenate_masks,
-    overlay_masks_on_images
+    overlay_masks_on_images,
 )
-from analyze_cell_areas import (
+from scripts.analyze_cell_areas import (
     analyze_masks,
     save_to_excel,
-    create_filter_visualization
+    create_filter_visualization,
 )
 
 

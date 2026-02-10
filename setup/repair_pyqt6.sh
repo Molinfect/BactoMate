@@ -5,17 +5,22 @@
 # never need to run on user machines.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Use explicit venv Python and pip paths (deterministic, like launcher)
-# Fallback to python if python3 doesn't exist (shouldn't happen in venv)
-VENV_PYTHON="$SCRIPT_DIR/venv/bin/python3"
-if [ ! -x "$VENV_PYTHON" ]; then
-    VENV_PYTHON="$SCRIPT_DIR/venv/bin/python"
+# When run from setup/, venv is in project root (parent of setup/)
+if [ -d "$SCRIPT_DIR/venv" ]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+else
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 fi
 
-VENV_PIP="$SCRIPT_DIR/venv/bin/pip"
+# Use explicit venv Python and pip paths (deterministic, like launcher)
+VENV_PYTHON="$PROJECT_ROOT/venv/bin/python3"
+if [ ! -x "$VENV_PYTHON" ]; then
+    VENV_PYTHON="$PROJECT_ROOT/venv/bin/python"
+fi
+
+VENV_PIP="$PROJECT_ROOT/venv/bin/pip"
 if [ ! -x "$VENV_PIP" ]; then
-    VENV_PIP="$SCRIPT_DIR/venv/bin/pip3"
+    VENV_PIP="$PROJECT_ROOT/venv/bin/pip3"
 fi
 
 # Verify venv Python exists
@@ -30,7 +35,7 @@ detect_python_version() {
 }
 
 PYTHON_VERSION=$(detect_python_version)
-PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
+PLUGIN_PATH="$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
 
 echo "Checking PyQt6 installation..."
 
@@ -43,9 +48,9 @@ else
     TEST_OUTPUT=$("$VENV_PYTHON" -c "
 import sys, os
 sys.path.insert(0, '.')
-os.environ['QT_PLUGIN_PATH'] = '$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'
+os.environ['QT_PLUGIN_PATH'] = '$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'
 from PyQt6.QtCore import QCoreApplication
-QCoreApplication.setLibraryPaths(['$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'])
+QCoreApplication.setLibraryPaths(['$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'])
 from PyQt6.QtWidgets import QApplication
 import sys
 app = QApplication(sys.argv)
@@ -98,7 +103,7 @@ if [ "${NEEDS_REINSTALL:-0}" = "1" ]; then
     
     # CRITICAL: Recompute Python version after reinstall (may have changed)
     PYTHON_VERSION=$(detect_python_version)
-    PLUGIN_PATH="$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
+    PLUGIN_PATH="$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
     
     echo "Testing PyQt6 after repair..."
     
@@ -106,9 +111,9 @@ if [ "${NEEDS_REINSTALL:-0}" = "1" ]; then
     TEST_OUTPUT=$("$VENV_PYTHON" -c "
 import sys, os
 sys.path.insert(0, '.')
-os.environ['QT_PLUGIN_PATH'] = '$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'
+os.environ['QT_PLUGIN_PATH'] = '$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'
 from PyQt6.QtCore import QCoreApplication
-QCoreApplication.setLibraryPaths(['$SCRIPT_DIR/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'])
+QCoreApplication.setLibraryPaths(['$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'])
 from PyQt6.QtWidgets import QApplication
 import sys
 app = QApplication(sys.argv)
