@@ -1215,7 +1215,7 @@ class ND2ConversionTab(QWidget):
         self.channel_select.setEnabled(False)
         params_layout.addWidget(self.channel_select)
         
-        # Corrections (one row to save vertical space)
+        # Image Corrections: one compact row (drift, bleach + method + channels)
         corrections_group = QGroupBox("Image Corrections")
         corrections_layout = QHBoxLayout()
         
@@ -1240,21 +1240,42 @@ class ND2ConversionTab(QWidget):
         corrections_layout.addWidget(self.drift_correct)
         corrections_layout.addWidget(drift_info_icon)
         
-        # Photobleaching correction with info icon
+        # Photobleaching: checkbox, Method dropdown, one info icon (channels + methods), then channel checkboxes when loaded
         self.bleach_correct = QCheckBox("Apply photobleaching correction")
         self.bleach_correct.setChecked(False)
+        self.bleach_method_combo = QComboBox()
+        self.bleach_method_combo.addItems([
+            "Exponential (intensity preservation)",
+            "Linear decay",
+            "Histogram matching",
+            "Per-frame min-max (visualization)",
+        ])
+        self.bleach_method_combo.setCurrentIndex(0)
+        self.bleach_method_combo.setToolTip("Method used for bleach correction. See info icon for details.")
         bleach_info_icon = create_info_icon(
-            "Apply photobleaching correction to compensate for fluorescence signal decay over time.\n\n"
-            "Default: Disabled (unchecked)\n"
-            "Source: Optional correction step\n\n"
-            "Method: Exponential decay correction (fits I(t) = I₀ × exp(-t/τ))\n"
-            "Normalizes intensity to the first frame.\n\n"
-            "Use when: Working with fluorescence channels that show signal decay.\n"
-            "Note: Only affects fluorescence channels, not phase contrast.",
+            "Photobleaching correction (inspired by CorrectBleach: https://github.com/fiji/CorrectBleach).\n\n"
+            "Which channels: Tick only the channels that are fluorescence (e.g. GFP, mScarlet); "
+            "bleach correction is applied only to those. Leave phase/transmission unticked. "
+            "Checkboxes appear here after loading a multi-channel file.\n\n"
+            "Methods:\n"
+            "• Exponential: I(t)=I₀×exp(-t/τ), normalizes to first frame. Use for intensity quantification.\n"
+            "• Linear: Linear decay fit, then scale to first frame.\n"
+            "• Histogram matching: Match each frame's histogram to frame 0. Good for segmentation; not for quantification.\n"
+            "• Per-frame min-max: Stretch each frame so its min→0 and max→full range of the current bit depth (e.g. 65535 for 16-bit). No RGB conversion; dtype and bit depth are preserved. Visualization only.",
             parent_widget=self
         )
         corrections_layout.addWidget(self.bleach_correct)
+        corrections_layout.addWidget(QLabel("Method:"))
+        corrections_layout.addWidget(self.bleach_method_combo)
         corrections_layout.addWidget(bleach_info_icon)
+        # Fluorescence channel checkboxes (populated when file/folder loaded; same row, after method)
+        self.bleach_channel_widget = QWidget()
+        self.bleach_channel_layout = QHBoxLayout()
+        self.bleach_channel_layout.setContentsMargins(0, 0, 0, 0)
+        self.bleach_channel_checks = []
+        self.bleach_channel_widget.setLayout(self.bleach_channel_layout)
+        self.bleach_channel_widget.setVisible(False)
+        corrections_layout.addWidget(self.bleach_channel_widget)
         corrections_layout.addStretch()
         
         corrections_group.setLayout(corrections_layout)
@@ -1393,6 +1414,24 @@ class ND2ConversionTab(QWidget):
         if dir_path:
             self.output_dir.setText(dir_path)
     
+    def _rebuild_bleach_channel_checks(self, channel_names, num_channels):
+        """Populate fluorescence channel checkboxes (which channels get bleach correction). All checked by default."""
+        # Remove old checkboxes
+        for cb in self.bleach_channel_checks:
+            self.bleach_channel_layout.removeWidget(cb)
+            cb.deleteLater()
+        self.bleach_channel_checks.clear()
+        if num_channels <= 1:
+            self.bleach_channel_widget.setVisible(False)
+            return
+        for i, name in enumerate(channel_names):
+            cb = QCheckBox(f"Ch{i+1}: {name}")
+            cb.setChecked(False)  # Default: none selected; user ticks fluorescence channels
+            cb.setToolTip("Tick if this channel is fluorescence and should get bleach correction")
+            self.bleach_channel_layout.addWidget(cb)
+            self.bleach_channel_checks.append(cb)
+        self.bleach_channel_widget.setVisible(True)
+    
     def load_folder_info(self, folder_path, supported_files):
         """Load and display information for all files in a folder"""
         folder = Path(folder_path)
@@ -1449,6 +1488,8 @@ class ND2ConversionTab(QWidget):
             for i, name in enumerate(first_file_info['channel_names']):
                 self.channel_select.addItem(f"Channel {i+1}: {name}")
             self.channel_select.setEnabled(first_file_info['num_channels'] > 1)
+            # Fluorescence channel checkboxes: one per channel, all checked by default (bleach applies to all unless user unticks)
+            self._rebuild_bleach_channel_checks(first_file_info['channel_names'], first_file_info['num_channels'])
             self.preview_btn.setEnabled(True)
             self.convert_btn.setEnabled(True)
             
@@ -2295,6 +2336,7 @@ class ND2ConversionTab(QWidget):
         for i, name in enumerate(channel_names):
             self.channel_select.addItem(f"Channel {i+1}: {name}")
         self.channel_select.setEnabled(num_channels > 1)
+        self._rebuild_bleach_channel_checks(channel_names, num_channels)
         
         # Update metadata display (now includes file name and dimensions)
         metadata_content = f"File: {Path(file_path).name} ({file_type.upper()})\n"
@@ -2455,15 +2497,13 @@ class ND2ConversionTab(QWidget):
                     selected_file_name = current_item.text()
                     selected_file = folder / selected_file_name
                     
-                    # Temporarily update file_path and load info for selected file
+                    # Load info for the selected file (so we know file_type, channels, etc.) but do NOT change the path
                     original_path = self.file_path.text()
                     self.file_path.setText(str(selected_file))
                     self.load_file_info(str(selected_file))
                     
-                    # Now preview the selected file
                     if self.file_info:
                         file_type = self.file_info.get('file_type', 'nd2')
-                        
                         if file_type == 'nd2':
                             self._preview_nd2()
                         elif file_type == 'lif':
@@ -2475,8 +2515,8 @@ class ND2ConversionTab(QWidget):
                         else:
                             QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
                     
-                    # Restore original path (optional - user might want to keep the selected file)
-                    # self.file_path.setText(original_path)
+                    # Restore path to folder so Convert still runs on the folder (preview choice must not change path)
+                    self.file_path.setText(original_path)
             return
         
         # Single file mode - check if file info is loaded
@@ -2497,8 +2537,25 @@ class ND2ConversionTab(QWidget):
         else:
             QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
     
-    def _create_unified_preview_ui(self, preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path):
-        """Create unified preview UI with improved histogram layout (used by all file types)"""
+    def _get_bleach_preview_kwargs(self):
+        """Return kwargs for preview bleach correction (from current tab settings)."""
+        bleach_apply = self.bleach_correct.isChecked()
+        bleach_method = ['exponential', 'linear', 'histogram_matching', 'per_frame_minmax'][
+            self.bleach_method_combo.currentIndex()
+        ]
+        bleach_channel_indices = None
+        if getattr(self, 'bleach_channel_checks', None):
+            indices = [i for i, cb in enumerate(self.bleach_channel_checks) if cb.isChecked()]
+            if indices and len(indices) < len(self.bleach_channel_checks):
+                bleach_channel_indices = indices
+        return dict(bleach_apply=bleach_apply, bleach_method=bleach_method, bleach_channel_indices=bleach_channel_indices)
+    
+    def _create_unified_preview_ui(
+        self, preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+        bleach_apply=False, bleach_method='exponential', bleach_channel_indices=None,
+    ):
+        """Create unified preview UI with improved histogram layout (used by all file types).
+        When bleach_apply is True, optional checkbox 'Show bleach correction' toggles live preview of correction."""
         import numpy as np
         import sys
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -2506,6 +2563,9 @@ class ND2ConversionTab(QWidget):
         from matplotlib.figure import Figure
         from PyQt6.QtCore import QTimer
         from PyQt6.QtGui import QKeySequence, QShortcut
+        
+        raw_frames = all_frames
+        display_frames_ref = {'data': all_frames}  # update_frame reads from this; we can swap to corrected
         
         # Matplotlib figure with navigation toolbar
         fig = Figure(figsize=(12, 8))
@@ -2527,20 +2587,15 @@ class ND2ConversionTab(QWidget):
         
         layout.addWidget(toolbar)
         
-        # Frame navigation (moved to top, below toolbar, to match segmentation preview)
+        # Frame navigation (moved to top, below toolbar); Frame spinbox has +/- for stepping
         nav_layout = QHBoxLayout()
-        prev_btn = QPushButton("Previous")
-        nav_layout.addWidget(prev_btn)
-        
         nav_layout.addWidget(QLabel("Frame:"))
         frame_spin = QSpinBox()
         frame_spin.setRange(1, num_time)
         frame_spin.setValue(1)
+        frame_spin.setToolTip(f"Jump to frame 1–{num_time}. Enter a number and press Enter.")
         nav_layout.addWidget(frame_spin)
         nav_layout.addWidget(QLabel(f"of {num_time}"))
-        
-        next_btn = QPushButton("Next")
-        nav_layout.addWidget(next_btn)
         
         # Channel selection (if multiple channels)
         if num_channels > 1:
@@ -2553,9 +2608,33 @@ class ND2ConversionTab(QWidget):
         else:
             channel_spin = None
         
+        # Show bleach correction in preview whenever there are multiple frames (so user can preview effect)
+        show_bleach_check = None
+        bleach_status_label = None  # "View: Raw" or "View: Bleach corrected (Method)" - updated on toggle
+        _bleach_method_display = {
+            'exponential': 'Exponential',
+            'linear': 'Linear',
+            'histogram_matching': 'Histogram matching',
+            'per_frame_minmax': 'Per-frame min-max',
+        }
+        method_display_name = _bleach_method_display.get(bleach_method, bleach_method)
+        if num_time > 1:
+            show_bleach_check = QCheckBox("Show bleach correction")
+            show_bleach_check.setToolTip(
+                "Preview the bleach correction effect. Uses the same method and fluorescence channel "
+                "settings as on the conversion tab (or defaults). Check \"Apply photobleaching correction\" "
+                "and tick fluorescence channels on the tab to match what will happen on Convert to TIFF."
+            )
+            show_bleach_check.setChecked(False)
+            nav_layout.addWidget(show_bleach_check)
+            bleach_status_label = QLabel("View: Raw")
+            bleach_status_label.setStyleSheet("color: #9E9E9E; font-size: 10pt;")
+            bleach_status_label.setToolTip("Current preview: raw data or bleach-corrected. Changing frame updates the image; correction is applied to all frames.")
+            nav_layout.addWidget(bleach_status_label)
+        
         nav_layout.addStretch()
         
-        # Frame info label
+        # Frame info label (will include View: Raw / View: Bleach corrected when we update it)
         frame_info = QLabel(f"Timepoint 1 of {num_time} | Channel: 1 | Z-slice: 1")
         frame_info.setStyleSheet("font-weight: bold; color: #2196F3;")
         nav_layout.addWidget(frame_info)
@@ -2757,9 +2836,12 @@ class ND2ConversionTab(QWidget):
                     im_handle.set_clim(vmin=vmin, vmax=vmax)
                     canvas.draw()
                     
-                    # Update frame info
+                    # Update frame info (include view mode; use stored display name if synced)
                     current_channel = (channel_spin.value() if channel_spin is not None else 1)
-                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                    _showing_corrected = (display_frames_ref['data'] is not raw_frames)
+                    _dn = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if _showing_corrected else None
+                    _view_suffix = f" | View: Bleach corrected ({_dn})" if _showing_corrected else " | View: Raw"
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suffix}")
                     
                     # Update histogram lines
                     if hist_vmin_line is not None:
@@ -2792,54 +2874,55 @@ class ND2ConversionTab(QWidget):
         hist_canvas.mpl_connect('motion_notify_event', on_histogram_motion)
         hist_canvas.mpl_connect('button_release_event', on_histogram_release)
         
-        # Function to update displayed frame
+        # Function to update displayed frame (reads from display_frames_ref so raw/corrected can be switched)
         def update_frame(frame_idx, channel_idx=0, vmin=None, vmax=None, update_sliders=True):
             """Update the displayed frame (frame_idx is 0-indexed internally, channel_idx is 0-indexed)"""
+            frames_source = display_frames_ref['data']
             # Get current channel selection if available
             if channel_spin is not None:
                 channel_idx = channel_spin.value() - 1  # Convert to 0-indexed
             else:
                 channel_idx = 0  # Default to first channel
             
-            # Handle different all_frames shapes directly (more robust)
+            # Handle different frames_source shapes directly (more robust)
             # ND2 files can have various shapes: (T, C, Z, Y, X), (T, C, Y, X), (T, Y, X), etc.
-            if len(all_frames.shape) == 5:  # TCZYX
+            if len(frames_source.shape) == 5:  # TCZYX
                 # Extract frame, channel, and first Z-slice
-                if channel_idx < all_frames.shape[1]:
-                    frame = all_frames[frame_idx, channel_idx, 0, :, :]  # T=frame_idx, C=channel_idx, Z=0
+                if channel_idx < frames_source.shape[1]:
+                    frame = frames_source[frame_idx, channel_idx, 0, :, :]  # T=frame_idx, C=channel_idx, Z=0
                 else:
-                    frame = all_frames[frame_idx, 0, 0, :, :]  # Fallback
-            elif len(all_frames.shape) == 4:
+                    frame = frames_source[frame_idx, 0, 0, :, :]  # Fallback
+            elif len(frames_source.shape) == 4:
                 # Could be TCYX or TZYX
                 if num_channels > 1:
                     # TCYX: extract frame and channel
-                    if channel_idx < all_frames.shape[1]:
-                        frame = all_frames[frame_idx, channel_idx, :, :]  # T=frame_idx, C=channel_idx
+                    if channel_idx < frames_source.shape[1]:
+                        frame = frames_source[frame_idx, channel_idx, :, :]  # T=frame_idx, C=channel_idx
                     else:
-                        frame = all_frames[frame_idx, 0, :, :]  # Fallback
+                        frame = frames_source[frame_idx, 0, :, :]  # Fallback
                 else:
                     # TZYX: extract frame and first Z-slice
-                    frame = all_frames[frame_idx, 0, :, :] if num_z > 1 else all_frames[frame_idx, :, :]
-            elif len(all_frames.shape) == 3:
+                    frame = frames_source[frame_idx, 0, :, :] if num_z > 1 else frames_source[frame_idx, :, :]
+            elif len(frames_source.shape) == 3:
                 # Could be TYX (single channel, single Z) or CYX (single frame, multi-channel)
-                if all_frames.shape[0] == num_time:
+                if frames_source.shape[0] == num_time:
                     # TYX: single channel, single Z
-                    frame = all_frames[frame_idx, :, :]
+                    frame = frames_source[frame_idx, :, :]
                 elif num_channels > 1:
                     # CYX: single frame, multi-channel - extract channel
-                    if channel_idx < all_frames.shape[0]:
-                        frame = all_frames[channel_idx, :, :]
+                    if channel_idx < frames_source.shape[0]:
+                        frame = frames_source[channel_idx, :, :]
                     else:
-                        frame = all_frames[0, :, :]
+                        frame = frames_source[0, :, :]
                 else:
                     # Fallback: assume TYX
-                    frame = all_frames[frame_idx, :, :]
-            elif len(all_frames.shape) == 2:
+                    frame = frames_source[frame_idx, :, :]
+            elif len(frames_source.shape) == 2:
                 # YX: single frame, single channel
-                frame = all_frames
+                frame = frames_source
             else:
                 # Fallback: try to extract frame
-                frame = all_frames[frame_idx] if frame_idx < len(all_frames) else all_frames[0]
+                frame = frames_source[frame_idx] if frame_idx < len(frames_source) else frames_source[0]
                 # If still multi-dimensional, try to extract channel
                 if len(frame.shape) > 2 and num_channels > 1:
                     if channel_idx < frame.shape[0]:
@@ -2928,13 +3011,20 @@ class ND2ConversionTab(QWidget):
             ax = fig.add_subplot(111)
             nonlocal im_handle
             im_handle = ax.imshow(frame, cmap='gray', vmin=vmin, vmax=vmax)
-            ax.set_title(f"Frame {frame_idx + 1} of {num_time}: {Path(file_path).name}")
+            _title = f"Frame {frame_idx + 1} of {num_time}: {Path(file_path).name}"
+            if display_frames_ref['data'] is not raw_frames:
+                _dn = getattr(preview_dialog, '_bleach_display_name_used', method_display_name)
+                _title += f" [bleach corrected: {_dn}]"
+            ax.set_title(_title)
             ax.axis('off')
             canvas.draw()
             
-            # Update frame info (1-indexed for display)
+            # Update frame info (1-indexed for display); show whether view is raw or bleach-corrected (use stored display name if updated by sync)
             current_channel = (channel_spin.value() if channel_spin is not None else 1)
-            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+            showing_corrected = (display_frames_ref['data'] is not raw_frames)
+            disp_name = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if showing_corrected else None
+            view_suffix = f" | View: Bleach corrected ({disp_name})" if showing_corrected else " | View: Raw"
+            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{view_suffix}")
         
         # Manual LUT adjustment from sliders
         def update_lut_from_sliders():
@@ -2967,9 +3057,12 @@ class ND2ConversionTab(QWidget):
                     # Force immediate redraw
                     canvas.draw()
                     
-                    # Update frame info
+                    # Update frame info (include view mode; use stored display name if synced)
                     current_channel = (channel_spin.value() if channel_spin is not None else 1)
-                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]")
+                    _showing_corr = (display_frames_ref['data'] is not raw_frames)
+                    _dn2 = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if _showing_corr else None
+                    _view_suff = f" | View: Bleach corrected ({_dn2})" if _showing_corr else " | View: Raw"
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suff}")
                     
                     # Store the current LUT values so they persist
                     current_frame_data['vmin'] = vmin
@@ -3046,9 +3139,6 @@ class ND2ConversionTab(QWidget):
                     QMessageBox.warning(preview_dialog, "Preview Error", 
                                       f"Could not display frame {idx + 1}:\n{str(e)}")
         
-        prev_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame - 1))
-        next_btn.clicked.connect(lambda: go_to_frame(preview_dialog.current_frame + 1))
-        
         # Connect channel selection (if available)
         if channel_spin is not None:
             def on_channel_changed():
@@ -3062,14 +3152,92 @@ class ND2ConversionTab(QWidget):
                     update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
             channel_spin.valueChanged.connect(on_channel_changed)
         
-        # Use editingFinished for when user finishes editing (presses Enter or leaves field)
-        # and a debounced valueChanged for when using arrow keys
-        def on_frame_changed():
-            frame_num = frame_spin.value() - 1
-            if 0 <= frame_num < num_time:
-                go_to_frame(frame_num)
+        # Connect "Show bleach correction" checkbox: always use current main-window settings when computing
+        if show_bleach_check is not None and bleach_status_label is not None:
+            def compute_corrected_from_tab():
+                """Read current method/channels from main window (self) and compute corrected stack."""
+                kwargs = self._get_bleach_preview_kwargs()
+                cur_method = kwargs['bleach_method']
+                cur_channels = kwargs.get('bleach_channel_indices')
+                try:
+                    from convert_nd2_to_tif import bleach_correct_stack
+                except ImportError:
+                    return None, None, None
+                data = np.asarray(raw_frames)
+                if data.ndim == 5:
+                    data = data[:, :, 0, :, :].copy()  # TCZYX -> TCYX
+                elif data.ndim == 3 and num_channels == 1:
+                    data = data[:, np.newaxis, :, :]  # TYX -> T1YX for stack API
+                corrected = bleach_correct_stack(data, method=cur_method, channel_indices=cur_channels)
+                display_name = _bleach_method_display.get(cur_method, cur_method)
+                return corrected, cur_method, cur_channels, display_name
+
+            def on_show_bleach_toggled(checked):
+                nonlocal current_vmin, current_vmax
+                if checked:
+                    result = compute_corrected_from_tab()
+                    corrected, cur_method, cur_channels, disp_name = result[0], result[1], result[2], result[3]
+                    if corrected is None:
+                        QMessageBox.warning(preview_dialog, "Preview", "Could not import bleach_correct_stack for preview.")
+                        show_bleach_check.setChecked(False)
+                        return
+                    preview_dialog._bleach_corrected_frames = corrected
+                    preview_dialog._bleach_method_used = cur_method
+                    preview_dialog._bleach_channel_indices_used = tuple(sorted(cur_channels or [])) if cur_channels is not None else ()
+                    preview_dialog._bleach_display_name_used = disp_name
+                    display_frames_ref['data'] = preview_dialog._bleach_corrected_frames
+                    bleach_status_label.setText(f"View: Bleach corrected ({disp_name})")
+                    bleach_status_label.setStyleSheet("color: #4CAF50; font-size: 10pt;")
+                else:
+                    display_frames_ref['data'] = raw_frames
+                    bleach_status_label.setText("View: Raw")
+                    bleach_status_label.setStyleSheet("color: #9E9E9E; font-size: 10pt;")
+                current_vmin = None
+                current_vmax = None
+                update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
+
+            show_bleach_check.toggled.connect(on_show_bleach_toggled)
+
+            # Poll main window: if user changes method/channels while preview is open and "Show bleach correction" is on, recompute
+            def poll_main_window_settings():
+                if not show_bleach_check.isChecked():
+                    return
+                kwargs = self._get_bleach_preview_kwargs()
+                cur_method = kwargs['bleach_method']
+                cur_channels = kwargs.get('bleach_channel_indices')
+                cur_channels_tuple = tuple(sorted(cur_channels or [])) if cur_channels is not None else ()
+                used_method = getattr(preview_dialog, '_bleach_method_used', None)
+                used_channels = getattr(preview_dialog, '_bleach_channel_indices_used', None)
+                if cur_method != used_method or cur_channels_tuple != (used_channels or ()):
+                    result = compute_corrected_from_tab()
+                    corrected, _, _, disp_name = result[0], result[1], result[2], result[3]
+                    if corrected is not None:
+                        preview_dialog._bleach_corrected_frames = corrected
+                        preview_dialog._bleach_method_used = cur_method
+                        preview_dialog._bleach_channel_indices_used = cur_channels_tuple
+                        preview_dialog._bleach_display_name_used = disp_name
+                        display_frames_ref['data'] = preview_dialog._bleach_corrected_frames
+                        bleach_status_label.setText(f"View: Bleach corrected ({disp_name})")
+                        current_vmin_outer = current_vmin
+                        current_vmax_outer = current_vmax
+                        update_frame(preview_dialog.current_frame, vmin=current_vmin_outer, vmax=current_vmax_outer, update_sliders=False)
+
+            sync_timer = QTimer(preview_dialog)
+            sync_timer.timeout.connect(poll_main_window_settings)
+            sync_timer.start(500)  # Check every 0.5 s
+            preview_dialog._bleach_sync_timer = sync_timer  # keep reference
         
-        frame_spin.editingFinished.connect(on_frame_changed)
+        # Use editingFinished for when user finishes editing (presses Enter or leaves field)
+        # and a debounced valueChanged for when using arrow keys.
+        # Spinbox is 1-based (1..num_time); we convert to 0-based index for go_to_frame.
+        def on_frame_changed():
+            user_frame = frame_spin.value()  # 1-based: 1 = first frame
+            idx = user_frame - 1
+            if 0 <= idx < num_time:
+                go_to_frame(idx)
+        
+        # Defer reading spinbox so Qt has committed the new value (avoids "jump to N-1" on Enter)
+        frame_spin.editingFinished.connect(lambda: QTimer.singleShot(0, on_frame_changed))
         # Debounce valueChanged to avoid triggering while typing
         frame_spin._change_timer = QTimer()
         frame_spin._change_timer.setSingleShot(True)
@@ -3118,8 +3286,11 @@ class ND2ConversionTab(QWidget):
                 # Load all frames (for navigation)
                 all_frames = nd2_reader.asarray()
             
-            # Use unified preview UI
-            self._create_unified_preview_ui(preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path)
+            # Use unified preview UI (with optional bleach preview from tab settings)
+            self._create_unified_preview_ui(
+                preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                **self._get_bleach_preview_kwargs()
+            )
             
         except ImportError as e:
             error_msg = str(e)
@@ -3218,8 +3389,11 @@ class ND2ConversionTab(QWidget):
                     # Likely (Y, X, T) - transpose
                     all_frames = all_frames.transpose(2, 0, 1)
                 
-                # Use unified preview UI with full LUT controls
-                self._create_unified_preview_ui(preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path)
+                # Use unified preview UI with full LUT controls (and optional bleach preview)
+                self._create_unified_preview_ui(
+                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                    **self._get_bleach_preview_kwargs()
+                )
                 
             finally:
                 if hasattr(lif_reader, 'close'):
@@ -3331,8 +3505,11 @@ class ND2ConversionTab(QWidget):
             if len(all_frames.shape) == 2:
                 all_frames = all_frames[np.newaxis, ...]
             
-            # Use unified preview UI with full LUT controls
-            self._create_unified_preview_ui(preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path)
+            # Use unified preview UI with full LUT controls (and optional bleach preview)
+            self._create_unified_preview_ui(
+                preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                **self._get_bleach_preview_kwargs()
+            )
             
         except Exception as e:
             QMessageBox.critical(self, "Error Previewing TIFF", f"Could not preview TIFF file:\n{str(e)}")
@@ -3365,7 +3542,31 @@ class ND2ConversionTab(QWidget):
     
     def _convert_nd2(self):
         """Convert file(s) to TIFF"""
-        
+        file_path = Path(self.file_path.text())
+
+        # When folder is selected: show file selection dialog (same as Preview) so user can tick/untick files to convert
+        if file_path.is_dir():
+            supported_files = sorted(
+                list(file_path.glob("*.nd2")) + list(file_path.glob("*.ND2"))
+            )
+            if not supported_files:
+                QMessageBox.warning(self, "No ND2 Files", "No ND2 files found in the selected folder.")
+                return
+            selected_files = show_file_selection_dialog(
+                self,
+                supported_files,
+                title="Select Files to Convert",
+                message=f"Select which files to convert to TIFF (all {len(supported_files)} selected by default):"
+            )
+            if selected_files is None:
+                return  # User cancelled
+            if len(selected_files) == 0:
+                QMessageBox.warning(self, "No Files Selected", "Please select at least one file to convert.")
+                return
+            files_to_convert = selected_files
+        else:
+            files_to_convert = [file_path]
+
         # Check for Z-stack and prompt user if max projection is not enabled
         if self.file_info and self.file_info.get('num_z', 1) > 1:
             if not self.max_z_projection.isChecked():
@@ -3400,9 +3601,14 @@ class ND2ConversionTab(QWidget):
                               f"Or: {parent_dir / 'Dru_analysis' / 'convert_nd2_to_tif.py'}")
             return
         
-        # Build command arguments
+        # Queue for multi-file conversion: process one file at a time, start next on finish
+        self._conversion_queue = files_to_convert
+        self._conversion_current_index = 0
+        first_path = self._conversion_queue[0]
+
+        # Build command arguments (path is the file/folder to convert; for queue we pass single file)
         cmd_args = [
-            self.file_path.text(),
+            str(first_path),
             '--frames', str(self.max_frames.value()),
         ]
         
@@ -3428,6 +3634,16 @@ class ND2ConversionTab(QWidget):
         
         if self.bleach_correct.isChecked():
             cmd_args.append('--bleach-correct')
+            bleach_methods = ['exponential', 'linear', 'histogram_matching', 'per_frame_minmax']
+            cmd_args.append('--bleach-method')
+            cmd_args.append(bleach_methods[self.bleach_method_combo.currentIndex()])
+            # Only pass --bleach-channels when user has flagged specific fluorescence channels
+            if getattr(self, 'bleach_channel_checks', None):
+                indices = [i for i, cb in enumerate(self.bleach_channel_checks) if cb.isChecked()]
+                if indices and len(indices) < len(self.bleach_channel_checks):
+                    # Not all channels selected: pass only the flagged ones
+                    cmd_args.append('--bleach-channels')
+                    cmd_args.extend(str(i) for i in indices)
         
         # Pass pixel size if extracted
         if self.file_info and self.file_info.get('pixel_size'):
@@ -3436,7 +3652,8 @@ class ND2ConversionTab(QWidget):
         # Run in thread
         self.convert_btn.setEnabled(False)
         self.convert_btn.setText("Converting...")
-        self.parent_window.log_output(f"Starting ND2 conversion: {self.file_path.text()}\n")
+        self.parent_window.log_output(f"Starting ND2 conversion: {first_path.name}" + (
+            f" (file 1/{len(files_to_convert)})" if len(files_to_convert) > 1 else "") + "\n")
         
         # Show progress bar with proper range
         self.parent_window.progress_bar.setVisible(True)
@@ -3445,9 +3662,9 @@ class ND2ConversionTab(QWidget):
         
         # Track progress state
         self.conversion_progress = {
-            'total_files': 0,
-            'current_file': 0,  # 0-indexed: 0 = first file, 1 = second file, etc.
-            'file_progress': 0  # 0-100 for current file
+            'total_files': len(files_to_convert),
+            'current_file': 0,
+            'file_progress': 0
         }
         
         # Store reference to prevent garbage collection
@@ -3564,19 +3781,72 @@ class ND2ConversionTab(QWidget):
         QApplication.processEvents()
     
     def on_finished(self, success, message):
-        self.convert_btn.setEnabled(True)
-        self.convert_btn.setText("Convert to TIFF")
-        self.parent_window.log_output(message)
-        # Hide progress bar
-        self.parent_window.progress_bar.setVisible(False)
         # Clean up worker thread
         if hasattr(self, 'worker'):
             self.worker.wait()
             self.worker = None
-        if success:
-            self.parent_window.log_output("✓ ND2 conversion completed successfully!\n")
-        else:
+        self.parent_window.log_output(message)
+        if not success:
+            self.convert_btn.setEnabled(True)
+            self.convert_btn.setText("Convert to TIFF")
+            self.parent_window.progress_bar.setVisible(False)
             QMessageBox.critical(self, "Error", f"Conversion failed:\n{message}")
+            return
+        # Success: if we have a queue and more files to convert, run next
+        queue = getattr(self, '_conversion_queue', None)
+        idx = getattr(self, '_conversion_current_index', 0)
+        if queue and idx + 1 < len(queue):
+            self._conversion_current_index = idx + 1
+            next_path = queue[self._conversion_current_index]
+            script_dir = Path(__file__).parent
+            convert_script = script_dir / "convert_nd2_to_tif.py"
+            if not convert_script.exists():
+                convert_script = script_dir.parent / "Dru_analysis" / "convert_nd2_to_tif.py"
+            cmd_args = [
+                str(next_path),
+                '--frames', str(self.max_frames.value()),
+            ]
+            if self.output_dir.text():
+                cmd_args.extend(['--output', self.output_dir.text()])
+            if self.separate_channels.isChecked():
+                cmd_args.append('--separate-channels')
+            else:
+                cmd_args.append('--combine-channels')
+            if self.max_z_projection.isChecked():
+                cmd_args.append('--max-z-projection')
+            selected_channel = self.channel_select.currentIndex() - 1
+            if selected_channel >= 0:
+                cmd_args.extend(['--channel', str(selected_channel)])
+            if self.drift_correct.isChecked():
+                cmd_args.append('--drift-correct')
+            if self.bleach_correct.isChecked():
+                cmd_args.append('--bleach-correct')
+                cmd_args.append('--bleach-method')
+                cmd_args.append(['exponential', 'linear', 'histogram_matching', 'per_frame_minmax'][self.bleach_method_combo.currentIndex()])
+                if getattr(self, 'bleach_channel_checks', None):
+                    indices = [i for i, cb in enumerate(self.bleach_channel_checks) if cb.isChecked()]
+                    if indices and len(indices) < len(self.bleach_channel_checks):
+                        cmd_args.append('--bleach-channels')
+                        cmd_args.extend(str(i) for i in indices)
+            if self.file_info and self.file_info.get('pixel_size'):
+                cmd_args.extend(['--pixel-size', str(self.file_info['pixel_size'])])
+            self.parent_window.log_output(f"Starting ND2 conversion: {next_path.name} (file {self._conversion_current_index + 1}/{len(queue)})\n")
+            self.conversion_progress['current_file'] = self._conversion_current_index
+            self.conversion_progress['file_progress'] = 0
+            self.worker = WorkerThread(str(convert_script), cmd_args, parent=self)
+            self.worker.finished.connect(self.on_finished)
+            self.worker.progress.connect(self._update_conversion_progress)
+            self.worker.start()
+            return
+        # All done
+        self.convert_btn.setEnabled(True)
+        self.convert_btn.setText("Convert to TIFF")
+        self.parent_window.progress_bar.setVisible(False)
+        n = len(queue) if queue else 1
+        self.parent_window.log_output(f"✓ ND2 conversion completed successfully ({n} file(s))!\n")
+        if queue:
+            self._conversion_queue = None
+            self._conversion_current_index = 0
     
     def _convert_lif(self):
         """Convert LIF file(s) to TIFF"""
@@ -3589,16 +3859,25 @@ class ND2ConversionTab(QWidget):
             
             # Check if it's a folder or single file
             if file_path.is_dir():
-                # Folder mode: find all LIF files
-                lif_files = sorted(
+                # Folder mode: find all LIF files and show selection dialog (same as Preview / ND2)
+                all_lif = sorted(
                     list(file_path.glob("*.lif")) + list(file_path.glob("*.LIF"))
                 )
-                
-                if not lif_files:
+                if not all_lif:
                     QMessageBox.warning(self, "No LIF Files", 
                                       "No LIF files found in the selected folder.")
                     return
-                
+                selected = show_file_selection_dialog(
+                    self, all_lif,
+                    title="Select Files to Convert",
+                    message=f"Select which files to convert to TIFF (all {len(all_lif)} selected by default):"
+                )
+                if selected is None:
+                    return
+                if len(selected) == 0:
+                    QMessageBox.warning(self, "No Files Selected", "Please select at least one file to convert.")
+                    return
+                lif_files = selected
                 total_files = len(lif_files)
                 self.parent_window.log_output(f"Found {total_files} LIF file(s) to convert\n")
             else:
@@ -3856,16 +4135,25 @@ class ND2ConversionTab(QWidget):
             
             # Check if it's a folder or single file
             if file_path.is_dir():
-                # Folder mode: find all CZI files
-                czi_files = sorted(
+                # Folder mode: find all CZI files and show selection dialog (same as Preview / ND2)
+                all_czi = sorted(
                     list(file_path.glob("*.czi")) + list(file_path.glob("*.CZI"))
                 )
-                
-                if not czi_files:
+                if not all_czi:
                     QMessageBox.warning(self, "No CZI Files", 
                                       "No CZI files found in the selected folder.")
                     return
-                
+                selected = show_file_selection_dialog(
+                    self, all_czi,
+                    title="Select Files to Convert",
+                    message=f"Select which files to convert to TIFF (all {len(all_czi)} selected by default):"
+                )
+                if selected is None:
+                    return
+                if len(selected) == 0:
+                    QMessageBox.warning(self, "No Files Selected", "Please select at least one file to convert.")
+                    return
+                czi_files = selected
                 total_files = len(czi_files)
                 self.parent_window.log_output(f"Found {total_files} CZI file(s) to convert\n")
             else:
@@ -4111,13 +4399,18 @@ class ND2ConversionTab(QWidget):
     
     def get_session_params(self):
         """Return current parameter values for session log (parameters only, no paths)."""
-        return {
+        out = {
             "max_frames": self.max_frames.value(),
             "separate_channels": self.separate_channels.isChecked(),
             "max_z_projection": self.max_z_projection.isChecked(),
             "drift_correct": self.drift_correct.isChecked(),
             "bleach_correct": self.bleach_correct.isChecked(),
         }
+        if hasattr(self, "bleach_method_combo"):
+            out["bleach_method"] = self.bleach_method_combo.currentIndex()
+        if getattr(self, "bleach_channel_checks", None):
+            out["bleach_fluorescence_channels"] = [cb.isChecked() for cb in self.bleach_channel_checks]
+        return out
     
     def set_session_params(self, data):
         """Apply saved parameter values (parameters only)."""
@@ -4126,6 +4419,21 @@ class ND2ConversionTab(QWidget):
         if "max_frames" in data and hasattr(self, "max_frames"):
             try:
                 self.max_frames.setValue(int(data["max_frames"]))
+            except (TypeError, ValueError):
+                pass
+        if "bleach_method" in data and hasattr(self, "bleach_method_combo"):
+            try:
+                idx = int(data["bleach_method"])
+                if 0 <= idx < self.bleach_method_combo.count():
+                    self.bleach_method_combo.setCurrentIndex(idx)
+            except (TypeError, ValueError):
+                pass
+        if "bleach_fluorescence_channels" in data and getattr(self, "bleach_channel_checks", None):
+            try:
+                states = data["bleach_fluorescence_channels"]
+                if isinstance(states, list) and len(states) == len(self.bleach_channel_checks):
+                    for cb, checked in zip(self.bleach_channel_checks, states):
+                        cb.setChecked(bool(checked))
             except (TypeError, ValueError):
                 pass
         for k, w in [
@@ -4199,9 +4507,6 @@ class ProcessingTab(QWidget):
             "Available Omnipose models:\n"
             "- bact_phase_omni: Bacterial phase contrast (recommended for bacteria)\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
-            "- cyto2_omni: General cytoplasm segmentation\n"
-            "- worm_omni: C. elegans and similar\n"
-            "- plant_omni: Plant cells (3D)\n"
             "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         , parent_widget=self)
@@ -4258,9 +4563,6 @@ class ProcessingTab(QWidget):
             "Available models:\n"
             "- bact_phase_omni: Bacterial phase contrast (default, best for bacteria)\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
-            "- cyto2_omni: General cytoplasm segmentation\n"
-            "- worm_omni: C. elegans and similar\n"
-            "- plant_omni: Plant cells (3D)\n"
             "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
             "Tip: Choose based on your cell type and imaging modality."
         )
@@ -4443,7 +4745,7 @@ class ProcessingTab(QWidget):
         scroll_layout.addWidget(seg_group)
         
         # Preview button - modern styling applied via global stylesheet
-        self.preview_btn = QPushButton("Preview Segmentation")
+        self.preview_btn = QPushButton("Preview Omnipose Segmentation")
         self.preview_btn.setEnabled(False)  # Disabled until file/folder is selected
         # Wrap preview_segmentation to catch all exceptions and prevent PyQt6 abort()
         def safe_preview_segmentation():
@@ -4575,9 +4877,6 @@ class ProcessingTab(QWidget):
         return [
             'bact_phase_omni',  # Recommended for bacteria
             'bact_fluor_omni',
-            'cyto2_omni',
-            'worm_omni',
-            'plant_omni',
             'bact_phase_affinity'
         ]
     
@@ -4804,8 +5103,8 @@ class ProcessingTab(QWidget):
                     OMNI_MODELS = [x for x in OMNI_MODELS if not (x in seen or seen.add(x))]
                     # Default fallback if still empty
                     if not OMNI_MODELS:
-                        OMNI_MODELS = ['cyto_omni', 'cyto2_omni', 'bact_omni', 'bact_phase_omni',
-                                      'bact_fluor_omni', 'worm_omni', 'nuclei_omni']
+                        OMNI_MODELS = ['bact_omni', 'bact_phase_omni',
+                                      'bact_fluor_omni']
                     omnipose.core.OMNI_MODELS = OMNI_MODELS
             except Exception:
                 # If patching fails, continue anyway - cellpose_omni has a fallback
@@ -4985,9 +5284,6 @@ class ProcessingTab(QWidget):
                                             f"Available Omnipose models:\n"
                                             f"  • bact_phase_omni (recommended for bacteria)\n"
                                             f"  • bact_fluor_omni\n"
-                                            f"  • cyto2_omni\n"
-                                            f"  • worm_omni\n"
-                                            f"  • plant_omni\n"
                                             f"  • bact_phase_affinity\n\n"
                                             f"See: https://omnipose.readthedocs.io/models.html\n\n"
                                             f"Please select a different model from the dropdown."
@@ -5187,7 +5483,7 @@ class ProcessingTab(QWidget):
                                 help_text += (
                                     f"Please try:\n"
                                     f"1. Wait for the model server to come back online (currently HTTP 500 error)\n"
-                                    f"2. Try a different model type (e.g., 'cyto2_omni' if available)\n"
+                                    f"2. Try a different model type\n"
                                     f"3. If you have cp3 models, use them with Cellpose model types, not Omnipose\n"
                                     f"4. Delete corrupted models: rm -rf {MODEL_DIR}/*.corrupted\n"
                                     f"5. Restart the application"
@@ -5236,9 +5532,6 @@ class ProcessingTab(QWidget):
                                         f"Available Omnipose models:\n"
                                         f"  • bact_phase_omni (recommended for bacteria)\n"
                                         f"  • bact_fluor_omni\n"
-                                        f"  • cyto2_omni\n"
-                                        f"  • worm_omni\n"
-                                        f"  • plant_omni\n"
                                         f"  • bact_phase_affinity\n\n"
                                         f"See: https://omnipose.readthedocs.io/models.html\n\n"
                                         f"Please select a different model from the dropdown."
@@ -5254,9 +5547,6 @@ class ProcessingTab(QWidget):
                                     f"Available Omnipose models:\n"
                                     f"  • bact_phase_omni (recommended for bacteria)\n"
                                     f"  • bact_fluor_omni\n"
-                                    f"  • cyto2_omni\n"
-                                    f"  • worm_omni\n"
-                                    f"  • plant_omni\n"
                                     f"  • bact_phase_affinity\n\n"
                                     f"See: https://omnipose.readthedocs.io/models.html\n\n"
                                     f"Please select a different model from the dropdown."
@@ -5394,10 +5684,6 @@ class ProcessingTab(QWidget):
                         'bact_phase_omni': 30.0,
                         'bact_omni': 30.0,
                         'bact_fluor_omni': 30.0,
-                        'cyto2_omni': 30.0,
-                        'cyto_omni': 30.0,
-                        'worm_omni': 30.0,
-                        'nuclei_omni': 20.0,
                     }
                     diameter_value = default_diameters.get(model_type, 30.0)
                 
@@ -10353,9 +10639,6 @@ class GrowthCurveVideoTab(QWidget):
         return [
             'bact_phase_omni',  # Recommended for bacteria
             'bact_fluor_omni',
-            'cyto2_omni',
-            'worm_omni',
-            'plant_omni',
             'bact_phase_affinity'
         ]
     
@@ -11857,7 +12140,7 @@ class SAM2SegmentWorker(QThread):
 # Tab label to log key mapping for session logs (order matches main window tabs)
 TAB_LOG_KEYS = [
     ("nd2", "TIFF Conversion"),
-    ("segmentation", "Segmentation"),
+    ("segmentation", "Omnipose Segment"),
     ("sam2", "SAM2 Segment"),
     ("analyze_masks", "Analyze Masks"),
     ("tracking", "Tracking"),
@@ -12098,8 +12381,9 @@ class MainWindow(QMainWindow):
         self.logs_tab = SessionLogsTab(self)
         
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
-        tabs.addTab(self.processing_tab, "Segmentation")
-        tabs.addTab(self.sam2_tab, "SAM2 Segment")
+        tabs.addTab(self.processing_tab, "Omnipose Segment")
+        # SAM2 tab: widget and code kept, tab not shown (uncomment next line to show)
+        # tabs.addTab(self.sam2_tab, "SAM2 Segment")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.growth_curve_tab, "Video Graph")

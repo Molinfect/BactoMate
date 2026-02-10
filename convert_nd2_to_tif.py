@@ -6,13 +6,14 @@ Extracts frames 1-150 from each ND2 file and saves them as TIFF files.
 
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import numpy as np
 import nd2
 import tifffile
 from scipy.ndimage import shift
 from skimage.registration import phase_cross_correlation
+from skimage.exposure import match_histograms
 
 
 def drift_correct_stack(frames: np.ndarray, reference_frame: int = 0, method: str = 'frame_by_frame') -> np.ndarray:
@@ -145,67 +146,92 @@ def drift_correct_stack(frames: np.ndarray, reference_frame: int = 0, method: st
     raise ValueError(f"Unexpected frame shape: {frames.shape}")
 
 
-def bleach_correct_stack(frames: np.ndarray, method: str = 'exponential') -> np.ndarray:
+def bleach_correct_stack(
+    frames: np.ndarray,
+    method: str = 'exponential',
+    channel_indices: Optional[List[int]] = None,
+) -> np.ndarray:
     """
     Correct for photobleaching in fluorescence time series.
-    
+    Inspired by Fiji CorrectBleach plugin (https://github.com/fiji/CorrectBleach).
+
+    Which channels: For multi-channel (T, C, Y, X), if channel_indices is given then
+    only those channel indices are corrected; others are left unchanged. If None,
+    all channels are corrected.
+
     Args:
         frames: Array of shape (T, Y, X) or (T, C, Y, X)
-        method: Correction method ('exponential' or 'linear')
-        
+        method: One of:
+            - 'exponential': Intensity preservation. I(t) = I0*exp(-t/τ), scale so
+              mean intensity matches first frame (like Fiji "Exponential with offset").
+            - 'linear': Linear decay fit, then scale to first frame.
+            - 'histogram_matching': Match each frame's histogram to frame 0 (like
+              Fiji "Histogram Matching"). Good for segmentation; not for quantification.
+            - 'per_frame_minmax': Per-frame min-max stretch. Each frame is scaled so
+              its minimum maps to 0 and maximum to the max of the input dtype (e.g.
+              255 for uint8, 65535 for uint16). Bit depth and dtype are unchanged;
+              output is still grayscale (no RGB). Good for visualization only.
+
     Returns:
-        Bleach-corrected frames
+        Bleach-corrected frames (same shape and dtype as input where possible).
     """
     if len(frames.shape) == 3:
         # Single channel: TYX
-        # Calculate mean intensity per frame
+        if method == 'per_frame_minmax':
+            corrected = np.zeros_like(frames, dtype=np.float64)
+            out_max = (np.iinfo(frames.dtype).max if np.issubdtype(frames.dtype, np.integer) else 1.0)
+            for t in range(frames.shape[0]):
+                fm = frames[t].astype(np.float64)
+                lo, hi = fm.min(), fm.max()
+                if hi > lo:
+                    corrected[t] = (fm - lo) / (hi - lo) * out_max
+                else:
+                    corrected[t] = fm
+            return np.clip(corrected, 0, out_max).astype(frames.dtype)
+        if method == 'histogram_matching':
+            corrected = frames.copy()
+            ref = frames[0]
+            for t in range(1, frames.shape[0]):
+                corrected[t] = match_histograms(frames[t], ref, channel_axis=None).astype(frames.dtype)
+            return corrected
+        # exponential or linear
         mean_intensities = np.mean(frames, axis=(1, 2))
-        
-        # Fit exponential decay or linear
         if method == 'exponential':
-            # Simple exponential fit: I(t) = I0 * exp(-t/tau)
-            # Use first frame as reference
             I0 = mean_intensities[0]
-            # Estimate tau from last frame
             I_final = mean_intensities[-1]
             if I_final > 0 and I0 > I_final:
                 tau = -len(mean_intensities) / np.log(I_final / I0)
             else:
-                tau = len(mean_intensities) * 10  # Large tau if no decay
-            
-            # Calculate correction factors
+                tau = len(mean_intensities) * 10
             t = np.arange(len(mean_intensities))
             expected = I0 * np.exp(-t / tau)
-            correction_factors = I0 / expected
-        else:  # linear
-            # Linear fit
+            correction_factors = I0 / np.maximum(expected, 1e-10)
+        else:
             I0 = mean_intensities[0]
             I_final = mean_intensities[-1]
             if I_final < I0:
                 slope = (I0 - I_final) / len(mean_intensities)
                 expected = I0 - slope * np.arange(len(mean_intensities))
-                correction_factors = I0 / expected
+                correction_factors = I0 / np.maximum(expected, 1e-10)
             else:
                 correction_factors = np.ones(len(mean_intensities))
-        
-        # Apply correction
         corrected = frames.copy()
         for t in range(frames.shape[0]):
-            corrected[t] = frames[t] * correction_factors[t]
-        
+            corrected[t] = (frames[t].astype(np.float64) * correction_factors[t]).astype(frames.dtype)
         return corrected
-    
-    elif len(frames.shape) == 4:
-        # Multi-channel: TCYX - correct each channel independently
-        corrected = np.zeros_like(frames)
-        for c in range(frames.shape[1]):
+
+    if len(frames.shape) == 4:
+        # Multi-channel: TCYX - correct only channels in channel_indices (or all if None)
+        corrected = frames.copy()
+        channels_to_correct = range(frames.shape[1]) if channel_indices is None else channel_indices
+        for c in channels_to_correct:
+            if c < 0 or c >= frames.shape[1]:
+                continue
             channel_frames = frames[:, c, :, :]
             corrected[:, c, :, :] = bleach_correct_stack(channel_frames, method)
-        
         return corrected
-    
-    else:
-        raise ValueError(f"Unexpected frame shape: {frames.shape}")
+
+    raise ValueError(f"Unexpected frame shape: {frames.shape}")
 
 
 def convert_nd2_to_tif(
@@ -216,6 +242,8 @@ def convert_nd2_to_tif(
     channel_index: Optional[int] = None,
     drift_correct: bool = False,
     bleach_correct: bool = False,
+    bleach_method: str = 'exponential',  # exponential | linear | histogram_matching | per_frame_minmax
+    bleach_channel_indices: Optional[List[int]] = None,  # If set, only these channel indices get correction; else all
     pixel_size: Optional[float] = None,  # Pixel size in µm to save in metadata
     max_z_projection: bool = False,  # Max intensity projection across Z-slices
 ) -> None:
@@ -488,8 +516,14 @@ def convert_nd2_to_tif(
                     print(f"  ✓ Drift correction complete")
                 
                 if bleach_correct:
-                    print(f"  Applying bleach correction...")
-                    all_frames = bleach_correct_stack(all_frames)
+                    ch_list = bleach_channel_indices
+                    if ch_list is not None:
+                        print(f"  Applying bleach correction ({bleach_method}) to channels: {ch_list}...")
+                    else:
+                        print(f"  Applying bleach correction ({bleach_method}) to all channels...")
+                    all_frames = bleach_correct_stack(
+                        all_frames, method=bleach_method, channel_indices=bleach_channel_indices
+                    )
                     print(f"  ✓ Bleach correction complete")
                 
                 # Process channels
@@ -780,7 +814,22 @@ def main() -> None:
     parser.add_argument(
         '--bleach-correct',
         action='store_true',
-        help='Apply photobleaching correction for fluorescence channels (exponential decay correction)'
+        help='Apply photobleaching correction (Fiji CorrectBleach-style). Applied to all channels unless --channel is set.'
+    )
+    parser.add_argument(
+        '--bleach-method',
+        type=str,
+        choices=['exponential', 'linear', 'histogram_matching', 'per_frame_minmax'],
+        default='exponential',
+        help='Bleach correction method: exponential (intensity preservation), linear, histogram_matching (Fiji-like), per_frame_minmax (per-frame min-max stretch, preserves bit depth, visualization only)'
+    )
+    parser.add_argument(
+        '--bleach-channels',
+        type=int,
+        nargs='*',
+        default=None,
+        metavar='N',
+        help='Channel indices (0-based) to apply bleach correction to. If omitted and --bleach-correct is set, all channels are corrected. Example: --bleach-channels 0 2'
     )
     parser.add_argument(
         '--pixel-size',
@@ -808,6 +857,8 @@ def main() -> None:
             channel_index=args.channel,
             drift_correct=args.drift_correct,
             bleach_correct=args.bleach_correct,
+            bleach_method=args.bleach_method,
+            bleach_channel_indices=args.bleach_channels,
             pixel_size=args.pixel_size,
             max_z_projection=args.max_z_projection,
         )
