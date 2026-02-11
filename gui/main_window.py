@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.constants import LOGS_DIR, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
-from gui.log_config import get_logger, log_exception
+from gui.log_config import get_logger, log_exception, write_crash_log
 from gui.tabs import (
     AnalyzeMasksTab,
     GrowthCurveVideoTab,
@@ -290,6 +290,13 @@ def main() -> None:
 
     def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
         traceback.print_exception(exc_type, exc_value, exc_traceback)
+        # Write to project Logs/crash.log so we can read it for debugging
+        try:
+            lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
+            block = "".join(lines)
+            write_crash_log(f"\n--- {datetime.now().isoformat()} ---\n{block}")
+        except Exception:
+            pass
 
     sys.excepthook = pyqt6_exception_handler
 

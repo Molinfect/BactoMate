@@ -39,6 +39,8 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.constants import PROJECT_ROOT
+from gui.image_canvas import ImageCanvas
+from gui.image_utils import to_qpixmap, scale_for_preview
 from gui.session_params import apply_to_widgets, get_from_widgets
 from gui.utils import safe_imread
 from gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
@@ -1068,10 +1070,7 @@ class AnalyzeMasksTab(QWidget):
             from skimage.measure import regionprops
             from skimage.morphology import remove_small_objects, binary_dilation
             from skimage.segmentation import find_boundaries
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-            from matplotlib.figure import Figure
-            
+
             # Load masks
             masks = safe_imread(mask_path)
             
@@ -1129,33 +1128,21 @@ class AnalyzeMasksTab(QWidget):
             preview_dialog.setModal(False)  # Make non-modal so main window is accessible
             
             layout = QVBoxLayout()
-            
-            # Matplotlib figure
-            fig = Figure(figsize=(12, 8))
-            canvas = FigureCanvas(fig)
-            toolbar = NavigationToolbar(canvas, preview_dialog)
-            # Style toolbar buttons to be white/more visible
-            toolbar.setStyleSheet(
-                "QToolButton {"
-                "color: white;"
-                "background-color: #5D6D7E;"
-                "border: 1px solid #34495E;"
-                "border-radius: 3px;"
-                "padding: 4px;"
-                "}"
-                "QToolButton:hover {"
-                "background-color: #34495E;"
-                "}"
-            )
-            
-            layout.addWidget(toolbar)
-            
-            # Filename label
-            filename_label = QLabel(f"File: {Path(mask_path).name}")
-            filename_label.setStyleSheet("font-weight: bold; font-size: 11pt; padding: 5px; color: #2C3E50;")
-            layout.addWidget(filename_label)
-            
-            # Frame navigation (spinbox only; no prev/next buttons, same as segmentation preview)
+
+            # Title (same style as Segmentation Preview)
+            title_label = QLabel(f"File: {Path(mask_path).name}")
+            title_label.setStyleSheet("font-weight: bold; color: #ddd;")
+            layout.addWidget(title_label)
+
+            # Qt-native image canvas (same as Segmentation Preview: zoom wheel, pan left/middle-drag)
+            image_canvas = ImageCanvas()
+            image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
+            image_canvas.setMinimumSize(400, 300)
+            image_canvas.setStyleSheet("background-color: #1e1e1e;")
+            image_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            layout.addWidget(image_canvas, 1)
+
+            # Frame navigation (same layout as Segmentation Preview)
             nav_layout = QHBoxLayout()
             nav_layout.addWidget(QLabel("Frame:"))
             frame_spin = QSpinBox()
@@ -1164,9 +1151,6 @@ class AnalyzeMasksTab(QWidget):
             nav_layout.addWidget(frame_spin)
             nav_layout.addWidget(QLabel(f"of {num_frames}"))
             nav_layout.addStretch()
-            
-            layout.addLayout(nav_layout)
-            layout.addWidget(canvas)
             
             # Info label will be added to nav_layout after reapply button
             info_label = QLabel("")
@@ -1497,20 +1481,19 @@ class AnalyzeMasksTab(QWidget):
                             QApplication.processEvents()
                             if cancelled:
                                 return
-                        
-                        # Update plot
-                        fig.clear()
-                        ax = fig.add_subplot(111)
-                        ax.imshow(vis)
-                        # Short title so it fits; second line for legend if needed
+
+                        # Update Qt-native canvas (same pipeline as Segmentation Preview)
                         do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
                         title = f"Frame {frame_idx + 1}/{num_frames}"
                         legend = f"Green=Accepted ({len(accepted_labels)})  Red=Rejected ({len(rejected_labels)})"
                         if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
                             legend += f"  Magenta=Contour (t={fi_contour_thickness})"
-                        ax.set_title(f"{title}\n{legend}", fontsize=9)
-                        ax.axis('off')
-                        canvas.draw()
+                        title_label.setText(f"{Path(mask_path).name}  |  {title}  |  {legend}")
+                        # vis is (H, W, 3) uint8; scale for large images then display
+                        dummy_mask = np.zeros(vis.shape[:2], dtype=np.int32)
+                        vis_scaled, _ = scale_for_preview(vis, dummy_mask)
+                        pixmap = to_qpixmap(vis_scaled)
+                        image_canvas.set_pixmap(pixmap, (vis_scaled.shape[1], vis_scaled.shape[0]), reset_view=False)
                     
                     info_label.setText(f"Accepted: {len(accepted_labels)} | Rejected: {len(rejected_labels)} | Total: {len(all_labels)}")
                     
@@ -1542,11 +1525,9 @@ class AnalyzeMasksTab(QWidget):
             
             def go_to_frame(idx):
                 if 0 <= idx < num_frames:
-                    # Stop any pending timer to prevent conflicts
                     if hasattr(frame_spin, '_change_timer'):
                         frame_spin._change_timer.stop()
                     preview_dialog.current_frame = idx
-                    # Update spinbox without triggering signals (to avoid recursion)
                     frame_spin.blockSignals(True)
                     frame_spin.setValue(idx + 1)  # Display is 1-based, index is 0-based
                     frame_spin.blockSignals(False)
@@ -1562,34 +1543,28 @@ class AnalyzeMasksTab(QWidget):
                         QMessageBox.warning(preview_dialog, "Preview Error", 
                                           f"Could not display frame {idx + 1}:\n{str(e)}")
             
-            # Use editingFinished for when user finishes editing (presses Enter or leaves field)
-            # and a debounced valueChanged for when using arrow keys
+            # editingFinished + debounced valueChanged (300ms) for frame spinbox
             def on_frame_changed():
-                # Cancel any pending timer updates to prevent multiple calls
                 if hasattr(frame_spin, '_change_timer'):
                     frame_spin._change_timer.stop()
-                frame_num = frame_spin.value() - 1  # Convert from 1-based display to 0-based index
+                frame_num = frame_spin.value() - 1
                 if 0 <= frame_num < num_frames:
-                    # Only go to frame if it's different from current to avoid unnecessary updates
                     if frame_num != preview_dialog.current_frame:
                         go_to_frame(frame_num)
                 else:
-                    # Invalid frame - reset to current
                     frame_spin.blockSignals(True)
                     frame_spin.setValue(preview_dialog.current_frame + 1)
                     frame_spin.blockSignals(False)
-            
+
             frame_spin.editingFinished.connect(on_frame_changed)
-            # Debounce valueChanged to avoid triggering while typing
             frame_spin._change_timer = QTimer()
             frame_spin._change_timer.setSingleShot(True)
             frame_spin._change_timer.timeout.connect(on_frame_changed)
-            # Only start timer if value is valid
+
             def on_value_changed(v):
                 if 1 <= v <= num_frames:
                     frame_spin._change_timer.start(300)
                 else:
-                    # Invalid value - cancel timer and reset
                     frame_spin._change_timer.stop()
                     frame_spin.blockSignals(True)
                     frame_spin.setValue(preview_dialog.current_frame + 1)
@@ -1611,7 +1586,9 @@ class AnalyzeMasksTab(QWidget):
             
             # Info label (moved after reapply button to match segmentation preview)
             nav_layout.addWidget(info_label)
-            
+
+            layout.addLayout(nav_layout)
+
             # Close loading progress dialog now that preview dialog is ready
             loading_progress.close()
             

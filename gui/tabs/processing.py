@@ -683,11 +683,9 @@ class ProcessingTab(QWidget):
             QApplication.processEvents()
             
             import tifffile
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.figure import Figure
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-            
+            from gui.image_utils import to_qpixmap, build_segmentation_overlay, scale_for_preview
+            from gui.image_canvas import ImageCanvas
+
             # CRITICAL: Patch omnipose.core.OMNI_MODELS before cellpose_omni imports it
             # This fixes "cannot import name 'OMNI_MODELS' from 'omnipose.core'" error in frozen builds
             # Also ensure get_masks patch is applied
@@ -753,37 +751,34 @@ class ProcessingTab(QWidget):
             
             num_frames = images.shape[0]
             
-            # Create preview dialog (non-modal so user can access main window)
-            preview_dialog = QDialog(self)
+            # Create preview dialog as top-level window (parent=None) so it opens in front
+            # on all platforms; non-modal so user can access main window
+            preview_dialog = QDialog(None)
             preview_dialog.setWindowTitle("Segmentation Preview")
             preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)  # Make non-modal so main window is accessible
+            preview_dialog.setModal(False)
+            preview_dialog.setWindowFlags(
+                preview_dialog.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
+            )
             
             layout = QVBoxLayout()
-            
-            # Matplotlib figure
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-            fig = Figure(figsize=(10, 8))
-            canvas = FigureCanvas(fig)
-            ax = fig.add_subplot(111)
-            
-            # Add navigation toolbar for zoom, pan, etc.
-            toolbar = NavigationToolbar(canvas, preview_dialog)
-            # Style toolbar buttons to be white/more visible
-            toolbar.setStyleSheet(
-                "QToolButton {"
-                "color: white;"
-                "background-color: #5D6D7E;"
-                "border: 1px solid #34495E;"
-                "border-radius: 3px;"
-                "padding: 4px;"
-                "}"
-                "QToolButton:hover {"
-                "background-color: #34495E;"
-                "}"
+
+            # Title label (frame / cells / filename)
+            title_label = QLabel("")
+            title_label.setStyleSheet("font-weight: bold; color: #ddd;")
+            layout.addWidget(title_label)
+
+            # Qt-native image canvas (zoom: wheel; pan: left-drag or middle-drag)
+            image_canvas = ImageCanvas()
+            image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
+            image_canvas.setMinimumSize(400, 300)
+            image_canvas.setStyleSheet("background-color: #1e1e1e;")
+            image_canvas.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Expanding,
             )
-            layout.addWidget(toolbar)
-            
+            layout.addWidget(image_canvas, 1)
+
             # Store data for navigation
             preview_dialog.images = images
             preview_dialog.current_frame = 0
@@ -1636,30 +1631,24 @@ class ProcessingTab(QWidget):
                     
                     preview_dialog.masks = mask
                     
-                    # Update progress message
+                    # Update progress message and let UI breathe
                     if progress_dialog:
                         progress_dialog.setLabelText("Rendering display...")
-                        QApplication.processEvents()
-                    
-                    # Clear and redraw
-                    ax.clear()
-                    
-                    # Normalize image for display
-                    img_norm = (display_frame - display_frame.min()) / (display_frame.max() - display_frame.min() + 1e-10)
-                    ax.imshow(img_norm, cmap='gray', alpha=0.7)
-                    
-                    # Overlay mask
-                    if mask.max() > 0:
-                        # Create colored overlay
-                        from matplotlib.colors import ListedColormap
-                        mask_overlay = np.ma.masked_where(mask == 0, mask)
-                        ax.imshow(mask_overlay, cmap='gist_ncar', alpha=0.5, interpolation='nearest')
-                    
+                    QApplication.processEvents()
+
+                    # Scale down for preview so overlay + pixmap + paint stay fast
+                    disp_scaled, mask_scaled = scale_for_preview(display_frame, mask)
+                    overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
+                    pixmap = to_qpixmap(overlay)
+                    height, width = overlay.shape[:2]
+                    image_canvas.set_pixmap(pixmap, (width, height), reset_view=False)
+                    QApplication.processEvents()
+
                     file_name = Path(file_path).name
                     num_cells = len(np.unique(mask)) - 1
-                    ax.set_title(f"Frame {frame_idx + 1} of {num_frames} | Cells detected: {num_cells} | {file_name}")
-                    ax.axis('off')
-                    canvas.draw()
+                    title_label.setText(
+                        f"Frame {frame_idx + 1} of {num_frames} | Cells detected: {num_cells} | {file_name}"
+                    )
                     
                     # Close progress dialog
                     if progress_dialog:
@@ -1741,32 +1730,27 @@ class ProcessingTab(QWidget):
                 finally:
                     is_updating_frame = False
             
-            # Use editingFinished for when user finishes editing (presses Enter or leaves field)
-            # and a debounced valueChanged for when using arrow keys
+            # editingFinished: when user presses Enter or leaves field. valueChanged + 300ms debounce: for arrow keys.
             def on_frame_changed():
-                # Cancel any pending timer updates
                 if hasattr(frame_spin, '_change_timer'):
                     frame_spin._change_timer.stop()
                 frame_num = frame_spin.value() - 1
                 if 0 <= frame_num < num_frames:
                     go_to_frame(frame_num)
                 else:
-                    # Invalid frame - reset to current
                     frame_spin.blockSignals(True)
                     frame_spin.setValue(preview_dialog.current_frame + 1)
                     frame_spin.blockSignals(False)
-            
+
             frame_spin.editingFinished.connect(on_frame_changed)
-            # Debounce valueChanged to avoid triggering while typing
             frame_spin._change_timer = QTimer()
             frame_spin._change_timer.setSingleShot(True)
             frame_spin._change_timer.timeout.connect(on_frame_changed)
-            # Only start timer if value is valid
+
             def on_value_changed(v):
                 if 1 <= v <= num_frames:
                     frame_spin._change_timer.start(300)
                 else:
-                    # Invalid value - cancel timer and reset
                     frame_spin._change_timer.stop()
                     frame_spin.blockSignals(True)
                     frame_spin.setValue(preview_dialog.current_frame + 1)
@@ -1808,14 +1792,55 @@ class ProcessingTab(QWidget):
             nav_layout.addWidget(clear_cache_btn)
             
             layout.addLayout(nav_layout)
-            layout.addWidget(canvas)
-            
-            # Close loading progress dialog now that preview dialog is ready
+
+            # Close button
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(preview_dialog.close)
+            layout.addWidget(close_btn)
+
+            # Add Cmd+W (or Ctrl+W) shortcut to close dialog
+            close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
+            close_shortcut.activated.connect(preview_dialog.close)
+            if sys.platform == 'darwin':
+                close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
+                close_shortcut_mac.activated.connect(preview_dialog.close)
+
+            preview_dialog.setLayout(layout)
+
+            # Show first frame immediately (image only), scaled for fast display
+            frame0 = images[0]
+            if frame0.ndim == 3:
+                display_frame0 = frame0[0] if frame0.shape[0] < 10 else frame0[:, :, 0]
+            else:
+                display_frame0 = frame0
+            empty_mask = np.zeros(display_frame0.shape, dtype=np.int32)
+            disp0, _ = scale_for_preview(display_frame0, empty_mask)
+            empty_scaled = np.zeros(disp0.shape, dtype=np.int32)
+            initial_overlay = build_segmentation_overlay(disp0, empty_scaled, alpha=0.0)
+            initial_pixmap = to_qpixmap(initial_overlay)
+            h0, w0 = initial_overlay.shape[:2]
+            image_canvas.set_pixmap(initial_pixmap, (w0, h0), reset_view=True)
+            file_name = Path(file_path).name
+            title_label.setText(f"Frame 1 of {num_frames} | Segmenting... | {file_name}")
+            status_label.setText("Segmenting first frame...")
             loading_progress.close()
-            
-            # Display first frame (will use cache if available)
-            update_display(0, show_progress=True)
-            
+            preview_dialog.show()
+            preview_dialog.raise_()
+            preview_dialog.activateWindow()
+
+            def start_preview():
+                preview_dialog.raise_()
+                preview_dialog.activateWindow()
+                update_display(0, show_progress=True)
+                # Clear "stay on top" after first display so the window doesn't stay on top forever
+                def clear_stay_on_top():
+                    preview_dialog.setWindowFlags(
+                        preview_dialog.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint
+                    )
+                    preview_dialog.show()  # needed after changing flags
+                QTimer.singleShot(1500, clear_stay_on_top)
+            QTimer.singleShot(0, start_preview)
+
             # Show cache info in status
             def update_cache_status():
                 cache_size = len(preview_dialog.segmentation_cache)
@@ -1823,25 +1848,8 @@ class ProcessingTab(QWidget):
                     status_label.setText(f"Ready (cached: {cache_size})")
                 else:
                     status_label.setText("Ready")
-            
-            # Update cache status after display
+
             QTimer.singleShot(100, update_cache_status)
-            
-            # Add Cmd+W (or Ctrl+W) shortcut to close dialog
-            close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
-            close_shortcut.activated.connect(preview_dialog.close)
-            # Also handle Cmd+W on macOS (Qt uses Ctrl modifier for Cmd on macOS)
-            if sys.platform == 'darwin':
-                close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
-                close_shortcut_mac.activated.connect(preview_dialog.close)
-            
-            # Close button
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(preview_dialog.close)
-            layout.addWidget(close_btn)
-            
-            preview_dialog.setLayout(layout)
-            preview_dialog.show()  # Use show() instead of exec_() to make it non-modal
             
         except ImportError as e:
             loading_progress.close()
@@ -1856,7 +1864,7 @@ class ProcessingTab(QWidget):
             else:
                 QMessageBox.warning(self, "Preview Unavailable", 
                                   f"Preview requires additional libraries:\n\n{error_msg}\n\n"
-                                  f"Install with: pip install matplotlib cellpose-omni")
+                                  f"Install with: pip install cellpose-omni")
         except Exception as e:
             loading_progress.close()
             error_msg = str(e)

@@ -5,6 +5,8 @@ Patches applied:
 1. peakdetect - scipy ifft import fix (scipy >= 1.10)
 2. cellpose_omni - model_type parameter fix (architecture detection)
 3. cellpose_omni - model URL fix (GitHub instead of Cellpose server)
+4. cellpose_omni - register bact_phase_affinity (checkpoint is 1-channel; do not set nchan=2)
+5. cellpose_omni transforms - trim to nchan after reshape (so 1-channel models get 1-channel input)
 """
 
 import sys
@@ -92,8 +94,48 @@ def patch_cellpose_omni() -> bool:
     else:
         print("  WARNING: Could not find _MODEL_URL line in cellpose_omni/models.py")
 
+    # 3) Register bact_phase_affinity so it is not replaced with 'cyto' (path would be overwritten)
+    if "'bact_phase_affinity'" not in content:
+        if "MODEL_NAMES = MCHN_MODEL_NAMES + MONO_OMNI_MODELS" in content:
+            content = content.replace(
+                "MODEL_NAMES = MCHN_MODEL_NAMES + MONO_OMNI_MODELS",
+                "MODEL_NAMES = MCHN_MODEL_NAMES + MONO_OMNI_MODELS + ['bact_phase_affinity']",
+                1,
+            )
+            changed = True
+        elif "MODEL_NAMES = ['cyto','nuclei','cyto2']+OMNI_MODELS" in content:
+            content = content.replace(
+                "MODEL_NAMES = ['cyto','nuclei','cyto2']+OMNI_MODELS",
+                "MODEL_NAMES = ['cyto','nuclei','cyto2']+OMNI_MODELS + ['bact_phase_affinity']",
+                1,
+            )
+            changed = True
+        elif "MODEL_NAMES = C1_MODELS + C2_BD_MODELS + C1_BD_MODELS + C2_MODELS + CP_MODELS" in content:
+            content = content.replace(
+                "MODEL_NAMES = C1_MODELS + C2_BD_MODELS + C1_BD_MODELS + C2_MODELS + CP_MODELS",
+                "MODEL_NAMES = C1_MODELS + C2_BD_MODELS + C1_BD_MODELS + C2_MODELS + CP_MODELS + ['bact_phase_affinity']",
+                1,
+            )
+            changed = True
+
+    # 4) Affinity (bact_phase_affinity): checkpoint in omnipose-models is 1-channel. Ensure we do NOT
+    #    set nchan=2 for affinity (revert if a previous patch added it), so the model stays 1-channel.
+    if "model_type in C2_MODEL_NAMES or (model_type and 'affinity' in model_type)" in content:
+        content = content.replace(
+            "if model_type in C2_MODEL_NAMES or (model_type and 'affinity' in model_type):\n                self.nchan = 2",
+            "if model_type in C2_MODEL_NAMES:\n                self.nchan = 2",
+            1,
+        )
+        changed = True
+
     if not changed:
-        if "model_type=model_type" in content and "raw.githubusercontent.com" in content:
+        # Consider already patched: URL + bact_phase_affinity registered, and no wrong nchan=2 for affinity
+        already_ok = (
+            "raw.githubusercontent.com" in content
+            and "bact_phase_affinity" in content
+            and "model_type in C2_MODEL_NAMES or (model_type and 'affinity'" not in content
+        )
+        if already_ok:
             print("  ✓ cellpose_omni is already patched")
             return True
         print("  WARNING: No changes applied to cellpose_omni/models.py")
@@ -105,6 +147,30 @@ def patch_cellpose_omni() -> bool:
         print(f"  Created backup at: {backup}")
     models_file.write_text(content)
     print("  ✓ Patched cellpose_omni (model_type + model URL)")
+    return True
+
+
+def patch_cellpose_omni_transforms() -> bool:
+    """Patch cellpose_omni/transforms.py: after reshape(), trim to nchan so 1-channel models get 1-channel input."""
+    transforms_file = _find_in_syspath("cellpose_omni/transforms.py")
+    if not transforms_file:
+        print("  WARNING: Could not find cellpose_omni/transforms.py")
+        return False
+
+    content = transforms_file.read_text()
+    old = "        x = reshape(x, channels=channels, channel_axis=channel_axis)\n        # print('AAA',x.shape,channels)\n    else:"
+    new = "        x = reshape(x, channels=channels, channel_axis=channel_axis)\n        if x.shape[-1] > nchan and x.ndim > dim:\n            x = x[..., :nchan]\n        # print('AAA',x.shape,channels)\n    else:"
+
+    if new in content:
+        print("  ✓ cellpose_omni transforms (nchan trim) already patched")
+        return True
+    if old not in content:
+        print("  WARNING: Could not find expected block in cellpose_omni/transforms.py")
+        return False
+
+    content = content.replace(old, new)
+    transforms_file.write_text(content)
+    print("  ✓ Patched cellpose_omni transforms (nchan trim)")
     return True
 
 
@@ -128,8 +194,15 @@ def main() -> bool:
     except Exception as e:
         print(f"  ✗ Error: {e}")
 
+    ok_transforms = False
+    print("\nPatching cellpose_omni transforms (nchan trim)...")
+    try:
+        ok_transforms = patch_cellpose_omni_transforms()
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+
     print("\n" + "=" * 50)
-    print(f"Done. peakdetect: {'OK' if ok_peak else 'skipped/failed'}; cellpose_omni: {'OK' if ok_cellpose else 'skipped/failed'}")
+    print(f"Done. peakdetect: {'OK' if ok_peak else 'skipped/failed'}; cellpose_omni: {'OK' if ok_cellpose else 'skipped/failed'}; transforms: {'OK' if ok_transforms else 'skipped/failed'}")
     print("=" * 50)
     return ok_peak or ok_cellpose
 

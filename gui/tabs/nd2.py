@@ -36,6 +36,8 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.constants import CONVERT_ND2_SCRIPT, PROJECT_ROOT
+from gui.image_canvas import ImageCanvas
+from gui.image_utils import to_qpixmap, scale_for_preview
 from gui.session_params import apply_to_widgets, get_from_widgets
 from gui.utils import safe_imread
 from gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
@@ -1475,35 +1477,27 @@ class ND2ConversionTab(QWidget):
         import numpy as np
         import sys
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
         from matplotlib.figure import Figure
         from PyQt6.QtCore import QTimer
         from PyQt6.QtGui import QKeySequence, QShortcut
-        
+
         raw_frames = all_frames
         display_frames_ref = {'data': all_frames}  # update_frame reads from this; we can swap to corrected
-        
-        # Matplotlib figure with navigation toolbar
-        fig = Figure(figsize=(12, 8))
-        canvas = FigureCanvas(fig)
-        toolbar = NavigationToolbar(canvas, preview_dialog)
-        # Style toolbar buttons to be white/more visible
-        toolbar.setStyleSheet(
-            "QToolButton {"
-            "color: white;"
-            "background-color: #5D6D7E;"
-            "border: 1px solid #34495E;"
-            "border-radius: 3px;"
-            "padding: 4px;"
-            "}"
-            "QToolButton:hover {"
-            "background-color: #34495E;"
-            "}"
-        )
-        
-        layout.addWidget(toolbar)
-        
-        # Frame navigation (moved to top, below toolbar); Frame spinbox has +/- for stepping
+
+        # Title (same style as Segmentation Preview)
+        title_label = QLabel(f"Timepoint 1 of {num_time}  |  {Path(file_path).name}")
+        title_label.setStyleSheet("font-weight: bold; color: #ddd;")
+        layout.addWidget(title_label)
+
+        # Qt-native image canvas (same as Segmentation Preview: zoom wheel, pan left/middle-drag)
+        image_canvas = ImageCanvas()
+        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
+        image_canvas.setMinimumSize(400, 300)
+        image_canvas.setStyleSheet("background-color: #1e1e1e;")
+        image_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(image_canvas, 1)
+
+        # Frame navigation (same layout pattern as Segmentation Preview)
         nav_layout = QHBoxLayout()
         nav_layout.addWidget(QLabel("Frame:"))
         frame_spin = QSpinBox()
@@ -1581,41 +1575,24 @@ class ND2ConversionTab(QWidget):
         hist_fig.subplots_adjust(left=0.12, right=0.95, top=0.90, bottom=0.15)
         hist_canvas.setStyleSheet("background-color: #2b2b2b;")
         lut_layout.addWidget(hist_canvas)
-        
-        # Min/Max value displays and manual input - more compact layout
-        value_layout = QHBoxLayout()
-        value_layout.setSpacing(10)  # Reduce spacing
-        value_layout.addWidget(QLabel("Min:"))
+
+        # LUT min/max kept as internal widgets (histogram drag + code still use them); not shown in UI
         lut_min_slider = QDoubleSpinBox()
         lut_min_slider.setRange(0, 65535)
         lut_min_slider.setDecimals(1)
         lut_min_slider.setSingleStep(10)
-        lut_min_slider.setToolTip("Minimum intensity value for display (or adjust via histogram)")
-        lut_min_slider.setMaximumWidth(120)  # Limit width to reduce white space
-        value_layout.addWidget(lut_min_slider)
-        
-        value_layout.addWidget(QLabel("Max:"))
         lut_max_slider = QDoubleSpinBox()
         lut_max_slider.setRange(0, 65535)
         lut_max_slider.setDecimals(1)
         lut_max_slider.setSingleStep(10)
-        lut_max_slider.setToolTip("Maximum intensity value for display (or adjust via histogram)")
-        lut_max_slider.setMaximumWidth(120)  # Limit width to reduce white space
-        value_layout.addWidget(lut_max_slider)
-        
-        value_layout.addStretch()
-        lut_layout.addLayout(value_layout)
-        
+
         lut_group.setLayout(lut_layout)
         lut_group.setMaximumHeight(280)  # Increased to match new histogram height
         layout.addWidget(lut_group)
-        
-        layout.addWidget(canvas)
-        
+
         # Store current frame data and LUT settings
         current_frame_data = {'frame': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None, 'histogram': None}
         is_updating_lut = False  # Flag to prevent recursive updates during LUT adjustment
-        im_handle = None  # Store image handle for LUT updates
         hist_vmin_line = None  # Vertical line for min value in histogram
         hist_vmax_line = None  # Vertical line for max value in histogram
         hist_plot = None  # Histogram bar plot
@@ -1625,6 +1602,29 @@ class ND2ConversionTab(QWidget):
         current_vmin = None
         current_vmax = None
         
+        def refresh_image_display():
+            """Redraw main image from current_frame_data (frame + vmin/vmax) into ImageCanvas."""
+            frame = current_frame_data.get('frame')
+            if frame is None:
+                return
+            if frame.ndim > 2:
+                frame = np.asarray(frame).squeeze()
+                if frame.ndim != 2:
+                    return
+            vmin = current_frame_data.get('vmin')
+            vmax = current_frame_data.get('vmax')
+            if vmin is None or vmax is None:
+                return
+            vmin, vmax = float(vmin), float(vmax)
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                vmax = max(vmin + 1e-6, float(np.nanmax(frame)) if np.any(np.isfinite(frame)) else vmin + 1)
+            vrange = max(vmax - vmin, 1e-6)
+            display = ((frame.astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
+            dummy_mask = np.zeros(display.shape[:2], dtype=np.int32)
+            display_scaled, _ = scale_for_preview(display, dummy_mask)
+            pixmap = to_qpixmap(display_scaled)
+            image_canvas.set_pixmap(pixmap, (display_scaled.shape[1], display_scaled.shape[0]), reset_view=False)
+
         def update_histogram(frame, vmin, vmax):
             """Update histogram plot with min/max lines"""
             nonlocal hist_vmin_line, hist_vmax_line, hist_plot
@@ -1746,19 +1746,20 @@ class ND2ConversionTab(QWidget):
                 # Update display directly without calling update_lut_from_sliders (to avoid recursion)
                 vmin = current_vmin
                 vmax = current_vmax
-                
-                # Update image display
-                if current_frame_data['frame'] is not None and im_handle is not None:
-                    im_handle.set_clim(vmin=vmin, vmax=vmax)
-                    canvas.draw()
-                    
+                current_frame_data['vmin'] = vmin
+                current_frame_data['vmax'] = vmax
+
+                # Update image display (Qt-native canvas)
+                if current_frame_data['frame'] is not None:
+                    refresh_image_display()
+
                     # Update frame info (include view mode; use stored display name if synced)
                     current_channel = (channel_spin.value() if channel_spin is not None else 1)
                     _showing_corrected = (display_frames_ref['data'] is not raw_frames)
                     _dn = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if _showing_corrected else None
                     _view_suffix = f" | View: Bleach corrected ({_dn})" if _showing_corrected else " | View: Raw"
                     frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suffix}")
-                    
+
                     # Update histogram lines
                     if hist_vmin_line is not None:
                         hist_vmin_line.set_xdata([vmin, vmin])
@@ -1773,10 +1774,6 @@ class ND2ConversionTab(QWidget):
                     if hist_vmin_line is not None and hist_vmax_line is not None:
                         hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
                     hist_canvas.draw()
-                    
-                    # Store values
-                    current_frame_data['vmin'] = vmin
-                    current_frame_data['vmax'] = vmax
             finally:
                 is_updating_lut = False
         
@@ -1809,16 +1806,16 @@ class ND2ConversionTab(QWidget):
                 else:
                     frame = frames_source[frame_idx, 0, 0, :, :]  # Fallback
             elif len(frames_source.shape) == 4:
-                # Could be TCYX or TZYX
+                # TCYX (e.g. bleach-corrected) or TZYX: always take 2D slice so frame is (Y, X)
                 if num_channels > 1:
                     # TCYX: extract frame and channel
                     if channel_idx < frames_source.shape[1]:
-                        frame = frames_source[frame_idx, channel_idx, :, :]  # T=frame_idx, C=channel_idx
+                        frame = frames_source[frame_idx, channel_idx, :, :]
                     else:
-                        frame = frames_source[frame_idx, 0, :, :]  # Fallback
+                        frame = frames_source[frame_idx, 0, :, :]
                 else:
-                    # TZYX: extract frame and first Z-slice
-                    frame = frames_source[frame_idx, 0, :, :] if num_z > 1 else frames_source[frame_idx, :, :]
+                    # Single channel: second dim is either C=1 or Z; take index 0 to get (Y, X)
+                    frame = frames_source[frame_idx, 0, :, :]
             elif len(frames_source.shape) == 3:
                 # Could be TYX (single channel, single Z) or CYX (single frame, multi-channel)
                 if frames_source.shape[0] == num_time:
@@ -1921,20 +1918,15 @@ class ND2ConversionTab(QWidget):
             
             # Update histogram
             update_histogram(frame, vmin, vmax)
-            
-            # Clear and redraw
-            fig.clear()
-            ax = fig.add_subplot(111)
-            nonlocal im_handle
-            im_handle = ax.imshow(frame, cmap='gray', vmin=vmin, vmax=vmax)
-            _title = f"Frame {frame_idx + 1} of {num_time}: {Path(file_path).name}"
+
+            # Update Qt-native canvas (same pipeline as Segmentation Preview)
+            _title = f"Timepoint {frame_idx + 1} of {num_time}  |  {Path(file_path).name}"
             if display_frames_ref['data'] is not raw_frames:
                 _dn = getattr(preview_dialog, '_bleach_display_name_used', method_display_name)
-                _title += f" [bleach corrected: {_dn}]"
-            ax.set_title(_title)
-            ax.axis('off')
-            canvas.draw()
-            
+                _title += f"  |  Bleach corrected ({_dn})"
+            title_label.setText(_title)
+            refresh_image_display()
+
             # Update frame info (1-indexed for display); show whether view is raw or bleach-corrected (use stored display name if updated by sync)
             current_channel = (channel_spin.value() if channel_spin is not None else 1)
             showing_corrected = (display_frames_ref['data'] is not raw_frames)
@@ -1965,25 +1957,20 @@ class ND2ConversionTab(QWidget):
                 # Update stored values
                 current_vmin = vmin
                 current_vmax = vmax
-                
-                # Update the image display directly using matplotlib's set_clim
-                if current_frame_data['frame'] is not None and im_handle is not None:
-                    # Update the color limits on the existing image
-                    im_handle.set_clim(vmin=vmin, vmax=vmax)
-                    # Force immediate redraw
-                    canvas.draw()
-                    
+                current_frame_data['vmin'] = vmin
+                current_frame_data['vmax'] = vmax
+
+                # Update the image display (Qt-native canvas)
+                if current_frame_data['frame'] is not None:
+                    refresh_image_display()
+
                     # Update frame info (include view mode; use stored display name if synced)
                     current_channel = (channel_spin.value() if channel_spin is not None else 1)
                     _showing_corr = (display_frames_ref['data'] is not raw_frames)
                     _dn2 = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if _showing_corr else None
                     _view_suff = f" | View: Bleach corrected ({_dn2})" if _showing_corr else " | View: Raw"
                     frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suff}")
-                    
-                    # Store the current LUT values so they persist
-                    current_frame_data['vmin'] = vmin
-                    current_frame_data['vmax'] = vmax
-                    
+
                     # Update histogram lines (only update lines, don't redraw entire histogram)
                     if hist_vmin_line is not None and hist_vmax_line is not None:
                         # Update line positions
@@ -1999,8 +1986,7 @@ class ND2ConversionTab(QWidget):
                         hist_canvas.draw()
                     else:
                         # If lines don't exist yet, update full histogram
-                        if current_frame_data['frame'] is not None:
-                            update_histogram(current_frame_data['frame'], vmin, vmax)
+                        update_histogram(current_frame_data['frame'], vmin, vmax)
                 else:
                     # Fallback: full update if image handle doesn't exist
                     update_frame(preview_dialog.current_frame, vmin=vmin, vmax=vmax, update_sliders=False)
@@ -2110,7 +2096,22 @@ class ND2ConversionTab(QWidget):
                     bleach_status_label.setStyleSheet("color: #9E9E9E; font-size: 10pt;")
                 current_vmin = None
                 current_vmax = None
-                update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
+                try:
+                    update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
+                except Exception as e:
+                    if checked:
+                        display_frames_ref['data'] = raw_frames
+                        bleach_status_label.setText("View: Raw")
+                        bleach_status_label.setStyleSheet("color: #9E9E9E; font-size: 10pt;")
+                        show_bleach_check.setChecked(False)
+                    QMessageBox.warning(
+                        preview_dialog, "Preview",
+                        f"Could not update preview after changing bleach correction:\n{str(e)}"
+                    )
+                    try:
+                        update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
+                    except Exception:
+                        pass
 
             show_bleach_check.toggled.connect(on_show_bleach_toggled)
 
@@ -2143,22 +2144,31 @@ class ND2ConversionTab(QWidget):
             sync_timer.start(500)  # Check every 0.5 s
             preview_dialog._bleach_sync_timer = sync_timer  # keep reference
         
-        # Use editingFinished for when user finishes editing (presses Enter or leaves field)
-        # and a debounced valueChanged for when using arrow keys.
-        # Spinbox is 1-based (1..num_time); we convert to 0-based index for go_to_frame.
+        # editingFinished + debounced valueChanged (300ms) for frame spinbox
         def on_frame_changed():
             user_frame = frame_spin.value()  # 1-based: 1 = first frame
             idx = user_frame - 1
             if 0 <= idx < num_time:
                 go_to_frame(idx)
-        
-        # Defer reading spinbox so Qt has committed the new value (avoids "jump to N-1" on Enter)
+            else:
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(preview_dialog.current_frame + 1)
+                frame_spin.blockSignals(False)
+
         frame_spin.editingFinished.connect(lambda: QTimer.singleShot(0, on_frame_changed))
-        # Debounce valueChanged to avoid triggering while typing
         frame_spin._change_timer = QTimer()
         frame_spin._change_timer.setSingleShot(True)
         frame_spin._change_timer.timeout.connect(on_frame_changed)
-        frame_spin.valueChanged.connect(lambda v: frame_spin._change_timer.start(300))
+
+        def on_value_changed(v):
+            if 1 <= v <= num_time:
+                frame_spin._change_timer.start(300)
+            else:
+                frame_spin._change_timer.stop()
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(preview_dialog.current_frame + 1)
+                frame_spin.blockSignals(False)
+        frame_spin.valueChanged.connect(on_value_changed)
         
         # Add Cmd+W (or Ctrl+W) shortcut to close dialog
         close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)

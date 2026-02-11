@@ -40,9 +40,10 @@ import gui.patches  # noqa: F401
 warnings.filterwarnings("ignore", category=UserWarning, message=".*pkg_resources.*")
 warnings.filterwarnings("ignore", category=FutureWarning, message=".*area_threshold.*")
 
-# Structured logging for app and GUI
+# Structured logging for app and GUI (Logs/crash.log will get uncaught tracebacks)
+from gui.constants import LOGS_DIR
 from gui.log_config import setup_logging, get_logger
-setup_logging(logging.INFO)
+setup_logging(logging.INFO, logs_dir=LOGS_DIR)
 
 if __name__ == "__main__":
     try:
