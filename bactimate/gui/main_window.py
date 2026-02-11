@@ -46,7 +46,7 @@ from bactimate.gui.tabs import (
     SessionLogsTab,
     TrackingTab,
 )
-from bactimate.gui.patches import base_path
+from bactimate.gui.paths import get_app_root
 from bactimate.gui.styles import get_modern_stylesheet
 
 
@@ -93,7 +93,7 @@ class MainWindow(QMainWindow):
         title_bar_layout.addStretch()
 
         logo_label = QLabel()
-        logo_path = Path(base_path) / "img" / "logo2.png"
+        logo_path = get_app_root() / "img" / "logo2.png"
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path))
             if pixmap.height() > 60:

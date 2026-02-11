@@ -108,8 +108,8 @@ def _apply_qt_paths() -> None:
     if getattr(sys, "frozen", False) or hasattr(sys, "__compiled__"):
         base_path = os.path.dirname(sys.executable)
     else:
-        # Repo root (bactimate/gui/patches.py -> ../.. = bactimate, ../../.. = repo) for venv and img/
-        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        # Repo root (bactimate/gui/patches.py -> .. = bactimate, ../.. = repo) for venv and img/
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
     abs_plugin_path = None
     abs_lib_dir = None

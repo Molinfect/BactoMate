@@ -21,10 +21,30 @@ else
     echo "No existing venv found (that's okay)"
 fi
 
-# Step 2: Create new virtual environment
+# Step 2: Create new virtual environment (need Python 3.10+ for trackastra and others)
 echo ""
 echo "Creating new virtual environment..."
-python3 -m venv venv
+PYTHON_CMD=""
+for candidate in python3.11 python3.10 python3; do
+    if command -v "$candidate" &>/dev/null; then
+        ver=$("$candidate" -c "import sys; print(sys.version_info.major, sys.version_info.minor)" 2>/dev/null) || continue
+        major=$(echo "$ver" | cut -d' ' -f1)
+        minor=$(echo "$ver" | cut -d' ' -f2)
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+            PYTHON_CMD="$candidate"
+            echo "Using: $candidate ($($candidate --version 2>&1))"
+            break
+        fi
+    fi
+done
+if [ -z "$PYTHON_CMD" ]; then
+    echo "✗ Error: BactiMate requires Python 3.10 or 3.11."
+    echo "  trackastra and other dependencies do not support Python 3.9."
+    echo "  Install Python 3.11 from https://www.python.org/downloads/ or run: brew install python@3.11"
+    echo "  Then run this script again (or use: python3.11 -m venv venv && source venv/bin/activate && pip install -r requirements.txt)"
+    exit 1
+fi
+"$PYTHON_CMD" -m venv venv
 echo "✓ New venv created"
 
 # Step 3: Activate virtual environment

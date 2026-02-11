@@ -6,7 +6,7 @@ This guide takes you from **no Python** (or the wrong version) to **BactiMate GU
 
 ## 1. Install Python 3.11
 
-BactiMate supports **Python 3.9–3.11**; **3.11** is recommended.
+BactiMate requires **Python 3.10 or 3.11** (3.11 recommended). Python 3.9 is not supported (e.g. trackastra needs 3.10+).
 
 ### macOS
 
