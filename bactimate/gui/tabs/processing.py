@@ -42,18 +42,19 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.constants import PROJECT_ROOT
-from gui.log_config import get_logger
-from gui.session_params import apply_to_widgets, get_from_widgets
-from gui.utils import safe_imread
-from gui.widgets import (
+from bactimate.gui.constants import PROJECT_ROOT
+from bactimate.gui.log_config import get_logger
+from bactimate.gui.preferences import LAST_DIR_SEGMENTATION
+from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
+from bactimate.gui.utils import safe_imread
+from bactimate.gui.widgets import (
     ClickableTooltip,
     TooltipClickFilter,
     DragDropGroupBox,
     create_info_icon,
     show_file_selection_dialog,
 )
-from gui.workers import WorkerThread
+from bactimate.gui.workers import WorkerThread
 
 class ProcessingTab(QWidget):
     """Unified tab for processing single files or folders"""
@@ -441,19 +442,19 @@ class ProcessingTab(QWidget):
             if self.file_path.text() and Path(self.file_path.text()).exists():
                 start_dir = str(Path(self.file_path.text()).parent)
             elif self.file_path.text():
-                # If path exists but file doesn't, use parent directory
                 start_dir = str(Path(self.file_path.text()).parent)
             else:
-                # Default to home directory
-                start_dir = str(Path.home())
-            
+                start_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
+
             file_path, _ = QFileDialog.getOpenFileName(
-                self, 
-                "Select TIFF File", 
+                self,
+                "Select TIFF File",
                 start_dir,
                 "TIFF Files (*.tif *.tiff);;All Files (*)"
             )
             if file_path:
+                if getattr(self.parent_window, "set_last_dir_for_tab", None):
+                    self.parent_window.set_last_dir_for_tab(LAST_DIR_SEGMENTATION, file_path)
                 self.file_path.setText(file_path)
                 self._update_overlay_checkbox_state()
                 if self.parent_window and hasattr(self.parent_window, 'log_output'):
@@ -469,8 +470,11 @@ class ProcessingTab(QWidget):
     
     def select_folder(self):
         """Open folder dialog to select a folder"""
-        folder_path = QFileDialog.getExistingDirectory(self, "Select Folder")
+        start_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Folder", start_dir)
         if folder_path:
+            if getattr(self.parent_window, "set_last_dir_for_tab", None):
+                self.parent_window.set_last_dir_for_tab(LAST_DIR_SEGMENTATION, folder_path)
             self.file_path.setText(folder_path)
             self._update_overlay_checkbox_state()
     
@@ -683,8 +687,8 @@ class ProcessingTab(QWidget):
             QApplication.processEvents()
             
             import tifffile
-            from gui.image_utils import to_qpixmap, build_segmentation_overlay, scale_for_preview
-            from gui.image_canvas import ImageCanvas
+            from bactimate.gui.image_utils import to_qpixmap, build_segmentation_overlay, scale_for_preview
+            from bactimate.gui.image_canvas import ImageCanvas
 
             # CRITICAL: Patch omnipose.core.OMNI_MODELS before cellpose_omni imports it
             # This fixes "cannot import name 'OMNI_MODELS' from 'omnipose.core'" error in frozen builds
@@ -1924,15 +1928,32 @@ class ProcessingTab(QWidget):
                 print(f"CRITICAL ERROR in preview_segmentation: {error_msg}", file=sys.stderr)
             # Don't re-raise - PyQt6 will abort if we do
     
-    def process_file_or_folder(self):
+    def _validate_for_run(self) -> list[str]:
+        """Return a list of error messages; if non-empty, do not start the job."""
+        errors: list[str] = []
         if not self.file_path.text():
-            QMessageBox.warning(self, "No Selection", "Please select a TIFF file or folder first.")
+            errors.append("Please select a TIFF file or folder first.")
+            return errors
+        path = Path(self.file_path.text())
+        if not path.exists():
+            errors.append(f"The selected path does not exist: {path}")
+            return errors
+        script_path = PROJECT_ROOT / "scripts" / "batch_process_tiff_sequence.py"
+        if not script_path.exists():
+            errors.append(f"Segmentation script not found: {script_path}")
+        if self.diameter.value() < 0:
+            errors.append("Diameter must be ≥ 0 (use 0 for auto-detect).")
+        return errors
+
+    def process_file_or_folder(self):
+        errors = self._validate_for_run()
+        if errors:
+            QMessageBox.warning(
+                self, "Cannot Start",
+                "Please fix the following:\n\n" + "\n".join(f"• {e}" for e in errors)
+            )
             return
-        
-        if not Path(self.file_path.text()).exists():
-            QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
-            return
-        
+
         script_dir = PROJECT_ROOT
         is_folder = self._is_folder_mode()
         

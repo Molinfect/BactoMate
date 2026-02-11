@@ -35,13 +35,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.constants import CONVERT_ND2_SCRIPT, PROJECT_ROOT
-from gui.image_canvas import ImageCanvas
-from gui.image_utils import to_qpixmap, scale_for_preview
-from gui.session_params import apply_to_widgets, get_from_widgets
-from gui.utils import safe_imread
-from gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
-from gui.workers import WorkerThread
+from bactimate.gui.constants import CONVERT_ND2_SCRIPT, PROJECT_ROOT
+from bactimate.gui.image_canvas import ImageCanvas
+from bactimate.gui.preferences import LAST_DIR_ND2
+from bactimate.gui.image_utils import to_qpixmap, scale_for_preview
+from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
+from bactimate.gui.utils import safe_imread
+from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
+from bactimate.gui.workers import WorkerThread
 
 class ND2ConversionTab(QWidget):
     """Tab for converting microscopy files (ND2, LIF, CZI) to TIFF with metadata extraction"""
@@ -269,8 +270,9 @@ class ND2ConversionTab(QWidget):
         return params_group
 
     def select_file(self):
+        start_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_ND2)
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Microscopy File", "", 
+            self, "Select Microscopy File", start_dir,
             "Microscopy Files (*.nd2 *.ND2 *.lif *.LIF *.czi *.CZI *.tif *.tiff *.TIF *.TIFF);;"
             "ND2 Files (*.nd2 *.ND2);;"
             "LIF Files (*.lif *.LIF);;"
@@ -279,12 +281,17 @@ class ND2ConversionTab(QWidget):
             "All Files (*)"
         )
         if file_path:
+            if getattr(self.parent_window, "set_last_dir_for_tab", None):
+                self.parent_window.set_last_dir_for_tab(LAST_DIR_ND2, file_path)
             self.file_path.setText(file_path)
             self.load_file_info(file_path)
-    
+
     def select_folder(self):
-        folder_path = QFileDialog.getExistingDirectory(self, "Select Folder with Microscopy Files")
+        start_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_ND2)
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Folder with Microscopy Files", start_dir)
         if folder_path:
+            if getattr(self.parent_window, "set_last_dir_for_tab", None):
+                self.parent_window.set_last_dir_for_tab(LAST_DIR_ND2, folder_path)
             self.file_path.setText(folder_path)
             # Load info from all supported files in the folder
             folder = Path(folder_path)
@@ -328,8 +335,11 @@ class ND2ConversionTab(QWidget):
                 self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
     
     def select_output_dir(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        start_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_ND2)
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", start_dir)
         if dir_path:
+            if getattr(self.parent_window, "set_last_dir_for_tab", None):
+                self.parent_window.set_last_dir_for_tab(LAST_DIR_ND2, dir_path)
             self.output_dir.setText(dir_path)
     
     def _rebuild_bleach_channel_checks(self, channel_names, num_channels):
@@ -2510,15 +2520,16 @@ class ND2ConversionTab(QWidget):
                 if reply == QMessageBox.StandardButton.Yes:
                     self.max_z_projection.setChecked(True)
         
-        # Check if convert_nd2_to_tif.py exists
-        from gui.constants import CONVERT_ND2_SCRIPT, PROJECT_ROOT
-        convert_script = CONVERT_ND2_SCRIPT if CONVERT_ND2_SCRIPT.exists() else PROJECT_ROOT.parent / "Dru_analysis" / "convert_nd2_to_tif.py"
-        if not convert_script.exists():
-            QMessageBox.warning(self, "Script Not Found",
-                              f"convert_nd2_to_tif.py not found.\n\n"
-                              f"Expected at: {CONVERT_ND2_SCRIPT}\n"
-                              f"Or: {PROJECT_ROOT.parent / 'Dru_analysis' / 'convert_nd2_to_tif.py'}")
+        # Check if convert_nd2_to_tif.py exists (path from bactimate.gui.paths / constants)
+        from bactimate.gui.constants import CONVERT_ND2_SCRIPT
+        if not CONVERT_ND2_SCRIPT.exists():
+            QMessageBox.warning(
+                self, "Script Not Found",
+                f"Conversion script not found.\n\nExpected: {CONVERT_ND2_SCRIPT}\n\n"
+                "Install BactiMate correctly or run from the project root."
+            )
             return
+        convert_script = CONVERT_ND2_SCRIPT
         
         # Queue for multi-file conversion: process one file at a time, start next on finish
         self._conversion_queue = files_to_convert
@@ -2717,8 +2728,8 @@ class ND2ConversionTab(QWidget):
         if queue and idx + 1 < len(queue):
             self._conversion_current_index = idx + 1
             next_path = queue[self._conversion_current_index]
-            from gui.constants import CONVERT_ND2_SCRIPT, PROJECT_ROOT
-            convert_script = CONVERT_ND2_SCRIPT if CONVERT_ND2_SCRIPT.exists() else PROJECT_ROOT.parent / "Dru_analysis" / "convert_nd2_to_tif.py"
+            from bactimate.gui.constants import CONVERT_ND2_SCRIPT
+            convert_script = CONVERT_ND2_SCRIPT
             cmd_args = [
                 str(next_path),
                 '--frames', str(self.max_frames.value()),

@@ -5,10 +5,10 @@ Uses mock widgets to avoid Qt dependency. Run with: pytest tests/ or python -m t
 import sys
 from pathlib import Path
 
-# Add project root so we can import gui
+# Add project root so we can import bactimate
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gui.session_params import get_from_widgets, apply_to_widgets
+from bactimate.gui.session_params import get_from_widgets, apply_to_widgets
 
 
 class MockCombo:

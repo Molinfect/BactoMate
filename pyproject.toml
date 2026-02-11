@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "bactimate"
 version = "1.0"
 description = "Batch processing and analysis GUI for microscopy (Omnipose, tracking, SAM2)"
-readme = "README.md"
+readme = "docs/README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "BactiMate" }]
@@ -41,7 +41,10 @@ cuda = [
 # Base workflow: install from repo with pip install -r requirements.txt
 # Optional: pip install -e .[sam2] to add SAM2 extra deps (sam2, huggingface_hub, torch>=2.5.1).
 
+[project.scripts]
+bactimate = "bactimate.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gui*"]
+include = ["bactimate*"]
 exclude = ["tests*", "Logs*"]

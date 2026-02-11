@@ -37,7 +37,7 @@ def get_crash_log_path() -> Path | None:
     """Return path to crash log file (project Logs/crash.log), or None if Logs dir not set."""
     if _LOGS_DIR is None:
         try:
-            from gui.constants import LOGS_DIR
+            from bactimate.gui.constants import LOGS_DIR
             return LOGS_DIR / "crash.log"
         except Exception:
             return None

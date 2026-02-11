@@ -27,9 +27,17 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.constants import LOGS_DIR, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
-from gui.log_config import get_logger, log_exception, write_crash_log
-from gui.tabs import (
+from bactimate.gui.constants import LOGS_DIR, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
+from bactimate.gui.log_config import get_logger, log_exception, write_crash_log
+from bactimate.gui.preferences import (
+    get_geometry,
+    get_last_dir,
+    get_state,
+    set_geometry,
+    set_last_dir,
+    set_state,
+)
+from bactimate.gui.tabs import (
     AnalyzeMasksTab,
     GrowthCurveVideoTab,
     ND2ConversionTab,
@@ -38,12 +46,12 @@ from gui.tabs import (
     SessionLogsTab,
     TrackingTab,
 )
-from gui.patches import base_path
-from gui.styles import get_modern_stylesheet
+from bactimate.gui.patches import base_path
+from bactimate.gui.styles import get_modern_stylesheet
 
 
 def _get_tab_classes() -> Tuple[Type[Any], ...]:
-    """Return tab classes (all from gui.tabs)."""
+    """Return tab classes (all from bactimate.gui.tabs)."""
     return (
         ND2ConversionTab,
         ProcessingTab,
@@ -175,13 +183,38 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
+        self._restore_geometry_and_state()
+
         self.statusBar().showMessage("Ready")
         self.log_output("Omnipose Batch Processing GUI started.\n")
         self.log_output("Select a tab and configure parameters to begin.\n\n")
 
     def closeEvent(self, event):
+        self._save_geometry_and_state()
         self._save_session_log()
         super().closeEvent(event)
+
+    def _restore_geometry_and_state(self) -> None:
+        """Restore main window geometry and state from QSettings."""
+        geom = get_geometry()
+        if geom and not geom.isEmpty():
+            self.restoreGeometry(geom)
+        state = get_state()
+        if state and not state.isEmpty():
+            self.restoreState(state)
+
+    def _save_geometry_and_state(self) -> None:
+        """Save main window geometry and state to QSettings."""
+        set_geometry(self.saveGeometry())
+        set_state(self.saveState())
+
+    def get_last_dir_for_tab(self, key: str) -> str:
+        """Return last used directory for the given tab (e.g. preferences.LAST_DIR_ND2)."""
+        return get_last_dir(key)
+
+    def set_last_dir_for_tab(self, key: str, path: str) -> None:
+        """Save last used directory for the given tab after a file/dir selection."""
+        set_last_dir(key, path)
 
     def _save_session_log(self):
         try:

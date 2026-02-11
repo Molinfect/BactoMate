@@ -8,7 +8,7 @@ import traceback
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from gui.log_config import get_logger, log_exception
+from bactimate.gui.log_config import get_logger, log_exception
 
 
 class WorkerThread(QThread):
@@ -2024,5 +2024,5 @@ class SAM2SegmentWorker(QThread):
 
 
 if __name__ == "__main__":
-    from gui.main_window import main
+    from bactimate.gui.main_window import main
     main()

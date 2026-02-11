@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.constants import LOGS_DIR, SESSION_TAB_KEYS
+from bactimate.gui.constants import LOGS_DIR, SESSION_TAB_KEYS
 
 
 class SessionLogsTab(QWidget):
@@ -98,7 +98,7 @@ class SessionLogsTab(QWidget):
                 mtime = datetime.fromtimestamp(p.stat().st_mtime)
                 label = f"{mtime.strftime('%Y-%m-%d %H:%M:%S')} — {p.name}"
             except (OSError, ValueError) as e:
-                from gui.log_config import get_logger
+                from bactimate.gui.log_config import get_logger
                 get_logger().debug("Session log list: could not format mtime for %s: %s", p.name, e)
                 label = p.name
             item = QListWidgetItem(label)
@@ -138,7 +138,7 @@ class SessionLogsTab(QWidget):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
-            from gui.log_config import get_logger
+            from bactimate.gui.log_config import get_logger
             get_logger().warning("Could not load session file: %s — %s", path, e)
             self.overview_text.setPlainText(f"Could not load file:\n{e}")
             return

@@ -11,7 +11,7 @@ import numpy as np
 # Add project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from gui.utils import safe_imread
+from bactimate.gui.utils import safe_imread
 
 
 def test_safe_imread_single_frame():

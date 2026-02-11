@@ -27,10 +27,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.session_params import apply_to_widgets, get_from_widgets
-from gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
+from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
+from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 
-from gui.workers import TrackingWorker
+from bactimate.gui.workers import TrackingWorker
 
 
 class TrackingTab(QWidget):

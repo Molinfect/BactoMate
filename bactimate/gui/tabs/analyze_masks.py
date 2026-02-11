@@ -38,13 +38,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from gui.constants import PROJECT_ROOT
-from gui.image_canvas import ImageCanvas
-from gui.image_utils import to_qpixmap, scale_for_preview
-from gui.session_params import apply_to_widgets, get_from_widgets
-from gui.utils import safe_imread
-from gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
-from gui.workers import WorkerThread
+from bactimate.gui.constants import PROJECT_ROOT
+from bactimate.gui.image_canvas import ImageCanvas
+from bactimate.gui.image_utils import to_qpixmap, scale_for_preview
+from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
+from bactimate.gui.utils import safe_imread
+from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
+from bactimate.gui.workers import WorkerThread
 
 class AnalyzeMasksTab(QWidget):
     """Tab for analyzing existing masks"""
