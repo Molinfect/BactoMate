@@ -139,6 +139,40 @@ def scale_for_preview(
         return _scale_with_sampling(image, mask, new_h, new_w, h, w)
 
 
+def draw_scale_bar(
+    rgb: np.ndarray,
+    pixel_size_um: float,
+    scale_factor: float = 1.0,
+    bar_um: float = 10.0,
+    color: Tuple[int, int, int] = (255, 255, 255),
+    thickness: int = 2,
+    margin: int = 12,
+) -> np.ndarray:
+    """
+    Draw a horizontal scale bar on an (H, W, 3) RGB uint8 array (in-place).
+    pixel_size_um: µm per pixel in the *original* image.
+    scale_factor: (display size / original size) so 1 display pixel = pixel_size_um/scale_factor µm.
+    bar_um: length of the bar in µm.
+    Bar is drawn at bottom-right with margin.
+    """
+    if pixel_size_um <= 0 or scale_factor <= 0:
+        return rgb
+    h, w = rgb.shape[:2]
+    bar_px = max(2, int(round(bar_um * scale_factor / pixel_size_um)))
+    # Clamp so bar fits
+    bar_px = min(bar_px, w - 2 * margin)
+    x0 = w - margin - bar_px
+    x1 = w - margin
+    y0 = h - margin - thickness
+    y1 = h - margin
+    y0 = max(0, y0)
+    y1 = min(h, y1)
+    x0 = max(0, x0)
+    x1 = min(w, x1)
+    rgb[y0:y1, x0:x1] = color
+    return rgb
+
+
 def build_segmentation_overlay(
     image: np.ndarray,
     mask: np.ndarray,

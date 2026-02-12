@@ -14,10 +14,10 @@ LOGS_DIR = get_logs_dir()
 CONVERT_ND2_SCRIPT = get_script_path("convert_nd2_to_tif.py")
 
 # Tab (key, display label) in display order. Used for session gather/apply and session log overview.
+# SAM2 omitted while tab is not in use (commented out in main_window).
 SESSION_TAB_KEYS = [
     ("nd2", "TIFF Conversion"),
     ("segmentation", "Omnipose Segment"),
-    ("sam2", "SAM2 Segment"),
     ("analyze_masks", "Analyze Masks"),
     ("tracking", "Tracking"),
     ("growth_curve_video", "Video Graph"),

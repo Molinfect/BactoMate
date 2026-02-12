@@ -57,10 +57,9 @@ def safe_imread(file_path):
                     img.seek(0)
                     return np.array(img)
             except ImportError:
-                # PIL not available - raise original error with helpful message
                 raise RuntimeError(
-                    f"NumPy 2.0 compatibility issue reading TIFF file. "
-                    f"Please install Pillow: pip install Pillow"
+                    "Required dependency Pillow is missing (needed for TIFF reading). "
+                    "Reinstall BactiMate dependencies: pip install -r requirements.txt"
                 ) from e
             except Exception as pil_error:
                 # If PIL also fails, raise original error
@@ -156,20 +155,22 @@ def split_multipage_tiff(input_path, output_dir=None, prefix="frame"):
     return frame_paths, temp_dir, images.shape
 
 
-def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', 
-                                  diameter=0, channels=[0, 0], 
+def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretrained_model=None,
+                                  diameter=0, channels=[0, 0],
                                   use_gpu=True, batch_size=8,
                                   flow_threshold=0.4, mask_threshold=0.0,
                                   omni=True, cluster=False, verbose=False):
     """
     Process individual frames with Omnipose.
-    
+
     Parameters:
     -----------
     frame_paths : list
         List of paths to frame images
     model_type : str
-        Omnipose model type (e.g., 'cyto2_omni', 'bact_omni', 'nuclei')
+        Omnipose model type (e.g., 'bact_phase_omni'). Ignored if pretrained_model is set.
+    pretrained_model : str, optional
+        Path to a user-trained .pth model. If set, model_type is ignored.
     diameter : float
         Cell diameter (0 for auto-detection)
     channels : list
@@ -194,78 +195,84 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
     masks : list
         List of mask arrays
     """
-    print(f"\nInitializing Omnipose model: {model_type}")
-    
-    # Workaround for cellpose_omni bug: Cellpose doesn't pass model_type to CellposeModel
-    # Delete model file to force architecture detection when model is re-downloaded
-    from cellpose_omni.models import model_path
-    import os
+    if pretrained_model:
+        print(f"\nInitializing Omnipose model from user checkpoint: {pretrained_model}")
+    else:
+        print(f"\nInitializing Omnipose model: {model_type}")
+
     from urllib.error import HTTPError
-    
-    try:
-        model_file = model_path(model_type, 0, True)
-        if os.path.exists(model_file):
-            print(f"Removing existing model file to ensure correct architecture...")
-            os.remove(model_file)
-    except HTTPError as e:
-        if e.code == 404:
-            print(f"\n⚠️  WARNING: Model '{model_type}' not found in GitHub repository (404 error).")
-            print(f"   This model may not be available in the Omnipose GitHub repository.")
-            print(f"   Trying to use cached model if available, or falling back to Cellpose server...")
-            # Check if model exists in cache
-            from pathlib import Path
-            from cellpose_omni.models import MODEL_DIR
-            torch_str = 'torch'
-            basename = f'{model_type}{torch_str}_0'
-            cache_model_file = Path(MODEL_DIR) / basename
-            if cache_model_file.exists():
-                print(f"   Using cached model: {cache_model_file}")
-                model_file = str(cache_model_file)
-            else:
-                # Try to get model from original Cellpose server as fallback
-                print(f"   Attempting to download from original Cellpose server...")
-                # Temporarily restore original URL
-                import cellpose_omni.models as models_module
-                original_url = getattr(models_module, '_MODEL_URL', None)
-                if original_url and 'github' in original_url:
-                    # Try original Cellpose server
-                    models_module._MODEL_URL = 'https://www.cellpose.org/models'
-                    try:
-                        model_file = model_path(model_type, 0, True)
-                        print(f"   ✓ Downloaded from Cellpose server")
-                    except Exception:
+
+    if pretrained_model:
+        if not os.path.isfile(pretrained_model):
+            raise FileNotFoundError(f"User model not found: {pretrained_model}")
+        model = models.Cellpose(gpu=use_gpu, pretrained_model=pretrained_model, omni=omni)
+    else:
+        # Workaround for cellpose_omni bug: Cellpose doesn't pass model_type to CellposeModel
+        from cellpose_omni.models import model_path
+        try:
+            model_file = model_path(model_type, 0, True)
+            if os.path.exists(model_file):
+                print(f"Removing existing model file to ensure correct architecture...")
+                os.remove(model_file)
+        except HTTPError as e:
+            if e.code == 404:
+                print(f"\n⚠️  WARNING: Model '{model_type}' not found in GitHub repository (404 error).")
+                print(f"   This model may not be available in the Omnipose GitHub repository.")
+                print(f"   Trying to use cached model if available, or falling back to Cellpose server...")
+                # Check if model exists in cache
+                from pathlib import Path
+                from cellpose_omni.models import MODEL_DIR
+                torch_str = 'torch'
+                basename = f'{model_type}{torch_str}_0'
+                cache_model_file = Path(MODEL_DIR) / basename
+                if cache_model_file.exists():
+                    print(f"   Using cached model: {cache_model_file}")
+                    model_file = str(cache_model_file)
+                else:
+                    # Try to get model from original Cellpose server as fallback
+                    print(f"   Attempting to download from original Cellpose server...")
+                    # Temporarily restore original URL
+                    import cellpose_omni.models as models_module
+                    original_url = getattr(models_module, '_MODEL_URL', None)
+                    if original_url and 'github' in original_url:
+                        # Try original Cellpose server
+                        models_module._MODEL_URL = 'https://www.cellpose.org/models'
+                        try:
+                            model_file = model_path(model_type, 0, True)
+                            print(f"   ✓ Downloaded from Cellpose server")
+                        except Exception:
+                            raise RuntimeError(
+                                f"Model '{model_type}' is not available.\n\n"
+                                f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
+                                f"  - bact_phase_omni (recommended for bacteria)\n"
+                                f"  - bact_fluor_omni\n"
+                                f"  - cyto2_omni\n"
+                                f"  - worm_omni\n"
+                                f"  - plant_omni\n"
+                                f"  - bact_phase_affinity\n\n"
+                                f"Please select a different model or check if '{model_type}' exists in the repository."
+                            )
+                        finally:
+                            # Restore GitHub URL
+                            if original_url:
+                                models_module._MODEL_URL = original_url
+                    else:
                         raise RuntimeError(
-                            f"Model '{model_type}' is not available.\n\n"
+                            f"Model '{model_type}' is not available in the repository.\n\n"
                             f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
                             f"  - bact_phase_omni (recommended for bacteria)\n"
                             f"  - bact_fluor_omni\n"
                             f"  - cyto2_omni\n"
                             f"  - worm_omni\n"
                             f"  - plant_omni\n"
-                            f"  - bact_phase_affinity\n\n"
-                            f"Please select a different model or check if '{model_type}' exists in the repository."
+                            f"  - bact_phase_affinity"
                         )
-                    finally:
-                        # Restore GitHub URL
-                        if original_url:
-                            models_module._MODEL_URL = original_url
-                else:
-                    raise RuntimeError(
-                        f"Model '{model_type}' is not available in the repository.\n\n"
-                        f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
-                        f"  - bact_phase_omni (recommended for bacteria)\n"
-                        f"  - bact_fluor_omni\n"
-                        f"  - cyto2_omni\n"
-                        f"  - worm_omni\n"
-                        f"  - plant_omni\n"
-                        f"  - bact_phase_affinity"
-                    )
-        else:
-            raise
-    
-    try:
+            else:
+                raise
+
         model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
-        
+
+    try:
         # Additional optimizations if available
         try:
             import torch
@@ -287,8 +294,8 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
         except:
             pass  # If torch not available or other error, continue without optimizations
         
-        # Verify architecture is correct (for C2_BD models: nchan=2, nclasses=4)
-        if hasattr(model.cp, 'nchan') and hasattr(model.cp, 'nclasses'):
+        # Verify architecture is correct (for C2_BD models: nchan=2, nclasses=4); skip for user models
+        if not pretrained_model and hasattr(model.cp, 'nchan') and hasattr(model.cp, 'nclasses'):
             expected_nchan = 2 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 1
             expected_nclasses = 4 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 3
             if model.cp.nchan != expected_nchan or model.cp.nclasses != expected_nclasses:
@@ -299,8 +306,10 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni',
                 # Try to fix by recreating with correct parameters
                 raise RuntimeError("Architecture mismatch - need to recreate model")
     except RuntimeError as e:
-        if "Architecture mismatch" in str(e):
-            # Recreate model by deleting and trying again
+        if "Architecture mismatch" in str(e) and not pretrained_model:
+            # Recreate model by deleting and trying again (built-in only)
+            from cellpose_omni.models import model_path
+            model_file = model_path(model_type, 0, True)
             if os.path.exists(model_file):
                 os.remove(model_file)
             model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
@@ -605,7 +614,7 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
         PIL_AVAILABLE = True
     except ImportError:
         PIL_AVAILABLE = False
-        print("WARNING: PIL not available, CellID labels will not be displayed in overlay")
+        print("WARNING: Pillow missing (required dependency); overlay labels disabled. Run: pip install -r requirements.txt")
     
     for i in tqdm(range(num_frames), desc="Creating overlays", **tqdm_kwargs):
         img = images_norm[i]
@@ -769,10 +778,8 @@ Examples:
     parser.add_argument('input', type=str, help='Input multipage TIFF file')
     parser.add_argument('--output', '-o', type=str, default=None,
                        help='Output directory (default: same as input)')
-    parser.add_argument('--model', type=str, default='cyto2_omni',
-                       choices=['cyto2_omni', 'cyto_omni', 'bact_omni', 'bact_phase_omni', 
-                               'bact_fluor_omni', 'worm_omni', 'nuclei', 'cyto2', 'cyto'],
-                       help='Omnipose model type (default: cyto2_omni)')
+    parser.add_argument('--model', type=str, default='bact_phase_omni',
+                       help='Omnipose model type (e.g. bact_phase_omni) or path to a user-trained .pth model')
     parser.add_argument('--diameter', type=float, default=0,
                        help='Cell diameter in pixels (0 for auto-detection, default: 0)')
     parser.add_argument('--channels', type=int, nargs=2, default=[0, 0],
@@ -824,11 +831,18 @@ Examples:
     )
     
     try:
-        # Step 2: Process frames with Omnipose
+        # Step 2: Process frames with Omnipose (--model can be type name or path to user .pth)
+        pretrained = args.model if os.path.isfile(args.model) else None
+        model_type = None if pretrained else args.model
+        # User-trained models have no size model: diameter=0 causes "No cell pixels found". Default to 30.
+        diameter = args.diameter if args.diameter > 0 else (30.0 if pretrained else args.diameter)
+        if pretrained and args.diameter == 0:
+            print("Note: Custom model used with diameter=0; using default diameter=30 (set --diameter for your cell size).")
         masks = process_frames_with_omnipose(
             frame_paths,
-            model_type=args.model,
-            diameter=args.diameter,
+            model_type=model_type,
+            pretrained_model=pretrained,
+            diameter=diameter,
             channels=args.channels,
             use_gpu=not args.no_gpu,
             batch_size=args.batch_size,

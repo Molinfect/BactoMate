@@ -38,8 +38,8 @@ def safe_imread(file_path: Union[str, Path]) -> np.ndarray:
             return np.array(img)
         except ImportError:
             raise RuntimeError(
-                "NumPy 2.0 compatibility issue reading TIFF file. "
-                "Please install Pillow: pip install Pillow"
+                "Required dependency Pillow is missing (needed for TIFF reading). "
+                "Reinstall BactiMate dependencies: pip install -r requirements.txt"
             ) from e
         except Exception as pil_error:
             raise e from pil_error

@@ -288,10 +288,8 @@ class MainWindow(QMainWindow):
         pixel_size = self.shared_metadata.get("pixel_size")
         if pixel_size is None:
             return
-        if hasattr(self, "processing_tab") and hasattr(self.processing_tab, "pixel_size"):
-            self.processing_tab.pixel_size.setValue(pixel_size)
-            if hasattr(self.processing_tab, "pixel_size_indicator"):
-                self.processing_tab.pixel_size_indicator.setText("(from metadata)")
+        if hasattr(self, "processing_tab") and hasattr(self.processing_tab, "pixel_size_um"):
+            self.processing_tab.pixel_size_um.setValue(pixel_size)
             self.log_output(f"✓ Updated pixel size in Processing tab: {pixel_size:.4f} µm\n")
         if hasattr(self, "analyze_tab") and hasattr(self.analyze_tab, "pixel_size"):
             self.analyze_tab.pixel_size.setValue(pixel_size)

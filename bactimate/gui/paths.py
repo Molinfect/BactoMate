@@ -84,6 +84,31 @@ def _get_user_data_logs_dir() -> Path:
     return base / "BactiMate" / "Logs"
 
 
+def _get_user_data_models_dir() -> Path:
+    """Platform-specific user data dir for user-trained Omnipose models (persists across pip upgrades)."""
+    if sys.platform == "darwin":
+        base = Path(os.path.expanduser("~/Library/Application Support"))
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", os.path.expanduser("~")))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")))
+    return base / "BactiMate" / "Models"
+
+
+def get_user_models_dir() -> Path:
+    """
+    Directory for user-trained Omnipose models. Created if missing.
+    - Installed: e.g. ~/Library/Application Support/BactiMate/Models (macOS).
+    - Dev/frozen: get_app_root() / "user_models".
+    """
+    if _is_installed():
+        path = _get_user_data_models_dir()
+    else:
+        path = get_app_root() / "user_models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def get_scripts_dir() -> Path:
     """Directory containing backend scripts (convert_nd2_to_tif.py, batch_process_*.py, etc.)."""
     return get_app_root() / "scripts"

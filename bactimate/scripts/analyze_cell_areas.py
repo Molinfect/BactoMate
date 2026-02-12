@@ -704,7 +704,7 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
         PIL_AVAILABLE = True
     except ImportError:
         PIL_AVAILABLE = False
-        print("WARNING: PIL not available, CellID labels will not be displayed in visualization")
+        print("WARNING: Pillow missing (required dependency); labels disabled. Run: pip install -r requirements.txt")
     
     for frame_idx in tqdm(range(num_frames), desc="Creating visualization"):
         mask = masks[frame_idx]  # Mask with persistent CellIDs (accepted cells only)

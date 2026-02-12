@@ -20,6 +20,16 @@ class WorkerThread(QThread):
         super().__init__(parent)
         self.script_path = script_path
         self.cmd_args = cmd_args
+        self._process = None
+
+    def terminate_process(self) -> None:
+        """Request termination of the running subprocess (e.g. for Cancel). Safe to call from main thread."""
+        if getattr(self, "_process", None) is not None:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
+            self._process = None
 
     @staticmethod
     def strip_ansi_codes(text: str) -> str:
@@ -51,6 +61,7 @@ class WorkerThread(QThread):
                 universal_newlines=True,
                 env=env,
             )
+            self._process = process
 
             output_lines = []
             while True:
@@ -69,12 +80,14 @@ class WorkerThread(QThread):
                         self.progress.emit(cleaned_line)
 
             process.wait()
+            self._process = None
             output = "\n".join(output_lines)
             if process.returncode == 0:
                 self.finished.emit(True, output)
             else:
                 self.finished.emit(False, output)
         except Exception as e:
+            self._process = None
             log_exception(get_logger(), "WorkerThread.run failed")
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
             self.finished.emit(False, error_msg)

@@ -44,8 +44,15 @@ from PyQt6.QtWidgets import (
 
 from bactimate.gui.constants import PROJECT_ROOT
 from bactimate.gui.log_config import get_logger
+from bactimate.gui.paths import get_user_models_dir
+from bactimate.gui.patches import _patch_omnipose_get_masks
 from bactimate.gui.preferences import LAST_DIR_SEGMENTATION
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
+from bactimate.gui.mask_utils import (
+    OMNIPOSE_MASKS_SUBDIR,
+    convert_masks_in_folder,
+    ensure_omnipose_masks_has_images,
+)
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import (
     ClickableTooltip,
@@ -56,12 +63,23 @@ from bactimate.gui.widgets import (
 )
 from bactimate.gui.workers import WorkerThread
 
+# Built-in Omnipose model types (no Cellpose-only). User-trained models are listed separately.
+BUILTIN_OMNIPOSE_MODELS = [
+    "bact_phase_omni",
+    "bact_fluor_omni",
+    "bact_phase_affinity",
+]
+# Extension for user-trained model files saved in get_user_models_dir()
+USER_MODEL_EXTENSION = ".pth"
+
+
 class ProcessingTab(QWidget):
     """Unified tab for processing single files or folders"""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.parent_window = parent
+        self._trained_models_this_session: list[str] = []  # for session log when user trains a model
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -101,12 +119,24 @@ class ProcessingTab(QWidget):
         self.preview_btn.clicked.connect(safe_preview_segmentation)
         scroll_layout.addWidget(self.preview_btn)
 
-        # Process button
+        # Process and Cancel buttons
         self.process_btn = QPushButton("Process File or Folder")
         self.process_btn.setEnabled(False)  # Disabled until file/folder is selected
         # Modern styling applied via global stylesheet
         self.process_btn.clicked.connect(self.process_file_or_folder)
         scroll_layout.addWidget(self.process_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setToolTip("Stop the current segmentation job.")
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setEnabled(False)
+        self._user_cancelled_processing = False
+        def on_cancel_processing():
+            if hasattr(self, "worker") and self.worker is not None and self.worker.isRunning():
+                self._user_cancelled_processing = True
+                self.worker.terminate_process()
+                self.parent_window.log_output("Cancelled by user.\n")
+        self.cancel_btn.clicked.connect(on_cancel_processing)
+        scroll_layout.addWidget(self.cancel_btn)
 
         # Connect file path changes to update button states (after buttons are created)
         self.file_path.textChanged.connect(self._update_button_states)
@@ -152,7 +182,7 @@ class ProcessingTab(QWidget):
         seg_container_layout = QHBoxLayout()
 
         # Left column: Basic parameters
-        basic_params_group = QGroupBox("Basic Parameters")
+        basic_params_group = QGroupBox("Model Parameters")
         basic_params_layout = QVBoxLayout()
         seg_layout = basic_params_layout
 
@@ -193,29 +223,35 @@ class ProcessingTab(QWidget):
         
         # Check model availability when changed
         def check_model_availability():
-            """Check if selected model is available (cached or downloadable)"""
-            from pathlib import Path
+            """Check if selected model is available (user model file or built-in cached/downloadable)."""
             try:
+                display = self.model_combo.currentText()
+                model_type, pretrained_path = self._resolve_model_selection(display)
+                if pretrained_path is not None:
+                    self.model_status_label.setText("✓ User model")
+                    self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
+                    flow_sb = getattr(self, "flow_threshold", None)
+                    if flow_sb is not None:
+                        flow_sb.setValue(0.0)  # User models: use 0 per Omnipose recommendation
+                    return
                 from cellpose_omni.models import MODEL_DIR
-                model_type = self.model_combo.currentText()
-                
-                # Check if model exists in cache
-                torch_str = 'torch'
-                basename = f'{model_type}{torch_str}_0'
+                torch_str = "torch"
+                basename = f"{model_type}{torch_str}_0"
                 cache_model_file = Path(MODEL_DIR) / basename
-                
                 if cache_model_file.exists():
                     self.model_status_label.setText("✓ Cached")
                     self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
                 else:
                     self.model_status_label.setText("Will download on first use")
                     self.model_status_label.setStyleSheet("color: #FF9800; font-size: 9pt;")
+                flow_sb = getattr(self, "flow_threshold", None)
+                if flow_sb is not None:
+                    flow_sb.setValue(0.4)  # Built-in models: default 0.4
             except Exception:
                 get_logger().debug("Model availability check failed, hiding status", exc_info=True)
                 self.model_status_label.setText("")
         
         self.model_combo.currentTextChanged.connect(check_model_availability)
-        # Check initial model
         check_model_availability()
         self.model_combo.setToolTip(
             "Omnipose model type for cell segmentation.\n\n"
@@ -224,24 +260,29 @@ class ProcessingTab(QWidget):
             "- bact_phase_omni: Bacterial phase contrast (default, best for bacteria)\n"
             "- bact_fluor_omni: Bacterial fluorescence\n"
             "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
-            "Tip: Choose based on your cell type and imaging modality."
+            "User-trained models appear here after training via 'Train model…'."
         )
+        train_model_btn = QPushButton("Train model")
+        train_model_btn.setToolTip("Train a new Omnipose model from your images and ground-truth masks.")
+        train_model_btn.clicked.connect(self._open_train_model_dialog)
+        model_layout.addWidget(train_model_btn)
         seg_layout.addLayout(model_layout)
         
         # Diameter
         diam_layout = QHBoxLayout()
         diam_label = QLabel("Diameter (0=auto):")
         diam_info_icon = create_info_icon(
-            "Expected cell diameter in pixels.\n\n"
-            "Default: 0 (auto-detect)\n"
-            "Source: Omnipose default (auto-detection)\n\n"
-            "Set to 0 for automatic detection (recommended for first try).\n"
-            "Specify a value (e.g., 20-50 pixels for bacteria) for more consistent results.\n\n"
+            "Expected cell diameter in pixels (only diameter field; Pixel size (µm) below is for scale bar).\n\n"
+            "Default: 0 (auto-detect). Set to 0 for automatic detection (recommended for first try).\n"
+            "Specify a value (e.g., 20-50 pixels for bacteria) for more consistent results.\n"
+            "If you know size in µm: diameter_px = diameter_µm ÷ Pixel size (µm).\n\n"
             "Typical values:\n"
             "- Bacteria: 20-50 pixels\n"
             "- Mammalian cells: 30-100 pixels\n"
             "- Nuclei: 15-30 pixels\n\n"
-            "Tip: Auto-detection works well, but specifying diameter often gives better results."
+            "Tip: Auto-detection works well, but specifying diameter often gives better results.\n\n"
+            "Custom/user model: try Flow threshold 0, Mask threshold -2, Diameter 0 or cell size (px). "
+            "See docs/CUSTOM_MODEL_TROUBLESHOOTING.md."
         , parent_widget=self)
         diam_layout.addWidget(diam_label)
         diam_layout.addWidget(diam_info_icon)
@@ -254,6 +295,27 @@ class ProcessingTab(QWidget):
         # Tooltip removed - info available via (?) icon only
         diam_layout.addWidget(self.diameter)
         seg_layout.addLayout(diam_layout)
+        
+        # Pixel size (µm) for scale bar and calibration only; diameter is set above in pixels
+        cal_layout = QHBoxLayout()
+        cal_layout.addWidget(QLabel("Pixel size (µm):"))
+        pixel_info = create_info_icon(
+            "Pixel size in µm (for scale bar and calibration). Diameter above is always in pixels.\n\n"
+            "To get diameter in px from µm: diameter_px = diameter_µm ÷ pixel_size_µm.\n"
+            "Common: 100× ~0.108, 60× ~0.18, 40× ~0.27. Can be filled from file metadata when available.",
+            parent_widget=self,
+        )
+        cal_layout.addWidget(pixel_info)
+        cal_layout.addStretch()  # Align spin box to the right like other rows
+        self.pixel_size_um = QDoubleSpinBox()
+        self.pixel_size_um.setRange(0, 10)
+        self.pixel_size_um.setValue(0)
+        self.pixel_size_um.setDecimals(3)
+        self.pixel_size_um.setSingleStep(0.01)
+        self.pixel_size_um.setFixedWidth(100)  # Same width as other spin boxes
+        self.pixel_size_um.setSpecialValueText("0")  # 0 = no µm scale (pixels only); see (?) tooltip
+        cal_layout.addWidget(self.pixel_size_um)
+        seg_layout.addLayout(cal_layout)
         
         # Flow threshold
         flow_layout = QHBoxLayout()
@@ -280,6 +342,13 @@ class ProcessingTab(QWidget):
         # Tooltip removed - info available via (?) icon only
         flow_layout.addWidget(self.flow_threshold)
         seg_layout.addLayout(flow_layout)
+        # Sync flow threshold to current model (user -> 0, built-in -> 0.4) now that widget exists
+        try:
+            display = self.model_combo.currentText()
+            _, pretrained_path = self._resolve_model_selection(display)
+            self.flow_threshold.setValue(0.0 if pretrained_path is not None else 0.4)
+        except Exception:
+            pass
         
         # Mask threshold
         mask_layout = QHBoxLayout()
@@ -311,7 +380,7 @@ class ProcessingTab(QWidget):
         seg_container_layout.addWidget(basic_params_group)
         
         # Right column: Options
-        options_group = QGroupBox("Options")
+        options_group = QGroupBox("Run Parameters")
         options_layout = QVBoxLayout()
         
         # GPU option
@@ -405,8 +474,12 @@ class ProcessingTab(QWidget):
         return seg_group
 
     def _update_button_states(self):
-        """Update button enabled states based on whether file/folder is selected"""
-        has_path = bool(self.file_path.text() and self.file_path.text().strip())
+        """Update button enabled states: path must exist and be a file or directory."""
+        raw = self.file_path.text() and self.file_path.text().strip()
+        has_path = False
+        if raw:
+            p = Path(raw)
+            has_path = p.exists() and (p.is_file() or p.is_dir())
         if hasattr(self, 'preview_btn'):
             self.preview_btn.setEnabled(has_path)
         if hasattr(self, 'process_btn'):
@@ -496,14 +569,542 @@ class ProcessingTab(QWidget):
     
     def _get_available_models(self):
         """
-        Return list of available Omnipose models only (no Cellpose-only models).
+        Return display names for the model dropdown: built-in Omnipose models first,
+        then user-trained models (filename stem) from get_user_models_dir().
         """
-        return [
-            'bact_phase_omni',  # Recommended for bacteria
-            'bact_fluor_omni',
-            'bact_phase_affinity'
-        ]
-    
+        names = list(BUILTIN_OMNIPOSE_MODELS)
+        try:
+            user_dir = get_user_models_dir()
+            for p in sorted(user_dir.glob(f"*{USER_MODEL_EXTENSION}")):
+                if p.is_file():
+                    names.append(p.stem)
+        except Exception:
+            pass
+        return names
+
+    def _resolve_model_selection(self, display_name: str) -> tuple[Optional[str], Optional[Path]]:
+        """
+        Resolve combo display name to either built-in model_type or user pretrained path.
+        Returns (model_type, pretrained_path): one is set, the other None.
+        """
+        if display_name in BUILTIN_OMNIPOSE_MODELS:
+            return (display_name, None)
+        try:
+            user_path = get_user_models_dir() / f"{display_name}{USER_MODEL_EXTENSION}"
+            if user_path.is_file():
+                return (None, user_path)
+        except Exception:
+            pass
+        return (None, None)
+
+    def _on_train_finished_background(self, success: bool, name: str, msg: str) -> None:
+        """Called when training finishes after the user closed the Train model dialog."""
+        self._train_worker = None
+        self.model_combo.clear()
+        self.model_combo.addItems(self._get_available_models())
+        if success:
+            if self.model_combo.findText(name) >= 0:
+                self.model_combo.setCurrentText(name)
+            QMessageBox.information(self, "Training finished", f"Model '{name}' was saved and is available in the dropdown.")
+        else:
+            QMessageBox.warning(self, "Training failed", msg)
+
+    def _open_train_model_dialog(self):
+        """Open dialog to train a new Omnipose model from user data (from-scratch)."""
+        from bactimate.gui.paths import get_user_models_dir
+        d = QDialog(self)
+        d.setWindowTitle("Train Omnipose model")
+        d.setMinimumWidth(550)
+        layout = QVBoxLayout()
+        last_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
+        # Training directory (drag-and-drop supported)
+        train_dir_edit = QLineEdit()
+        train_dir_edit.setPlaceholderText("Absolute path to folder with image/mask pairs (or drag and drop)")
+        def handle_dropped_training_path(dropped_path):
+            path_obj = Path(dropped_path)
+            if path_obj.is_dir():
+                train_dir_edit.setText(dropped_path)
+            elif path_obj.is_file():
+                train_dir_edit.setText(str(path_obj.parent))
+        dir_group = DragDropGroupBox(
+            "Training directory (images + masks)",
+            d,
+            on_drop_callback=handle_dropped_training_path,
+        )
+        dir_layout = QHBoxLayout()
+        dir_layout.addWidget(QLabel("Path:"))
+        dir_info = create_info_icon(
+            "Folder containing your training data: one image file and one mask file per pair.\n\n"
+            "Omnipose expects: for each image 'NAME.tif', a mask file 'NAME<Mask filter>.tif' (e.g. NAME_masks.tif). Same base name, mask = base + Mask filter + extension.\n\n"
+            "Mask format (important): Masks must be instance label matrices, not binary. Background = 0, each cell = a unique integer (1, 2, 3, …). Do not use a single value (e.g. 255) for all cells—Omnipose converts labels to flow fields per cell. If your mask is binary (e.g. from Ilastik: 0 and 255), convert it to instance labels first (e.g. with skimage.measure.label on the binary mask, then save as single-channel integer TIFF). See docs/TRAINING_MASKS.md.",
+            d,
+        )
+        dir_layout.addWidget(dir_info)
+        dir_layout.addWidget(train_dir_edit)
+        def browse_dir():
+            path = QFileDialog.getExistingDirectory(d, "Select training directory", last_dir)
+            if path:
+                train_dir_edit.setText(path)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(browse_dir)
+        dir_layout.addWidget(browse_btn)
+        dir_group.setLayout(dir_layout)
+        layout.addWidget(dir_group)
+        # Mask format help link
+        mask_help_btn = QPushButton("Mask format help (instance vs binary)")
+        def open_mask_format_doc():
+            doc_path = PROJECT_ROOT / "docs" / "TRAINING_MASKS.md"
+            if doc_path.exists():
+                try:
+                    if sys.platform == "darwin":
+                        subprocess.run(["open", str(doc_path)], check=False)
+                    elif sys.platform == "win32":
+                        subprocess.run(["start", "", str(doc_path)], check=False, shell=True)
+                    else:
+                        subprocess.run(["xdg-open", str(doc_path)], check=False)
+                except Exception:
+                    pass
+            else:
+                QMessageBox.information(d, "Help", "docs/TRAINING_MASKS.md not found. See the (?) tooltip for mask format requirements.")
+        mask_help_btn.clicked.connect(open_mask_format_doc)
+        layout.addWidget(mask_help_btn)
+        # Filters
+        filter_label = QLabel("File name filters:")
+        filter_info = create_info_icon(
+            "Suffix that identifies image vs mask files.\n\n"
+            "Image filter: leave empty if filenames are e.g. A.tif; use _img if you have A_img.tif.\n"
+            "Mask filter: suffix on mask files. With _masks, mask for 'cell1.tif' must be 'cell1_masks.tif'. With _segmentation, use 'cell1_segmentation.tif'. Must match your filenames exactly.",
+            d,
+        )
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(filter_label)
+        filter_row.addWidget(filter_info)
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Image filter:"))
+        img_filter_edit = QLineEdit()
+        img_filter_edit.setPlaceholderText("empty or _img")
+        img_filter_edit.setMaximumWidth(120)
+        filter_layout.addWidget(img_filter_edit)
+        filter_layout.addWidget(QLabel("Mask filter:"))
+        mask_filter_edit = QLineEdit()
+        mask_filter_edit.setText("_mask")
+        mask_filter_edit.setMaximumWidth(120)
+        filter_layout.addWidget(mask_filter_edit)
+        make_masks_btn = QPushButton("Make masks Omnipose compatible")
+        make_masks_info = create_info_icon(
+            "Convert binary masks (e.g. 0 and 255 from Ilastik) to instance label matrices.\n"
+            "Converted masks (and image copies when naming matches) are written to a subfolder 'omnipose_masks'; your originals are never overwritten.\n"
+            "Keep the training directory as the folder that contains your images and masks. When you click Start training, we use the omnipose_masks subfolder automatically and copy images there if needed.",
+            d,
+        )
+        filter_layout.addWidget(make_masks_btn)
+        filter_layout.addWidget(make_masks_info)
+        def on_make_masks():
+            folder_str = train_dir_edit.text().strip()
+            mask_filter = mask_filter_edit.text().strip()
+            img_filter = img_filter_edit.text().strip()
+            if not folder_str:
+                QMessageBox.warning(d, "No folder", "Enter a training directory first.")
+                return
+            folder = Path(folder_str)
+            converted, skipped, errors, out_dir = convert_masks_in_folder(
+                folder, mask_filter, img_filter=img_filter
+            )
+            total = converted + skipped
+            if total == 0 and not errors:
+                QMessageBox.information(
+                    d,
+                    "No masks found",
+                    f"No files matching *{mask_filter}.tif or *{mask_filter}.tiff in:\n{folder}",
+                )
+                return
+            msg = (
+                f"Converted masks + image copies: {out_dir}\n\n"
+                f"Converted: {converted}, already OK: {skipped}."
+            )
+            if errors:
+                err_text = "\n".join(errors[:10])
+                if len(errors) > 10:
+                    err_text += f"\n… and {len(errors) - 10} more."
+                QMessageBox.warning(d, "Mask conversion", f"{msg}\n\nErrors:\n{err_text}")
+                return
+            msg += (
+                "\n\nKeep the training directory as is. When you click Start training, "
+                "we will use the omnipose_masks subfolder automatically (and copy images there if needed)."
+            )
+            box = QMessageBox(d)
+            box.setWindowTitle("Masks ready")
+            box.setText(msg)
+            box.setIcon(QMessageBox.Icon.Information)
+            open_btn = box.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Ok)
+            box.exec()
+            if box.clickedButton() == open_btn:
+                try:
+                    if sys.platform == "darwin":
+                        subprocess.run(["open", str(out_dir)], check=False)
+                    elif sys.platform == "win32":
+                        subprocess.run(["explorer", str(out_dir)], check=False)
+                    else:
+                        subprocess.run(["xdg-open", str(out_dir)], check=False)
+                except Exception:
+                    pass
+        make_masks_btn.clicked.connect(on_make_masks)
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        # Model name (required)
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Model name:"))
+        user_models_path = get_user_models_dir()
+        name_info = create_info_icon(
+            "A short name for your model (letters, numbers, underscores). "
+            "It will appear in the model dropdown and is used to save the .pth file. "
+            "Example: my_bacteria_v1. Do not use path separators (no / or \\).\n\n"
+            "Models are saved in BactiMate's user models folder. You can also copy .pth files (trained with Omnipose elsewhere) into this folder—they will appear in the dropdown on refresh.\n\n"
+            f"User models folder:\n{user_models_path}",
+            d,
+        )
+        name_layout.addWidget(name_info)
+        model_name_edit = QLineEdit()
+        model_name_edit.setPlaceholderText("e.g. my_bacteria_v1")
+        name_layout.addWidget(model_name_edit)
+        layout.addLayout(name_layout)
+        # Hyperparameters
+        layout.addWidget(QLabel("Training parameters:"))
+        params_layout = QHBoxLayout()
+        params_layout.addWidget(QLabel("Epochs:"))
+        epochs_info = create_info_icon(
+            "Number of full passes over the training set.\n\n"
+            "Omnipose often benefits from more epochs (e.g. 4000 for bacteria).\n"
+            "Fewer epochs (500–1000) can be used for quick tests.",
+            d,
+        )
+        params_layout.addWidget(epochs_info)
+        n_epochs_spin = QSpinBox()
+        n_epochs_spin.setRange(100, 50000)
+        n_epochs_spin.setValue(4000)
+        params_layout.addWidget(n_epochs_spin)
+        params_layout.addWidget(QLabel("Learning rate:"))
+        lr_info = create_info_icon(
+            "Step size for the optimizer (default 0.1).\n\n"
+            "Larger values train faster but can be unstable; smaller values are slower but more stable.",
+            d,
+        )
+        params_layout.addWidget(lr_info)
+        lr_spin = QDoubleSpinBox()
+        lr_spin.setRange(0.001, 1.0)
+        lr_spin.setValue(0.1)
+        lr_spin.setDecimals(3)
+        params_layout.addWidget(lr_spin)
+        params_layout.addWidget(QLabel("Batch size:"))
+        batch_info = create_info_icon(
+            "Number of image crops per training step.\n\n"
+            "Larger batches (e.g. 16) train faster if you have enough GPU memory;\n"
+            "smaller batches (e.g. 4–8) use less memory.",
+            d,
+        )
+        params_layout.addWidget(batch_info)
+        batch_spin = QSpinBox()
+        batch_spin.setRange(1, 128)
+        batch_spin.setValue(16)
+        params_layout.addWidget(batch_spin)
+        params_layout.addStretch()
+        layout.addLayout(params_layout)
+        nchan_layout = QHBoxLayout()
+        nchan_layout.addWidget(QLabel("Channels (nchan):"))
+        nchan_info = create_info_icon(
+            "Number of image channels the model expects.\n\n"
+            "1 = grayscale only (Omnipose default for mono-channel; like bact_phase_affinity). "
+            "2 = two-channel (like bact_phase_omni; grayscale is duplicated/padded to 2 at training). "
+            "Both work in Preview/Batch: we pass the correct channel count at inference. "
+            "Always set nchan and nclasses to match when evaluating.",
+            d,
+        )
+        nchan_layout.addWidget(nchan_info)
+        nchan_spin = QSpinBox()
+        nchan_spin.setRange(1, 8)
+        nchan_spin.setValue(2)  # 2 for grayscale (Omnipose/patch uses channels=[0,0]); set nclasses to match when evaluating
+        nchan_layout.addWidget(nchan_spin)
+        nchan_layout.addWidget(QLabel("Classes (nclasses):"))
+        nclasses_info = create_info_icon(
+            "Number of prediction classes (2 = flow + distance; 3 adds boundary).\n\n"
+            "Use 3 for typical Omnipose bacteria models (recommended).",
+            d,
+        )
+        nchan_layout.addWidget(nclasses_info)
+        nclasses_spin = QSpinBox()
+        nclasses_spin.setRange(2, 4)
+        nclasses_spin.setValue(3)
+        nchan_layout.addWidget(nclasses_spin)
+        use_gpu_cb = QCheckBox("Use GPU")
+        use_gpu_cb.setChecked(True)
+        gpu_info = create_info_icon(
+            "Use GPU (CUDA or Apple MPS) if available for much faster training.\n"
+            "Uncheck to train on CPU only.",
+            d,
+        )
+        nchan_layout.addWidget(gpu_info)
+        nchan_layout.addWidget(use_gpu_cb)
+        nchan_layout.addStretch()
+        layout.addLayout(nchan_layout)
+        # Log output
+        log_label = QLabel("Training log:")
+        layout.addWidget(log_label)
+        log_text = QTextEdit()
+        log_text.setReadOnly(True)
+        log_text.setMaximumHeight(120)
+        layout.addWidget(log_text)
+        # Buttons
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
+        bb.setOrientation(Qt.Orientation.Horizontal)
+        start_btn = bb.button(QDialogButtonBox.StandardButton.Ok)
+        start_btn.setText("Start training")
+        bb.rejected.connect(d.reject)
+
+        class TrainWorker(QThread):
+            log_line = pyqtSignal(str)
+            finished_with = pyqtSignal(bool, str, str)  # success, model_name, message
+
+            def __init__(self, cmd, env, cwd, save_dir, dest_file, model_name):
+                super().__init__()
+                self.cmd = cmd
+                self.env = env
+                self.cwd = cwd
+                self.save_dir = save_dir
+                self.dest_file = dest_file
+                self.model_name = model_name
+
+            def run(self):
+                import shutil
+                try:
+                    proc = subprocess.Popen(
+                        self.cmd,
+                        env=self.env,
+                        cwd=self.cwd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    for line in proc.stdout:
+                        self.log_line.emit(line.rstrip())
+                    proc.wait()
+                    if proc.returncode != 0:
+                        self.finished_with.emit(False, self.model_name, f"Omnipose exited with code {proc.returncode}.")
+                        return
+                    # Omnipose saves to train_dir/models/; filename often has no .pth extension
+                    pth_files = list(Path(self.save_dir).glob("*.pth"))
+                    alt = Path(self.cwd) / "models"
+                    if not pth_files and alt.is_dir():
+                        pth_files = list(alt.glob("*.pth"))
+                    if not pth_files and alt.is_dir():
+                        # Fallback: Omnipose may save without .pth; use newest file in models/
+                        all_files = [p for p in alt.iterdir() if p.is_file()]
+                        if all_files:
+                            newest = max(all_files, key=lambda p: p.stat().st_mtime)
+                            pth_files = [newest]
+                    if not pth_files:
+                        self.finished_with.emit(False, self.model_name, "No .pth checkpoint found after training.")
+                        return
+                    newest = max(pth_files, key=lambda p: p.stat().st_mtime)
+                    shutil.copy2(newest, self.dest_file)
+                    shutil.rmtree(self.save_dir, ignore_errors=True)
+                    self.finished_with.emit(True, self.model_name, f"Saved to {self.dest_file}")
+                except Exception as e:
+                    self.finished_with.emit(False, self.model_name, str(e))
+
+        def start_training():
+            train_dir = train_dir_edit.text().strip()
+            model_name = model_name_edit.text().strip()
+            if not train_dir or not Path(train_dir).is_dir():
+                QMessageBox.warning(d, "Invalid directory", "Please choose an absolute path to a training directory.")
+                return
+            if not model_name:
+                QMessageBox.warning(d, "Invalid name", "Please enter a model name.")
+                return
+            if "/" in model_name or "\\" in model_name:
+                QMessageBox.warning(d, "Invalid name", "Model name must not contain path separators.")
+                return
+            dest_file = get_user_models_dir() / f"{model_name}{USER_MODEL_EXTENSION}"
+            if dest_file.exists():
+                if QMessageBox.question(d, "Model already exists", f"A model named '{model_name}' already exists. Overwrite it? This cannot be undone.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                    return
+            train_dir_abs = Path(train_dir).resolve()
+            img_filter = img_filter_edit.text().strip()
+            mask_filter = mask_filter_edit.text().strip() or "_mask"
+            # If user ran "Make masks compatible", masks (and maybe images) are in train_dir/omnipose_masks. Use that folder and ensure images are present.
+            train_path = ensure_omnipose_masks_has_images(train_dir_abs, mask_filter, img_filter=img_filter)
+            train_dir_abs = str(train_path)
+            # Pre-check: Omnipose needs one mask file per image (base name + mask_filter + ext). Catch missing masks or bad names early.
+            exts = (".tif", ".tiff", ".png", ".npy", ".npz")
+            mask_suffixes = ("_cp_masks", "_cp_output", "_flows", mask_filter)
+
+            def base_name(p, suf):
+                return p.stem.replace(suf, "") if suf else p.stem
+
+            def count_pairs(ifilter):
+                candidates = [
+                    f for f in train_path.iterdir()
+                    if f.is_file() and f.suffix.lower() in exts
+                    and not any(f.stem.endswith(s) or (f.stem + s == f.stem) for s in mask_suffixes)
+                ]
+                n = 0
+                for f in candidates:
+                    base = base_name(f, ifilter)
+                    if not base or base == ".":
+                        continue
+                    if any((train_path / f"{base}{mask_filter}{e}").exists() for e in exts):
+                        n += 1
+                return n, candidates
+
+            pairs_ok, image_candidates = count_pairs(img_filter)
+            bad_base = [f.name for f in image_candidates if not base_name(f, img_filter) or base_name(f, img_filter) == "."]
+
+            # If Image filter is empty and no pairs found, try to infer it from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase)
+            if pairs_ok == 0 and not img_filter and image_candidates:
+                mask_files = [f for f in train_path.iterdir() if f.is_file() and f.stem.endswith(mask_filter)]
+                for img_f in image_candidates:
+                    stem = img_f.stem
+                    for mf in mask_files:
+                        base = mf.stem[: -len(mask_filter)] if mask_filter else mf.stem
+                        if base and stem.startswith(base) and stem != base:
+                            inferred = stem[len(base):]
+                            if count_pairs(inferred)[0] > 0:
+                                img_filter = inferred
+                                img_filter_edit.setText(inferred)
+                                pairs_ok, image_candidates = count_pairs(img_filter)
+                                bad_base = [f.name for f in image_candidates if not base_name(f, img_filter) or base_name(f, img_filter) == "."]
+                                break
+                    if pairs_ok > 0:
+                        break
+
+            if bad_base:
+                QMessageBox.warning(
+                    d, "Invalid training files",
+                    f"Some image filenames give an empty base name (Omnipose will skip them or fail): {bad_base[:5]}{'…' if len(bad_base) > 5 else ''}. "
+                    "Use names like 'image.tif' with a matching 'image_masks.tif' (no leading dot).",
+                )
+                return
+            if pairs_ok == 0:
+                folder_used = getattr(train_path, "name", str(train_path))
+                if folder_used == OMNIPOSE_MASKS_SUBDIR or str(train_path).endswith(os.path.sep + OMNIPOSE_MASKS_SUBDIR):
+                    hint = (
+                        f"The folder '{train_path}' contains only mask files (no images). "
+                        f"Images are copied from the parent folder when they match the mask names: for each mask 'NAME{mask_filter}.tif' we need an image 'NAME{img_filter or ''}.tif' (or .tiff/.png) in the parent. "
+                        "Check that the parent folder has image files with matching base names and that Image filter matches your image filenames."
+                    )
+                else:
+                    hint = (
+                        f"For each image we need a mask: base name + '{mask_filter}' + extension. "
+                        f"Image filter is '{img_filter or '(empty)'}' — the base is taken from the image by removing this suffix. "
+                        f"Example: for image '634_phase.tif' and mask '634_masks.tif', set Image filter to '_phase' so the base is '634'."
+                    )
+                QMessageBox.warning(
+                    d, "No image/mask pairs found",
+                    f"No matching mask files found. {hint}",
+                )
+                return
+            start_btn.setEnabled(False)
+            log_text.clear()
+            n_epochs = n_epochs_spin.value()
+            log_text.append(f"Found {pairs_ok} image/mask pair(s). All will be used every epoch for {n_epochs} epochs.")
+            log_text.append("Starting Omnipose training (this may take a long time)…")
+            # Omnipose CLI: see https://omnipose.readthedocs.io (Training). We use absolute --dir;
+            # we do not pass --all_channels (images are grayscale; when nchan=2 our patch duplicates channel via channels=[0,0]).
+            cmd = [
+                sys.executable, "-m", "omnipose", "--train",
+                "--dir", train_dir_abs,
+                "--mask_filter", mask_filter,
+                "--pretrained_model", "None",
+                "--diameter", "0",
+                "--n_epochs", str(n_epochs_spin.value()),
+                "--learning_rate", str(lr_spin.value()),
+                "--batch_size", str(batch_spin.value()),
+                "--nchan", str(nchan_spin.value()),
+                "--nclasses", str(nclasses_spin.value()),
+                "--RAdam",
+            ]
+            if img_filter:
+                cmd.extend(["--img_filter", img_filter])
+            if use_gpu_cb.isChecked():
+                cmd.append("--use_gpu")
+            # Channel axis: 0 = channels first (CYX). Only relevant when nchan > 1.
+            if nchan_spin.value() >= 2:
+                cmd.extend(["--channel_axis", "0"])
+            import tempfile
+            save_dir = tempfile.mkdtemp(prefix="bactimate_train_")
+            env = os.environ.copy()
+            env["CELLPOSE_LOCAL_MODELS_PATH"] = save_dir
+
+            worker = TrainWorker(cmd, env, train_dir_abs, save_dir, dest_file, model_name)
+            self._train_worker = worker  # Keep ref so thread isn't destroyed if dialog closes
+
+            def on_log(line):
+                if log_text:
+                    log_text.append(line)
+
+            def on_finished(success, name, msg):
+                start_btn.setEnabled(True)
+                if log_text:
+                    log_text.append(f"\n{msg}")
+                if success:
+                    training_record = {
+                        "model_name": name,
+                        "n_epochs": n_epochs_spin.value(),
+                        "learning_rate": lr_spin.value(),
+                        "batch_size": batch_spin.value(),
+                        "nchan": nchan_spin.value(),
+                        "nclasses": nclasses_spin.value(),
+                        "use_gpu": use_gpu_cb.isChecked(),
+                        "mask_filter": mask_filter_edit.text().strip() or "_mask",
+                        "img_filter": img_filter_edit.text().strip() or "",
+                        "train_dir": train_dir_edit.text().strip(),
+                    }
+                    self._trained_models_this_session.append(training_record)
+                    if getattr(self.parent_window, "_save_session_log", None):
+                        self.parent_window._save_session_log()
+                    QMessageBox.information(
+                        d, "Done",
+                        f"Model '{name}' saved. It will appear in the model dropdown.\n\n"
+                        "When using it: if no cells are detected, set Diameter (e.g. 30 px) in Processing; custom models do not support auto-diameter."
+                    )
+                    current = self.model_combo.currentText()
+                    self.model_combo.clear()
+                    self.model_combo.addItems(self._get_available_models())
+                    if self.model_combo.findText(name) >= 0:
+                        self.model_combo.setCurrentText(name)
+                    else:
+                        self.model_combo.setCurrentText(current or "bact_phase_omni")
+                else:
+                    QMessageBox.warning(d, "Training failed", msg)
+                self._train_worker = None
+
+            worker.log_line.connect(on_log)
+            worker.finished_with.connect(on_finished)
+            worker.start()
+
+            def on_dialog_closed():
+                # If user closes dialog while training is running, keep worker alive and handle finish on the tab
+                w = getattr(self, "_train_worker", None)
+                if w is not None and w.isRunning():
+                    try:
+                        w.log_line.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        w.finished_with.disconnect()
+                    except Exception:
+                        pass
+                    w.finished_with.connect(self._on_train_finished_background)
+
+            d.finished.connect(on_dialog_closed)
+
+        start_btn.clicked.connect(start_training)
+        layout.addWidget(bb)
+        d.setLayout(layout)
+        d.exec()
+
     def reset_segmentation_defaults(self):
         """Reset all segmentation parameters to their default values"""
         # Set default model, fallback to first available if bact_phase_omni not available
@@ -512,6 +1113,7 @@ class ProcessingTab(QWidget):
         elif self.model_combo.count() > 0:
             self.model_combo.setCurrentIndex(0)
         self.diameter.setValue(0)
+        self.pixel_size_um.setValue(0)
         self.flow_threshold.setValue(0.4)
         self.mask_threshold.setValue(0.0)
         self.use_gpu.setChecked(True)
@@ -520,21 +1122,25 @@ class ProcessingTab(QWidget):
     
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
-        return get_from_widgets([
+        out = get_from_widgets([
             ("model", self.model_combo),
             ("diameter", self.diameter),
+            ("pixel_size_um", self.pixel_size_um),
             ("flow_threshold", self.flow_threshold),
             ("mask_threshold", self.mask_threshold),
             ("use_gpu", self.use_gpu),
             ("cluster", self.cluster),
             ("create_overlay", self.create_overlay),
         ])
+        out["trained_models_this_session"] = list(self._trained_models_this_session)
+        return out
 
     def set_session_params(self, data: dict[str, Any]) -> None:
         """Apply saved parameter values (parameters only)."""
         apply_to_widgets(data, [
             ("model", self.model_combo),
             ("diameter", self.diameter),
+            ("pixel_size_um", self.pixel_size_um),
             ("flow_threshold", self.flow_threshold),
             ("mask_threshold", self.mask_threshold),
             ("use_gpu", self.use_gpu),
@@ -687,7 +1293,7 @@ class ProcessingTab(QWidget):
             QApplication.processEvents()
             
             import tifffile
-            from bactimate.gui.image_utils import to_qpixmap, build_segmentation_overlay, scale_for_preview
+            from bactimate.gui.image_utils import to_qpixmap, build_segmentation_overlay, scale_for_preview, draw_scale_bar
             from bactimate.gui.image_canvas import ImageCanvas
 
             # CRITICAL: Patch omnipose.core.OMNI_MODELS before cellpose_omni imports it
@@ -816,37 +1422,40 @@ class ProcessingTab(QWidget):
                 return None
             
             def load_model():
-                """Load Omnipose model (only reloads if model type or GPU setting changed)"""
-                # Get current parameters
+                """Load Omnipose model (only reloads if model type or GPU setting changed)."""
                 params = get_current_parameters()
-                current_model_type = params['model_type']
-                current_use_gpu = params['use_gpu']
-                
-                # Check if model needs to be reloaded (only when model type or GPU changes)
-                needs_reload = (preview_dialog.model is None or 
-                               (hasattr(preview_dialog, '_last_model_type') and preview_dialog._last_model_type != current_model_type) or
-                               (hasattr(preview_dialog, '_last_use_gpu') and preview_dialog._last_use_gpu != current_use_gpu))
-                
+                current_model_type = params.get("model_type")
+                pretrained_path = params.get("pretrained_model")
+                current_use_gpu = params["use_gpu"]
+                current_key = pretrained_path or current_model_type or ""
+                needs_reload = (
+                    preview_dialog.model is None
+                    or (getattr(preview_dialog, "_last_model_key", None) != current_key)
+                    or (getattr(preview_dialog, "_last_use_gpu", None) != current_use_gpu)
+                )
                 if needs_reload:
-                    # Clear cache when model changes (old results are invalid)
                     preview_dialog.segmentation_cache.clear()
-                
                 if needs_reload:
                     try:
-                        from cellpose_omni.models import model_path, MODEL_DIR
                         import os
-                        from urllib.error import HTTPError
+                        from urllib.error import HTTPError  # required for except HTTPError below (must be in scope for all paths)
+                        # User-trained model: load by path
+                        if pretrained_path and os.path.isfile(pretrained_path):
+                            status_label.setText("Loading user model...")
+                            QApplication.processEvents()
+                            preview_dialog.model = models.Cellpose(
+                                gpu=current_use_gpu,
+                                pretrained_model=pretrained_path,
+                                omni=True,
+                            )
+                            preview_dialog._last_model_key = current_key
+                            preview_dialog._last_use_gpu = current_use_gpu
+                            return True
+                        from cellpose_omni.models import model_path, MODEL_DIR
                         from pathlib import Path
-                        
-                        # Verify MODEL_DIR is set correctly (should be local models directory if env var was set)
-                        # This is just for debugging - MODEL_DIR is set when module is imported
-                        expected_model_dir = PROJECT_ROOT / 'models'
+                        expected_model_dir = PROJECT_ROOT / "models"
                         if expected_model_dir.exists() and str(MODEL_DIR) != str(expected_model_dir):
-                            # Environment variable might not have been set before import
-                            # This shouldn't happen, but log it if it does
                             pass
-                        
-                        # Check for model in local directory first, then cache
                         model_file = find_model_file(current_model_type, 0, True)
                         
                         if model_file and os.path.exists(model_file):
@@ -1015,7 +1624,7 @@ class ProcessingTab(QWidget):
                         except Exception:
                             get_logger().debug("Patching get_masks failed, continuing", exc_info=True)
                         
-                        preview_dialog._last_model_type = current_model_type
+                        preview_dialog._last_model_key = current_key
                         preview_dialog._last_use_gpu = current_use_gpu
                         status_label.setText("Model loaded")
                         QApplication.processEvents()
@@ -1061,7 +1670,7 @@ class ProcessingTab(QWidget):
                                         model_type=current_model_type, 
                                         omni=True
                                     )
-                                    preview_dialog._last_model_type = current_model_type
+                                    preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Model reloaded successfully!")
                                     QApplication.processEvents()
@@ -1125,7 +1734,7 @@ class ProcessingTab(QWidget):
                                         model_type=current_model_type, 
                                         omni=True
                                     )
-                                    preview_dialog._last_model_type = current_model_type
+                                    preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Using cached model")
                                     QApplication.processEvents()
@@ -1175,7 +1784,7 @@ class ProcessingTab(QWidget):
                                         model_type=current_model_type, 
                                         omni=True
                                     )
-                                    preview_dialog._last_model_type = current_model_type
+                                    preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Using cached model")
                                     QApplication.processEvents()
@@ -1230,7 +1839,7 @@ class ProcessingTab(QWidget):
                                         model_type=current_model_type, 
                                         omni=True
                                     )
-                                    preview_dialog._last_model_type = current_model_type
+                                    preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Using cached model")
                                     QApplication.processEvents()
@@ -1275,32 +1884,28 @@ class ProcessingTab(QWidget):
                 return True
             
             def get_current_parameters():
-                """Get current parameters from main window (works because dialog is non-modal)"""
-                # CRITICAL: In frozen builds, diameter=0 (auto-detect) causes None comparison errors
-                # in omnipose/core.py. Use a default diameter instead of 0.
+                """Get current parameters from main window (works because dialog is non-modal)."""
                 import sys
-                is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
-                
-                diameter_value = self.diameter.value()
-                model_type = self.model_combo.currentText()
-                
-                # If diameter is 0 and we're in a frozen build, use a model-specific default
-                if diameter_value == 0 and is_frozen:
-                    # Default diameters based on model type (common values for bacteria)
+                is_frozen = getattr(sys, "frozen", False) or hasattr(sys, "__compiled__")
+                diameter_value = self._get_effective_diameter_pixels()
+                display = self.model_combo.currentText()
+                model_type, pretrained_path = self._resolve_model_selection(display)
+                # User-trained models have no size model: diameter=0 causes "No cell pixels found". Default to 30.
+                if diameter_value == 0 and (pretrained_path or is_frozen):
                     default_diameters = {
-                        'bact_phase_omni': 30.0,
-                        'bact_omni': 30.0,
-                        'bact_fluor_omni': 30.0,
+                        "bact_phase_omni": 30.0,
+                        "bact_omni": 30.0,
+                        "bact_fluor_omni": 30.0,
                     }
-                    diameter_value = default_diameters.get(model_type, 30.0)
-                
+                    diameter_value = default_diameters.get(model_type or display, 30.0)
                 return {
-                    'diameter': diameter_value if diameter_value > 0 else 0,  # Use 0 instead of None
-                    'flow_threshold': self.flow_threshold.value(),
-                    'mask_threshold': self.mask_threshold.value(),
-                    'cluster': self.cluster.isChecked(),
-                    'model_type': model_type,
-                    'use_gpu': self.use_gpu.isChecked(),
+                    "diameter": diameter_value if diameter_value > 0 else 0,
+                    "flow_threshold": self.flow_threshold.value(),
+                    "mask_threshold": self.mask_threshold.value(),
+                    "cluster": self.cluster.isChecked(),
+                    "model_type": model_type,
+                    "pretrained_model": str(pretrained_path) if pretrained_path else None,
+                    "use_gpu": self.use_gpu.isChecked(),
                 }
             
             # Cache for segmentation results: key = (frame_idx, diameter, flow_threshold, mask_threshold, cluster, model_type, use_gpu)
@@ -1324,9 +1929,9 @@ class ProcessingTab(QWidget):
                 mask_threshold = float(mask_threshold)
                 
                 return (frame_idx, diameter, flow_threshold, mask_threshold,
-                       bool(params.get('cluster', False)), 
-                       str(params.get('model_type', 'bact_phase_omni')), 
-                       bool(params.get('use_gpu', True)))
+                       bool(params.get("cluster", False)),
+                       str(params.get("model_type") or params.get("pretrained_model") or "bact_phase_omni"),
+                       bool(params.get("use_gpu", True)))
             
             # Segmentation worker thread class
             class SegmentationWorker(QThread):
@@ -1401,11 +2006,26 @@ class ProcessingTab(QWidget):
                 # Now generate cache key with clean parameters
                 cache_key = get_cache_key(frame_idx, params)
                 
+                # Optional disk cache (session): same key as in-memory, stored under temp dir
+                import hashlib
+                import tempfile
+                _cache_dir = Path(tempfile.gettempdir()) / "bactimate_preview_cache"
+                _disk_key = hashlib.sha256(f"{file_path}|{cache_key}".encode()).hexdigest()[:24]
+                _disk_path = _cache_dir / f"{_disk_key}.npy"
+                
                 # Check cache first (safely - handle any old cache entries with None values)
                 if use_cache:
                     try:
                         if cache_key in preview_dialog.segmentation_cache:
                             return preview_dialog.segmentation_cache[cache_key]
+                        # Check disk cache
+                        if _disk_path.exists():
+                            try:
+                                mask_disk = np.load(_disk_path)
+                                preview_dialog.segmentation_cache[cache_key] = mask_disk
+                                return mask_disk
+                            except Exception:
+                                pass
                     except (TypeError, ValueError) as e:
                         # Cache key comparison failed (likely old entries with None values)
                         # Clean cache and continue
@@ -1491,8 +2111,13 @@ class ProcessingTab(QWidget):
                             resample=True,
                             verbose=False
                         )
-                    # Cache the result
+                    # Cache the result (memory and optional disk)
                     preview_dialog.segmentation_cache[cache_key] = mask
+                    try:
+                        _cache_dir.mkdir(parents=True, exist_ok=True)
+                        np.save(_disk_path, mask)
+                    except Exception:
+                        pass
                     return mask
                 except RecursionError as e:
                     # Handle recursion errors (e.g., from broken runtime hooks)
@@ -1541,7 +2166,7 @@ class ProcessingTab(QWidget):
                                     )
                                     # Cache the result with the new diameter
                                     cache_key_retry = get_cache_key(frame_idx, {'diameter': retry_diameter, 'flow_threshold': flow_threshold,
-                                                                              'mask_threshold': mask_threshold, 'cluster': cluster, 'model_type': params.get('model_type'),
+                                                                              'mask_threshold': mask_threshold, 'cluster': cluster, 'model_type': params.get('model_type'), 'pretrained_model': params.get('pretrained_model'),
                                                                               'use_gpu': params.get('use_gpu')})
                                     preview_dialog.segmentation_cache[cache_key_retry] = mask
                                     return mask
@@ -1643,6 +2268,10 @@ class ProcessingTab(QWidget):
                     # Scale down for preview so overlay + pixmap + paint stay fast
                     disp_scaled, mask_scaled = scale_for_preview(display_frame, mask)
                     overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
+                    pixel_size_um = self.pixel_size_um.value()
+                    if pixel_size_um > 0:
+                        scale_factor = disp_scaled.shape[1] / max(1, display_frame.shape[1])
+                        draw_scale_bar(overlay, pixel_size_um, scale_factor=scale_factor)
                     pixmap = to_qpixmap(overlay)
                     height, width = overlay.shape[:2]
                     image_canvas.set_pixmap(pixmap, (width, height), reset_view=False)
@@ -1665,11 +2294,23 @@ class ProcessingTab(QWidget):
                     
                     # Update status
                     cache_size = len(preview_dialog.segmentation_cache)
-                    if has_cache:
-                        status_label.setText(f"Ready (from cache)")
+                    if num_cells == 0:
+                        params = get_current_parameters()
+                        if params.get("pretrained_model"):
+                            status_label.setText("No cells detected. Try Flow 0, Mask -2, Diameter 0 or cell size (px). See docs/CUSTOM_MODEL_TROUBLESHOOTING.md.")
+                            status_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                        else:
+                            if has_cache:
+                                status_label.setText("Ready (from cache) — no cells")
+                            else:
+                                status_label.setText(f"Ready (cached: {cache_size}) — no cells")
+                            status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
                     else:
-                        status_label.setText(f"Ready (cached: {cache_size})")
-                    status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
+                        if has_cache:
+                            status_label.setText("Ready (from cache)")
+                        else:
+                            status_label.setText(f"Ready (cached: {cache_size})")
+                        status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
                 except Exception as e:
                     if progress_dialog:
                         progress_dialog.close()
@@ -1689,7 +2330,11 @@ class ProcessingTab(QWidget):
             nav_layout.addWidget(QLabel("Frame:"))
             nav_layout.addWidget(frame_spin)
             nav_layout.addWidget(QLabel(f"of {num_frames}"))
-            
+            scale_label = QLabel("")
+            if self.pixel_size_um.value() > 0:
+                scale_label.setText(f"Scale: {self.pixel_size_um.value():.3f} µm/px")
+                scale_label.setToolTip("Pixel size from Processing tab (scale bar drawn on image).")
+            nav_layout.addWidget(scale_label)
             # Add status label to navigation layout
             nav_layout.addStretch()
             nav_layout.addWidget(status_label)
@@ -1821,6 +2466,10 @@ class ProcessingTab(QWidget):
             disp0, _ = scale_for_preview(display_frame0, empty_mask)
             empty_scaled = np.zeros(disp0.shape, dtype=np.int32)
             initial_overlay = build_segmentation_overlay(disp0, empty_scaled, alpha=0.0)
+            pixel_size_um_0 = self.pixel_size_um.value()
+            if pixel_size_um_0 > 0:
+                scale_factor_0 = disp0.shape[1] / max(1, display_frame0.shape[1])
+                draw_scale_bar(initial_overlay, pixel_size_um_0, scale_factor=scale_factor_0)
             initial_pixmap = to_qpixmap(initial_overlay)
             h0, w0 = initial_overlay.shape[:2]
             image_canvas.set_pixmap(initial_pixmap, (w0, h0), reset_view=True)
@@ -1928,6 +2577,25 @@ class ProcessingTab(QWidget):
                 print(f"CRITICAL ERROR in preview_segmentation: {error_msg}", file=sys.stderr)
             # Don't re-raise - PyQt6 will abort if we do
     
+    def _get_effective_diameter_pixels(self) -> float:
+        """Return diameter in pixels (the single Diameter field)."""
+        return self.diameter.value()
+
+    def _open_in_file_manager(self, path: Path) -> None:
+        """Open the given path (file or directory) in the OS default file manager."""
+        path = Path(path)
+        if not path.exists():
+            return
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", str(path)], check=False)
+            elif sys.platform == "win32":
+                subprocess.run(["explorer", str(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(path)], check=False)
+        except Exception:
+            get_logger().debug("Could not open path in file manager", exc_info=True)
+
     def _validate_for_run(self) -> list[str]:
         """Return a list of error messages; if non-empty, do not start the job."""
         errors: list[str] = []
@@ -1941,7 +2609,7 @@ class ProcessingTab(QWidget):
         script_path = PROJECT_ROOT / "scripts" / "batch_process_tiff_sequence.py"
         if not script_path.exists():
             errors.append(f"Segmentation script not found: {script_path}")
-        if self.diameter.value() < 0:
+        if self._get_effective_diameter_pixels() < 0:
             errors.append("Diameter must be ≥ 0 (use 0 for auto-detect).")
         return errors
 
@@ -1970,11 +2638,13 @@ class ProcessingTab(QWidget):
             # Create output directory at base level with _segmentation suffix
             output_dir = base_dir / f"{input_file.stem}_segmentation"
             
+            _mt, _path = self._resolve_model_selection(self.model_combo.currentText())
+            model_arg = str(_path) if _path else (_mt or self.model_combo.currentText())
             cmd_args = [
                 self.file_path.text(),
                 '--output', str(output_dir),
-                '--model', self.model_combo.currentText(),
-                '--diameter', str(self.diameter.value()),
+                '--model', model_arg,
+                '--diameter', str(self._get_effective_diameter_pixels()),
                 '--flow-threshold', str(self.flow_threshold.value()),
                 '--mask-threshold', str(self.mask_threshold.value()),
                 '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
@@ -1987,8 +2657,11 @@ class ProcessingTab(QWidget):
             if not self.create_overlay.isChecked():
                 cmd_args.append('--no-overlay')
             
+            self._last_output_dir = output_dir
             self.process_btn.setEnabled(False)
             self.process_btn.setText("Processing...")
+            self.cancel_btn.setVisible(True)
+            self.cancel_btn.setEnabled(True)
             self.parent_window.log_output(f"Starting single file processing: {self.file_path.text()}\n")
             self.parent_window.log_output(f"Output directory: {output_dir}\n")
         else:
@@ -2045,8 +2718,11 @@ class ProcessingTab(QWidget):
             
             self.process_btn.setEnabled(False)
             self.process_btn.setText(f"Processing... (0/{len(selected_files)})")
+            self.cancel_btn.setVisible(True)
+            self.cancel_btn.setEnabled(True)
             self.parent_window.log_output(f"Starting batch folder processing: {len(selected_files)} file(s) selected from {self.file_path.text()}\n")
             
+            self._last_output_dir = folder  # folder containing all _segmentation outputs
             # Process first file
             self._process_next_segmentation_file(script_path)
             return  # Early return, processing continues in _process_next_segmentation_file
@@ -2066,6 +2742,8 @@ class ProcessingTab(QWidget):
         """Process next file in folder mode (segmentation)"""
         if self.current_file_index >= len(self.folder_files):
             # All files processed
+            self.cancel_btn.setVisible(False)
+            self.cancel_btn.setEnabled(False)
             self.process_btn.setEnabled(True)
             is_folder = self._is_folder_mode()
             if is_folder:
@@ -2074,8 +2752,18 @@ class ProcessingTab(QWidget):
                 self.process_btn.setText("Process File")
             self.parent_window.progress_bar.setVisible(False)
             self.parent_window.log_output(f"\n✓ Segmentation complete for all {len(self.folder_files)} file(s)!\n")
-            QMessageBox.information(self, "Processing Complete", 
-                                  f"Successfully processed {len(self.folder_files)} file(s).")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Processing Complete")
+            msg.setText(
+                f"Successfully processed {len(self.folder_files)} file(s).\n\n"
+                "Output: one _segmentation subfolder per file (masks and overlay)."
+            )
+            msg.setIcon(QMessageBox.Icon.Information)
+            open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            if msg.clickedButton() == open_btn and getattr(self, "_last_output_dir", None):
+                self._open_in_file_manager(Path(self._last_output_dir))
             return
         
         tiff_file = self.folder_files[self.current_file_index]
@@ -2089,12 +2777,13 @@ class ProcessingTab(QWidget):
         # Create output directory at base level with _segmentation suffix
         output_dir = base_dir / f"{tiff_file.stem}_segmentation"
         
-        # Build command arguments for this file
+        _mt, _path = self._resolve_model_selection(self.model_combo.currentText())
+        model_arg = str(_path) if _path else (_mt or self.model_combo.currentText())
         cmd_args = [
             str(tiff_file),
             '--output', str(output_dir),
-            '--model', self.model_combo.currentText(),
-            '--diameter', str(self.diameter.value()),
+            '--model', model_arg,
+            '--diameter', str(self._get_effective_diameter_pixels()),
             '--flow-threshold', str(self.flow_threshold.value()),
             '--mask-threshold', str(self.mask_threshold.value()),
             '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
@@ -2145,6 +2834,17 @@ class ProcessingTab(QWidget):
         if hasattr(self, 'worker'):
             self.worker.wait()
             self.worker = None
+        
+        # If user cancelled, stop the queue and reset UI
+        if getattr(self, "_user_cancelled_processing", False):
+            self._user_cancelled_processing = False
+            self.cancel_btn.setVisible(False)
+            self.cancel_btn.setEnabled(False)
+            self.process_btn.setEnabled(True)
+            self.process_btn.setText("Process All Files in Folder" if self._is_folder_mode() else "Process File")
+            self.parent_window.progress_bar.setVisible(False)
+            self.parent_window.log_output("Processing cancelled.\n")
+            return
         
         # Move to next file
         self.current_file_index += 1
@@ -2240,6 +2940,8 @@ class ProcessingTab(QWidget):
                     pass  # ignore progress parse errors
     
     def on_finished(self, success, message):
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.setEnabled(False)
         self.process_btn.setEnabled(True)
         is_folder = self._is_folder_mode()
         if is_folder:
@@ -2261,7 +2963,24 @@ class ProcessingTab(QWidget):
                 self.parent_window.log_output("✓ Folder processed successfully!\n")
             else:
                 self.parent_window.log_output("✓ File processed successfully!\n")
+            # Offer to open output folder (single-file mode only; folder mode has its own dialog)
+            if not is_folder and getattr(self, "_last_output_dir", None):
+                out_path = Path(self._last_output_dir)
+                if out_path.exists():
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("Processing Complete")
+                    msg.setText("File processed successfully.")
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                    msg.addButton(QMessageBox.StandardButton.Ok)
+                    msg.exec()
+                    if msg.clickedButton() == open_btn:
+                        self._open_in_file_manager(out_path)
         else:
-            QMessageBox.critical(self, "Error", f"Processing failed:\n{message}")
+            if getattr(self, "_user_cancelled_processing", False):
+                self._user_cancelled_processing = False
+                self.parent_window.log_output("Processing was cancelled.\n")
+            else:
+                QMessageBox.critical(self, "Error", f"Processing failed:\n{message}")
 
 
