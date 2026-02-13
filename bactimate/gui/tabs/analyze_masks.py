@@ -238,14 +238,6 @@ class AnalyzeMasksTab(QWidget):
         sol_layout.addWidget(self.min_solidity)
         morph_layout.addLayout(sol_layout)
         
-        self.exclude_border_cb = QCheckBox("Exclude masks touching the image borders")
-        self.exclude_border_cb.setChecked(False)
-        self.exclude_border_cb.setToolTip(
-            "When enabled, any mask region that touches the top, bottom, left or right edge of the image "
-            "is excluded from counts and area (useful to avoid partial cells at the border)."
-        )
-        morph_layout.addWidget(self.exclude_border_cb)
-        
         # Add morphological filters to the main layout
         morph_params_layout.addLayout(morph_layout)
         
@@ -484,6 +476,20 @@ class AnalyzeMasksTab(QWidget):
         combined_summary_layout.addWidget(combined_summary_info_icon)
         combined_summary_layout.addStretch()
         options_layout.addLayout(combined_summary_layout)
+        
+        # Row 3: Exclude masks touching borders
+        exclude_border_layout = QHBoxLayout()
+        self.exclude_border_cb = QCheckBox("Exclude masks touching the image borders")
+        self.exclude_border_cb.setChecked(False)
+        exclude_border_info_icon = create_info_icon(
+            "When enabled, any mask region that touches the top, bottom, left or right edge of the image "
+            "is excluded from counts and area (useful to avoid partial cells at the border).",
+            parent_widget=self
+        )
+        exclude_border_layout.addWidget(self.exclude_border_cb)
+        exclude_border_layout.addWidget(exclude_border_info_icon)
+        exclude_border_layout.addStretch()
+        options_layout.addLayout(exclude_border_layout)
         
         options_group.setLayout(options_layout)
         options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)

@@ -299,6 +299,20 @@ def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
         return False
 
     content = core_file.read_text()
+    # Repair broken installs where the _f.write string was split (unterminated string at line 1738)
+    broken_write = (
+        '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}'
+        "\n"
+        '".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
+    )
+    fixed_write = (
+        '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n'
+        "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
+    )
+    if broken_write in content:
+        content = content.replace(broken_write, fixed_write)
+        core_file.write_text(content)
+        print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic string literal)")
     old = """    else: # nothing to compute, just make it compatible
         omnipose_logger.info('No cell pixels found.')"""
     new = """    else: # nothing to compute, just make it compatible
@@ -307,7 +321,7 @@ def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
             if _dp and dist is not None:
                 _d = np.asarray(dist)
                 with open(_dp, "a", encoding="utf-8") as _f:
-                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\n".format(
+                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(
                         float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))
         except Exception:
             pass
@@ -443,24 +457,54 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         print("  WARNING: Could not find cellpose_omni/models.py")
         return False
     content = models_file.read_text()
-    # Repair broken debug write (unterminated string from earlier patch) if present.
-    # Match: with open(...) _f.write("...state_dict_sample=%s) then newline(s) then " % ( - flexible whitespace.
-    broken_debug_re = re.compile(
-        r'(\s+)with open\(_dp, "a", encoding="utf-8"\) as _f:\s+'
-        r'_f\.write\("\[%s\] \[cellpose_omni load\] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s)'
-        r'\s+'
-        r'" % \(_ts, self\.pretrained_model, user_nchan, user_nclasses, list\(_ckpt\.keys\(\)\)\[:25\], _sk\)\)'
+    # Repair broken debug write (unterminated string) if present. Run first so broken files get fixed
+    # before any "already patched" logic. Match: try block containing _f.write("...state_dict_sample=%s)
+    # then newline then " % ( (syntax error). Replace whole try/except with safe one-line write.
+    new_try_block = """            try:
+                import datetime as _dt
+                _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
+                if _dp and _ckpt is not None and isinstance(_ckpt, dict):
+                    _st = _ckpt.get('state_dict') or _ckpt.get('model_state_dict') or _ckpt
+                    _sk = list(_st.keys())[:12] if isinstance(_st, dict) else []
+                    _ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with open(_dp, "a", encoding="utf-8") as _f:
+                        _f.write("[%s] [cellpose_omni load] path=%r nchan=%s nclasses=%s keys=%s\\n" % (_ts, self.pretrained_model, user_nchan, user_nclasses, list(_ckpt.keys())[:25]))
+            except Exception:
+                pass"""
+    # Regex: try block containing _f.write with newline inside the string (broken).
+    broken_try_re = re.compile(
+        r'\s+try:\s+import datetime as _dt\s+_dp = os\.environ\.get\("BACTIMATE_OMNI_DEBUG_LOG"\).*?'
+        r'with open\(_dp, "a", encoding="utf-8"\) as _f:\s+_f\.write\("\[%s\].*?state_dict_sample=%s\s+" % \(_ts, self\.pretrained_model, user_nchan, user_nclasses, list\(_ckpt\.keys\(\)\)\[:25\], _sk\)\)\s+except Exception:\s+pass',
+        re.DOTALL,
     )
-    fixed_debug = (
-        r'\1with open(_dp, "a", encoding="utf-8") as _f:\n\1'
-        r'_f.write(\n\1    "[%s] [cellpose_omni load] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s\\n"\n\1'
-        r'    % (_ts, self.pretrained_model, user_nchan, user_nclasses, list(_ckpt.keys())[:25], _sk))'
-    )
-    if broken_debug_re.search(content):
-        content = broken_debug_re.sub(fixed_debug, content, count=1)
+    if broken_try_re.search(content):
+        content = broken_try_re.sub(new_try_block, content, count=1)
         models_file.write_text(content)
         print("  ✓ Repaired cellpose_omni models.py (unterminated debug string)")
         return True
+    # Exact string repair (for same newline/indent as in repo)
+    broken_marker = 'state_dict_sample=%s\n" % (_ts, self.pretrained_model'
+    if broken_marker in content:
+        old_try_block = (
+            '            try:\n'
+            '                import datetime as _dt\n'
+            '                _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")\n'
+            '                if _dp and _ckpt is not None and isinstance(_ckpt, dict):\n'
+            '                    _st = _ckpt.get(\'state_dict\') or _ckpt.get(\'model_state_dict\') or _ckpt\n'
+            '                    _sk = list(_st.keys())[:12] if isinstance(_st, dict) else []\n'
+            '                    _ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")\n'
+            '                    with open(_dp, "a", encoding="utf-8") as _f:\n'
+            '                        _f.write("[%s] [cellpose_omni load] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s\n'
+            '\n'
+            '" % (_ts, self.pretrained_model, user_nchan, user_nclasses, list(_ckpt.keys())[:25], _sk))\n'
+            '            except Exception:\n'
+            '                pass'
+        )
+        if old_try_block in content:
+            content = content.replace(old_try_block, new_try_block, 1)
+            models_file.write_text(content)
+            print("  ✓ Repaired cellpose_omni models.py (unterminated debug string)")
+            return True
     # 1) Add pretrained_model=None to Cellpose.__init__ signature (support use_torch or torch param name)
     new_sig_4 = """    def __init__(self, gpu=False, model_type='cyto', net_avg=True, device=None, 
                  use_torch=True, model_dir=None, dim=2, omni=None, pretrained_model=None):"""
