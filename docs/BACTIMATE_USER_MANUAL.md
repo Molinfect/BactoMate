@@ -255,21 +255,23 @@ Opened by **Train model** in the Model Parameters area.
 - **Mask filter:** Line edit; default “_mask”. Suffix on mask files (e.g. _masks → cell1_masks.tif).
 - **Info (?) —** “Suffix that identifies image vs mask files. Image filter: leave empty if A.tif; use _img if A_img.tif. Mask filter: must match your filenames exactly.”
 
-**Make masks Omnipose compatible** — Converts binary masks to instance labels and writes (with image copies when naming matches) to subfolder `omnipose_masks`. Does **not** change the training directory path; when you click “Start training”, the app uses `omnipose_masks` automatically and copies images there if needed.
+**Convert masks for Omnipose** — Converts binary masks to instance labels and writes (with image copies when naming matches) to subfolder `omnipose_masks`. Does **not** change the training directory path; when you click “Start training”, the app uses `omnipose_masks` automatically and copies images there if needed.
 - **Info (?) —** “Convert binary masks to instance label matrices. Converted masks (and image copies when naming matches) are written to subfolder 'omnipose_masks'. Keep the training directory as the folder that contains your images and masks. When you click Start training, we use the omnipose_masks subfolder automatically and copy images there if needed.”
 
-**Model name:** Line edit; placeholder “e.g. my_bacteria_v1”. Required; no path separators. Info (?) explains it appears in the dropdown and is saved as `.pth` in the user models folder.
+**Model name:** Line edit; placeholder “e.g. my_bacteria_v1”. Required; no path separators. This is the **output** name: the trained checkpoint is saved as `<model_name>.pth` in the **user models folder** and appears in the model dropdown. User models folder: when running from the **repo** it is `<repo_root>/user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models` (macOS) or `%APPDATA%/BactiMate/Models` (Windows). The success dialog after training shows the full save path and, if you used transfer learning, a note “(Transfer learning from …)”.
 
 **Training parameters**
 
 - **Epochs:** Spin box [100, 50000]; default 4000. Info (?) — Full passes over training set; Omnipose often benefits from more (e.g. 4000 for bacteria).
 - **Learning rate:** Double spin [0.001, 1.0]; default 0.1. Info (?) — Step size; larger faster but unstable, smaller slower but stable.
 - **Batch size:** Spin [1, 128]; default 16. Info (?) — Larger batches faster with enough GPU memory; smaller use less memory.
-- **Channels (nchan):** Spin [1, 8]; default **2** (grayscale duplicated; Omnipose/patch uses channels=[0,0]). Info (?) — 1 = grayscale only; 2 = two-channel like bact_phase_omni. Set nclasses to match when evaluating.
-- **Classes (nclasses):** Spin [2, 4]; default 3. Info (?) — 2 = flow+distance; 3 adds boundary. Use 3 for typical Omnipose bacteria models.
+- **Start from (transfer learning):** Dropdown — **None (from scratch)** or a pretrained model that appears in the main tab’s Model list (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**). If you choose a pretrained model, training adds your data on top of it; **nchan** and **nclasses** are locked to match the model (required by Omnipose).
+- **Check compatibility with selected model:** Button — Validates that the training folder has image/mask pairs and that image dimensions match the selected model (e.g. 2D images for bact_phase_omni). Use this before starting training when using transfer learning.
+- **Channels (nchan):** Spin [1, 8]; default **2** (grayscale duplicated; Omnipose/patch uses channels=[0,0]). Info (?) — 1 = grayscale only; 2 = two-channel like bact_phase_omni. Set nclasses to match when evaluating. **Locked** when a pretrained model is selected.
+- **Classes (nclasses):** Spin [2, 4]; default 3. Info (?) — 2 = flow+distance; 3 adds boundary. Use 3 for typical Omnipose bacteria models. **Locked** when a pretrained model is selected.
 - **Use GPU:** Check box; default checked. Info (?) — Use GPU (CUDA or Apple MPS) if available.
 
-Before starting, the dialog checks for image/mask pairs. If **Image filter** is empty and no pairs are found, it **infers** the image filter from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase) and fills the field so training can proceed. It also shows: “Found N image/mask pair(s). All will be used every epoch for M epochs.” Then it runs Omnipose training; log is shown in the dialog. On success, the new model appears in the main tab’s model dropdown.
+Before starting, the dialog checks for image/mask pairs. When you use a **pretrained model**, it also checks that images are 2D if the model is 2D (e.g. bact_phase_omni); 3D stacks trigger a warning and you can cancel or continue. If **Image filter** is empty and no pairs are found, it **infers** the image filter from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase) and fills the field so training can proceed. It also shows: “Found N image/mask pair(s). All will be used every epoch for M epochs.” (When using transfer learning it adds: “Transfer learning: starting from … (nchan/nclasses locked to match).”) Then it runs Omnipose training; log is shown in the dialog. **On success**, a dialog shows the full path where the model was saved (user models folder), and if you used transfer learning, a line “(Transfer learning from …)”. The model list is refreshed and the new model appears in the main tab’s model dropdown.
 
 ### 4.5 Preview dialog (Omnipose)
 
@@ -287,7 +289,80 @@ Before starting, the dialog checks for image/mask pairs. If **Image filter** is 
 
 ### 4.7 Session parameters (Omnipose Segment)
 
-Session log stores (among others): file path, model, diameter, pixel_size_um, flow_threshold, mask_threshold, use_gpu, cluster, create_overlay. Training dialog stores: train_dir, model_name, n_epochs, learning_rate, batch_size, nchan, nclasses, use_gpu, mask_filter, img_filter.
+Session log stores (among others): file path, model, diameter, pixel_size_um, flow_threshold, mask_threshold, use_gpu, cluster, create_overlay. Each time you complete a training run, a **training record** is appended and the session is saved (see Section 8). The record includes: **train_dir**, **model_name**, **n_epochs**, **learning_rate**, **batch_size**, **nchan**, **nclasses**, **use_gpu**, **mask_filter**, **img_filter**, and **pretrained_model** (e.g. `"bact_phase_omni"` when you used transfer learning, or absent/null when from scratch). Session files are written to the **Logs** folder with a timestamp (e.g. `Logs/2026-02-09_14-30-00_session.json`).
+
+### 4.8 User-trained vs built-in models (no cells / wrong detections)
+
+**Why custom models can fail on the same images they were trained on**
+
+Inference must use the **same architecture** as training ([Omnipose docs](https://omnipose.readthedocs.io)):
+
+- **"omni" in the filename (main cause)**: cellpose_omni sets **omni=True** (Omnipose dynamics) only when the checkpoint **filename stem** contains the word **"omni"**. Built-in models are named e.g. `bact_phase_omni`, so they work. BactiMate saves user models as e.g. `mf_test.pth` → stem has no "omni" → the library loaded them as standard Cellpose (omni=False), producing wrong or random detections. **BactiMate now fixes this automatically**: when you run segmentation or preview with a user model, it passes a path whose name contains "omni" (via a temporary link/copy) so the loader uses Omnipose dynamics. You do not need to rename files.
+- **nchan** (number of input channels): BactiMate trains with **nchan=2**. If the loaded model had nchan=1, input shape would be wrong.
+- **nclasses** (output classes): Training default is **nclasses=3**. Built-in bacteria models use nclasses=4. Wrong nclasses → wrong outputs.
+- **Diameter**: User models have no size model; **diameter=0** gives no cells. BactiMate uses diameter=30 when you leave it at 0, and **flow_threshold=0** for custom models.
+- **Flow threshold**: For custom models use **0**; 0.4 often removes all detections.
+
+**Comparing user vs built-in**
+
+When you run segmentation with a **user model**, the batch script logs:
+
+- Checkpoint keys and (if present) **nchan** / **nclasses** from the .pth file.
+- **Loaded model architecture: nchan=…, nclasses=…** after the model is loaded.
+
+If you see `nchan=1` or `nclasses=2` for a model you trained in BactiMate (which uses 2 and 3), that mismatch can explain wrong or no detections.
+
+**Transfer learning (start from a pretrained model)**
+
+In the **Train model** dialog, use **Start from** to choose a built-in model from the main tab (e.g. **bact_phase_omni**, **bact_fluor_omni**) instead of **None (from scratch)**. Your data is then added on top of the existing model; often fewer epochs are needed and results are more stable. **nchan** and **nclasses** are locked to match the pretrained model (Omnipose requirement). Use **Check compatibility with selected model** to validate that your folder has image/mask pairs and that image dimensions match (e.g. 2D images for bact_phase_omni; 3D stacks will trigger a warning). See [Omnipose Training](https://omnipose.readthedocs.io) (Transfer learning).
+
+**Inspect a checkpoint manually**
+
+From the project root:
+
+```bash
+# Show where BactiMate stores user models and list .pth files (use if you don't know the path)
+python -m bactimate.scripts.inspect_omnipose_checkpoint --list-user-models
+
+# Inspect a specific model (use the path shown above or your actual path)
+python -m bactimate.scripts.inspect_omnipose_checkpoint path/to/your_model.pth
+```
+
+User models folder: when running from the **repo** it is `<repo_root>/user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models` (macOS) or `%APPDATA%/BactiMate/Models` (Windows).
+
+This prints the checkpoint’s top-level keys, any stored nchan/nclasses, and the first conv layer shape (from which input channels can be inferred). Compare with BactiMate’s inference defaults: **nchan=2, nclasses=3**. Models trained with other tools may use different nchan/nclasses; those same values must be used at inference (future BactiMate versions may allow setting them in the UI).
+
+**Why bact_phase_affinity works without "omni" in the name**
+
+Built-in models are loaded by **model type** (e.g. `bact_phase_affinity`), not by file path. The library decides how to run them from the model type string and internal lists. **bact_phase_affinity** is an affinity-based model and uses a different code path than flow-based Omnipose models; it does not rely on the filename. The **"omni in filename"** rule only applies when the library loads a **custom checkpoint from a file path**: in that case it infers `omni` from the file’s stem. So built-in names (bact_phase_omni, bact_phase_affinity, etc.) are handled by model type; only user `.pth` paths are affected by the filename.
+
+**User model (e.g. after transfer learning) detects no cells while bact_phase_omni does**
+
+Omnipose/cellpose_omni often saves trained checkpoints with the network state under a **nested** key (e.g. `state_dict` or `model_state_dict`), not at the top level. BactiMate’s patch must infer **nchan** and **nclasses** from the checkpoint to build the model with the same architecture. If the patch only looked at top-level keys, it never saw the conv weights and assumed nchan=1, so the model was built for 1 channel while the weights expected 2 → wrong input shape → no or random detections. **Fix:** Re-run `python setup/apply_all_patches.py` so the patch is updated to read nchan/nclasses from top-level keys when present and to infer nchan from the first conv weight **inside** `state_dict` / `model_state_dict` when needed. Then restart BactiMate and run segmentation again with your user model (e.g. mf_bact_phase_omni).
+
+**Debug log (user vs built-in model)**
+
+When loading models and running segmentation, BactiMate writes lines to **Logs/omnipose_debug.log** (project `Logs` folder, or under Application Support on installed builds). Each line is timestamped. You’ll see:
+- **USER_MODEL pre-load**: checkpoint inspection (nchan, nclasses, first_layer_shape, keys) before the patched loader runs.
+- **cellpose_omni load**: what the patched loader inferred (nchan, nclasses, ckpt_keys, state_dict sample).
+- **USER_MODEL / BUILTIN post-load**: `model.cp.nchan` and `model.cp.nclasses` after loading.
+- **eval**: kind (USER_MODEL vs BUILTIN), model id, diameter, flow/mask threshold, frame shape, and result **n_cells**, mask_min, mask_max.
+
+Compare a run with a built-in model (e.g. bact_phase_omni) and one with your user model: same image and similar diameter/flow/mask. If the built-in run shows `n_cells > 0` and the user run shows `n_cells=0` and/or different nchan/nclasses in post-load, the issue is likely architecture (nchan/nclasses) or parameters; use the log to confirm what was inferred and passed to eval.
+
+**Why renaming to mf_lasse_omni.pth might not fix it**
+
+1. **BactiMate patch**: If you ran `setup/apply_all_patches.py`, BactiMate patches cellpose_omni so that when a **path** to a user model is passed, it sets `omni=True` and infers **nchan** and **nclasses** from the checkpoint (top-level or inside state_dict). In that case the **filename is ignored** for the omni flag. So renaming alone doesn’t change behavior when the patch is applied; the patch already forces the right mode. If user models still fail, ensure the patch was applied (run the patch script from the repo) and that you fully restarted BactiMate after patching.
+2. **Dropdown selection**: If you rename (or copy) to `mf_lasse_omni.pth`, the model list shows **stems** of `.pth` files. You must choose **"mf_lasse_omni"** in the dropdown so BactiMate actually uses that file. If you still have `mf_lasse` selected, it will use `mf_lasse.pth`. Refresh the model list (e.g. switch tab and back, or restart) if the new file doesn’t appear.
+3. **Without the patch**: If the patch is not applied, the vanilla cellpose_omni `Cellpose` class may not accept a user path at all, so passing a path can fail or be ignored. The "omni in filename" workaround (and BactiMate’s symlink/copy with an `_omni` name) helps when the library does accept a path and only then infers `omni` from the filename.
+
+**One model works, another does not**
+
+If **mf_test** gives random detections but **mf_lasse** gives none, possible causes:
+
+- Different training settings (nchan/nclasses) between the two; check with the inspector.
+- Different diameter or flow threshold; try diameter ≈ your cell size in pixels and flow_threshold=0 for both.
+- Different image type or normalization; keep training and inference image format and bit depth consistent.
 
 ---
 
@@ -467,14 +542,14 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 ### 9.2 Naming conventions
 
 - **Omnipose training:** Image and mask pairs: `NAME<Image filter>.tif` and `NAME<Mask filter>.tif` (e.g. `634_phase.tif` + `634_masks.tif` with Image filter `_phase`, Mask filter `_masks`). Base name is derived by stripping the Image filter from the image filename; the mask must then be `base + Mask filter + extension`. If Image filter is empty and filenames follow e.g. `634_phase.tif` / `634_masks.tif`, the training dialog can auto-infer `_phase` and fill Image filter.
-- **omnipose_masks folder:** After “Make masks Omnipose compatible”, converted masks (and copied images when naming matches) live in `training_folder/omnipose_masks/`. The training directory field stays on the parent folder; at “Start training” the app uses `omnipose_masks` and syncs missing images from the parent.
+- **omnipose_masks folder:** After “Convert masks for Omnipose”, converted masks (and copied images when naming matches) live in `training_folder/omnipose_masks/`. The training directory field stays on the parent folder; at “Start training” the app uses `omnipose_masks` and syncs missing images from the parent.
 
 ### 9.3 Cross-tab workflows
 
 1. **ND2 → Segment → Analyze:** Convert ND2 in TIFF Conversion → open Omnipose Segment, set path to converted TIFF or folder → Process → open Analyze Masks, set path to mask file or folder → set pixel size and filters → Analyze Masks.
 2. **Segment → Analyze → Tracking:** After segmentation, analyze masks (Analyze Masks) → in Tracking, set mask TIFF, optional original TIFF, optional Excel from Analyze Masks → Run Tracking.
 3. **Analyze → Video Graph:** After Analyze Masks, use the Excel output and the same TIFF sequence in Video Graph; set time per frame → Create Growth Curve Video.
-4. **Training:** In Omnipose Segment, Train model → set training directory (folder with image/mask pairs), set Image/Mask filters, optionally “Make masks Omnipose compatible” → set model name and hyperparameters → Start training. New model appears in Model dropdown.
+4. **Training:** In Omnipose Segment, Train model → set training directory (folder with image/mask pairs), set Image/Mask filters, optionally “Convert masks for Omnipose” → set model name and hyperparameters → Start training. New model appears in Model dropdown.
 
 ---
 
@@ -483,7 +558,7 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 **Q: I have 634_phase.tif and 634_masks.tif; training says “No matching mask files found”.**  
 A: Set **Image filter** to `_phase` so the base name is “634” and the app looks for `634_masks.tif`. You can leave Image filter empty and click Start training; the dialog will try to infer `_phase` from the filenames and fill it in.
 
-**Q: After “Make masks Omnipose compatible”, the path switched to omnipose_masks and training fails (no images).**  
+**Q: After “Convert masks for Omnipose”, the path switched to omnipose_masks and training fails (no images).**  
 A: The app no longer switches the path. Keep the training directory on the **parent** folder (the one that contains both images and masks). When you click Start training, the app uses the `omnipose_masks` subfolder and copies missing images from the parent. If it still fails, the error message explains that images must match mask names (e.g. NAME.tif for NAME_masks.tif) and suggests checking the parent folder and Image filter.
 
 **Q: Which flow threshold for my custom model?**  
@@ -498,8 +573,8 @@ A: In Omnipose Segment, “Pixel size (µm)” is for **scale bar and calibratio
 **Q: Session Logs — what gets applied?**  
 A: Parameter values (model, diameter, thresholds, filters, options, etc.) are applied to each tab’s widgets. **File/folder paths are not changed** so you keep your current inputs.
 
-**Q: I only have masks (no images) in omnipose_masks; I didn’t click “Make masks compatible”. Will training still work?**  
-A: Yes. If there is **no** `omnipose_masks` subfolder, the training directory is used as-is (your folder with both images and masks). Training runs on that single folder. The `omnipose_masks` logic only applies when that subfolder exists (e.g. after you ran “Make masks Omnipose compatible” at least once).
+**Q: I only have masks (no images) in omnipose_masks; I didn’t click “Convert masks for Omnipose”. Will training still work?**  
+A: Yes. If there is **no** `omnipose_masks` subfolder, the training directory is used as-is (your folder with both images and masks). Training runs on that single folder. The `omnipose_masks` logic only applies when that subfolder exists (e.g. after you ran “Convert masks for Omnipose” at least once).
 
 **Q: Analyze Masks — what Excel columns are required for Video Graph?**  
 A: Video Graph expects an Excel from Analyze Masks with at least **Frame** (frame number) and **Total Cell Area (Relative)** (normalized so first frame = 1.0). These are produced by the Analyze Masks tab’s Summary sheet.
@@ -557,7 +632,7 @@ This appendix reproduces the **(?)** info icon texts as they appear in the appli
 **Train dialog — File name filters (Section 4.4)**  
 “Suffix that identifies image vs mask files. Image filter: leave empty if filenames are e.g. A.tif; use _img if you have A_img.tif. Mask filter: suffix on mask files. With _masks, mask for 'cell1.tif' must be 'cell1_masks.tif'. Must match your filenames exactly.”
 
-**Train dialog — Make masks Omnipose compatible (Section 4.4)**  
+**Train dialog — Convert masks for Omnipose (Section 4.4)**  
 “Convert binary masks (e.g. 0 and 255 from Ilastik) to instance label matrices. Converted masks (and image copies when naming matches) are written to a subfolder 'omnipose_masks'; your originals are never overwritten. Keep the training directory as the folder that contains your images and masks. When you click Start training, we use the omnipose_masks subfolder automatically and copy images there if needed.”
 
 **Train dialog — Model name (Section 4.4)**  

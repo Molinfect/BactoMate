@@ -7,8 +7,24 @@
 # Log initial PYTHONHOME value before unsetting (for debugging)
 INITIAL_PYTHONHOME="${PYTHONHOME:-<not set>}"
 
-# Redirect stderr to log file for debugging
-LOG_DIR="$HOME/Library/Logs/BactiMate"
+# Get script directory (setup/) and project root first so we can put launch.log in BactiMate Logs
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# Use BactiMate Logs folder (same as omnipose_debug.log, crash.log) for portability (new Mac/Windows)
+# When running from .app bundle, app dir may be read-only -> use platform user data dir
+if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]] || [[ "$PROJECT_ROOT" == *"/Contents/Resources"* ]]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        LOG_DIR="$HOME/Library/Application Support/BactiMate/Logs"
+    elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
+        LOG_DIR="${APPDATA:-$HOME/AppData/Roaming}/BactiMate/Logs"
+    else
+        LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/BactiMate/Logs"
+    fi
+else
+    LOG_DIR="$PROJECT_ROOT/Logs"
+fi
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/launch.log"
 
@@ -26,11 +42,7 @@ fi
 unset PYTHONHOME 2>/dev/null || true
 echo "$(date): [DEBUG] Initial PYTHONHOME was: $INITIAL_PYTHONHOME" >> "$LOG_FILE"
 echo "$(date): [DEBUG] PYTHONHOME after unset: ${PYTHONHOME:-<unset>}" >> "$LOG_FILE"
-
-# Get script directory (setup/) and project root
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-cd "$PROJECT_ROOT"
+echo "$(date): Log file: $LOG_FILE" >> "$LOG_FILE"
 
 # Log for debugging
 echo "$(date): Launch script directory (setup): $SCRIPT_DIR" >> "$LOG_FILE"
@@ -54,7 +66,7 @@ if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ]; then
     echo "$(date): ERROR: Python interpreter not found in venv: $PROJECT_ROOT/venv/bin/" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHON=$VENV_PYTHON" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHONW=$VENV_PYTHONW" >> "$LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: Python environment not found. The application may be corrupted. Check ~/Library/Logs/BactiMate/launch.log for details." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    osascript -e "display dialog \"BactiMate Error: Python environment not found. The application may be corrupted. Check BactiMate Logs folder: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 fi
 
@@ -103,7 +115,7 @@ if [ $PYTHON_TEST_EXIT -ne 0 ]; then
         otool -L "$PYTHON_CMD" | head -10 >> "$LOG_FILE" 2>&1 || true
     fi
     
-    osascript -e 'display dialog "BactiMate Error: Python interpreter failed to start. The application may be corrupted or incompatible with this system. Check ~/Library/Logs/BactiMate/launch.log for details." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    osascript -e "display dialog \"BactiMate Error: Python interpreter failed to start. The application may be corrupted or incompatible with this system. Check BactiMate Logs: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 else
     echo "$(date): Python test successful: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"

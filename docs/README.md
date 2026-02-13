@@ -484,7 +484,7 @@ The app bundle is designed to work across different Macs. Key features:
 
 1. **Relocatable Virtual Environment**: Uses `PYTHONHOME` environment variable to make the venv relocatable
 2. **Direct Python Execution**: Uses venv Python directly instead of activation (more reliable)
-3. **Error Logging**: Logs to `~/Library/Logs/BactiMate/launch.log` for debugging
+3. **Error Logging**: Logs to the BactiMate Logs folder (`Logs/launch.log` in the project, or `~/Library/Application Support/BactiMate/Logs` when run from app bundle) for debugging
 4. **User-Friendly Error Dialogs**: Shows error messages if launch fails
 
 **Key Environment Variables:**
@@ -521,6 +521,34 @@ Total size is typically 500MB-1.5GB, which is reasonable for a scientific applic
 
 ## Troubleshooting
 
+### User-trained models: why different parameters?
+
+Models trained with BactiMate use the same Omnipose code (`python -m omnipose --train ...`), so in principle they should behave like the built-in `bact_phase_omni` and the same parameters (e.g. mask threshold 0) would apply. In practice, user checkpoints often produce a distance map in a different range (e.g. constant or shifted negative values), so with the default mask threshold 0 you get "No cell pixels".
+
+**Likely causes:**
+
+- **Input preprocessing**: At inference, BactiMate (and cellpose_omni) normalize and resize images. If that differs from what Omnipose used during training (e.g. per-tile vs per-image normalization, or different rescaling when diameter=0), the network sees a different input distribution and can output a collapsed or shifted distance channel.
+- **Size model**: Built-in models can use a size model so that diameter=0 triggers rescaling; user models typically have no size model, so rescaling and effective scale at the network input can differ.
+- **Training run**: Different data or training length can change the scale of the distance head output even with the same architecture.
+
+So the difference is not that "training broke the model"—it's that inference conditions (preprocessing, rescaling) don’t fully match training, so the output range of the distance channel differs. Using a **negative mask threshold** (e.g. -2.5) for user models is a pragmatic workaround so that pixels still count as "cell" and segmentation runs. The proper long-term fix is to align inference with training (same normalization and rescaling) so the distance channel stays in the same range as the pretrained model.
+
+### Making user-trained models match pretrained behavior
+
+To get user-trained models to behave like the built-in Omnipose models (same parameters, no need for a negative mask threshold), follow the [Omnipose Training](https://omnipose.readthedocs.io/training.html) and [Models](https://omnipose.readthedocs.io/models.html) docs:
+
+1. **Same architecture as pretrained**  
+   When training from a pretrained model (e.g. **bact_phase_omni**), BactiMate locks **nchan** and **nclasses** to the model's values (e.g. nchan=2, nclasses=3 for bact_phase_omni). Use "Check compatibility" and keep these locked so the saved checkpoint matches the pretrained architecture.
+
+2. **Checkpoint metadata**  
+   After training, BactiMate rewrites the saved `.pth` to include **nchan** and **nclasses** in the checkpoint. That way, at inference the same architecture is used and the distance channel is read correctly. Models trained in BactiMate (with the current version) get this automatically; older or externally trained `.pth` files may not have it, so the loader infers nchan from weights and defaults nclasses=3.
+
+3. **Training settings**  
+   Train with **diameter=0** (no rescaling), as in the Omnipose docs. Use the same channel setup as at inference (e.g. grayscale → nchan=2 with channels=[0,0]).
+
+4. **Inference settings**  
+   For well-trained models, [Settings](https://omnipose.readthedocs.io/settings.html) recommends **flow_threshold=0.0** and **mask_threshold=0.0**. If your user model still gives 0 cells with mask_threshold=0, try the negative mask threshold workaround (e.g. -2.5) or re-check that training data and preprocessing match inference.
+
 ### App Bundle Issues
 
 #### App won't launch
@@ -539,7 +567,7 @@ Total size is typically 500MB-1.5GB, which is reasonable for a scientific applic
 
 3. Check the log file:
    ```bash
-   cat ~/Library/Logs/BactiMate/launch.log
+   cat Logs/launch.log
    ```
    
    The log will show:
@@ -573,7 +601,7 @@ After the first launch, macOS will remember the app is safe.
 
 If the app fails on another machine, check the log file:
 ```bash
-cat ~/Library/Logs/BactiMate/launch.log
+cat Logs/launch.log
 ```
 
 Common issues:
@@ -757,7 +785,7 @@ pytest tests/ -v
 - [ ] Test on build machine (should still work)
 - [ ] Copy to different Mac (different user, different location)
 - [ ] Test launch on different Mac
-- [ ] Check log file if it fails: `~/Library/Logs/BactiMate/launch.log`
+- [ ] Check log file if it fails: `Logs/launch.log` (or `~/Library/Application Support/BactiMate/Logs/launch.log` when run from app)
 - [ ] Verify error dialogs appear if there are critical errors
 
 ## Available Scripts

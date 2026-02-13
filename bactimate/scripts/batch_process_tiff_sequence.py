@@ -23,6 +23,21 @@ from pathlib import Path
 from tqdm import tqdm
 import tempfile
 import shutil
+from datetime import datetime
+
+
+def _append_omni_debug(msg: str) -> None:
+    """Append a timestamped line to BactiMate omnipose_debug.log if env is set (for Run button / batch path)."""
+    path = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
+    if not path:
+        return
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [batch] {msg}\n")
+    except Exception:
+        pass
 
 # Compatibility wrapper for NumPy 2.0
 def safe_imread(file_path):
@@ -205,7 +220,50 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
     if pretrained_model:
         if not os.path.isfile(pretrained_model):
             raise FileNotFoundError(f"User model not found: {pretrained_model}")
+        pretrained_model = str(Path(pretrained_model).resolve())
+        _ckpt_path_for_inspect = pretrained_model
+        # cellpose_omni sets omni=True only when "omni" is in the checkpoint filename (stem).
+        # Our saved models are e.g. mf_test.pth -> stem "mf_test" -> omni=False -> wrong dynamics.
+        # Use a path whose filename contains "omni" so the loader uses Omnipose dynamics.
+        stem = Path(pretrained_model).stem
+        if "omni" not in stem.lower():
+            import tempfile
+            _omni_link_dir = tempfile.mkdtemp(prefix="bactimate_omni_")
+            _omni_link_path = os.path.join(_omni_link_dir, f"{stem}_omni.pth")
+            try:
+                os.symlink(pretrained_model, _omni_link_path)
+            except OSError:
+                # e.g. Windows without symlink privilege; copy instead (slower but works)
+                import shutil
+                shutil.copy2(pretrained_model, _omni_link_path)
+            pretrained_model = _omni_link_path
+            print("Note: Using Omnipose loader (filename contains 'omni') so custom model runs with correct dynamics.")
+        # Inspect checkpoint so we can log architecture (user vs built-in must match training)
+        try:
+            from bactimate.gui.omnipose_utils import inspect_omnipose_checkpoint, get_default_user_model_architecture
+            ckpt_info = inspect_omnipose_checkpoint(_ckpt_path_for_inspect)
+            if "error" not in ckpt_info:
+                print(f"Checkpoint keys (first 15): {ckpt_info.get('keys', [])[:15]}")
+                if ckpt_info.get("nchan") is not None or ckpt_info.get("first_layer_shape"):
+                    print(f"Checkpoint nchan: {ckpt_info.get('nchan')} (from file or inferred from first conv shape {ckpt_info.get('first_layer_shape')})")
+                if ckpt_info.get("nclasses") is not None:
+                    print(f"Checkpoint nclasses: {ckpt_info.get('nclasses')}")
+            def_nchan, def_nclasses = get_default_user_model_architecture()
+            print(f"BactiMate inference uses nchan={def_nchan}, nclasses={def_nclasses} (must match training).")
+        except Exception as _e:
+            pass  # non-fatal
         model = models.Cellpose(gpu=use_gpu, pretrained_model=pretrained_model, omni=omni)
+        # Log what the loaded model actually has (cellpose_omni may read from filename or use defaults)
+        try:
+            if hasattr(model, 'cp') and hasattr(model.cp, 'nchan') and hasattr(model.cp, 'nclasses'):
+                print(f"Loaded model architecture: nchan={model.cp.nchan}, nclasses={model.cp.nclasses}")
+                if (getattr(model.cp, 'nchan', None) != 2 or getattr(model.cp, 'nclasses', None) not in (3, 4)):
+                    print("WARNING: Model nchan/nclasses differ from BactiMate training defaults (2, 3). If you trained with BactiMate, this may cause wrong or no detections.")
+                _append_omni_debug(
+                    f"USER_MODEL post-load path={pretrained_model!r} model.cp.nchan={model.cp.nchan} model.cp.nclasses={model.cp.nclasses}"
+                )
+        except Exception:
+            pass
     else:
         # Workaround for cellpose_omni bug: Cellpose doesn't pass model_type to CellposeModel
         from cellpose_omni.models import model_path
@@ -271,6 +329,15 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
                 raise
 
         model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
+        try:
+            if hasattr(model, 'cp'):
+                nchan = getattr(model.cp, 'nchan', None)
+                nclasses = getattr(model.cp, 'nclasses', None)
+                _append_omni_debug(
+                    f"BUILTIN post-load model_type={model_type!r} model.cp.nchan={nchan} model.cp.nclasses={nclasses}"
+                )
+        except Exception:
+            pass
 
     try:
         # Additional optimizations if available
@@ -424,6 +491,20 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
                     masks.extend(batch_masks)
                 except:
                     masks.append(batch_masks)
+            
+            # Debug log after first batch (same format as Preview dialog for comparison)
+            if batch_num == 1:
+                try:
+                    first_masks = batch_masks if isinstance(batch_masks, list) else [batch_masks[i] for i in range(len(batch_images))] if batch_masks.ndim >= 3 else [batch_masks]
+                    n_cells_first = sum(len(np.unique(m)) - 1 for m in first_masks) if first_masks else 0
+                    kind = "USER_MODEL" if pretrained_model else "BUILTIN"
+                    model_id = str(pretrained_model) if pretrained_model else model_type
+                    _append_omni_debug(
+                        f"eval kind={kind} model={model_id!r} diameter={diameter} flow_thr={flow_threshold} mask_thr={mask_threshold} "
+                        f"batch_frames={len(batch_images)} -> n_cells_first_batch={n_cells_first}"
+                    )
+                except Exception:
+                    pass
             
             # Progress update after batch completion
             frames_completed = len(masks)
@@ -836,8 +917,15 @@ Examples:
         model_type = None if pretrained else args.model
         # User-trained models have no size model: diameter=0 causes "No cell pixels found". Default to 30.
         diameter = args.diameter if args.diameter > 0 else (30.0 if pretrained else args.diameter)
-        if pretrained and args.diameter == 0:
-            print("Note: Custom model used with diameter=0; using default diameter=30 (set --diameter for your cell size).")
+        flow_threshold = float(args.flow_threshold)
+        if pretrained:
+            if args.diameter == 0:
+                print("Note: Custom model used with diameter=0; using default diameter=30 (set --diameter for your cell size).")
+            # Custom models need flow_threshold=0 (permissive); 0.4 often yields no cells
+            if flow_threshold > 0.2:
+                print("Note: Using flow_threshold=0 for custom model (higher values often yield no cells).")
+                flow_threshold = 0.0
+            print(f"Custom model inference: diameter={diameter}, flow_threshold={flow_threshold}")
         masks = process_frames_with_omnipose(
             frame_paths,
             model_type=model_type,
@@ -846,7 +934,7 @@ Examples:
             channels=args.channels,
             use_gpu=not args.no_gpu,
             batch_size=args.batch_size,
-            flow_threshold=args.flow_threshold,
+            flow_threshold=flow_threshold,
             mask_threshold=args.mask_threshold,
             omni=not args.no_omni,
             cluster=args.cluster,

@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
 )
 
 from bactimate.gui.constants import PROJECT_ROOT
-from bactimate.gui.log_config import get_logger
+from bactimate.gui.log_config import get_logger, append_omnipose_debug
 from bactimate.gui.paths import get_user_models_dir
 from bactimate.gui.patches import _patch_omnipose_get_masks
 from bactimate.gui.preferences import LAST_DIR_SEGMENTATION
@@ -53,6 +53,7 @@ from bactimate.gui.mask_utils import (
     convert_masks_in_folder,
     ensure_omnipose_masks_has_images,
 )
+from bactimate.gui.omnipose_utils import ensure_omni_in_model_path, inspect_omnipose_checkpoint
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import (
     ClickableTooltip,
@@ -71,6 +72,21 @@ BUILTIN_OMNIPOSE_MODELS = [
 ]
 # Extension for user-trained model files saved in get_user_models_dir()
 USER_MODEL_EXTENSION = ".pth"
+
+# Transfer learning: only offer models that exist in the main tab (BUILTIN_OMNIPOSE_MODELS).
+# (nchan, nclasses, dim) per Omnipose models table; used to lock nchan/nclasses when selected.
+PRETRAINED_NCHAN_NCLASSES_DIM = {
+    "bact_phase_omni": (2, 3, 2),
+    "bact_fluor_omni": (2, 3, 2),
+    "bact_phase_affinity": (1, 2, 2),
+}
+
+
+def _get_pretrained_training_options():
+    """Start from None or from a built-in model that appears in the main segmentation tab."""
+    return [("None (from scratch)", None)] + [
+        (name, name) for name in BUILTIN_OMNIPOSE_MODELS if name in PRETRAINED_NCHAN_NCLASSES_DIM
+    ]
 
 
 class ProcessingTab(QWidget):
@@ -233,6 +249,7 @@ class ProcessingTab(QWidget):
                     flow_sb = getattr(self, "flow_threshold", None)
                     if flow_sb is not None:
                         flow_sb.setValue(0.0)  # User models: use 0 per Omnipose recommendation
+                    # No mask_threshold pre-selection; 0 works for models trained with checkpoint metadata
                     return
                 from cellpose_omni.models import MODEL_DIR
                 torch_str = "torch"
@@ -347,6 +364,7 @@ class ProcessingTab(QWidget):
             display = self.model_combo.currentText()
             _, pretrained_path = self._resolve_model_selection(display)
             self.flow_threshold.setValue(0.0 if pretrained_path is not None else 0.4)
+            self.mask_threshold.setValue(0.0)  # Same default for all models
         except Exception:
             pass
         
@@ -354,20 +372,16 @@ class ProcessingTab(QWidget):
         mask_layout = QHBoxLayout()
         mask_label = QLabel("Mask threshold:")
         mask_info_icon = create_info_icon(
-            "Mask probability threshold for cell detection.\n\n"
-            "Default: 0.0\n"
-            "Source: Omnipose/Cellpose default\n\n"
-            "Lower values: More permissive (more cells, possible false positives).\n"
-            "Higher values: Stricter (fewer cells).\n\n"
-            "Range: 0.0 to 1.0\n"
-            "Tip: Usually 0.0 is fine; increase if masks look too loose.",
+            "Distance/cell probability threshold for cell detection.\n\n"
+            "Default: 0.0. Lower values: more permissive. Higher values: stricter.\n"
+            "Range: -5.0 to 1.0 (negative can help if a model outputs shifted distance values).",
             parent_widget=self
         )
         mask_layout.addWidget(mask_label)
         mask_layout.addWidget(mask_info_icon)
         mask_layout.addStretch()
         self.mask_threshold = QDoubleSpinBox()
-        self.mask_threshold.setRange(0.0, 1.0)
+        self.mask_threshold.setRange(-5.0, 1.0)
         self.mask_threshold.setValue(0.0)
         self.mask_threshold.setSingleStep(0.1)
         self.mask_threshold.setDecimals(2)
@@ -614,7 +628,6 @@ class ProcessingTab(QWidget):
         from bactimate.gui.paths import get_user_models_dir
         d = QDialog(self)
         d.setWindowTitle("Train Omnipose model")
-        d.setMinimumWidth(550)
         layout = QVBoxLayout()
         last_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
         # Training directory (drag-and-drop supported)
@@ -636,7 +649,7 @@ class ProcessingTab(QWidget):
         dir_info = create_info_icon(
             "Folder containing your training data: one image file and one mask file per pair.\n\n"
             "Omnipose expects: for each image 'NAME.tif', a mask file 'NAME<Mask filter>.tif' (e.g. NAME_masks.tif). Same base name, mask = base + Mask filter + extension.\n\n"
-            "Mask format (important): Masks must be instance label matrices, not binary. Background = 0, each cell = a unique integer (1, 2, 3, …). Do not use a single value (e.g. 255) for all cells—Omnipose converts labels to flow fields per cell. If your mask is binary (e.g. from Ilastik: 0 and 255), convert it to instance labels first (e.g. with skimage.measure.label on the binary mask, then save as single-channel integer TIFF). See docs/TRAINING_MASKS.md.",
+            "Mask format: must be instance labels (see (?) next to 'Convert masks for Omnipose').",
             d,
         )
         dir_layout.addWidget(dir_info)
@@ -650,24 +663,6 @@ class ProcessingTab(QWidget):
         dir_layout.addWidget(browse_btn)
         dir_group.setLayout(dir_layout)
         layout.addWidget(dir_group)
-        # Mask format help link
-        mask_help_btn = QPushButton("Mask format help (instance vs binary)")
-        def open_mask_format_doc():
-            doc_path = PROJECT_ROOT / "docs" / "TRAINING_MASKS.md"
-            if doc_path.exists():
-                try:
-                    if sys.platform == "darwin":
-                        subprocess.run(["open", str(doc_path)], check=False)
-                    elif sys.platform == "win32":
-                        subprocess.run(["start", "", str(doc_path)], check=False, shell=True)
-                    else:
-                        subprocess.run(["xdg-open", str(doc_path)], check=False)
-                except Exception:
-                    pass
-            else:
-                QMessageBox.information(d, "Help", "docs/TRAINING_MASKS.md not found. See the (?) tooltip for mask format requirements.")
-        mask_help_btn.clicked.connect(open_mask_format_doc)
-        layout.addWidget(mask_help_btn)
         # Filters
         filter_label = QLabel("File name filters:")
         filter_info = create_info_icon(
@@ -692,14 +687,15 @@ class ProcessingTab(QWidget):
         mask_filter_edit.setText("_mask")
         mask_filter_edit.setMaximumWidth(120)
         filter_layout.addWidget(mask_filter_edit)
-        make_masks_btn = QPushButton("Make masks Omnipose compatible")
+        make_masks_btn = QPushButton("Convert masks for Omnipose")
+        make_masks_btn.setFixedWidth(260)
         make_masks_info = create_info_icon(
-            "Convert binary masks (e.g. 0 and 255 from Ilastik) to instance label matrices.\n"
-            "Converted masks (and image copies when naming matches) are written to a subfolder 'omnipose_masks'; your originals are never overwritten.\n"
-            "Keep the training directory as the folder that contains your images and masks. When you click Start training, we use the omnipose_masks subfolder automatically and copy images there if needed.",
+            "Mask format: Omnipose needs instance label matrices, not binary. Background = 0; each cell = a unique integer (1, 2, 3, …). Do not use one value (e.g. 255) for all cells—Omnipose needs per-cell IDs to compute flow fields.\n\n"
+            "This button: Converts binary masks (e.g. 0 and 255 from Ilastik) to instance labels. Output (and image copies when naming matches) goes to subfolder 'omnipose_masks'; originals are never overwritten. When you Start training, we use omnipose_masks automatically.",
             d,
         )
         filter_layout.addWidget(make_masks_btn)
+        filter_layout.addSpacing(8)
         filter_layout.addWidget(make_masks_info)
         def on_make_masks():
             folder_str = train_dir_edit.text().strip()
@@ -752,7 +748,6 @@ class ProcessingTab(QWidget):
                 except Exception:
                     pass
         make_masks_btn.clicked.connect(on_make_masks)
-        filter_layout.addStretch()
         layout.addLayout(filter_layout)
         # Model name (required)
         name_layout = QHBoxLayout()
@@ -771,6 +766,34 @@ class ProcessingTab(QWidget):
         model_name_edit.setPlaceholderText("e.g. my_bacteria_v1")
         name_layout.addWidget(model_name_edit)
         layout.addLayout(name_layout)
+        # Start from (transfer learning)
+        start_from_layout = QHBoxLayout()
+        start_from_layout.addWidget(QLabel("Start from (transfer learning):"))
+        pretrained_combo = QComboBox()
+        for display_name, _ in _get_pretrained_training_options():
+            pretrained_combo.addItem(display_name)
+        pretrained_combo.setToolTip(
+            "Train from scratch (None) or continue training from a pretrained Omnipose model. "
+            "When a pretrained model is selected, nchan and nclasses are locked to match the model."
+        )
+        start_from_info = create_info_icon(
+            "Add your data on top of an existing model (e.g. bact_phase_omni) instead of training from scratch. "
+            "nchan and nclasses are fixed to the model's architecture. Use 'Check compatibility' to validate your data.",
+            d,
+        )
+        start_from_layout.addWidget(pretrained_combo)
+        start_from_layout.addWidget(start_from_info)
+        check_compat_btn = QPushButton("Check compatibility")
+        check_compat_btn.setFixedWidth(260)
+        check_compat_btn.setToolTip("Validate that training folder has image/mask pairs and that image dimensions match the selected pretrained model (e.g. 2D for bact_phase_omni).")
+        start_from_layout.addWidget(check_compat_btn)
+        start_from_layout.addSpacing(12)
+        check_compat_info = create_info_icon(
+            "Validates image/mask pairs in your training folder and that image dimensions match the selected model (e.g. 2D for bact_phase_omni). Use after choosing 'Start from' and setting the training directory.",
+            d,
+        )
+        start_from_layout.addWidget(check_compat_info)
+        layout.addLayout(start_from_layout)
         # Hyperparameters
         layout.addWidget(QLabel("Training parameters:"))
         params_layout = QHBoxLayout()
@@ -836,7 +859,7 @@ class ProcessingTab(QWidget):
         nchan_layout.addWidget(nclasses_info)
         nclasses_spin = QSpinBox()
         nclasses_spin.setRange(2, 4)
-        nclasses_spin.setValue(3)
+        nclasses_spin.setValue(3)  # bact_phase_omni uses 3 (flow + distance; see omnipose.readthedocs.io/models)
         nchan_layout.addWidget(nclasses_spin)
         use_gpu_cb = QCheckBox("Use GPU")
         use_gpu_cb.setChecked(True)
@@ -849,6 +872,35 @@ class ProcessingTab(QWidget):
         nchan_layout.addWidget(use_gpu_cb)
         nchan_layout.addStretch()
         layout.addLayout(nchan_layout)
+
+        _locked_style = "QSpinBox:disabled { background-color: palette(mid); color: palette(placeholder-text); }"
+        _normal_style = ""
+
+        def update_pretrained_lock():
+            idx = pretrained_combo.currentIndex()
+            options = _get_pretrained_training_options()
+            cli_value = options[idx][1] if 0 <= idx < len(options) else None
+            if cli_value and cli_value in PRETRAINED_NCHAN_NCLASSES_DIM:
+                nchan, nclass, _ = PRETRAINED_NCHAN_NCLASSES_DIM[cli_value]
+                nchan_spin.setValue(nchan)
+                nclasses_spin.setValue(nclass)
+                nchan_spin.setEnabled(False)
+                nclasses_spin.setEnabled(False)
+                nchan_spin.setStyleSheet(_locked_style)
+                nclasses_spin.setStyleSheet(_locked_style)
+                lock_tip = f"Locked to match selected model ({cli_value}). Required for transfer learning."
+                nchan_spin.setToolTip(lock_tip)
+                nclasses_spin.setToolTip(lock_tip)
+            else:
+                nchan_spin.setEnabled(True)
+                nclasses_spin.setEnabled(True)
+                nchan_spin.setStyleSheet(_normal_style)
+                nclasses_spin.setStyleSheet(_normal_style)
+                nchan_spin.setToolTip("")
+                nclasses_spin.setToolTip("")
+        pretrained_combo.currentIndexChanged.connect(update_pretrained_lock)
+        update_pretrained_lock()
+
         # Log output
         log_label = QLabel("Training log:")
         layout.addWidget(log_label)
@@ -867,7 +919,7 @@ class ProcessingTab(QWidget):
             log_line = pyqtSignal(str)
             finished_with = pyqtSignal(bool, str, str)  # success, model_name, message
 
-            def __init__(self, cmd, env, cwd, save_dir, dest_file, model_name):
+            def __init__(self, cmd, env, cwd, save_dir, dest_file, model_name, nchan, nclasses):
                 super().__init__()
                 self.cmd = cmd
                 self.env = env
@@ -875,6 +927,28 @@ class ProcessingTab(QWidget):
                 self.save_dir = save_dir
                 self.dest_file = dest_file
                 self.model_name = model_name
+                self.nchan = int(nchan)
+                self.nclasses = int(nclasses)
+
+            def _write_checkpoint_metadata(self):
+                """Rewrite dest_file so checkpoint includes nchan/nclasses for correct load at inference (matches Omnipose pretrained behavior)."""
+                try:
+                    import torch
+                    ckpt = torch.load(self.dest_file, map_location="cpu", weights_only=False)
+                    if not isinstance(ckpt, dict):
+                        ckpt = {"state_dict": ckpt, "nchan": self.nchan, "nclasses": self.nclasses}
+                        torch.save(ckpt, self.dest_file)
+                        return
+                    if "nchan" in ckpt and "nclasses" in ckpt:
+                        return
+                    state = ckpt.get("state_dict") or ckpt
+                    ckpt = dict(ckpt)
+                    ckpt["state_dict"] = state
+                    ckpt["nchan"] = self.nchan
+                    ckpt["nclasses"] = self.nclasses
+                    torch.save(ckpt, self.dest_file)
+                except Exception:
+                    pass  # non-fatal; loading will still infer from state_dict
 
             def run(self):
                 import shutil
@@ -909,10 +983,87 @@ class ProcessingTab(QWidget):
                         return
                     newest = max(pth_files, key=lambda p: p.stat().st_mtime)
                     shutil.copy2(newest, self.dest_file)
+                    self._write_checkpoint_metadata()
                     shutil.rmtree(self.save_dir, ignore_errors=True)
                     self.finished_with.emit(True, self.model_name, f"Saved to {self.dest_file}")
                 except Exception as e:
                     self.finished_with.emit(False, self.model_name, str(e))
+
+        def _training_pairs(train_path, img_filter, mask_filter):
+            """Return (n_pairs, first_paired_image_path, image_candidates) for compatibility check and start_training."""
+            exts = (".tif", ".tiff", ".png", ".npy", ".npz")
+            mask_suffixes = ("_cp_masks", "_cp_output", "_flows", mask_filter)
+
+            def base_name(p, suf):
+                return p.stem.replace(suf, "") if suf else p.stem
+
+            candidates = [
+                f for f in train_path.iterdir()
+                if f.is_file() and f.suffix.lower() in exts
+                and not any(f.stem.endswith(s) or (f.stem + s == f.stem) for s in mask_suffixes)
+            ]
+            n, first = 0, None
+            for f in candidates:
+                base_val = base_name(f, img_filter)
+                if not base_val or base_val == ".":
+                    continue
+                if any((train_path / f"{base_val}{mask_filter}{e}").exists() for e in exts):
+                    n += 1
+                    if first is None:
+                        first = f
+            return n, first, candidates
+
+        def on_check_compatibility():
+            train_dir = train_dir_edit.text().strip()
+            if not train_dir or not Path(train_dir).is_dir():
+                QMessageBox.warning(d, "Invalid directory", "Please choose an absolute path to a training directory.")
+                return
+            mask_filter = mask_filter_edit.text().strip() or "_mask"
+            img_filter = img_filter_edit.text().strip()
+            train_path = ensure_omnipose_masks_has_images(Path(train_dir).resolve(), mask_filter, img_filter=img_filter)
+            n_pairs, first_img, _ = _training_pairs(train_path, img_filter, mask_filter)
+            if n_pairs == 0:
+                QMessageBox.warning(
+                    d, "Compatibility",
+                    "No image/mask pairs found. Set Image and Mask filters so each image has a matching mask file.",
+                )
+                return
+            idx = pretrained_combo.currentIndex()
+            options = _get_pretrained_training_options()
+            cli_value = options[idx][1] if 0 <= idx < len(options) else None
+            detail_parts = []
+            if cli_value and cli_value in PRETRAINED_NCHAN_NCLASSES_DIM:
+                _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[cli_value]
+                if dim == 2 and first_img:
+                    try:
+                        arr = safe_imread(str(first_img))
+                    except Exception:
+                        arr = None
+                    if arr is not None and arr.ndim == 3 and arr.shape[0] > 4:
+                        QMessageBox.warning(
+                            d, "Compatibility",
+                            f"Found {n_pairs} pair(s), but the first image has shape {tuple(arr.shape)} (likely a 3D stack). "
+                            "The selected model is 2D. Use 2D slices or a 3D model (e.g. plant_omni).",
+                        )
+                        return
+                    if arr is not None:
+                        detail_parts.append(
+                            f"Checked first image dimensions: shape {tuple(arr.shape)} — 2D, compatible with the selected 2D model ({cli_value})."
+                        )
+                    else:
+                        detail_parts.append("Could not load first image to verify dimensions; pair count and filters are valid.")
+                elif dim == 2:
+                    detail_parts.append("Pair count and filters valid. No image could be sampled for dimension check.")
+                else:
+                    detail_parts.append(f"Pair count and filters valid. Selected model is 3D ({cli_value}); dimension check skipped.")
+            else:
+                detail_parts.append(
+                    "Filters and pair naming are valid. Select a pretrained model in 'Start from' to also verify image dimensions (2D vs 3D)."
+                )
+            msg = f"Found {n_pairs} image/mask pair(s).\n\n" + "\n\n".join(detail_parts)
+            QMessageBox.information(d, "Compatibility", msg)
+
+        check_compat_btn.clicked.connect(on_check_compatibility)
 
         def start_training():
             train_dir = train_dir_edit.text().strip()
@@ -937,28 +1088,11 @@ class ProcessingTab(QWidget):
             train_path = ensure_omnipose_masks_has_images(train_dir_abs, mask_filter, img_filter=img_filter)
             train_dir_abs = str(train_path)
             # Pre-check: Omnipose needs one mask file per image (base name + mask_filter + ext). Catch missing masks or bad names early.
-            exts = (".tif", ".tiff", ".png", ".npy", ".npz")
-            mask_suffixes = ("_cp_masks", "_cp_output", "_flows", mask_filter)
+            pairs_ok, first_img_path, image_candidates = _training_pairs(train_path, img_filter, mask_filter)
 
             def base_name(p, suf):
                 return p.stem.replace(suf, "") if suf else p.stem
 
-            def count_pairs(ifilter):
-                candidates = [
-                    f for f in train_path.iterdir()
-                    if f.is_file() and f.suffix.lower() in exts
-                    and not any(f.stem.endswith(s) or (f.stem + s == f.stem) for s in mask_suffixes)
-                ]
-                n = 0
-                for f in candidates:
-                    base = base_name(f, ifilter)
-                    if not base or base == ".":
-                        continue
-                    if any((train_path / f"{base}{mask_filter}{e}").exists() for e in exts):
-                        n += 1
-                return n, candidates
-
-            pairs_ok, image_candidates = count_pairs(img_filter)
             bad_base = [f.name for f in image_candidates if not base_name(f, img_filter) or base_name(f, img_filter) == "."]
 
             # If Image filter is empty and no pairs found, try to infer it from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase)
@@ -970,10 +1104,10 @@ class ProcessingTab(QWidget):
                         base = mf.stem[: -len(mask_filter)] if mask_filter else mf.stem
                         if base and stem.startswith(base) and stem != base:
                             inferred = stem[len(base):]
-                            if count_pairs(inferred)[0] > 0:
+                            if _training_pairs(train_path, inferred, mask_filter)[0] > 0:
                                 img_filter = inferred
                                 img_filter_edit.setText(inferred)
-                                pairs_ok, image_candidates = count_pairs(img_filter)
+                                pairs_ok, first_img_path, image_candidates = _training_pairs(train_path, img_filter, mask_filter)
                                 bad_base = [f.name for f in image_candidates if not base_name(f, img_filter) or base_name(f, img_filter) == "."]
                                 break
                     if pairs_ok > 0:
@@ -1005,18 +1139,42 @@ class ProcessingTab(QWidget):
                     f"No matching mask files found. {hint}",
                 )
                 return
+            # Compatibility with pretrained model: 2D models expect 2D images (not 3D stacks)
+            pretrained_idx = pretrained_combo.currentIndex()
+            options = _get_pretrained_training_options()
+            pretrained_cli = options[pretrained_idx][1] if 0 <= pretrained_idx < len(options) else None
+            if pretrained_cli and pretrained_cli in PRETRAINED_NCHAN_NCLASSES_DIM:
+                _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[pretrained_cli]
+                if dim == 2:
+                    _, first_img_path, _ = _training_pairs(train_path, img_filter, mask_filter)
+                    if first_img_path:
+                        try:
+                            arr = safe_imread(str(first_img_path))
+                        except Exception:
+                            arr = None
+                        if arr is not None and arr.ndim == 3 and arr.shape[0] > 4:
+                            if QMessageBox.question(
+                                d, "Compatibility",
+                                f"First image has shape {tuple(arr.shape)} (likely a 3D stack). The selected model is 2D. Continue anyway?",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No,
+                            ) != QMessageBox.StandardButton.Yes:
+                                return
             start_btn.setEnabled(False)
             log_text.clear()
             n_epochs = n_epochs_spin.value()
             log_text.append(f"Found {pairs_ok} image/mask pair(s). All will be used every epoch for {n_epochs} epochs.")
+            if pretrained_cli:
+                log_text.append(f"Transfer learning: starting from {pretrained_cli} (nchan/nclasses locked to match).")
             log_text.append("Starting Omnipose training (this may take a long time)…")
             # Omnipose CLI: see https://omnipose.readthedocs.io (Training). We use absolute --dir;
             # we do not pass --all_channels (images are grayscale; when nchan=2 our patch duplicates channel via channels=[0,0]).
+            pretrained_arg = pretrained_cli if pretrained_cli else "None"
             cmd = [
                 sys.executable, "-m", "omnipose", "--train",
                 "--dir", train_dir_abs,
                 "--mask_filter", mask_filter,
-                "--pretrained_model", "None",
+                "--pretrained_model", pretrained_arg,
                 "--diameter", "0",
                 "--n_epochs", str(n_epochs_spin.value()),
                 "--learning_rate", str(lr_spin.value()),
@@ -1037,7 +1195,10 @@ class ProcessingTab(QWidget):
             env = os.environ.copy()
             env["CELLPOSE_LOCAL_MODELS_PATH"] = save_dir
 
-            worker = TrainWorker(cmd, env, train_dir_abs, save_dir, dest_file, model_name)
+            worker = TrainWorker(
+                cmd, env, train_dir_abs, save_dir, dest_file, model_name,
+                nchan_spin.value(), nclasses_spin.value(),
+            )
             self._train_worker = worker  # Keep ref so thread isn't destroyed if dialog closes
 
             def on_log(line):
@@ -1060,15 +1221,19 @@ class ProcessingTab(QWidget):
                         "mask_filter": mask_filter_edit.text().strip() or "_mask",
                         "img_filter": img_filter_edit.text().strip() or "",
                         "train_dir": train_dir_edit.text().strip(),
+                        "pretrained_model": pretrained_arg if pretrained_cli else None,
                     }
                     self._trained_models_this_session.append(training_record)
                     if getattr(self.parent_window, "_save_session_log", None):
                         self.parent_window._save_session_log()
-                    QMessageBox.information(
-                        d, "Done",
-                        f"Model '{name}' saved. It will appear in the model dropdown.\n\n"
+                    done_msg = (
+                        f"Model '{name}' saved to:\n{dest_file}\n\n"
+                        "It will appear in the model dropdown. "
                         "When using it: if no cells are detected, set Diameter (e.g. 30 px) in Processing; custom models do not support auto-diameter."
                     )
+                    if pretrained_cli:
+                        done_msg = f"(Transfer learning from {pretrained_cli})\n\n" + done_msg
+                    QMessageBox.information(d, "Done", done_msg)
                     current = self.model_combo.currentText()
                     self.model_combo.clear()
                     self.model_combo.addItems(self._get_available_models())
@@ -1102,7 +1267,16 @@ class ProcessingTab(QWidget):
 
         start_btn.clicked.connect(start_training)
         layout.addWidget(bb)
-        d.setLayout(layout)
+        # Enforce minimum width so dialog cannot be resized narrower (avoids (?) overlapping button)
+        content = QWidget()
+        content.setLayout(layout)
+        _min_width = 650
+        content.setMinimumWidth(_min_width)
+        d.setMinimumWidth(_min_width)
+        d_layout = QVBoxLayout()
+        d_layout.setContentsMargins(0, 0, 0, 0)
+        d_layout.addWidget(content)
+        d.setLayout(d_layout)
         d.exec()
 
     def reset_segmentation_defaults(self):
@@ -1443,11 +1617,41 @@ class ProcessingTab(QWidget):
                         if pretrained_path and os.path.isfile(pretrained_path):
                             status_label.setText("Loading user model...")
                             QApplication.processEvents()
+                            # Debug: inspect checkpoint before load (see Logs/omnipose_debug.log)
+                            try:
+                                inspect_info = inspect_omnipose_checkpoint(pretrained_path)
+                                append_omnipose_debug(
+                                    f"[BactiMate USER_MODEL pre-load] path={pretrained_path!r} "
+                                    f"inspect: nchan={inspect_info.get('nchan')} nclasses={inspect_info.get('nclasses')} "
+                                    f"first_layer_shape={inspect_info.get('first_layer_shape')} keys={inspect_info.get('keys', [])[:15]!r}"
+                                )
+                            except Exception:
+                                pass
+                            # cellpose_omni only sets omni=True when "omni" is in the filename
+                            path_for_loader = ensure_omni_in_model_path(pretrained_path)
                             preview_dialog.model = models.Cellpose(
                                 gpu=current_use_gpu,
-                                pretrained_model=pretrained_path,
+                                pretrained_model=path_for_loader,
                                 omni=True,
                             )
+                            # Debug: what did the patched loader set on model.cp?
+                            try:
+                                cp = getattr(preview_dialog.model, "cp", None)
+                                nchan = getattr(cp, "nchan", None)
+                                nclasses = getattr(cp, "nclasses", None)
+                                append_omnipose_debug(
+                                    f"[BactiMate USER_MODEL post-load] model.cp.nchan={nchan} model.cp.nclasses={nclasses}"
+                                )
+                                get_logger().info("User model loaded: nchan=%s nclasses=%s", nchan, nclasses)
+                                # If size model failed to load, diameter=0 won't rescale -> often 0 cells
+                                if getattr(preview_dialog.model, "pretrained_size", None) is None:
+                                    append_omnipose_debug(
+                                        "[BactiMate USER_MODEL] size model not loaded (pretrained_size is None). "
+                                        "diameter=0 will not rescale -> often 0 cells. "
+                                        "Run from project root: venv/bin/python3 setup/apply_all_patches.py then restart BactiMate."
+                                    )
+                            except Exception:
+                                pass
                             preview_dialog._last_model_key = current_key
                             preview_dialog._last_use_gpu = current_use_gpu
                             return True
@@ -1542,7 +1746,18 @@ class ProcessingTab(QWidget):
                             model_type=current_model_type, 
                             omni=True
                         )
-                        
+                        # Debug: built-in model load (see Logs/omnipose_debug.log)
+                        try:
+                            cp = getattr(preview_dialog.model, "cp", None)
+                            nchan = getattr(cp, "nchan", None)
+                            nclasses = getattr(cp, "nclasses", None)
+                            append_omnipose_debug(
+                                f"[BactiMate BUILTIN post-load] model_type={current_model_type!r} "
+                                f"model.cp.nchan={nchan} model.cp.nclasses={nclasses}"
+                            )
+                        except Exception:
+                            pass
+
                         # CRITICAL: Patch omnipose.core.get_masks to handle bd=None
                         # In frozen builds, the boundary field (bd) can be None if model files
                         # aren't found, causing "None > -1" errors. This patch provides a fallback.
@@ -1890,18 +2105,21 @@ class ProcessingTab(QWidget):
                 diameter_value = self._get_effective_diameter_pixels()
                 display = self.model_combo.currentText()
                 model_type, pretrained_path = self._resolve_model_selection(display)
-                # User-trained models have no size model: diameter=0 causes "No cell pixels found". Default to 30.
-                if diameter_value == 0 and (pretrained_path or is_frozen):
+                # Built-in: only default to 30 when frozen (frozen build workaround).
+                if diameter_value == 0 and is_frozen and not pretrained_path:
                     default_diameters = {
                         "bact_phase_omni": 30.0,
                         "bact_omni": 30.0,
                         "bact_fluor_omni": 30.0,
                     }
                     diameter_value = default_diameters.get(model_type or display, 30.0)
+                # User models: diameter=0 triggers slow two-pass (estimate then segment). Use 30 so we run once; result is the same.
+                if pretrained_path is not None and (diameter_value is None or diameter_value <= 0):
+                    diameter_value = 30.0
                 return {
-                    "diameter": diameter_value if diameter_value > 0 else 0,
+                    "diameter": diameter_value if diameter_value and diameter_value > 0 else 0,
                     "flow_threshold": self.flow_threshold.value(),
-                    "mask_threshold": self.mask_threshold.value(),
+                    "mask_threshold": self._get_effective_mask_threshold(),
                     "cluster": self.cluster.isChecked(),
                     "model_type": model_type,
                     "pretrained_model": str(pretrained_path) if pretrained_path else None,
@@ -2111,6 +2329,19 @@ class ProcessingTab(QWidget):
                             resample=True,
                             verbose=False
                         )
+                    # Debug: log eval result for user vs built-in (see Logs/omnipose_debug.log)
+                    try:
+                        kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
+                        model_id = params.get("pretrained_model") or params.get("model_type") or "?"
+                        n_cells = len(np.unique(mask)) - 1
+                        append_omnipose_debug(
+                            f"[BactiMate eval] kind={kind} model={model_id!r} "
+                            f"diameter={diameter} flow_thr={flow_threshold} mask_thr={mask_threshold} "
+                            f"frame_shape={getattr(frame, 'shape', None)} channels=[0,0] -> "
+                            f"n_cells={n_cells} mask_min={int(mask.min())} mask_max={int(mask.max())}"
+                        )
+                    except Exception:
+                        pass
                     # Cache the result (memory and optional disk)
                     preview_dialog.segmentation_cache[cache_key] = mask
                     try:
@@ -2581,6 +2812,28 @@ class ProcessingTab(QWidget):
         """Return diameter in pixels (the single Diameter field)."""
         return self.diameter.value()
 
+    def _get_run_diameter_and_flow(self) -> tuple[float, float]:
+        """
+        Return (diameter, flow_threshold) to pass to the batch script when running segmentation.
+        Custom (user-trained) models: diameter=0 would give no cells, so use 30; flow_threshold
+        must be 0 (permissive). Built-in models: use GUI values as-is.
+        """
+        display = self.model_combo.currentText()
+        model_type, pretrained_path = self._resolve_model_selection(display)
+        diameter = self._get_effective_diameter_pixels()
+        flow = float(self.flow_threshold.value())
+        if pretrained_path is not None:
+            # User-trained model: no size model, so diameter=0 fails at inference
+            if diameter is None or diameter <= 0:
+                diameter = 30.0
+            # Custom models need permissive flow (0); 0.4 often yields no cells
+            flow = 0.0
+        return (float(diameter), flow)
+
+    def _get_effective_mask_threshold(self) -> float:
+        """Return mask_threshold to pass to model.eval(). Use UI value as-is (no special case for user models)."""
+        return float(self.mask_threshold.value())
+
     def _open_in_file_manager(self, path: Path) -> None:
         """Open the given path (file or directory) in the OS default file manager."""
         path = Path(path)
@@ -2639,14 +2892,22 @@ class ProcessingTab(QWidget):
             output_dir = base_dir / f"{input_file.stem}_segmentation"
             
             _mt, _path = self._resolve_model_selection(self.model_combo.currentText())
-            model_arg = str(_path) if _path else (_mt or self.model_combo.currentText())
+            if _path is not None:
+                model_arg = ensure_omni_in_model_path(_path)
+            else:
+                model_arg = _mt or self.model_combo.currentText()
+            run_diameter, run_flow = self._get_run_diameter_and_flow()
+            if _path is not None and (self._get_effective_diameter_pixels() <= 0 or self.flow_threshold.value() != 0):
+                self.parent_window.log_output(
+                    "Custom model: using diameter=30 and flow_threshold=0 (set Diameter in Processing for your cell size if needed).\n"
+                )
             cmd_args = [
                 self.file_path.text(),
                 '--output', str(output_dir),
                 '--model', model_arg,
-                '--diameter', str(self._get_effective_diameter_pixels()),
-                '--flow-threshold', str(self.flow_threshold.value()),
-                '--mask-threshold', str(self.mask_threshold.value()),
+                '--diameter', str(run_diameter),
+                '--flow-threshold', str(run_flow),
+                '--mask-threshold', str(self._get_effective_mask_threshold()),
                 '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
             ]
             
@@ -2778,14 +3039,22 @@ class ProcessingTab(QWidget):
         output_dir = base_dir / f"{tiff_file.stem}_segmentation"
         
         _mt, _path = self._resolve_model_selection(self.model_combo.currentText())
-        model_arg = str(_path) if _path else (_mt or self.model_combo.currentText())
+        if _path is not None:
+            model_arg = ensure_omni_in_model_path(_path)
+        else:
+            model_arg = _mt or self.model_combo.currentText()
+        run_diameter, run_flow = self._get_run_diameter_and_flow()
+        if _path is not None and (self._get_effective_diameter_pixels() <= 0 or self.flow_threshold.value() != 0):
+            self.parent_window.log_output(
+                "Custom model: using diameter=30 and flow_threshold=0 (set Diameter in Processing for your cell size if needed).\n"
+            )
         cmd_args = [
             str(tiff_file),
             '--output', str(output_dir),
             '--model', model_arg,
-            '--diameter', str(self._get_effective_diameter_pixels()),
-            '--flow-threshold', str(self.flow_threshold.value()),
-            '--mask-threshold', str(self.mask_threshold.value()),
+            '--diameter', str(run_diameter),
+            '--flow-threshold', str(run_flow),
+            '--mask-threshold', str(self._get_effective_mask_threshold()),
             '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
         ]
         
