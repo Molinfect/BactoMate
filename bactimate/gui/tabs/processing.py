@@ -795,7 +795,6 @@ class ProcessingTab(QWidget):
         start_from_layout.addWidget(start_from_info)
         check_compat_btn = QPushButton("Check compatibility")
         check_compat_btn.setFixedWidth(260)
-        check_compat_btn.setToolTip("Validate that training folder has image/mask pairs and that image dimensions match the selected pretrained model (e.g. 2D for bact_phase_omni).")
         start_from_layout.addWidget(check_compat_btn)
         start_from_layout.addSpacing(12)
         check_compat_info = create_info_icon(

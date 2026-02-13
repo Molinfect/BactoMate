@@ -443,6 +443,24 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         print("  WARNING: Could not find cellpose_omni/models.py")
         return False
     content = models_file.read_text()
+    # Repair broken debug write (unterminated string from earlier patch) if present.
+    # Match: with open(...) _f.write("...state_dict_sample=%s) then newline(s) then " % ( - flexible whitespace.
+    broken_debug_re = re.compile(
+        r'(\s+)with open\(_dp, "a", encoding="utf-8"\) as _f:\s+'
+        r'_f\.write\("\[%s\] \[cellpose_omni load\] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s)'
+        r'\s+'
+        r'" % \(_ts, self\.pretrained_model, user_nchan, user_nclasses, list\(_ckpt\.keys\(\)\)\[:25\], _sk\)\)'
+    )
+    fixed_debug = (
+        r'\1with open(_dp, "a", encoding="utf-8") as _f:\n\1'
+        r'_f.write(\n\1    "[%s] [cellpose_omni load] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s\\n"\n\1'
+        r'    % (_ts, self.pretrained_model, user_nchan, user_nclasses, list(_ckpt.keys())[:25], _sk))'
+    )
+    if broken_debug_re.search(content):
+        content = broken_debug_re.sub(fixed_debug, content, count=1)
+        models_file.write_text(content)
+        print("  ✓ Repaired cellpose_omni models.py (unterminated debug string)")
+        return True
     # 1) Add pretrained_model=None to Cellpose.__init__ signature (support use_torch or torch param name)
     new_sig_4 = """    def __init__(self, gpu=False, model_type='cyto', net_avg=True, device=None, 
                  use_torch=True, model_dir=None, dim=2, omni=None, pretrained_model=None):"""
@@ -629,7 +647,9 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                     _sk = list(_st.keys())[:12] if isinstance(_st, dict) else []
                     _ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     with open(_dp, "a", encoding="utf-8") as _f:
-                        _f.write("[%s] [cellpose_omni load] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s\n" % (_ts, self.pretrained_model, user_nchan, user_nclasses, list(_ckpt.keys())[:25], _sk))
+                        _f.write(
+                            "[%s] [cellpose_omni load] path=%r inferred nchan=%s nclasses=%s ckpt_keys=%s state_dict_sample=%s\\n"
+                            % (_ts, self.pretrained_model, user_nchan, user_nclasses, list(_ckpt.keys())[:25], _sk))
             except Exception:
                 pass
             self.cp = CellposeModel(device=self.device, gpu=self.gpu,
