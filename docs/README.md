@@ -549,6 +549,9 @@ To get user-trained models to behave like the built-in Omnipose models (same par
 4. **Inference settings**  
    For well-trained models, [Settings](https://omnipose.readthedocs.io/settings.html) recommends **flow_threshold=0.0** and **mask_threshold=0.0**. If your user model still gives 0 cells with mask_threshold=0, try the negative mask threshold workaround (e.g. -2.5) or re-check that training data and preprocessing match inference.
 
+5. **Training data and architecture**  
+   When you click **Start training**, BactiMate always prepares the **omnipose_masks** subfolder (masks normalized to instance labels) and always uses the **same architecture as the built-in model**. If you choose **"New model (same architecture as bact_phase_omni)"**, BactiMate initializes from bact_phase_omni and trains on your data, so the result is identical to the built-in model (same architecture, same init) and works at inference. You can also choose to fine-tune from bact_phase_omni or another built-in model explicitly.
+
 ### App Bundle Issues
 
 #### App won't launch

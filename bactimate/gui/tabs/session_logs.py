@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bactimate.gui.constants import LOGS_DIR, SESSION_TAB_KEYS
+from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS
 
 
 class SessionLogsTab(QWidget):
@@ -40,7 +40,7 @@ class SessionLogsTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
 
-        list_group = QGroupBox("Recent session logs (last 10)")
+        list_group = QGroupBox(f"Recent session logs (last 10 shown; up to {MAX_SESSION_LOGS} kept)")
         list_layout = QVBoxLayout()
         self.log_list = QListWidget()
         self.log_list.setMinimumHeight(120)

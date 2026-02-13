@@ -52,6 +52,7 @@ from bactimate.gui.mask_utils import (
     OMNIPOSE_MASKS_SUBDIR,
     convert_masks_in_folder,
     ensure_omnipose_masks_has_images,
+    prepare_omnipose_masks_from_pairs,
 )
 from bactimate.gui.omnipose_utils import ensure_omni_in_model_path, inspect_omnipose_checkpoint
 from bactimate.gui.utils import safe_imread
@@ -81,10 +82,14 @@ PRETRAINED_NCHAN_NCLASSES_DIM = {
     "bact_phase_affinity": (1, 2, 2),
 }
 
+# When user selects "New model (same architecture)", we initialize from this so the result is
+# identical to the built-in model (same architecture, same init) but trained on their data.
+CANONICAL_BACTERIAL_MODEL = "bact_phase_omni"
+
 
 def _get_pretrained_training_options():
-    """Start from None or from a built-in model that appears in the main segmentation tab."""
-    return [("None (from scratch)", None)] + [
+    """Start from canonical (new model, same arch) or from a built-in model by name."""
+    return [("New model", None)] + [
         (name, name) for name in BUILTIN_OMNIPOSE_MODELS if name in PRETRAINED_NCHAN_NCLASSES_DIM
     ]
 
@@ -628,6 +633,8 @@ class ProcessingTab(QWidget):
         from bactimate.gui.paths import get_user_models_dir
         d = QDialog(self)
         d.setWindowTitle("Train Omnipose model")
+        close_shortcut = QShortcut(QKeySequence.StandardKey.Close, d)
+        close_shortcut.activated.connect(d.reject)
         layout = QVBoxLayout()
         last_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
         # Training directory (drag-and-drop supported)
@@ -768,17 +775,20 @@ class ProcessingTab(QWidget):
         layout.addLayout(name_layout)
         # Start from (transfer learning)
         start_from_layout = QHBoxLayout()
-        start_from_layout.addWidget(QLabel("Start from (transfer learning):"))
+        start_from_layout.addWidget(QLabel("Start from:"))
         pretrained_combo = QComboBox()
+        pretrained_combo.setMinimumWidth(200)
         for display_name, _ in _get_pretrained_training_options():
             pretrained_combo.addItem(display_name)
         pretrained_combo.setToolTip(
-            "Train from scratch (None) or continue training from a pretrained Omnipose model. "
-            "When a pretrained model is selected, nchan and nclasses are locked to match the model."
+            "'New model': same architecture as bact_phase_omni, initialized from it, trained on your data. "
+            "Other options: continue from that pretrained model. nchan/nclasses are always locked to match the chosen architecture."
         )
         start_from_info = create_info_icon(
-            "Add your data on top of an existing model (e.g. bact_phase_omni) instead of training from scratch. "
-            "nchan and nclasses are fixed to the model's architecture. Use 'Check compatibility' to validate your data.",
+            "New model: BactiMate initializes from bact_phase_omni so the result is identical to the built-in model (same architecture, same init) but trained on your data. "
+            "Other options: fine-tune from that pretrained model.\n\n"
+            "Channels and classes are set automatically: bact_phase_affinity → 1 channel, 2 classes; "
+            "other bacterial models (bact_phase_omni, bact_fluor_omni, New model) → 2 channels, 3 classes.",
             d,
         )
         start_from_layout.addWidget(pretrained_combo)
@@ -801,12 +811,13 @@ class ProcessingTab(QWidget):
         epochs_info = create_info_icon(
             "Number of full passes over the training set.\n\n"
             "Omnipose often benefits from more epochs (e.g. 4000 for bacteria).\n"
-            "Fewer epochs (500–1000) can be used for quick tests.",
+            "Fewer epochs (500–1000) for quick tests; 4–20 for a fast sanity check.",
             d,
         )
         params_layout.addWidget(epochs_info)
         n_epochs_spin = QSpinBox()
-        n_epochs_spin.setRange(100, 50000)
+        n_epochs_spin.setRange(1, 50000)
+        n_epochs_spin.setSingleStep(100)
         n_epochs_spin.setValue(4000)
         params_layout.addWidget(n_epochs_spin)
         params_layout.addWidget(QLabel("Learning rate:"))
@@ -833,34 +844,6 @@ class ProcessingTab(QWidget):
         batch_spin.setRange(1, 128)
         batch_spin.setValue(16)
         params_layout.addWidget(batch_spin)
-        params_layout.addStretch()
-        layout.addLayout(params_layout)
-        nchan_layout = QHBoxLayout()
-        nchan_layout.addWidget(QLabel("Channels (nchan):"))
-        nchan_info = create_info_icon(
-            "Number of image channels the model expects.\n\n"
-            "1 = grayscale only (Omnipose default for mono-channel; like bact_phase_affinity). "
-            "2 = two-channel (like bact_phase_omni; grayscale is duplicated/padded to 2 at training). "
-            "Both work in Preview/Batch: we pass the correct channel count at inference. "
-            "Always set nchan and nclasses to match when evaluating.",
-            d,
-        )
-        nchan_layout.addWidget(nchan_info)
-        nchan_spin = QSpinBox()
-        nchan_spin.setRange(1, 8)
-        nchan_spin.setValue(2)  # 2 for grayscale (Omnipose/patch uses channels=[0,0]); set nclasses to match when evaluating
-        nchan_layout.addWidget(nchan_spin)
-        nchan_layout.addWidget(QLabel("Classes (nclasses):"))
-        nclasses_info = create_info_icon(
-            "Number of prediction classes (2 = flow + distance; 3 adds boundary).\n\n"
-            "Use 3 for typical Omnipose bacteria models (recommended).",
-            d,
-        )
-        nchan_layout.addWidget(nclasses_info)
-        nclasses_spin = QSpinBox()
-        nclasses_spin.setRange(2, 4)
-        nclasses_spin.setValue(3)  # bact_phase_omni uses 3 (flow + distance; see omnipose.readthedocs.io/models)
-        nchan_layout.addWidget(nclasses_spin)
         use_gpu_cb = QCheckBox("Use GPU")
         use_gpu_cb.setChecked(True)
         gpu_info = create_info_icon(
@@ -868,10 +851,19 @@ class ProcessingTab(QWidget):
             "Uncheck to train on CPU only.",
             d,
         )
-        nchan_layout.addWidget(gpu_info)
-        nchan_layout.addWidget(use_gpu_cb)
-        nchan_layout.addStretch()
-        layout.addLayout(nchan_layout)
+        params_layout.addWidget(gpu_info)
+        params_layout.addWidget(use_gpu_cb)
+        params_layout.addStretch()
+        layout.addLayout(params_layout)
+        # nchan/nclasses are fixed by "Start from"; hidden spinboxes updated by update_pretrained_lock
+        nchan_spin = QSpinBox(d)
+        nchan_spin.setRange(1, 8)
+        nchan_spin.setValue(2)
+        nchan_spin.setVisible(False)
+        nclasses_spin = QSpinBox(d)
+        nclasses_spin.setRange(2, 4)
+        nclasses_spin.setValue(3)
+        nclasses_spin.setVisible(False)
 
         _locked_style = "QSpinBox:disabled { background-color: palette(mid); color: palette(placeholder-text); }"
         _normal_style = ""
@@ -880,15 +872,20 @@ class ProcessingTab(QWidget):
             idx = pretrained_combo.currentIndex()
             options = _get_pretrained_training_options()
             cli_value = options[idx][1] if 0 <= idx < len(options) else None
-            if cli_value and cli_value in PRETRAINED_NCHAN_NCLASSES_DIM:
-                nchan, nclass, _ = PRETRAINED_NCHAN_NCLASSES_DIM[cli_value]
+            # Lock nchan/nclasses to match selected model, or to canonical (bact_phase_omni) when "New model"
+            model_for_arch = cli_value if cli_value else CANONICAL_BACTERIAL_MODEL
+            if model_for_arch in PRETRAINED_NCHAN_NCLASSES_DIM:
+                nchan, nclass, _ = PRETRAINED_NCHAN_NCLASSES_DIM[model_for_arch]
                 nchan_spin.setValue(nchan)
                 nclasses_spin.setValue(nclass)
                 nchan_spin.setEnabled(False)
                 nclasses_spin.setEnabled(False)
                 nchan_spin.setStyleSheet(_locked_style)
                 nclasses_spin.setStyleSheet(_locked_style)
-                lock_tip = f"Locked to match selected model ({cli_value}). Required for transfer learning."
+                lock_tip = (
+                    f"Locked to match {model_for_arch} (same architecture as built-in). "
+                    "Required so the new model works at inference."
+                )
                 nchan_spin.setToolTip(lock_tip)
                 nclasses_spin.setToolTip(lock_tip)
             else:
@@ -1031,9 +1028,10 @@ class ProcessingTab(QWidget):
             idx = pretrained_combo.currentIndex()
             options = _get_pretrained_training_options()
             cli_value = options[idx][1] if 0 <= idx < len(options) else None
+            model_for_arch = cli_value or CANONICAL_BACTERIAL_MODEL
             detail_parts = []
-            if cli_value and cli_value in PRETRAINED_NCHAN_NCLASSES_DIM:
-                _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[cli_value]
+            if model_for_arch in PRETRAINED_NCHAN_NCLASSES_DIM:
+                _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[model_for_arch]
                 if dim == 2 and first_img:
                     try:
                         arr = safe_imread(str(first_img))
@@ -1048,14 +1046,14 @@ class ProcessingTab(QWidget):
                         return
                     if arr is not None:
                         detail_parts.append(
-                            f"Checked first image dimensions: shape {tuple(arr.shape)} — 2D, compatible with the selected 2D model ({cli_value})."
+                            f"Checked first image dimensions: shape {tuple(arr.shape)} — 2D, compatible with the selected 2D model ({model_for_arch})."
                         )
                     else:
                         detail_parts.append("Could not load first image to verify dimensions; pair count and filters are valid.")
                 elif dim == 2:
                     detail_parts.append("Pair count and filters valid. No image could be sampled for dimension check.")
                 else:
-                    detail_parts.append(f"Pair count and filters valid. Selected model is 3D ({cli_value}); dimension check skipped.")
+                    detail_parts.append(f"Pair count and filters valid. Selected model is 3D ({model_for_arch}); dimension check skipped.")
             else:
                 detail_parts.append(
                     "Filters and pair naming are valid. Select a pretrained model in 'Start from' to also verify image dimensions (2D vs 3D)."
@@ -1084,8 +1082,16 @@ class ProcessingTab(QWidget):
             train_dir_abs = Path(train_dir).resolve()
             img_filter = img_filter_edit.text().strip()
             mask_filter = mask_filter_edit.text().strip() or "_mask"
-            # If user ran "Make masks compatible", masks (and maybe images) are in train_dir/omnipose_masks. Use that folder and ensure images are present.
-            train_path = ensure_omnipose_masks_has_images(train_dir_abs, mask_filter, img_filter=img_filter)
+            # Populate omnipose_masks from the same pair discovery as _training_pairs so we always
+            # use converted masks when pairs exist (avoids glob mismatch: e.g. default _mask vs *_masks.tif).
+            parent_dir = train_dir_abs.parent if train_dir_abs.name == OMNIPOSE_MASKS_SUBDIR else train_dir_abs
+            train_path, n_from_pairs = prepare_omnipose_masks_from_pairs(
+                parent_dir, img_filter, mask_filter
+            )
+            if n_from_pairs == 0:
+                train_path = ensure_omnipose_masks_has_images(
+                    parent_dir, mask_filter, img_filter=img_filter
+                )
             train_dir_abs = str(train_path)
             # Pre-check: Omnipose needs one mask file per image (base name + mask_filter + ext). Catch missing masks or bad names early.
             pairs_ok, first_img_path, image_candidates = _training_pairs(train_path, img_filter, mask_filter)
@@ -1143,8 +1149,9 @@ class ProcessingTab(QWidget):
             pretrained_idx = pretrained_combo.currentIndex()
             options = _get_pretrained_training_options()
             pretrained_cli = options[pretrained_idx][1] if 0 <= pretrained_idx < len(options) else None
-            if pretrained_cli and pretrained_cli in PRETRAINED_NCHAN_NCLASSES_DIM:
-                _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[pretrained_cli]
+            model_for_dim = pretrained_cli or CANONICAL_BACTERIAL_MODEL
+            if model_for_dim in PRETRAINED_NCHAN_NCLASSES_DIM:
+                _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[model_for_dim]
                 if dim == 2:
                     _, first_img_path, _ = _training_pairs(train_path, img_filter, mask_filter)
                     if first_img_path:
@@ -1164,12 +1171,16 @@ class ProcessingTab(QWidget):
             log_text.clear()
             n_epochs = n_epochs_spin.value()
             log_text.append(f"Found {pairs_ok} image/mask pair(s). All will be used every epoch for {n_epochs} epochs.")
+            # Always use the same architecture as the built-in model: initialize from bact_phase_omni so the
+            # new model is identical (same architecture, same init) and works at inference; only the training data differs.
+            pretrained_arg = pretrained_cli if pretrained_cli else CANONICAL_BACTERIAL_MODEL
             if pretrained_cli:
                 log_text.append(f"Transfer learning: starting from {pretrained_cli} (nchan/nclasses locked to match).")
+            else:
+                log_text.append(f"New model: initializing from {CANONICAL_BACTERIAL_MODEL} (same architecture as built-in), training on your data.")
             log_text.append("Starting Omnipose training (this may take a long time)…")
             # Omnipose CLI: see https://omnipose.readthedocs.io (Training). We use absolute --dir;
             # we do not pass --all_channels (images are grayscale; when nchan=2 our patch duplicates channel via channels=[0,0]).
-            pretrained_arg = pretrained_cli if pretrained_cli else "None"
             cmd = [
                 sys.executable, "-m", "omnipose", "--train",
                 "--dir", train_dir_abs,
@@ -1221,7 +1232,7 @@ class ProcessingTab(QWidget):
                         "mask_filter": mask_filter_edit.text().strip() or "_mask",
                         "img_filter": img_filter_edit.text().strip() or "",
                         "train_dir": train_dir_edit.text().strip(),
-                        "pretrained_model": pretrained_arg if pretrained_cli else None,
+                        "pretrained_model": pretrained_arg,
                     }
                     self._trained_models_this_session.append(training_record)
                     if getattr(self.parent_window, "_save_session_log", None):
@@ -1231,8 +1242,7 @@ class ProcessingTab(QWidget):
                         "It will appear in the model dropdown. "
                         "When using it: if no cells are detected, set Diameter (e.g. 30 px) in Processing; custom models do not support auto-diameter."
                     )
-                    if pretrained_cli:
-                        done_msg = f"(Transfer learning from {pretrained_cli})\n\n" + done_msg
+                    done_msg = f"(Initialized from {pretrained_arg})\n\n" + done_msg
                     QMessageBox.information(d, "Done", done_msg)
                     current = self.model_combo.currentText()
                     self.model_combo.clear()
@@ -2678,12 +2688,8 @@ class ProcessingTab(QWidget):
             close_btn.clicked.connect(preview_dialog.close)
             layout.addWidget(close_btn)
 
-            # Add Cmd+W (or Ctrl+W) shortcut to close dialog
-            close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
+            close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
             close_shortcut.activated.connect(preview_dialog.close)
-            if sys.platform == 'darwin':
-                close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
-                close_shortcut_mac.activated.connect(preview_dialog.close)
 
             preview_dialog.setLayout(layout)
 

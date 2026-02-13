@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bactimate.gui.constants import LOGS_DIR, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
+from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
 from bactimate.gui.log_config import get_logger, log_exception, write_crash_log
 from bactimate.gui.preferences import (
     get_geometry,
@@ -48,6 +48,22 @@ from bactimate.gui.tabs import (
 )
 from bactimate.gui.paths import get_app_root
 from bactimate.gui.styles import get_modern_stylesheet
+
+
+def _prune_old_session_logs(logs_dir: Path, keep_count: int) -> None:
+    """Keep only the most recent keep_count session log files; delete older ones."""
+    if keep_count <= 0 or not logs_dir.is_dir():
+        return
+    session_files = sorted(
+        logs_dir.glob("*_session.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in session_files[keep_count:]:
+        try:
+            path.unlink()
+        except OSError:
+            log_exception(get_logger(), f"Failed to remove old session log {path.name}")
 
 
 def _get_tab_classes() -> Tuple[Type[Any], ...]:
@@ -230,6 +246,7 @@ class MainWindow(QMainWindow):
             }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            _prune_old_session_logs(LOGS_DIR, MAX_SESSION_LOGS)
         except Exception:
             log_exception(get_logger(), "Failed to save session log")
 

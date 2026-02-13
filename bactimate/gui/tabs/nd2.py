@@ -2180,13 +2180,8 @@ class ND2ConversionTab(QWidget):
                 frame_spin.blockSignals(False)
         frame_spin.valueChanged.connect(on_value_changed)
         
-        # Add Cmd+W (or Ctrl+W) shortcut to close dialog
-        close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
+        close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
         close_shortcut.activated.connect(preview_dialog.close)
-        # Also handle Cmd+W on macOS (Qt uses Ctrl modifier for Cmd on macOS)
-        if sys.platform == 'darwin':
-            close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
-            close_shortcut_mac.activated.connect(preview_dialog.close)
         
         # Display first frame (with auto LUT applied by default)
         # Initialize current_frame to ensure it's set before channel changes

@@ -238,6 +238,14 @@ class AnalyzeMasksTab(QWidget):
         sol_layout.addWidget(self.min_solidity)
         morph_layout.addLayout(sol_layout)
         
+        self.exclude_border_cb = QCheckBox("Exclude masks touching the image borders")
+        self.exclude_border_cb.setChecked(False)
+        self.exclude_border_cb.setToolTip(
+            "When enabled, any mask region that touches the top, bottom, left or right edge of the image "
+            "is excluded from counts and area (useful to avoid partial cells at the border)."
+        )
+        morph_layout.addWidget(self.exclude_border_cb)
+        
         # Add morphological filters to the main layout
         morph_params_layout.addLayout(morph_layout)
         
@@ -581,11 +589,6 @@ class AnalyzeMasksTab(QWidget):
         # Modern styling applied via global stylesheet
         self.analyze_btn.clicked.connect(self.analyze_masks)
         scroll_layout.addWidget(self.analyze_btn)
-        self._last_analysis_excel = None
-        export_csv_btn = QPushButton("Export last result to CSV")
-        export_csv_btn.setToolTip("Export the most recent analysis Excel (Summary or Detailed sheet) to a CSV file.")
-        export_csv_btn.clicked.connect(self._export_last_result_to_csv)
-        scroll_layout.addWidget(export_csv_btn)
         
         # Connect file path changes to update button states
         self.file_path.textChanged.connect(self._update_analyze_button_state)
@@ -875,6 +878,7 @@ class AnalyzeMasksTab(QWidget):
             ("min_length", self.min_length),
             ("detailed", self.detailed),
             ("create_vis", self.create_vis),
+            ("exclude_border", self.exclude_border_cb),
         ])
         if hasattr(self, "create_combined_summary"):
             d["create_combined_summary"] = self.create_combined_summary.isChecked()
@@ -901,6 +905,7 @@ class AnalyzeMasksTab(QWidget):
             ("min_length", self.min_length),
             ("detailed", self.detailed),
             ("create_vis", self.create_vis),
+            ("exclude_border", self.exclude_border_cb),
         ])
         if "create_combined_summary" in data and hasattr(self, "create_combined_summary"):
             self.create_combined_summary.setChecked(bool(data["create_combined_summary"]))
@@ -1600,13 +1605,8 @@ class AnalyzeMasksTab(QWidget):
             # Initial preview with progress
             update_preview(0, show_progress=True)
             
-            # Add Cmd+W (or Ctrl+W) shortcut to close dialog
-            close_shortcut = QShortcut(QKeySequence("Ctrl+W"), preview_dialog)
+            close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
             close_shortcut.activated.connect(preview_dialog.close)
-            # Also handle Cmd+W on macOS (Qt uses Ctrl modifier for Cmd on macOS)
-            if sys.platform == 'darwin':
-                close_shortcut_mac = QShortcut(QKeySequence("Meta+W"), preview_dialog)
-                close_shortcut_mac.activated.connect(preview_dialog.close)
             
             # Close button
             close_btn = QPushButton("Close")
@@ -1709,7 +1709,6 @@ class AnalyzeMasksTab(QWidget):
             
             # Create output path at base level with _analysis suffix
             output_path = base_dir / f"{input_file.stem}_analysis.xlsx"
-            self._last_analysis_excel = str(output_path)
             
             # Build command arguments
             cmd_args = [
@@ -1736,6 +1735,8 @@ class AnalyzeMasksTab(QWidget):
                 cmd_args.append('--detailed')
             if self.create_vis.isChecked():
                 cmd_args.append('--visualization')
+            if self.exclude_border_cb.isChecked():
+                cmd_args.append('--exclude-border')
             
             # Add FI image path if FI analysis is enabled
             if self.analyze_fi.isChecked() and self.fi_file_path.text():
@@ -1797,8 +1798,6 @@ class AnalyzeMasksTab(QWidget):
         """Process next file in folder mode"""
         if self.current_file_index >= len(self.folder_files):
             # All files processed
-            if getattr(self, "folder_output_paths", None):
-                self._last_analysis_excel = self.folder_output_paths[-1]
             self.analyze_btn.setEnabled(True)
             self.analyze_btn.setText("Analyze Masks")
             self.parent_window.progress_bar.setVisible(False)
@@ -1856,6 +1855,8 @@ class AnalyzeMasksTab(QWidget):
             cmd_args.append('--detailed')
         if self.create_vis.isChecked():
             cmd_args.append('--visualization')
+        if self.exclude_border_cb.isChecked():
+            cmd_args.append('--exclude-border')
         
         # Add FI image path if FI analysis is enabled
         if self.analyze_fi.isChecked() and self.fi_file_path.text():
@@ -1905,45 +1906,6 @@ class AnalyzeMasksTab(QWidget):
         self.current_file_index += 1
         self._process_next_folder_file(script_path)
     
-    def _export_last_result_to_csv(self):
-        """Export the most recent analysis Excel (Summary or Detailed sheet) to a user-chosen CSV file."""
-        path = getattr(self, "_last_analysis_excel", None)
-        if not path or not Path(path).exists():
-            QMessageBox.information(
-                self,
-                "No result to export",
-                "Run 'Analyze Masks' first. The last analysis Excel will then be available for export to CSV.",
-            )
-            return
-        default_name = Path(path).stem + ".csv"
-        csv_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export to CSV",
-            str(Path(path).parent / default_name),
-            "CSV Files (*.csv);;All Files (*)",
-        )
-        if not csv_path:
-            return
-        try:
-            import pandas as pd
-            # Prefer Detailed (per-cell) or Summary sheet
-            xl = pd.ExcelFile(path)
-            sheet = None
-            for name in ("Detailed", "Summary"):
-                if name in xl.sheet_names:
-                    sheet = name
-                    break
-            if sheet is None and xl.sheet_names:
-                sheet = xl.sheet_names[0]
-            if sheet is None:
-                QMessageBox.warning(self, "Export failed", "No sheets found in the Excel file.")
-                return
-            df = pd.read_excel(path, sheet_name=sheet)
-            df.to_csv(csv_path, index=False)
-            QMessageBox.information(self, "Export complete", f"Exported sheet '{sheet}' to:\n{csv_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Export failed", f"Could not export to CSV:\n{e}")
-
     def on_finished(self, success, message):
         self.analyze_btn.setEnabled(True)
         self.analyze_btn.setText("Analyze Masks")

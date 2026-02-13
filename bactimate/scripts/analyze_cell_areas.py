@@ -26,34 +26,39 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def calculate_cell_properties(mask, pixel_size=0.108):
+def calculate_cell_properties(mask, pixel_size=0.108, exclude_border=False):
     """
     Calculate properties for each cell in a mask.
-    
+
     Parameters:
     -----------
     mask : array
         Labeled mask image (0 = background, 1,2,3... = cell IDs)
     pixel_size : float
         Pixel size in µm (default: 0.108)
-        
+    exclude_border : bool
+        If True, skip regions that touch the image border (default: False).
+
     Returns:
     --------
     properties : list of dict
         List of cell properties (area, width, length, aspect_ratio, etc.)
     """
     props = []
-    
+    h, w = mask.shape[:2]
+
     # Get region properties
-    # Note: regionprops calculates all properties by default, but we only use a subset
-    # This is a limitation of scikit-image - we can't selectively calculate properties
     regions = regionprops(mask)
-    
+
     for region in regions:
         # Skip background (label 0)
         if region.label == 0:
             continue
-            
+        if exclude_border:
+            min_row, min_col, max_row, max_col = region.bbox
+            if min_row <= 0 or min_col <= 0 or max_row >= h or max_col >= w:
+                continue
+
         # Basic properties
         area_pixels = region.area
         area_um2 = area_pixels * (pixel_size ** 2)
@@ -291,11 +296,12 @@ def filter_by_size(properties, min_area_um2=None, max_area_um2=None, min_width_u
     return filtered
 
 
-def analyze_masks(masks_path, pixel_size=0.108, 
+def analyze_masks(masks_path, pixel_size=0.108,
                   min_aspect_ratio=1.5, max_aspect_ratio=10.0,
                   min_eccentricity=0.5, min_solidity=0.7,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
-                  remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True):
+                  remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True,
+                  exclude_border=False):
     """
     Analyze masks and extract cell areas with morphological filtering.
     
@@ -399,7 +405,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
             mask_cleaned = mask
         
         # Calculate cell properties
-        properties = calculate_cell_properties(mask_cleaned, pixel_size=pixel_size)
+        properties = calculate_cell_properties(mask_cleaned, pixel_size=pixel_size, exclude_border=exclude_border)
         
         # Get all cell labels
         all_labels = {prop['label'] for prop in properties}
@@ -1001,6 +1007,8 @@ Examples:
                        help='Thickness of contour region in pixels for FI intensity calculation (default: 1)')
     parser.add_argument('--no-fi-contour', action='store_true',
                        help='Disable contour-based FI metrics (only compute Mean FI Intensity)')
+    parser.add_argument('--exclude-border', action='store_true',
+                       help='Exclude cells that touch the image border from counts and area')
     
     args = parser.parse_args()
     
@@ -1045,6 +1053,7 @@ Examples:
         fi_image_path=fi_image_path,
         fi_contour_thickness=args.fi_contour_thickness,
         fi_do_contour=not args.no_fi_contour,
+        exclude_border=args.exclude_border,
     )
     
     # Get input mask filename stem for output naming

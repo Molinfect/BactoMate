@@ -8,6 +8,10 @@ import shutil
 from pathlib import Path
 from typing import Literal, Tuple
 
+# Match dialog pair discovery (processing._training_pairs): exts and suffixes
+_PAIR_EXTS = (".tif", ".tiff", ".png", ".npy", ".npz")
+_MASK_STEM_SUFFIXES = ("_cp_masks", "_cp_output", "_flows")
+
 import numpy as np
 import tifffile
 from scipy.ndimage import label as scipy_label
@@ -131,6 +135,72 @@ def convert_masks_in_folder(
                 break
 
     return (converted, skipped, errors, out_dir)
+
+
+def get_training_pairs(
+    folder: Path,
+    img_filter: str,
+    mask_filter: str,
+) -> list[tuple[Path, Path]]:
+    """
+    Discover (image, mask) pairs in folder using the same logic as the dialog's
+    _training_pairs: image candidates (non-mask files), base = stem minus img_filter,
+    mask = base + mask_filter + ext. Used so Start training can populate omnipose_masks
+    from the same set of pairs we count for validation (avoids glob mismatch).
+    """
+    if not folder.is_dir():
+        return []
+    suffixes_to_skip = (*_MASK_STEM_SUFFIXES, mask_filter)
+    candidates = [
+        f
+        for f in folder.iterdir()
+        if f.is_file()
+        and f.suffix.lower() in (e.lower() for e in _PAIR_EXTS)
+        and not any(
+            f.stem.endswith(s) or (f.stem + s == f.stem) for s in suffixes_to_skip
+        )
+    ]
+    pairs: list[tuple[Path, Path]] = []
+    for f in candidates:
+        base = f.stem.replace(img_filter, "") if img_filter else f.stem
+        if not base or base == ".":
+            continue
+        for ext in _PAIR_EXTS:
+            mask_path = folder / f"{base}{mask_filter}{ext}"
+            if mask_path.exists():
+                pairs.append((f, mask_path))
+                break
+    return pairs
+
+
+def prepare_omnipose_masks_from_pairs(
+    parent_dir: Path,
+    img_filter: str,
+    mask_filter: str,
+) -> tuple[Path, int]:
+    """
+    Populate parent_dir/omnipose_masks from discovered (image, mask) pairs in parent_dir.
+    Uses the same pair logic as get_training_pairs (and the dialog's _training_pairs),
+    so training always uses converted masks when pairs exist, even if the mask_filter
+    glob would find no files (e.g. default _mask vs files named *_masks.tif).
+    Returns (train_dir, n_pairs). train_dir is omnipose_masks if n_pairs > 0, else parent_dir.
+    """
+    pairs = get_training_pairs(parent_dir, img_filter, mask_filter)
+    if not pairs:
+        return (parent_dir, 0)
+    out_dir = parent_dir / OMNIPOSE_MASKS_SUBDIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for img_path, mask_path in pairs:
+        out_mask = out_dir / mask_path.name
+        convert_single_mask_to_omnipose(mask_path, out_path=out_mask)
+        # Copy image with same name as in source so Omnipose finds it
+        dst_img = out_dir / img_path.name
+        if not dst_img.is_file() or dst_img.stat().st_mtime < img_path.stat().st_mtime:
+            try:
+                shutil.copy2(img_path, dst_img)
+            except Exception:
+                pass
+    return (out_dir, len(pairs))
 
 
 # Extensions we treat as images when syncing into omnipose_masks (try multiple for robustness)

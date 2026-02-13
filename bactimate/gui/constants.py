@@ -10,6 +10,9 @@ from bactimate.gui.paths import get_app_root, get_logs_dir, get_script_path
 PROJECT_ROOT = get_app_root()
 LOGS_DIR = get_logs_dir()
 
+# Keep only the last N session log files; older ones are deleted after each save
+MAX_SESSION_LOGS = 100
+
 # Script paths for subprocess calls
 CONVERT_ND2_SCRIPT = get_script_path("convert_nd2_to_tif.py")
 
