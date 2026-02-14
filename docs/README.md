@@ -170,12 +170,12 @@ Analyze existing mask files with morphological filtering.
 2. Set pixel size
 3. Configure morphological filters
 4. Set size constraints
-5. Choose options (detailed data, visualization)
+5. Choose options (detailed data, visualization, **Exclude masks at borders** to omit border-touching cells from counts and area)
 6. Click "Analyze Masks"
 
 **Output:**
 - Excel file with area analysis
-- Filter visualization (if enabled): green=accepted, red=rejected
+- Filter visualization (if enabled): green=accepted, red=rejected (border-touching cells shown red when "Exclude masks at borders" is on)
 
 ### Parameter Guide
 
@@ -207,6 +207,7 @@ Analyze existing mask files with morphological filtering.
 - **Min Solidity**: Minimum solidity (default: 0.7)
 - **Max Area**: Maximum cell area in µm² (0 = no limit)
 - **Max Width**: Maximum cell width in µm (0 = no limit)
+- **Exclude masks at borders**: When enabled, cells touching the image border are excluded from counts and area (useful for partial cells at the edge)
 
 ## Command Line Usage
 
@@ -550,7 +551,7 @@ To get user-trained models to behave like the built-in Omnipose models (same par
    For well-trained models, [Settings](https://omnipose.readthedocs.io/settings.html) recommends **flow_threshold=0.0** and **mask_threshold=0.0**. If your user model still gives 0 cells with mask_threshold=0, try the negative mask threshold workaround (e.g. -2.5) or re-check that training data and preprocessing match inference.
 
 5. **Training data and architecture**  
-   When you click **Start training**, BactiMate always prepares the **omnipose_masks** subfolder (masks normalized to instance labels) and always uses the **same architecture as the built-in model**. If you choose **"New model (same architecture as bact_phase_omni)"**, BactiMate initializes from bact_phase_omni and trains on your data, so the result is identical to the built-in model (same architecture, same init) and works at inference. You can also choose to fine-tune from bact_phase_omni or another built-in model explicitly.
+   When you click **Start training**, BactiMate prepares the **omnipose_masks** subfolder (masks as instance labels) and uses the same architecture as the built-in bacterial model. **Start from** options: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. The result then works at inference with the same parameters as the built-in model.
 
 ### App Bundle Issues
 

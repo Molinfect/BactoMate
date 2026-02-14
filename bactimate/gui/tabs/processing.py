@@ -88,10 +88,10 @@ CANONICAL_BACTERIAL_MODEL = "bact_phase_omni"
 
 
 def _get_pretrained_training_options():
-    """From scratch (None), from bact_phase_omni (New model), or from another built-in by name. Same architecture: nchan=2, nclasses=3."""
+    """From scratch (None), or a built-in model name to initialize from. Same architecture: nchan=2, nclasses=3."""
     return [
-        ("From scratch", "None"),  # Omnipose paper: --pretrained_model None --nclasses 3
-        ("New model (from bact_phase_omni)", None),  # transfer from built-in
+        ("From scratch", "None"),  # --pretrained_model None
+        (CANONICAL_BACTERIAL_MODEL, None),  # init from built-in bact_phase_omni (same as other built-in names)
     ] + [(name, name) for name in BUILTIN_OMNIPOSE_MODELS if name in PRETRAINED_NCHAN_NCLASSES_DIM and name != CANONICAL_BACTERIAL_MODEL]
 
 
@@ -817,10 +817,11 @@ class ProcessingTab(QWidget):
         for display_name, _ in _get_pretrained_training_options():
             pretrained_combo.addItem(display_name)
         start_from_info = create_info_icon(
-            "New model: BactiMate initializes from bact_phase_omni so the result is identical to the built-in model (same architecture, same init) but trained on your data. "
-            "Other options: fine-tune from that pretrained model.\n\n"
-            "Channels and classes are set automatically: bact_phase_affinity → 1 channel, 2 classes; "
-            "other bacterial models (bact_phase_omni, bact_fluor_omni, New model) → 2 channels, 3 classes.",
+            "Choose which checkpoint to start training from.\n\n"
+            "From scratch: no pretrained model; network is initialized from scratch (nchan=2, nclasses=3).\n\n"
+            "bact_phase_omni / bact_fluor_omni / bact_phase_affinity: you get a new model file (your name) initialized from that built-in model; training runs on your data. "
+            "Channels and classes match the chosen model: bact_phase_affinity → 1 channel, 2 classes; "
+            "bact_phase_omni and bact_fluor_omni → 2 channels, 3 classes.",
             d,
         )
         start_from_layout.addWidget(pretrained_combo)
@@ -903,7 +904,7 @@ class ProcessingTab(QWidget):
             idx = pretrained_combo.currentIndex()
             options = _get_pretrained_training_options()
             cli_value = options[idx][1] if 0 <= idx < len(options) else None
-            # Same architecture as paper: nchan=2, nclasses=3 for bacterial (From scratch / New model / bact_phase_omni)
+            # Same architecture as paper: nchan=2, nclasses=3 for bacterial (From scratch or bact_phase_omni)
             model_for_arch = CANONICAL_BACTERIAL_MODEL if (cli_value is None or cli_value == "None") else cli_value
             if model_for_arch in PRETRAINED_NCHAN_NCLASSES_DIM:
                 nchan, nclass, _ = PRETRAINED_NCHAN_NCLASSES_DIM[model_for_arch]
@@ -1212,7 +1213,7 @@ class ProcessingTab(QWidget):
             elif pretrained_cli:
                 log_text.append(f"Transfer learning: starting from {pretrained_cli} (nchan/nclasses match that model).")
             else:
-                log_text.append(f"New model: from {CANONICAL_BACTERIAL_MODEL} (same architecture), training on your data.")
+                log_text.append(f"Initializing from {CANONICAL_BACTERIAL_MODEL} (same architecture), training on your data.")
             log_text.append("Starting Omnipose training (this may take a long time)…")
             # Same as Omnipose paper: --train --diameter 0 --n_epochs 4000 --learning_rate 0.1 --batch_size 16 --RAdam --nclasses 3
             # (From scratch: --pretrained_model None; transfer: --pretrained_model bact_phase_omni or other). We pass --nchan/--nclasses through; no architecture change.

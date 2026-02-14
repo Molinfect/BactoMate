@@ -314,7 +314,29 @@ def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
     repaired_any = False
     for core_file in core_files:
         content = core_file.read_text()
+        # Normalize line endings so repairs match after copy to app bundle (e.g. \r\n -> \n).
+        if "\r" in content:
+            content = content.replace("\r\n", "\n").replace("\r", "\n")
+
         # Repair broken installs where the _f.write string was split (unterminated string at line 1738).
+        # Loose regex first: broken write split across lines (unterminated string then ".format(...)" on following line(s)).
+        broken_loose = re.compile(
+            r'_f\.write\s*\(\s*"\[omnipose no cell pixels\] dist min=\{\:.4f\} max=\{\:.4f\} mean=\{\:.4f\} shape=\{\} mask_thr=\{\}'
+            r'\s*\n\s*"\.format\s*\([\s\S]*?mask_threshold\s*\)\s*\)',
+            re.DOTALL,
+        )
+        def _repl(m):
+            return (
+                '                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n'
+                "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
+            )
+        if broken_loose.search(content):
+            content = broken_loose.sub(_repl, content, count=1)
+            core_file.write_text(content)
+            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic, loose regex): {}".format(core_file))
+            repaired_any = True
+            continue
+
         # Exact pattern A: newline then ".format(" (no leading spaces on that line - as in installed file).
         broken_a = (
             "                    _f.write(\"[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}"

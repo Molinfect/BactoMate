@@ -265,7 +265,7 @@ Opened by **Train model** in the Model Parameters area.
 - **Epochs:** Spin box [100, 50000]; default 4000. Info (?) — Full passes over training set; Omnipose often benefits from more (e.g. 4000 for bacteria).
 - **Learning rate:** Double spin [0.001, 1.0]; default 0.1. Info (?) — Step size; larger faster but unstable, smaller slower but stable.
 - **Batch size:** Spin [1, 128]; default 16. Info (?) — Larger batches faster with enough GPU memory; smaller use less memory.
-- **Start from (transfer learning):** Dropdown — **None (from scratch)** or a pretrained model that appears in the main tab’s Model list (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**). If you choose a pretrained model, training adds your data on top of it; **nchan** and **nclasses** are locked to match the model (required by Omnipose).
+- **Start from (transfer learning):** Dropdown. Options: **From scratch** (no pretrained model; nchan=2, nclasses=3); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint—you get a new model file (your name) trained on your data. **nchan** and **nclasses** are locked to match the chosen model (required by Omnipose). See the (?) tooltip for details.
 - **Check compatibility with selected model:** Button — Validates that the training folder has image/mask pairs and that image dimensions match the selected model (e.g. 2D images for bact_phase_omni). Use this before starting training when using transfer learning.
 - **Channels (nchan):** Spin [1, 8]; default **2** (grayscale duplicated; Omnipose/patch uses channels=[0,0]). Info (?) — 1 = grayscale only; 2 = two-channel like bact_phase_omni. Set nclasses to match when evaluating. **Locked** when a pretrained model is selected.
 - **Classes (nclasses):** Spin [2, 4]; default 3. Info (?) — 2 = flow+distance; 3 adds boundary. Use 3 for typical Omnipose bacteria models. **Locked** when a pretrained model is selected.
@@ -314,7 +314,7 @@ If you see `nchan=1` or `nclasses=2` for a model you trained in BactiMate (which
 
 **Transfer learning (start from a pretrained model)**
 
-In the **Train model** dialog, use **Start from** to choose a built-in model from the main tab (e.g. **bact_phase_omni**, **bact_fluor_omni**) instead of **None (from scratch)**. Your data is then added on top of the existing model; often fewer epochs are needed and results are more stable. **nchan** and **nclasses** are locked to match the pretrained model (Omnipose requirement). Use **Check compatibility with selected model** to validate that your folder has image/mask pairs and that image dimensions match (e.g. 2D images for bact_phase_omni; 3D stacks will trigger a warning). See [Omnipose Training](https://omnipose.readthedocs.io) (Transfer learning).
+In the **Train model** dialog, **Start from** offers: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. Choosing a pretrained option adds your data on top of it; **nchan** and **nclasses** are locked to match (Omnipose requirement). Use **Check compatibility with selected model** to validate image/mask pairs and that image dimensions match (e.g. 2D for bact_phase_omni). See [Omnipose Training](https://omnipose.readthedocs.io).
 
 **Inspect a checkpoint manually**
 
@@ -403,6 +403,7 @@ If **mf_test** gives random detections but **mf_lasse** gives none, possible cau
 - **Include detailed per-cell data:** Check box; default **checked**. Info (?) — When enabled, Excel includes a sheet with per-cell measurements (ID, area, width, length, aspect ratio, eccentricity, solidity, etc.); when disabled, only summary (total area per frame).
 - **Create filter visualization:** Check box; default **checked**. Info (?) — Creates TIFF with green=accepted, red=rejected. Saved as `*_filter_visualization.tif`. Useful for QC.
 - **Create combined summary:** Described in Combine group above.
+- **Exclude masks at borders:** Check box; default **unchecked**. Info (?) — When enabled, any mask that touches the image border is excluded from counts and area (useful to avoid partial cells at the image edge). In **Preview Filter Effects**, border-touching masks are shown in red when this option is on; use **Re-apply** to refresh the preview after toggling.
 
 ### 5.5 Combine existing summaries from folder
 
@@ -425,7 +426,7 @@ If **mf_test** gives random detections but **mf_lasse** gives none, possible cau
 
 ### 5.8 Session parameters (Analyze Masks)
 
-Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, analyze_fi, fi_file_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
+Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_file_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
 
 ---
 
