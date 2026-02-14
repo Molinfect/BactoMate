@@ -26,6 +26,18 @@ def _find_in_syspath(relative_path: str) -> Optional[Path]:
     return None
 
 
+def _find_all_in_syspath(relative_path: str) -> list[Path]:
+    """Return all existing paths under sys.path for relative_path (deduplicated, order preserved)."""
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in sys.path:
+        candidate = Path(p).resolve() / relative_path
+        if candidate.exists() and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    return out
+
+
 def patch_peakdetect() -> bool:
     """Patch peakdetect/peakdetect.py to fix scipy ifft import (scipy >= 1.10)."""
     peakdetect_file = _find_in_syspath("peakdetect/peakdetect.py")
@@ -292,30 +304,67 @@ def patch_omnipose_core_constant_dist_workaround() -> bool:
 
 
 def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
-    """When omnipose compute_masks finds no cell pixels, log dist map stats to BactiMate debug log so we can see what the network actually outputs."""
-    core_file = _find_in_syspath("omnipose/core.py")
-    if not core_file:
+    """When omnipose compute_masks finds no cell pixels, log dist map stats to BactiMate debug log. Patch every omnipose/core.py on sys.path so launch and app venvs both get fixed."""
+    import re
+    core_files = _find_all_in_syspath("omnipose/core.py")
+    if not core_files:
         print("  WARNING: Could not find omnipose/core.py")
         return False
 
-    content = core_file.read_text()
-    # Repair broken installs where the _f.write string was split (unterminated string at line 1738)
-    broken_write = (
-        '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}'
-        "\n"
-        '".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
-    )
-    fixed_write = (
-        '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n'
-        "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
-    )
-    if broken_write in content:
-        content = content.replace(broken_write, fixed_write)
-        core_file.write_text(content)
-        print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic string literal)")
-    old = """    else: # nothing to compute, just make it compatible
+    repaired_any = False
+    for core_file in core_files:
+        content = core_file.read_text()
+        # Repair broken installs where the _f.write string was split (unterminated string at line 1738).
+        # Exact pattern A: newline then ".format(" (no leading spaces on that line - as in installed file).
+        broken_a = (
+            "                    _f.write(\"[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}"
+            "\n"
+            '".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
+        )
+        fixed_a = (
+            "                    _f.write(\"[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n\".format(\n"
+            "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
+        )
+        if broken_a in content:
+            content = content.replace(broken_a, fixed_a)
+            core_file.write_text(content)
+            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
+            repaired_any = True
+            continue
+        # Exact pattern B: newline then 20 spaces then ".format(" (alternate indent).
+        broken_write = (
+            '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}'
+            "\n"
+            '                    ".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
+        )
+        fixed_write = (
+            '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n'
+            "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
+        )
+        if broken_write in content:
+            content = content.replace(broken_write, fixed_write)
+            core_file.write_text(content)
+            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
+            repaired_any = True
+            continue
+        # Regex fallback: match broken write (newline/code inside string) with flexible whitespace.
+        broken_re = re.compile(
+            r'_f\.write\("\[omnipose no cell pixels\] dist min=\{\:.4f\} max=\{\:.4f\} mean=\{\:.4f\} shape=\{\} mask_thr=\{\}[\s\S]*?"\.format\(\s+float\(np\.min\(_d\)\), float\(np\.max\(_d\)\), float\(np\.mean\(_d\)\), _d\.shape, mask_threshold\)\)',
+            re.DOTALL,
+        )
+        if broken_re.search(content):
+            content = broken_re.sub(
+                '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))',
+                content,
+                count=1,
+            )
+            core_file.write_text(content)
+            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic, regex): {}".format(core_file))
+            repaired_any = True
+            continue
+        old = """    else: # nothing to compute, just make it compatible
         omnipose_logger.info('No cell pixels found.')"""
-    new = """    else: # nothing to compute, just make it compatible
+        new = """    else: # nothing to compute, just make it compatible
         try:
             _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
             if _dp and dist is not None:
@@ -326,16 +375,17 @@ def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
         except Exception:
             pass
         omnipose_logger.info('No cell pixels found.')"""
-    if new in content:
-        print("  ✓ omnipose core (no-cell-pixels diagnostic) already patched")
+        if new in content:
+            continue
+        if old not in content:
+            continue
+        content = content.replace(old, new)
+        core_file.write_text(content)
+        print("  ✓ Patched omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
+        repaired_any = True
+    if repaired_any:
         return True
-    if old not in content:
-        print("  WARNING: Could not find 'No cell pixels found' block in omnipose/core.py")
-        return False
-
-    content = content.replace(old, new)
-    core_file.write_text(content)
-    print("  ✓ Patched omnipose core (log dist stats when no cell pixels)")
+    print("  ✓ omnipose core (no-cell-pixels diagnostic) already patched ({} copy/copies)".format(len(core_files)))
     return True
 
 
@@ -1040,11 +1090,18 @@ def patch_cellpose_omni_main_train_channels() -> bool:
         print("  WARNING: Could not find cellpose_omni/__main__.py")
         return False
     content = main_file.read_text()
-    # Patched form: assignment so that nchan==2 gets [args.chan, args.chan2] (grayscale duplicated)
-    already = "channels = [args.chan, args.chan2] if nchan == 2 else None"
-    if already in content:
+    # 1) Fix model.train(..., channels=None, ...) so it passes the channels variable (required for nchan==2 grayscale).
+    train_call_none = "channels=None,  # or channels if you prefer"
+    train_call_var = "channels=channels,"
+    if train_call_none in content:
+        content = content.replace(train_call_none, train_call_var, 1)
+        main_file.write_text(content)
+        print("  ✓ Patched cellpose_omni __main__ (train channels: pass channels to model.train)")
+        return True
+    if train_call_var in content:
         print("  ✓ cellpose_omni __main__ (train channels) already patched")
         return True
+    # 2) Legacy: ensure assignment exists so channels is set when nchan==2 (some installs have it, some need it).
     # Upstream sets "channels = None" (or "channels = None ") before model.train(..., channels=channels, ...)
     old_assign_variants = [
         "                channels = None ",
@@ -1081,6 +1138,12 @@ def patch_cellpose_omni_main_train_channels() -> bool:
 
 
 def main() -> bool:
+    # When building the app bundle, pass --target-site-packages so we patch the copied venv, not another path.
+    if len(sys.argv) >= 2 and sys.argv[1] == "--target-site-packages" and len(sys.argv) >= 3:
+        target = Path(sys.argv[2]).resolve()
+        if target.is_dir():
+            sys.path.insert(0, str(target))
+            print("Target site-packages: {}".format(target))
     print("=" * 50)
     print("Applying BactiMate compatibility patches")
     print("=" * 50)

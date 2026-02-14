@@ -88,10 +88,11 @@ CANONICAL_BACTERIAL_MODEL = "bact_phase_omni"
 
 
 def _get_pretrained_training_options():
-    """Start from canonical (new model, same arch) or from a built-in model by name."""
-    return [("New model", None)] + [
-        (name, name) for name in BUILTIN_OMNIPOSE_MODELS if name in PRETRAINED_NCHAN_NCLASSES_DIM
-    ]
+    """From scratch (None), from bact_phase_omni (New model), or from another built-in by name. Same architecture: nchan=2, nclasses=3."""
+    return [
+        ("From scratch", "None"),  # Omnipose paper: --pretrained_model None --nclasses 3
+        ("New model (from bact_phase_omni)", None),  # transfer from built-in
+    ] + [(name, name) for name in BUILTIN_OMNIPOSE_MODELS if name in PRETRAINED_NCHAN_NCLASSES_DIM and name != CANONICAL_BACTERIAL_MODEL]
 
 
 class ProcessingTab(QWidget):
@@ -284,6 +285,35 @@ class ProcessingTab(QWidget):
             "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
             "User-trained models appear here after training via 'Train model…'."
         )
+        fix_metadata_btn = QPushButton("Fix metadata")
+        fix_metadata_btn.setToolTip(
+            "If a user model does not detect cells, it may lack nchan/nclasses in the file. "
+            "Click to write them into the selected user model so it loads correctly."
+        )
+        fix_metadata_btn.setEnabled(False)
+
+        def update_fix_metadata_enabled():
+            display = self.model_combo.currentText()
+            _, pretrained_path = self._resolve_model_selection(display)
+            fix_metadata_btn.setEnabled(pretrained_path is not None)
+
+        def on_fix_metadata():
+            display = self.model_combo.currentText()
+            _, pretrained_path = self._resolve_model_selection(display)
+            if not pretrained_path or not pretrained_path.is_file():
+                QMessageBox.warning(self, "Fix metadata", "Select a user model first.")
+                return
+            from bactimate.gui.omnipose_utils import fix_user_model_metadata
+            ok, msg = fix_user_model_metadata(pretrained_path)
+            if ok:
+                QMessageBox.information(self, "Fix metadata", msg)
+            else:
+                QMessageBox.warning(self, "Fix metadata", msg)
+
+        fix_metadata_btn.clicked.connect(on_fix_metadata)
+        self.model_combo.currentTextChanged.connect(update_fix_metadata_enabled)
+        update_fix_metadata_enabled()
+        model_layout.addWidget(fix_metadata_btn)
         train_model_btn = QPushButton("Train model")
         train_model_btn.setToolTip("Train a new Omnipose model from your images and ground-truth masks.")
         train_model_btn.clicked.connect(self._open_train_model_dialog)
@@ -764,7 +794,9 @@ class ProcessingTab(QWidget):
             "A short name for your model (letters, numbers, underscores). "
             "It will appear in the model dropdown and is used to save the .pth file. "
             "Example: my_bacteria_v1. Do not use path separators (no / or \\).\n\n"
-            "Models are saved in BactiMate's user models folder. You can also copy .pth files (trained with Omnipose elsewhere) into this folder—they will appear in the dropdown on refresh.\n\n"
+            "BactiMate automatically adds '_omni' to the filename if your name does not already contain 'omni' (e.g. my_model → my_model_omni.pth). "
+            "This is required: Omnipose/Cellpose only enable correct cell detection when 'omni' is in the filename; without it, the model would load with wrong settings and fail to detect cells.\n\n"
+            "Models are saved in BactiMate's user models folder. You can also copy .pth files (trained with Omnipose elsewhere) into this folder—they will appear in the dropdown on refresh; name them with '_omni' in the filename (e.g. my_model_omni.pth) so they work correctly.\n\n"
             f"User models folder:\n{user_models_path}",
             d,
         )
@@ -871,8 +903,8 @@ class ProcessingTab(QWidget):
             idx = pretrained_combo.currentIndex()
             options = _get_pretrained_training_options()
             cli_value = options[idx][1] if 0 <= idx < len(options) else None
-            # Lock nchan/nclasses to match selected model, or to canonical (bact_phase_omni) when "New model"
-            model_for_arch = cli_value if cli_value else CANONICAL_BACTERIAL_MODEL
+            # Same architecture as paper: nchan=2, nclasses=3 for bacterial (From scratch / New model / bact_phase_omni)
+            model_for_arch = CANONICAL_BACTERIAL_MODEL if (cli_value is None or cli_value == "None") else cli_value
             if model_for_arch in PRETRAINED_NCHAN_NCLASSES_DIM:
                 nchan, nclass, _ = PRETRAINED_NCHAN_NCLASSES_DIM[model_for_arch]
                 nchan_spin.setValue(nchan)
@@ -927,7 +959,7 @@ class ProcessingTab(QWidget):
                 self.nclasses = int(nclasses)
 
             def _write_checkpoint_metadata(self):
-                """Rewrite dest_file so checkpoint includes nchan/nclasses for correct load at inference (matches Omnipose pretrained behavior)."""
+                """Persist the same nchan/nclasses we passed to training into the saved .pth so the loader can load it (Omnipose may not write them). No architecture change."""
                 try:
                     import torch
                     ckpt = torch.load(self.dest_file, map_location="cpu", weights_only=False)
@@ -1074,9 +1106,12 @@ class ProcessingTab(QWidget):
             if "/" in model_name or "\\" in model_name:
                 QMessageBox.warning(d, "Invalid name", "Model name must not contain path separators.")
                 return
-            dest_file = get_user_models_dir() / f"{model_name}{USER_MODEL_EXTENSION}"
+            # Cellpose/Omnipose only enable omni dynamics when "omni" is in the filename; without it, detection fails.
+            # So we always save with _omni in the stem (e.g. my_model → my_model_omni.pth) so the model works at inference.
+            final_stem = model_name if "omni" in model_name.lower() else f"{model_name}_omni"
+            dest_file = get_user_models_dir() / f"{final_stem}{USER_MODEL_EXTENSION}"
             if dest_file.exists():
-                if QMessageBox.question(d, "Model already exists", f"A model named '{model_name}' already exists. Overwrite it? This cannot be undone.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                if QMessageBox.question(d, "Model already exists", f"A model named '{final_stem}' already exists. Overwrite it? This cannot be undone.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                     return
             train_dir_abs = Path(train_dir).resolve()
             img_filter = img_filter_edit.text().strip()
@@ -1148,7 +1183,7 @@ class ProcessingTab(QWidget):
             pretrained_idx = pretrained_combo.currentIndex()
             options = _get_pretrained_training_options()
             pretrained_cli = options[pretrained_idx][1] if 0 <= pretrained_idx < len(options) else None
-            model_for_dim = pretrained_cli or CANONICAL_BACTERIAL_MODEL
+            model_for_dim = CANONICAL_BACTERIAL_MODEL if (pretrained_cli is None or pretrained_cli == "None") else pretrained_cli
             if model_for_dim in PRETRAINED_NCHAN_NCLASSES_DIM:
                 _, _, dim = PRETRAINED_NCHAN_NCLASSES_DIM[model_for_dim]
                 if dim == 2:
@@ -1170,21 +1205,22 @@ class ProcessingTab(QWidget):
             log_text.clear()
             n_epochs = n_epochs_spin.value()
             log_text.append(f"Found {pairs_ok} image/mask pair(s). All will be used every epoch for {n_epochs} epochs.")
-            # Always use the same architecture as the built-in model: initialize from bact_phase_omni so the
-            # new model is identical (same architecture, same init) and works at inference; only the training data differs.
-            pretrained_arg = pretrained_cli if pretrained_cli else CANONICAL_BACTERIAL_MODEL
-            if pretrained_cli:
-                log_text.append(f"Transfer learning: starting from {pretrained_cli} (nchan/nclasses locked to match).")
+            # Pass through to Omnipose: same args as paper (--nchan 2 --nclasses 3). No architecture change.
+            pretrained_arg = pretrained_cli if pretrained_cli is not None else CANONICAL_BACTERIAL_MODEL
+            if pretrained_cli == "None":
+                log_text.append("From scratch: --pretrained_model None, nchan=2, nclasses=3 (Omnipose paper defaults).")
+            elif pretrained_cli:
+                log_text.append(f"Transfer learning: starting from {pretrained_cli} (nchan/nclasses match that model).")
             else:
-                log_text.append(f"New model: initializing from {CANONICAL_BACTERIAL_MODEL} (same architecture as built-in), training on your data.")
+                log_text.append(f"New model: from {CANONICAL_BACTERIAL_MODEL} (same architecture), training on your data.")
             log_text.append("Starting Omnipose training (this may take a long time)…")
-            # Omnipose CLI: see https://omnipose.readthedocs.io (Training). We use absolute --dir;
-            # we do not pass --all_channels (images are grayscale; when nchan=2 our patch duplicates channel via channels=[0,0]).
+            # Same as Omnipose paper: --train --diameter 0 --n_epochs 4000 --learning_rate 0.1 --batch_size 16 --RAdam --nclasses 3
+            # (From scratch: --pretrained_model None; transfer: --pretrained_model bact_phase_omni or other). We pass --nchan/--nclasses through; no architecture change.
             cmd = [
                 sys.executable, "-m", "omnipose", "--train",
                 "--dir", train_dir_abs,
                 "--mask_filter", mask_filter,
-                "--pretrained_model", pretrained_arg,
+                "--pretrained_model", str(pretrained_arg),
                 "--diameter", "0",
                 "--n_epochs", str(n_epochs_spin.value()),
                 "--learning_rate", str(lr_spin.value()),
@@ -1206,7 +1242,7 @@ class ProcessingTab(QWidget):
             env["CELLPOSE_LOCAL_MODELS_PATH"] = save_dir
 
             worker = TrainWorker(
-                cmd, env, train_dir_abs, save_dir, dest_file, model_name,
+                cmd, env, train_dir_abs, save_dir, dest_file, final_stem,
                 nchan_spin.value(), nclasses_spin.value(),
             )
             self._train_worker = worker  # Keep ref so thread isn't destroyed if dialog closes

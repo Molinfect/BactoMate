@@ -44,7 +44,7 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
 
     out["keys"] = keys
 
-    # Common places Omnipose/Cellpose might store architecture
+    # Top-level nchan/nclasses (may be wrong if written by an older fix; we prefer inferred from weights)
     if "nchan" in keys:
         try:
             out["nchan"] = int(ckpt["nchan"])
@@ -61,7 +61,7 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
 
-    # Infer nchan from first conv weight: e.g. conv0.weight has shape (out, in, k, k) -> in = nchan
+    # Infer nchan from first conv weight (match patched cellpose_omni loader: any 4D weight with conv/encoder/.0.)
     state = ckpt.get("state_dict") or ckpt.get("model_state_dict")
     if state is None and isinstance(ckpt, dict):
         if any(str(k).startswith("conv") or str(k).startswith("0.") for k in keys):
@@ -71,24 +71,124 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
                 if "conv" in str(k).lower() and "weight" in str(k).lower():
                     state = ckpt
                     break
-    # Only use 4D tensors (Conv2d weight: out, in, kH, kW); skip 1D/2D (e.g. BatchNorm)
     if isinstance(state, dict):
         for k, v in state.items():
             if (
                 hasattr(v, "shape")
-                and "conv" in str(k).lower()
                 and "weight" in str(k).lower()
                 and len(getattr(v, "shape", [])) == 4
             ):
-                try:
-                    out["first_layer_shape"] = list(v.shape)
-                    if out["nchan"] is None:
+                key_str = str(k)
+                key_lower = key_str.lower()
+                # Match conv/encoder/.0./ or keys like "0.weight", "model.0.weight" (Omnipose/Cellpose)
+                if (
+                    "conv" in key_lower
+                    or "encoder" in key_lower
+                    or ".0." in key_lower
+                    or key_str.startswith("0.")
+                ):
+                    try:
+                        out["first_layer_shape"] = list(v.shape)
+                        if out["nchan"] is None:
+                            out["nchan"] = int(v.shape[1])
+                    except Exception:
+                        pass
+                    break
+        if out["nchan"] is None:
+            for k, v in state.items():
+                if hasattr(v, "shape") and len(getattr(v, "shape", [])) == 4:
+                    try:
+                        out["first_layer_shape"] = list(v.shape)
                         out["nchan"] = int(v.shape[1])
+                    except Exception:
+                        pass
+                    break
+
+        # Infer nclasses from output conv only when the file doesn't have it (avoid overwriting correct 3 with wrong 4).
+        # Output layer: 4D weight with shape[0] in (2,3,4); prefer key with "out" or smallest spatial.
+        if out["nclasses"] is None:
+            candidates: list[tuple[str, Any, int]] = []
+            for k, v in state.items():
+                if not hasattr(v, "shape") or len(getattr(v, "shape", [])) != 4:
+                    continue
+                try:
+                    s = v.shape
+                    if s[0] in (2, 3, 4):
+                        spatial = int(s[2]) * int(s[3])
+                        candidates.append((str(k), v, spatial))
+                except Exception:
+                    continue
+            if candidates:
+                candidates.sort(key=lambda x: ("out" not in x[0].lower(), x[2]))
+                try:
+                    out["nclasses"] = int(candidates[0][1].shape[0])
                 except Exception:
                     pass
-                break
 
     return out
+
+
+def fix_user_model_metadata(
+    pth_path: str | Path,
+    nchan_override: int | None = None,
+    nclasses_override: int | None = None,
+) -> tuple[bool, str]:
+    """
+    Add missing nchan/nclasses to a .pth so the loader can load it. No architecture change:
+    only for checkpoints that lack these (e.g. saved by Omnipose CLI and copied in). BactiMate-
+    trained models already get them from training. When the file has them we keep them unless
+    overrides are given (e.g. --nclasses 3 to correct a wrong value).
+
+    Returns:
+        (success, message)
+    """
+    pth_path = Path(pth_path).resolve()
+    if not pth_path.is_file():
+        return (False, f"File not found: {pth_path}")
+    info = inspect_omnipose_checkpoint(pth_path)
+    if "error" in info:
+        return (False, f"Could not load checkpoint: {info['error']}")
+    default_nchan, default_nclasses = get_default_user_model_architecture()
+    # Values we will write: override if given, else from file/infer, else default
+    write_nchan = (
+        nchan_override
+        if nchan_override is not None
+        else (info.get("nchan") if info.get("nchan") is not None else default_nchan)
+    )
+    write_nclasses = (
+        nclasses_override
+        if nclasses_override is not None
+        else (info.get("nclasses") if info.get("nclasses") is not None else default_nclasses)
+    )
+    try:
+        import torch
+        ckpt = torch.load(str(pth_path), map_location="cpu", weights_only=False)
+    except Exception as e:
+        return (False, str(e))
+    if not isinstance(ckpt, dict):
+        ckpt = {"state_dict": ckpt}
+    # Skip only when file already has the same values we would write (no need to overwrite)
+    file_nchan = ckpt.get("nchan")
+    file_nclasses = ckpt.get("nclasses")
+    if (
+        file_nchan is not None
+        and file_nclasses is not None
+        and int(file_nchan) == write_nchan
+        and int(file_nclasses) == write_nclasses
+    ):
+        return (True, f"Checkpoint already has nchan={write_nchan}, nclasses={write_nclasses}.")
+    nchan = write_nchan
+    nclasses = write_nclasses
+    state = ckpt.get("state_dict") or ckpt.get("model_state_dict") or ckpt
+    ckpt = dict(ckpt)
+    ckpt["state_dict"] = state
+    ckpt["nchan"] = int(nchan)
+    ckpt["nclasses"] = int(nclasses)
+    try:
+        torch.save(ckpt, pth_path)
+    except Exception as e:
+        return (False, str(e))
+    return (True, f"Written nchan={nchan}, nclasses={nclasses} to {pth_path.name}")
 
 
 def get_default_user_model_architecture() -> tuple[int, int]:

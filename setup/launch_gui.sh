@@ -7,9 +7,14 @@
 # Log initial PYTHONHOME value before unsetting (for debugging)
 INITIAL_PYTHONHOME="${PYTHONHOME:-<not set>}"
 
-# Get script directory (setup/) and project root first so we can put launch.log in BactiMate Logs
+# Get script directory and project root. When run from .app, script is in Resources (venv lives here).
+# When run from project, script is in setup/ so project root is SCRIPT_DIR/..
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -d "$SCRIPT_DIR/venv/bin" ]; then
+    PROJECT_ROOT="$SCRIPT_DIR"
+else
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
 cd "$PROJECT_ROOT"
 
 # Use BactiMate Logs folder (same as omnipose_debug.log, crash.log) for portability (new Mac/Windows)
@@ -66,7 +71,12 @@ if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ]; then
     echo "$(date): ERROR: Python interpreter not found in venv: $PROJECT_ROOT/venv/bin/" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHON=$VENV_PYTHON" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHONW=$VENV_PYTHONW" >> "$LOG_FILE"
-    osascript -e "display dialog \"BactiMate Error: Python environment not found. The application may be corrupted. Check BactiMate Logs folder: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+    if [[ "$PROJECT_ROOT" != *".app/Contents/Resources"* ]]; then
+        MSG="BactiMate Error: Python environment not found. From the project folder run: ./setup/setup_fresh_env.sh then try again. Logs: $LOG_DIR"
+    else
+        MSG="BactiMate Error: Python environment not found. The application may be corrupted. Logs: $LOG_DIR"
+    fi
+    osascript -e "display dialog \"$MSG\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 fi
 
