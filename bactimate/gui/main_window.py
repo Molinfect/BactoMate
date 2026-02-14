@@ -325,6 +325,8 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    log = get_logger()
+    log.info("Creating application and main window...")
     if sys.platform == "darwin":
         plugins_dir = os.environ.get("QT_PLUGIN_PATH")
         if plugins_dir:
@@ -354,6 +356,7 @@ def main() -> None:
         app.setStyleSheet(get_modern_stylesheet())
         window = MainWindow()
         window.show()
+        log.info("BactiMate window shown.")
         sys.exit(app.exec())
     except Exception as e:
         log_exception(get_logger(), "Failed to start GUI")

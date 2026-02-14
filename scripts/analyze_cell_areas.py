@@ -26,34 +26,39 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-def calculate_cell_properties(mask, pixel_size=0.108):
+def calculate_cell_properties(mask, pixel_size=0.108, exclude_border=False):
     """
     Calculate properties for each cell in a mask.
-    
+
     Parameters:
     -----------
     mask : array
         Labeled mask image (0 = background, 1,2,3... = cell IDs)
     pixel_size : float
         Pixel size in µm (default: 0.108)
-        
+    exclude_border : bool
+        If True, skip regions that touch the image border (default: False).
+
     Returns:
     --------
     properties : list of dict
         List of cell properties (area, width, length, aspect_ratio, etc.)
     """
     props = []
-    
+    h, w = mask.shape[:2]
+
     # Get region properties
-    # Note: regionprops calculates all properties by default, but we only use a subset
-    # This is a limitation of scikit-image - we can't selectively calculate properties
     regions = regionprops(mask)
-    
+
     for region in regions:
         # Skip background (label 0)
         if region.label == 0:
             continue
-            
+        if exclude_border:
+            min_row, min_col, max_row, max_col = region.bbox
+            if min_row <= 0 or min_col <= 0 or max_row >= h or max_col >= w:
+                continue
+
         # Basic properties
         area_pixels = region.area
         area_um2 = area_pixels * (pixel_size ** 2)

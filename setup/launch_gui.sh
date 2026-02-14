@@ -130,6 +130,10 @@ if [ $PYTHON_TEST_EXIT -ne 0 ]; then
 else
     echo "$(date): Python test successful: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"
     
+    # Log Python version prominently (venv can be 3.11 or 3.9 depending on how it was created)
+    PYTHON_VERSION_FULL=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')" 2>/dev/null || echo "unknown")
+    echo "$(date): Using Python $PYTHON_VERSION_FULL from venv: $PYTHON_CMD" >> "$LOG_FILE"
+    
     # Log Python system information for debugging cross-machine issues
     echo "$(date): Python system information:" >> "$LOG_FILE"
     "$PYTHON_CMD" -c "import sys; import platform; print(f'  executable: {sys.executable}'); print(f'  prefix: {sys.prefix}'); print(f'  base_prefix: {sys.base_prefix}'); print(f'  version: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'); print(f'  platform: {platform.platform()}')" >> "$LOG_FILE" 2>&1 || true

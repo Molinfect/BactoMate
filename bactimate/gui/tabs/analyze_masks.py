@@ -461,7 +461,8 @@ class AnalyzeMasksTab(QWidget):
         options_row1.addLayout(vis_layout)
         options_layout.addLayout(options_row1)
         
-        # Row 2: Create combined summary (below Include per-cell data)
+        # Row 2: same structure as row 1 (two sub-layouts with stretch) so spacing matches
+        options_row2 = QHBoxLayout()
         combined_summary_layout = QHBoxLayout()
         self.create_combined_summary = QCheckBox("Create combined summary")
         self.create_combined_summary.setChecked(False)
@@ -475,11 +476,9 @@ class AnalyzeMasksTab(QWidget):
         combined_summary_layout.addWidget(self.create_combined_summary)
         combined_summary_layout.addWidget(combined_summary_info_icon)
         combined_summary_layout.addStretch()
-        options_layout.addLayout(combined_summary_layout)
-        
-        # Row 3: Exclude masks touching borders
+        options_row2.addLayout(combined_summary_layout)
         exclude_border_layout = QHBoxLayout()
-        self.exclude_border_cb = QCheckBox("Exclude masks touching the image borders")
+        self.exclude_border_cb = QCheckBox("Exclude masks at borders")
         self.exclude_border_cb.setChecked(False)
         exclude_border_info_icon = create_info_icon(
             "When enabled, any mask region that touches the top, bottom, left or right edge of the image "
@@ -489,7 +488,8 @@ class AnalyzeMasksTab(QWidget):
         exclude_border_layout.addWidget(self.exclude_border_cb)
         exclude_border_layout.addWidget(exclude_border_info_icon)
         exclude_border_layout.addStretch()
-        options_layout.addLayout(exclude_border_layout)
+        options_row2.addLayout(exclude_border_layout)
+        options_layout.addLayout(options_row2)
         
         options_group.setLayout(options_layout)
         options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1196,6 +1196,7 @@ class AnalyzeMasksTab(QWidget):
                     'max_area': self.max_area.value() if self.max_area.value() > 0 else None,
                     'min_width': self.min_width.value() if self.min_width.value() > 0 else None,
                     'max_width': self.max_width.value() if self.max_width.value() > 0 else None,
+                    'exclude_border': self.exclude_border_cb.isChecked(),
                     'fi_contour_thickness': self.fi_contour_thickness.value() if hasattr(self, 'fi_contour_thickness') else 1,
                 }
             
@@ -1351,10 +1352,14 @@ class AnalyzeMasksTab(QWidget):
                         if cancelled:
                             return
                     
-                    # Calculate properties (optimized: only request needed properties)
-                    # Use a more efficient approach: request only the properties we need
-                    properties = calculate_cell_properties(mask_cleaned, pixel_size=params['pixel_size'])
-                    all_labels = {prop['label'] for prop in properties}
+                    # All non-zero labels in mask (for visualization: show every cell as accepted or rejected)
+                    all_labels = set(np.unique(mask_cleaned)) - {0}
+                    # Calculate properties; when exclude_border=True, border-touching cells are omitted from properties
+                    properties = calculate_cell_properties(
+                        mask_cleaned,
+                        pixel_size=params['pixel_size'],
+                        exclude_border=params.get('exclude_border', False),
+                    )
                     
                     if progress_dialog:
                         progress_dialog.setLabelText("Applying morphological filters... (50%)")

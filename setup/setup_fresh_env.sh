@@ -13,10 +13,17 @@ echo "=========================================="
 echo ""
 
 # Step 1: Remove old virtual environment
+# rm -rf on a large venv can take 10+ min. Rename then delete in background with nohup so it survives script exit.
 if [ -d "venv" ]; then
     echo "Removing old virtual environment..."
-    rm -rf venv
-    echo "✓ Old venv removed"
+    if [ -d "venv.old" ]; then
+        nohup rm -rf venv.old >/dev/null 2>&1 &
+        disown 2>/dev/null || true
+    fi
+    mv venv venv.old
+    nohup rm -rf venv.old >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    echo "✓ Old venv moved to venv.old (deleting in background; if venv.old remains, run: rm -rf venv.old)"
 else
     echo "No existing venv found (that's okay)"
 fi

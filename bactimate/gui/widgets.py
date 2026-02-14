@@ -251,6 +251,12 @@ class DragDropGroupBox(QGroupBox):
         else:
             event.ignore()
 
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
     def dragLeaveEvent(self, event):
         self._drag_over = False
         self.setStyleSheet("")

@@ -670,6 +670,7 @@ class ProcessingTab(QWidget):
         # Training directory (drag-and-drop supported)
         train_dir_edit = QLineEdit()
         train_dir_edit.setPlaceholderText("Absolute path to folder with image/mask pairs (or drag and drop)")
+        train_dir_edit.setAcceptDrops(False)  # let parent DragDropGroupBox receive drops
         def handle_dropped_training_path(dropped_path):
             path_obj = Path(dropped_path)
             if path_obj.is_dir():
@@ -682,7 +683,9 @@ class ProcessingTab(QWidget):
             on_drop_callback=handle_dropped_training_path,
         )
         dir_layout = QHBoxLayout()
-        dir_layout.addWidget(QLabel("Path:"))
+        path_label = QLabel("Path:")
+        path_label.setAcceptDrops(False)
+        dir_layout.addWidget(path_label)
         dir_info = create_info_icon(
             "Folder containing your training data: one image file and one mask file per pair.\n\n"
             "Omnipose expects: for each image 'NAME.tif', a mask file 'NAME<Mask filter>.tif' (e.g. NAME_masks.tif). Same base name, mask = base + Mask filter + extension.\n\n"
@@ -696,6 +699,7 @@ class ProcessingTab(QWidget):
             if path:
                 train_dir_edit.setText(path)
         browse_btn = QPushButton("Browse…")
+        browse_btn.setAcceptDrops(False)
         browse_btn.clicked.connect(browse_dir)
         dir_layout.addWidget(browse_btn)
         dir_group.setLayout(dir_layout)
@@ -812,10 +816,6 @@ class ProcessingTab(QWidget):
         pretrained_combo.setMinimumWidth(200)
         for display_name, _ in _get_pretrained_training_options():
             pretrained_combo.addItem(display_name)
-        pretrained_combo.setToolTip(
-            "'New model': same architecture as bact_phase_omni, initialized from it, trained on your data. "
-            "Other options: continue from that pretrained model. nchan/nclasses are always locked to match the chosen architecture."
-        )
         start_from_info = create_info_icon(
             "New model: BactiMate initializes from bact_phase_omni so the result is identical to the built-in model (same architecture, same init) but trained on your data. "
             "Other options: fine-tune from that pretrained model.\n\n"

@@ -42,7 +42,9 @@ def run() -> None:
     try:
         log = get_logger()
         log.info("Starting BactiMate")
+        log.info("Loading GUI (PyQt6 and tabs; can take 1–2 min on first launch from app bundle)...")
         from bactimate.gui.main_window import main
+        log.info("GUI modules loaded, creating window...")
         main()
     except ModuleNotFoundError as e:
         if "PyQt6" in str(e):
