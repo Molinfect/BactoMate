@@ -11,14 +11,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Tuple, Type
 
-from PyQt6.QtCore import Qt, QCoreApplication
-from PyQt6.QtGui import QCursor, QFont, QPixmap
+from PyQt6.QtCore import Qt, QCoreApplication, QTimer, QUrl
+from PyQt6.QtGui import QCursor, QFont, QPixmap, QAction, QKeySequence, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
+    QMenuBar,
+    QMessageBox,
     QProgressBar,
     QSizePolicy,
     QTabWidget,
@@ -199,6 +202,8 @@ class MainWindow(QMainWindow):
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
+        self._add_menu_bar()
+
         self._restore_geometry_and_state()
 
         self.statusBar().showMessage("Ready")
@@ -267,6 +272,59 @@ class MainWindow(QMainWindow):
             tab = getattr(self, TAB_WIDGET_ATTR[key])
             if hasattr(tab, "set_session_params"):
                 tab.set_session_params(data[key])
+
+    def _add_menu_bar(self) -> None:
+        """Minimal menu bar: app menu (About, Quit), File (Quit), Help (User manual)."""
+        menubar = self.menuBar()
+        app_menu = menubar.addMenu("BactiMate")
+        about_action = QAction("About BactiMate", self)
+        about_action.triggered.connect(self._show_about)
+        app_menu.addAction(about_action)
+        app_menu.addSeparator()
+        quit_action = QAction("Quit BactiMate", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+        app_menu.addAction(quit_action)
+        file_menu = menubar.addMenu("File")
+        file_quit = QAction("Quit", self)
+        file_quit.setShortcut(QKeySequence.StandardKey.Quit)
+        file_quit.triggered.connect(self.close)
+        file_menu.addAction(file_quit)
+        help_menu = menubar.addMenu("Help")
+        user_manual_action = QAction("User manual", self)
+        user_manual_action.triggered.connect(self._open_user_manual)
+        help_menu.addAction(user_manual_action)
+
+    def _show_about(self) -> None:
+        try:
+            from bactimate import __version__
+            version = __version__
+        except Exception:
+            version = "1.0"
+        QMessageBox.about(
+            self,
+            "About BactiMate",
+            f"<b>BactiMate</b> – bacteria time-lapse batch processing and analysis.<br><br>Version {version}<br><br>"
+            "Documentation: <b>Help → User manual</b>.",
+        )
+
+    def _open_user_manual(self) -> None:
+        """Open the user manual (docs/BACTIMATE_USER_MANUAL.md) with the system default app."""
+        app_root = get_app_root()
+        manual_path = app_root / "docs" / "BACTIMATE_USER_MANUAL.md"
+        if manual_path.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(manual_path)))
+        else:
+            # Fallback: open docs folder or show path
+            docs_dir = app_root / "docs"
+            if docs_dir.exists():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(docs_dir)))
+            else:
+                QMessageBox.information(
+                    self,
+                    "User manual",
+                    f"Manual not found at:\n{manual_path}\n\nOpen the docs/ folder from the app or installation.",
+                )
 
     def _center_window(self):
         frame_geometry = self.frameGeometry()
@@ -352,10 +410,28 @@ def main() -> None:
 
     try:
         app = QApplication(sys.argv)
+        app.setApplicationName("BactiMate")
+        app.setApplicationDisplayName("BactiMate")
+        # Re-apply process title after Qt init (Qt can overwrite it on macOS; menu bar shows process name)
+        if sys.platform == "darwin":
+            try:
+                import setproctitle
+                setproctitle.setproctitle("BactiMate")
+            except Exception:
+                pass
         app.setStyle("Fusion")
         app.setStyleSheet(get_modern_stylesheet())
         window = MainWindow()
         window.show()
+        # Re-apply process title once after show (macOS menu bar can be updated late)
+        if sys.platform == "darwin":
+            def _reapply_title() -> None:
+                try:
+                    import setproctitle
+                    setproctitle.setproctitle("BactiMate")
+                except Exception:
+                    pass
+            QTimer.singleShot(500, _reapply_title)
         log.info("BactiMate window shown.")
         sys.exit(app.exec())
     except Exception as e:

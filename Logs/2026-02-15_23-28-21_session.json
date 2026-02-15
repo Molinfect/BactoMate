@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-13 20:54:05",
+  "timestamp": "2026-02-15 23:28:21",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -34,6 +34,7 @@
       "min_length": 0.0,
       "detailed": true,
       "create_vis": true,
+      "exclude_border": false,
       "create_combined_summary": false,
       "analyze_fi": false,
       "analyze_fi_contour": false,

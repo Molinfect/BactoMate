@@ -9,6 +9,15 @@ Usage:
     python -m bactimate
     bactimate   (after pip install -e .)
 """
+# Set process title first so macOS menu bar and Dock show "BactiMate" not "Python"
+# (required when launched from .app bundle via python main.py; setproctitle must be in venv)
+if __name__ == "__main__":
+    try:
+        import setproctitle
+        setproctitle.setproctitle("BactiMate")
+    except Exception:
+        pass
+
 if __name__ == "__main__":
     from bactimate.__main__ import run
     run()

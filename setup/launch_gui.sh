@@ -463,17 +463,23 @@ if [ -t 0 ]; then
 fi
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # Only pass PYTHONHOME if it's set (for app bundles)
-    if [ -n "$PYTHONHOME" ]; then
-        echo "$(date): [DEBUG] Passing PYTHONHOME=$PYTHONHOME to Python (app bundle mode)" >> "$LOG_FILE"
-        exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
+    # macOS menu bar shows the process name. Keep "BactiMate": if we're already zsh (launcher
+    # started us as BactiMate), just exec -a BactiMate python; else exec zsh so we can use -a.
+    if [ -n "${PYTHONHOME:-}" ]; then
+        echo "$(date): [DEBUG] Passing PYTHONHOME to Python (app bundle mode)" >> "$LOG_FILE"
     else
-        echo "$(date): [DEBUG] NOT passing PYTHONHOME to Python (regular venv mode)" >> "$LOG_FILE"
-        exec env PATH="$PATH" QT_PLUGIN_PATH="$QT_PLUGIN_PATH" DYLD_FRAMEWORK_PATH="$DYLD_FRAMEWORK_PATH" QT_FRAMEWORK_PATH="$QT_FRAMEWORK_PATH" QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1 "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
+        echo "$(date): [DEBUG] NOT passing PYTHONHOME (regular venv mode)" >> "$LOG_FILE"
+    fi
+    export PYTHONHOME PATH QT_PLUGIN_PATH DYLD_FRAMEWORK_PATH QT_FRAMEWORK_PATH PYTHON_CMD PROJECT_ROOT
+    export QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        # Already in zsh (e.g. launcher ran "zsh -c source ..." with argv[0]=BactiMate); keep name
+        exec -a BactiMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
+    else
+        exec /bin/zsh -c 'export PYTHONHOME PATH QT_PLUGIN_PATH DYLD_FRAMEWORK_PATH QT_FRAMEWORK_PATH QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1; exec -a BactiMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"'
     fi
 else
-    # Only pass PYTHONHOME if it's set (for app bundles)
-    if [ -n "$PYTHONHOME" ]; then
+    if [ -n "${PYTHONHOME:-}" ]; then
         exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
     else
         exec env PATH="$PATH" "$PYTHON_CMD" "$PROJECT_ROOT/main.py"

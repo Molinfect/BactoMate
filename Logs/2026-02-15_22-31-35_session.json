@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-13 20:59:00",
+  "timestamp": "2026-02-15 22:31:35",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -19,21 +19,7 @@
       "use_gpu": true,
       "cluster": false,
       "create_overlay": true,
-      "trained_models_this_session": [
-        {
-          "model_name": "no_convert_test2",
-          "n_epochs": 2,
-          "learning_rate": 0.1,
-          "batch_size": 16,
-          "nchan": 2,
-          "nclasses": 3,
-          "use_gpu": true,
-          "mask_filter": "_masks",
-          "img_filter": "_phase",
-          "train_dir": "/Users/philipppopp/Desktop/test_MF/",
-          "pretrained_model": "bact_phase_omni"
-        }
-      ]
+      "trained_models_this_session": []
     },
     "analyze_masks": {
       "pixel_size": 0.108,
@@ -48,6 +34,7 @@
       "min_length": 0.0,
       "detailed": true,
       "create_vis": true,
+      "exclude_border": false,
       "create_combined_summary": false,
       "analyze_fi": false,
       "analyze_fi_contour": false,

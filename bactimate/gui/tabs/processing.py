@@ -658,8 +658,48 @@ class ProcessingTab(QWidget):
     def _open_train_model_dialog(self):
         """Open dialog to train a new Omnipose model from user data (from-scratch)."""
         from bactimate.gui.paths import get_user_models_dir
-        d = QDialog(self)
+
+        _min_width = 900
+        _min_height = 650
+
+        class TrainModelDialog(QDialog):
+            """Dialog that enforces minimum size and stays a proper window (minimizable, non-modal)."""
+            def __init__(self, parent, min_w, min_h):
+                super().__init__(parent)
+                self._min_w = min_w
+                self._min_h = min_h
+
+            def minimumSizeHint(self):
+                from PyQt6.QtCore import QSize
+                return QSize(self._min_w, self._min_h)
+
+            def sizeHint(self):
+                from PyQt6.QtCore import QSize
+                return QSize(self._min_w, self._min_h)
+
+            def resizeEvent(self, event):
+                super().resizeEvent(event)
+                w, h = self.width(), self.height()
+                if w < self._min_w or h < self._min_h:
+                    # Defer so layout has finished; then clamp to minimum (works on macOS)
+                    QTimer.singleShot(0, self._enforce_min_size)
+
+            def _enforce_min_size(self):
+                w, h = self.width(), self.height()
+                if w < self._min_w or h < self._min_h:
+                    self.resize(max(w, self._min_w), max(h, self._min_h))
+
+        d = TrainModelDialog(self, _min_width, _min_height)
         d.setWindowTitle("Train Omnipose model")
+        d.setWindowModality(Qt.WindowModality.NonModal)  # main window stays usable; can minimize both
+        # Use Window so it's a normal window (not a sheet on macOS): min/max/close buttons and resizable
+        d.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
+        d.setMinimumSize(_min_width, _min_height)
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, d)
         close_shortcut.activated.connect(d.reject)
         layout = QVBoxLayout()
@@ -1562,17 +1602,19 @@ class ProcessingTab(QWidget):
 
         start_btn.clicked.connect(start_training)
         layout.addWidget(bb)
-        # Enforce minimum width so dialog cannot be resized narrower (avoids (?) overlapping button)
+        # Enforce minimum size so dialog cannot be resized smaller (avoids (?) overlapping; usable when minimized/restored)
         content = QWidget()
         content.setLayout(layout)
-        _min_width = 650
-        content.setMinimumWidth(_min_width)
-        d.setMinimumWidth(_min_width)
+        content.setMinimumSize(_min_width, _min_height)
+        content.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         d_layout = QVBoxLayout()
         d_layout.setContentsMargins(0, 0, 0, 0)
         d_layout.addWidget(content)
         d.setLayout(d_layout)
-        d.exec()
+        # Re-apply minimum after layout; enforce once after show (in case platform opens small)
+        d.setMinimumSize(_min_width, _min_height)
+        d.show()  # non-modal: main BactiMate window stays usable and can be minimized too
+        QTimer.singleShot(50, d._enforce_min_size)
 
     def reset_segmentation_defaults(self):
         """Reset all segmentation parameters to their default values"""

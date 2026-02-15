@@ -1,43 +1,33 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-13 20:59:41",
+  "timestamp": "2026-02-15 22:15:16",
   "tabs": {
     "nd2": {
-      "max_frames": 100,
+      "max_frames": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
-      "bleach_method": 0
+      "bleach_method": 0,
+      "bleach_fluorescence_channels": [
+        false,
+        false
+      ]
     },
     "segmentation": {
-      "model": "new_convert",
+      "model": "bact_phase_omni",
       "diameter": 0.0,
-      "pixel_size_um": 0.0,
-      "flow_threshold": 0.0,
+      "pixel_size_um": 0.107,
+      "flow_threshold": 0.4,
       "mask_threshold": 0.0,
       "use_gpu": true,
       "cluster": false,
       "create_overlay": true,
-      "trained_models_this_session": [
-        {
-          "model_name": "no_convert_test2",
-          "n_epochs": 2,
-          "learning_rate": 0.1,
-          "batch_size": 16,
-          "nchan": 2,
-          "nclasses": 3,
-          "use_gpu": true,
-          "mask_filter": "_masks",
-          "img_filter": "_phase",
-          "train_dir": "/Users/philipppopp/Desktop/test_MF/",
-          "pretrained_model": "bact_phase_omni"
-        }
-      ]
+      "trained_models_this_session": []
     },
     "analyze_masks": {
-      "pixel_size": 0.108,
-      "min_aspect_ratio": 1.5,
+      "pixel_size": 0.107,
+      "min_aspect_ratio": 4.0,
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
       "min_solidity": 0.7,
@@ -48,6 +38,7 @@
       "min_length": 0.0,
       "detailed": true,
       "create_vis": true,
+      "exclude_border": true,
       "create_combined_summary": false,
       "analyze_fi": false,
       "analyze_fi_contour": false,

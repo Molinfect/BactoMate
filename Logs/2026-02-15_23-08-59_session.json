@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-13 21:19:20",
+  "timestamp": "2026-02-15 23:08:59",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -26,7 +26,7 @@
       "min_aspect_ratio": 1.5,
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
-      "min_solidity": 0.0,
+      "min_solidity": 0.7,
       "min_area": 0.0,
       "max_area": 0.0,
       "min_width": 0.0,
@@ -34,6 +34,7 @@
       "min_length": 0.0,
       "detailed": true,
       "create_vis": true,
+      "exclude_border": false,
       "create_combined_summary": false,
       "analyze_fi": false,
       "analyze_fi_contour": false,
