@@ -87,13 +87,17 @@ class ClickableTooltip(QLabel):
 
 
 class TooltipClickFilter(QObject):
-    """Event filter to hide tooltip when clicking elsewhere"""
+    """Event filter to hide tooltip when clicking elsewhere or when app loses focus"""
 
     def __init__(self, tooltip, parent=None):
         super().__init__(parent)
         self.tooltip = tooltip
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ApplicationDeactivate:
+            if self.tooltip and self.tooltip.isVisible():
+                ClickableTooltip.hide_current()
+            return False
         if event.type() == QEvent.Type.MouseButtonPress:
             global_pos = event.globalPosition().toPoint()
             widget_under_mouse = QApplication.widgetAt(global_pos)

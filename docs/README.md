@@ -551,7 +551,52 @@ To get user-trained models to behave like the built-in Omnipose models (same par
    For well-trained models, [Settings](https://omnipose.readthedocs.io/settings.html) recommends **flow_threshold=0.0** and **mask_threshold=0.0**. If your user model still gives 0 cells with mask_threshold=0, try the negative mask threshold workaround (e.g. -2.5) or re-check that training data and preprocessing match inference.
 
 5. **Training data and architecture**  
-   When you click **Start training**, BactiMate prepares the **omnipose_masks** subfolder (masks as instance labels) and uses the same architecture as the built-in bacterial model. **Start from** options: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. The result then works at inference with the same parameters as the built-in model.
+   Set the training directory and Image/Mask filters (or use **Auto-detect filters** to infer them from filenames). When you click **Start training**, BactiMate creates the **omnipose_masks** subfolder (instance-label masks) and uses the same architecture as the built-in bacterial model. For large or sparse images, use **Tile and prepare for training** first: it splits image/mask pairs into smaller tiles (e.g. 512×512), drops tiles with too few cells, and writes to a folder (default `omnipose_masks_tiled`). Set the training directory to that folder and **Crop size (tyx)** to half the tile size (e.g. 256×256). **Start from** options: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. The result then works at inference with the same parameters as the built-in model.
+
+6. **Making fine-tuning predictable (avoid 0 cells)**  
+   Fine-tuning with too many epochs can weaken the **output head** (the last layer that produces the distance map): the weights shrink and the distance map stays below the mask threshold → 0 cells. (1) Use the **default** when starting from a pretrained model: **50 epochs**, LR 0.01 (BactiMate sets these when you select e.g. bact_phase_omni). Fewer epochs (50) usually keep the verdict “likely segments”; 200+ often drift the head. (2) Use the **50 / 200 / 500** buttons next to Epochs (50 = recommended). (3) After training, run **Check pipeline**: if the verdict is “likely segments”, the model is good; if “weak head” or “may segment”, try 50 epochs or lower LR (0.005) and retrain. See [Omnipose Training](https://omnipose.readthedocs.io/training.html) and [GitHub](https://github.com/kevinjohncutler/omnipose) for from-scratch (4000 epochs).
+
+### Omnipose pipeline diagnostic script
+
+The same diagnostic is available in the GUI via **Check pipeline** (Processing tab, next to **Train model**) and from the command line. The GUI report includes **checkpoint comparison** for the selected model(s): weight summary, output-head stats, and a verdict (likely segments vs likely 0 cells from the output-head bias). Use the standalone script when you want to run specific checks or compare checkpoints from the CLI:
+
+```bash
+# Check a saved .pth (metadata, 'omni' in filename, load test)
+python -m bactimate.scripts.check_omnipose_pipeline model path/to/model_omni.pth
+
+# Check training directory (image/mask pairs, mask format, optional omnipose_masks prep)
+python -m bactimate.scripts.check_omnipose_pipeline training /path/to/train_dir
+python -m bactimate.scripts.check_omnipose_pipeline training /path/to/train_dir --img-filter _phase --mask-filter _masks --prepare
+
+# Check that an image works with a model (channels, shape, optional eval)
+python -m bactimate.scripts.check_omnipose_pipeline inference path/to/model_omni.pth path/to/image.tif
+
+# Run model + training + inference checks together
+python -m bactimate.scripts.check_omnipose_pipeline all path/to/model_omni.pth /path/to/train_dir --image path/to/test.tif
+
+# Compare two or more checkpoints (weight summary, output-head verdict: likely segments vs 0 cells)
+python -m bactimate.scripts.check_omnipose_pipeline compare a.pth b.pth [c.pth ...] [--builtin] [--forward image.tif]
+```
+
+This helps confirm: (1) the `.pth` has correct metadata and loads with Omnipose dynamics; (2) training data has valid pairs and Omnipose-ready instance masks; (3) inference image shape/channels match the model; (4) when comparing checkpoints, whether the output head has drifted (e.g. after many epochs) and is likely to give 0 cells. The report also shows whether the **loader is patched** to unwrap BactiMate-style checkpoints (see below).
+
+### Checkpoint format: why user models can fail to segment
+
+Built-in Omnipose models (e.g. `bact_phase_omnitorch_0`) are saved as a **plain state_dict** (only weight tensors). BactiMate-trained checkpoints are saved as a **dict** with `state_dict`, `nchan`, and `nclasses`. A loader that does `model.load_state_dict(torch.load(path))` without unwrapping will see the full dict and can fail or load nothing, so you get no segmentation even though the weights are fine.
+
+**BactiMate’s fix:** `setup/apply_all_patches.py` patches `cellpose_omni/resnet_torch.py` so it unwraps the checkpoint: `state_dict = ckpt.get('state_dict', ckpt)` before `load_state_dict`. After patching, user checkpoints load correctly.
+
+**If segmentation still fails:**
+
+1. **Confirm the patch is applied**  
+   Run **Check pipeline** on your user model; the report line “Loader unwraps checkpoint dict” should say “Yes (patched)”. If it says “No”, run `python setup/apply_all_patches.py` and restart.
+
+2. **Convert to plain state_dict**  
+   For an unpatched environment or to match the built-in format exactly:
+   ```bash
+   python -m bactimate.scripts.convert_checkpoint_to_plain path/to/scratch_4000_omni.pth
+   ```
+   This writes `scratch_4000_omni_plain.pth` (plain state_dict only). Use that file in BactiMate’s model dropdown (after copying to the user models folder and naming it with `_omni` in the filename) or in other tools that expect a plain state_dict.
 
 ### App Bundle Issues
 

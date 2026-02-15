@@ -24,13 +24,20 @@ def _settings() -> QSettings:
     return QSettings(_ORG, _APP)
 
 
+def get_default_browse_dir() -> str:
+    """Return the user's Desktop for file/folder dialogs when no last dir is set. Fallback to home if Desktop missing."""
+    desktop = Path.home() / "Desktop"
+    return str(desktop) if desktop.is_dir() else str(Path.home())
+
+
 def get_last_dir(key: str) -> str:
-    """Return last used directory for the given tab key, or empty string."""
+    """Return last used directory for the given tab key, or the user's Desktop."""
     val = _settings().value(f"last_dir/{key}", "")
     path_str = str(val) if val else ""
     if path_str and Path(path_str).is_dir():
         return path_str
-    return ""
+    desktop = Path.home() / "Desktop"
+    return str(desktop) if desktop.is_dir() else str(Path.home())
 
 
 def set_last_dir(key: str, path: str) -> None:

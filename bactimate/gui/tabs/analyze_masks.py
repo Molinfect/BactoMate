@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 
 from bactimate.gui.constants import PROJECT_ROOT
 from bactimate.gui.image_canvas import ImageCanvas
+from bactimate.gui.preferences import get_default_browse_dir
 from bactimate.gui.image_utils import to_qpixmap, scale_for_preview
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.utils import safe_imread
@@ -89,10 +90,6 @@ class AnalyzeMasksTab(QWidget):
             "Source: Hardcoded default, or extracted from metadata\n\n"
             "This value is used to convert pixel areas to µm².\n"
             "If you loaded a file with pixel size metadata, this will be auto-filled.\n\n"
-            "Common values:\n"
-            "- 100x objective: ~0.108 µm/pixel\n"
-            "- 60x objective: ~0.18 µm/pixel\n"
-            "- 40x objective: ~0.27 µm/pixel\n\n"
             "Tip: Check your microscope settings or ND2 metadata for the correct value."
         , parent_widget=self)
         pixel_layout.addWidget(pixel_label)
@@ -671,7 +668,7 @@ class AnalyzeMasksTab(QWidget):
     def select_file(self):
         """Open file dialog to select a mask TIFF file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Mask TIFF File", "", "TIFF Files (*.tif *.tiff);;All Files (*)"
+            self, "Select Mask TIFF File", get_default_browse_dir(), "TIFF Files (*.tif *.tiff);;All Files (*)"
         )
         if file_path:
             self.file_path.setText(file_path)
@@ -680,7 +677,7 @@ class AnalyzeMasksTab(QWidget):
     def select_folder(self):
         """Open folder dialog to select a folder"""
         folder_path = QFileDialog.getExistingDirectory(
-            self, "Select Folder Containing Mask Files", ""
+            self, "Select Folder Containing Mask Files", get_default_browse_dir()
         )
         if folder_path:
             self.file_path.setText(folder_path)
@@ -697,7 +694,7 @@ class AnalyzeMasksTab(QWidget):
     def select_fi_file(self):
         """Open file dialog to select an FI channel TIFF file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select FI Channel TIFF File", "", "TIFF Files (*.tif *.tiff);;All Files (*)"
+            self, "Select FI Channel TIFF File", get_default_browse_dir(), "TIFF Files (*.tif *.tiff);;All Files (*)"
         )
         if file_path:
             self.fi_file_path.setText(file_path)
@@ -751,7 +748,7 @@ class AnalyzeMasksTab(QWidget):
     def _browse_combine_folder(self):
         """Open folder dialog for 'Combine summaries from folder' path."""
         folder_path = QFileDialog.getExistingDirectory(
-            self, "Select Folder Containing Analysis Excel Files", ""
+            self, "Select Folder Containing Analysis Excel Files", get_default_browse_dir()
         )
         if folder_path:
             self.combine_folder_path.setText(folder_path)

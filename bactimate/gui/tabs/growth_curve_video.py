@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bactimate.gui.preferences import get_default_browse_dir
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 
@@ -317,7 +318,7 @@ class GrowthCurveVideoTab(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select TIFF File",
-            "",
+            get_default_browse_dir(),
             "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)"
         )
         if file_path:
@@ -328,7 +329,7 @@ class GrowthCurveVideoTab(QWidget):
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "Select Folder with TIFF Sequence",
-            ""
+            get_default_browse_dir()
         )
         if folder_path:
             self.video_path.setText(folder_path)
@@ -356,7 +357,7 @@ class GrowthCurveVideoTab(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Excel Analysis File",
-            "",
+            get_default_browse_dir(),
             "Excel Files (*.xlsx *.xls);;All Files (*)"
         )
         if file_path:

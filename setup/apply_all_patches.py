@@ -10,6 +10,7 @@ Patches applied:
 6. cellpose_omni io - NumPy 2.0 safe TIFF read (newbyteorder removed in NumPy 2.0)
 7. cellpose_omni models - Cellpose.__init__ accepts pretrained_model (path) for user-trained models
 8. cellpose_omni __main__ - pass channels to model.train() when nchan==2 so grayscale is duplicated to 2 channels
+9. cellpose_omni core - DataParallel unwrap when saving model (self.net.module.save_model when wrapped)
 """
 
 import sys
@@ -238,11 +239,24 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
                                             weights_only=True))"""
     new_gpu = """            ckpt = torch.load(filename, map_location=torch_GPU, weights_only=False)
             state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
-            self.load_state_dict(state_dict)"""
-    if "state_dict = ckpt.get('state_dict'" in content:
-        print("  ✓ cellpose_omni resnet_torch (load checkpoint unwrap) already patched")
+            if state_dict and next(iter(state_dict.keys()), '').startswith('module.'):
+                state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
+            self.load_state_dict(state_dict, strict=False)"""
+    # Upgrade existing patch: add module. strip + strict=False if we only have the unwrap
+    # Upgrade: already has unwrap (weights_only=False) but missing module. strip and strict=False
+    if "state_dict = ckpt.get('state_dict'" in content and "strict=False" not in content and "self.load_state_dict(state_dict)" in content:
+        content = content.replace(
+            "            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt\n            self.load_state_dict(state_dict)",
+            "            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt\n            if state_dict and next(iter(state_dict.keys()), '').startswith('module.'):\n                state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}\n            self.load_state_dict(state_dict, strict=False)",
+        )
+        if "strict=False" in content:
+            resnet_file.write_text(content)
+            print("  ✓ cellpose_omni resnet_torch (added module. strip + strict=False)")
+            return True
+    if "state_dict = ckpt.get('state_dict'" in content and "strict=False" in content:
+        print("  ✓ cellpose_omni resnet_torch (load checkpoint + module strip) already patched")
         return True
-    if old_gpu not in content:
+    if old_gpu not in content and "state_dict = ckpt.get('state_dict'" not in content:
         print("  WARNING: Could not find load_model GPU branch in cellpose_omni/resnet_torch.py")
         return False
 
@@ -250,9 +264,17 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
     # CPU branch
     old_cpu = """            state_dict = torch.load(filename, map_location=torch_CPU, weights_only=True)"""
     new_cpu = """            ckpt = torch.load(filename, map_location=torch_CPU, weights_only=False)
-            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt"""
+            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+            if state_dict and next(iter(state_dict.keys()), '').startswith('module.'):
+                state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}"""
     if old_cpu in content:
         content = content.replace(old_cpu, new_cpu)
+    elif "ckpt.get('state_dict', ckpt)" in content and "state_dict.keys(), '').startswith('module.')" not in content:
+        # CPU already patched; add module strip
+        content = content.replace(
+            "            ckpt = torch.load(filename, map_location=torch_CPU, weights_only=False)\n            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt",
+            "            ckpt = torch.load(filename, map_location=torch_CPU, weights_only=False)\n            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt\n            if state_dict and next(iter(state_dict.keys()), '').startswith('module.'):\n                state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}",
+        )
     resnet_file.write_text(content)
     print("  ✓ Patched cellpose_omni resnet_torch (load checkpoint with nchan/nclasses)")
     return True
@@ -304,86 +326,40 @@ def patch_omnipose_core_constant_dist_workaround() -> bool:
 
 
 def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
-    """When omnipose compute_masks finds no cell pixels, log dist map stats to BactiMate debug log. Patch every omnipose/core.py on sys.path so launch and app venvs both get fixed."""
+    """When omnipose compute_masks finds no cell pixels, log dist map stats. Use single-line write so the string can never be split (SyntaxError). Repair any broken copy."""
     import re
     core_files = _find_all_in_syspath("omnipose/core.py")
     if not core_files:
         print("  WARNING: Could not find omnipose/core.py")
         return False
 
+    # Single-line write so the patched file can never have an unterminated string (safe for copy/app bundle).
+    _one_line_write = '                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
+
     repaired_any = False
     for core_file in core_files:
         content = core_file.read_text()
-        # Normalize line endings so repairs match after copy to app bundle (e.g. \r\n -> \n).
         if "\r" in content:
             content = content.replace("\r\n", "\n").replace("\r", "\n")
 
-        # Repair broken installs where the _f.write string was split (unterminated string at line 1738).
-        # Loose regex first: broken write split across lines (unterminated string then ".format(...)" on following line(s)).
-        broken_loose = re.compile(
-            r'_f\.write\s*\(\s*"\[omnipose no cell pixels\] dist min=\{\:.4f\} max=\{\:.4f\} mean=\{\:.4f\} shape=\{\} mask_thr=\{\}'
-            r'\s*\n\s*"\.format\s*\([\s\S]*?mask_threshold\s*\)\s*\)',
-            re.DOTALL,
-        )
-        def _repl(m):
-            return (
-                '                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n'
-                "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
+        # 1) If file contains the diagnostic but the write spans multiple lines or is broken, normalize to one-line.
+        if "omnipose no cell pixels" in content and "_f.write" in content:
+            if _one_line_write in content:
+                continue  # already safe
+            # Match from optional leading whitespace + _f.write to end of .format(..., mask_threshold)) (handles broken split, any indent).
+            norm_re = re.compile(
+                r'\s*_f\.write\s*\(\s*"\[omnipose no cell pixels\] dist min=\{\:.4f\} max=\{\:.4f\} mean=\{\:.4f\} shape=\{\} mask_thr=\{\}[\s\S]*?mask_threshold\s*\)\s*\)',
+                re.DOTALL,
             )
-        if broken_loose.search(content):
-            content = broken_loose.sub(_repl, content, count=1)
-            core_file.write_text(content)
-            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic, loose regex): {}".format(core_file))
-            repaired_any = True
-            continue
+            if norm_re.search(content):
+                new_content = norm_re.sub(_one_line_write, content, count=1)
+                if new_content != content:
+                    core_file.write_text(new_content)
+                    print("  ✓ Normalized omnipose core (no-cell-pixels to one-line): {}".format(core_file))
+                    repaired_any = True
+                    continue
 
-        # Exact pattern A: newline then ".format(" (no leading spaces on that line - as in installed file).
-        broken_a = (
-            "                    _f.write(\"[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}"
-            "\n"
-            '".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
-        )
-        fixed_a = (
-            "                    _f.write(\"[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n\".format(\n"
-            "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
-        )
-        if broken_a in content:
-            content = content.replace(broken_a, fixed_a)
-            core_file.write_text(content)
-            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
-            repaired_any = True
-            continue
-        # Exact pattern B: newline then 20 spaces then ".format(" (alternate indent).
-        broken_write = (
-            '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}'
-            "\n"
-            '                    ".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
-        )
-        fixed_write = (
-            '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n'
-            "                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))"
-        )
-        if broken_write in content:
-            content = content.replace(broken_write, fixed_write)
-            core_file.write_text(content)
-            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
-            repaired_any = True
-            continue
-        # Regex fallback: match broken write (newline/code inside string) with flexible whitespace.
-        broken_re = re.compile(
-            r'_f\.write\("\[omnipose no cell pixels\] dist min=\{\:.4f\} max=\{\:.4f\} mean=\{\:.4f\} shape=\{\} mask_thr=\{\}[\s\S]*?"\.format\(\s+float\(np\.min\(_d\)\), float\(np\.max\(_d\)\), float\(np\.mean\(_d\)\), _d\.shape, mask_threshold\)\)',
-            re.DOTALL,
-        )
-        if broken_re.search(content):
-            content = broken_re.sub(
-                '_f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(\n                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))',
-                content,
-                count=1,
-            )
-            core_file.write_text(content)
-            print("  ✓ Repaired omnipose core (no-cell-pixels diagnostic, regex): {}".format(core_file))
-            repaired_any = True
-            continue
+        # 2) Original patch: insert the full block (with one-line write so it never breaks).
         old = """    else: # nothing to compute, just make it compatible
         omnipose_logger.info('No cell pixels found.')"""
         new = """    else: # nothing to compute, just make it compatible
@@ -392,8 +368,7 @@ def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
             if _dp and dist is not None:
                 _d = np.asarray(dist)
                 with open(_dp, "a", encoding="utf-8") as _f:
-                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(
-                        float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))
+                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))
         except Exception:
             pass
         omnipose_logger.info('No cell pixels found.')"""
@@ -405,9 +380,43 @@ def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
         core_file.write_text(content)
         print("  ✓ Patched omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
         repaired_any = True
+
     if repaired_any:
         return True
     print("  ✓ omnipose core (no-cell-pixels diagnostic) already patched ({} copy/copies)".format(len(core_files)))
+    return True
+
+
+def patch_omnipose_core_bce_boundary_range() -> bool:
+    """Fix RuntimeError: all elements of input should be between 0 and 1. Boundary head outputs logits; BCELoss expects [0,1]. Apply sigmoid to prediction and clamp target."""
+    core_files = _find_all_in_syspath("omnipose/core.py")
+    if not core_files:
+        print("  WARNING: Could not find omnipose/core.py")
+        return False
+
+    old = """        if self.nclasses==(self.dim+2):
+            bd = y[:,self.dim+1]
+            bd_loss = self.BCELoss(bd,boundary) #BCElogits"""
+    new = """        if self.nclasses==(self.dim+2):
+            bd = y[:,self.dim+1]
+            # Boundary head outputs logits; BCELoss expects [0,1]. Apply sigmoid and ensure target is float.
+            bd_prob = torch.sigmoid(bd)
+            boundary_float = boundary.float().clamp(0., 1.)
+            bd_loss = self.BCELoss(bd_prob, boundary_float)"""
+    patched = False
+    for core_file in core_files:
+        content = core_file.read_text()
+        if "bd_prob = torch.sigmoid(bd)" in content and "boundary_float = boundary.float()" in content:
+            continue
+        if old not in content:
+            continue
+        content = content.replace(old, new)
+        core_file.write_text(content)
+        print("  ✓ Patched omnipose core (BCE boundary range fix): {}".format(core_file))
+        patched = True
+    if patched:
+        return True
+    print("  ✓ omnipose core (BCE boundary range) already patched ({} copy/copies)".format(len(core_files)))
     return True
 
 
@@ -1159,6 +1168,53 @@ def patch_cellpose_omni_main_train_channels() -> bool:
     return True
 
 
+def patch_cellpose_omni_core_save_model() -> bool:
+    """Patch cellpose_omni/core.py: when self.net is DataParallel, call save_model on .module (fixes AttributeError in frozen/build).
+    Handles both: single line self.net.save_model(file_name) and the if self.torch and self.gpu / else variant (else branch fails on CPU when net is still DataParallel)."""
+    core_file = _find_in_syspath("cellpose_omni/core.py")
+    if not core_file:
+        print("  WARNING: Could not find cellpose_omni/core.py")
+        return False
+    content = core_file.read_text()
+    # Already fully patched: single-line safe call or two-line (net = ...; net.save_model)
+    if "self.net.save_model(file_name)" not in content and (
+        "(self.net.module if hasattr(self.net, 'module') else self.net).save_model(file_name)" in content
+        or "net = self.net.module if hasattr(self.net, 'module') else self.net" in content
+    ):
+        print("  ✓ cellpose_omni core (DataParallel save_model) already patched")
+        return True
+    # Variant A: if/else block (app bundle / some installs) — CPU branch uses self.net.save_model and can be DataParallel
+    block_old = """                        if self.torch and self.gpu:
+                            self.net.module.save_model(file_name)
+                        else:
+                            self.net.save_model(file_name)"""
+    block_new = """                        net = self.net.module if hasattr(self.net, 'module') else self.net
+                        net.save_model(file_name)"""
+    if block_old in content:
+        backup = core_file.with_suffix(".py.backup")
+        if not backup.exists():
+            backup.write_text(content)
+            print(f"  Created backup at: {backup}")
+        content = content.replace(block_old, block_new, 1)
+        core_file.write_text(content)
+        print("  ✓ Patched cellpose_omni core (DataParallel save_model, if/else variant)")
+        return True
+    # Variant B: single line
+    old = "self.net.save_model(file_name)"
+    new = "(self.net.module if hasattr(self.net, 'module') else self.net).save_model(file_name)"
+    if old in content:
+        backup = core_file.with_suffix(".py.backup")
+        if not backup.exists():
+            backup.write_text(content)
+            print(f"  Created backup at: {backup}")
+        content = content.replace(old, new, 1)
+        core_file.write_text(content)
+        print("  ✓ Patched cellpose_omni core (DataParallel save_model)")
+        return True
+    print("  WARNING: Could not find save_model block in cellpose_omni/core.py")
+    return False
+
+
 def main() -> bool:
     # When building the app bundle, pass --target-site-packages so we patch the copied venv, not another path.
     if len(sys.argv) >= 2 and sys.argv[1] == "--target-site-packages" and len(sys.argv) >= 3:
@@ -1227,6 +1283,13 @@ def main() -> bool:
     except Exception as e:
         print(f"  ✗ Error: {e}")
 
+    ok_omnipose_bce_boundary = False
+    print("\nPatching omnipose core (BCE boundary range for training)...")
+    try:
+        ok_omnipose_bce_boundary = patch_omnipose_core_bce_boundary_range()
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+
     ok_omnipose_dtype = False
     print("\nPatching omnipose core (grid_sample dtype)...")
     try:
@@ -1255,10 +1318,17 @@ def main() -> bool:
     except Exception as e:
         print(f"  ✗ Error: {e}")
 
+    ok_cellpose_core_save = False
+    print("\nPatching cellpose_omni core (DataParallel save_model)...")
+    try:
+        ok_cellpose_core_save = patch_cellpose_omni_core_save_model()
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+
     print("\n" + "=" * 50)
-    print(f"Done. peakdetect: {'OK' if ok_peak else 'skipped/failed'}; cellpose_omni: {'OK' if ok_cellpose else 'skipped/failed'}; transforms: {'OK' if ok_transforms else 'skipped/failed'}; io: {'OK' if ok_io else 'skipped/failed'}; dynamics: {'OK' if ok_dynamics else 'skipped/failed'}; resnet_load: {'OK' if ok_resnet_load else 'skipped/failed'}; omnipose_workaround: {'OK' if ok_omnipose_workaround else 'skipped/failed'}; omnipose_diagnostic: {'OK' if ok_omnipose_diagnostic else 'skipped/failed'}; omnipose_dtype: {'OK' if ok_omnipose_dtype else 'skipped/failed'}; omnipose_follow_flows: {'OK' if ok_omnipose_follow_flows else 'skipped/failed'}; Cellpose pretrained_model: {'OK' if ok_cellpose_pretrained else 'skipped/failed'}; train_channels: {'OK' if ok_train_channels else 'skipped/failed'}")
+    print(f"Done. peakdetect: {'OK' if ok_peak else 'skipped/failed'}; cellpose_omni: {'OK' if ok_cellpose else 'skipped/failed'}; transforms: {'OK' if ok_transforms else 'skipped/failed'}; io: {'OK' if ok_io else 'skipped/failed'}; dynamics: {'OK' if ok_dynamics else 'skipped/failed'}; resnet_load: {'OK' if ok_resnet_load else 'skipped/failed'}; omnipose_workaround: {'OK' if ok_omnipose_workaround else 'skipped/failed'}; omnipose_diagnostic: {'OK' if ok_omnipose_diagnostic else 'skipped/failed'}; omnipose_bce_boundary: {'OK' if ok_omnipose_bce_boundary else 'skipped/failed'}; omnipose_dtype: {'OK' if ok_omnipose_dtype else 'skipped/failed'}; omnipose_follow_flows: {'OK' if ok_omnipose_follow_flows else 'skipped/failed'}; Cellpose pretrained_model: {'OK' if ok_cellpose_pretrained else 'skipped/failed'}; train_channels: {'OK' if ok_train_channels else 'skipped/failed'}; cellpose_omni_core_save: {'OK' if ok_cellpose_core_save else 'skipped/failed'}")
     print("=" * 50)
-    return ok_peak or ok_cellpose or ok_io or ok_cellpose_pretrained
+    return ok_peak or ok_cellpose or ok_io or ok_cellpose_pretrained or ok_cellpose_core_save
 
 
 if __name__ == "__main__":

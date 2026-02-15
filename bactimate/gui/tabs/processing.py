@@ -4,6 +4,7 @@ Processing tab: single file or folder segmentation with Omnipose (batch_process_
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -50,12 +51,27 @@ from bactimate.gui.preferences import LAST_DIR_SEGMENTATION
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.mask_utils import (
     OMNIPOSE_MASKS_SUBDIR,
-    convert_masks_in_folder,
+    OMNIPOSE_MASKS_TILED_SUBDIR,
     ensure_omnipose_masks_has_images,
+    ensure_training_images_nchan,
+    get_training_pairs,
+    infer_training_filters,
     prepare_omnipose_masks_from_pairs,
+    tile_training_data,
 )
 from bactimate.gui.omnipose_utils import ensure_omni_in_model_path, inspect_omnipose_checkpoint
 from bactimate.gui.utils import safe_imread
+from bactimate.scripts.check_omnipose_pipeline import (
+    ensure_builtin_model_cached,
+    get_checkable_model_path,
+    _check_model,
+    _check_training_data,
+    _check_inference,
+    format_model_report,
+    format_training_report,
+    format_inference_report,
+    run_checkpoint_comparison,
+)
 from bactimate.gui.widgets import (
     ClickableTooltip,
     TooltipClickFilter,
@@ -76,6 +92,9 @@ USER_MODEL_EXTENSION = ".pth"
 
 # Transfer learning: only offer models that exist in the main tab (BUILTIN_OMNIPOSE_MODELS).
 # (nchan, nclasses, dim) per Omnipose models table; used to lock nchan/nclasses when selected.
+# nclasses=3 is the Omnipose CLI parameter (flow + distance + boundary). The network output
+# layer has 4 channels; checkpoints/loader may show "4 output channels" or model.cp.nclasses=4 —
+# that is the same architecture, not a mismatch.
 PRETRAINED_NCHAN_NCLASSES_DIM = {
     "bact_phase_omni": (2, 3, 2),
     "bact_fluor_omni": (2, 3, 2),
@@ -285,39 +304,17 @@ class ProcessingTab(QWidget):
             "- bact_phase_affinity: Bacterial phase contrast (affinity-based)\n\n"
             "User-trained models appear here after training via 'Train model…'."
         )
-        fix_metadata_btn = QPushButton("Fix metadata")
-        fix_metadata_btn.setToolTip(
-            "If a user model does not detect cells, it may lack nchan/nclasses in the file. "
-            "Click to write them into the selected user model so it loads correctly."
-        )
-        fix_metadata_btn.setEnabled(False)
-
-        def update_fix_metadata_enabled():
-            display = self.model_combo.currentText()
-            _, pretrained_path = self._resolve_model_selection(display)
-            fix_metadata_btn.setEnabled(pretrained_path is not None)
-
-        def on_fix_metadata():
-            display = self.model_combo.currentText()
-            _, pretrained_path = self._resolve_model_selection(display)
-            if not pretrained_path or not pretrained_path.is_file():
-                QMessageBox.warning(self, "Fix metadata", "Select a user model first.")
-                return
-            from bactimate.gui.omnipose_utils import fix_user_model_metadata
-            ok, msg = fix_user_model_metadata(pretrained_path)
-            if ok:
-                QMessageBox.information(self, "Fix metadata", msg)
-            else:
-                QMessageBox.warning(self, "Fix metadata", msg)
-
-        fix_metadata_btn.clicked.connect(on_fix_metadata)
-        self.model_combo.currentTextChanged.connect(update_fix_metadata_enabled)
-        update_fix_metadata_enabled()
-        model_layout.addWidget(fix_metadata_btn)
         train_model_btn = QPushButton("Train model")
         train_model_btn.setToolTip("Train a new Omnipose model from your images and ground-truth masks.")
         train_model_btn.clicked.connect(self._open_train_model_dialog)
         model_layout.addWidget(train_model_btn)
+        check_pipeline_btn = QPushButton("Check pipeline")
+        check_pipeline_btn.setToolTip(
+            "Run model diagnostic: check and compare models. "
+            "Optional: training data folder, and image for inference."
+        )
+        check_pipeline_btn.clicked.connect(self._open_check_pipeline_dialog)
+        model_layout.addWidget(check_pipeline_btn)
         seg_layout.addLayout(model_layout)
         
         # Diameter
@@ -689,7 +686,8 @@ class ProcessingTab(QWidget):
         dir_info = create_info_icon(
             "Folder containing your training data: one image file and one mask file per pair.\n\n"
             "Omnipose expects: for each image 'NAME.tif', a mask file 'NAME<Mask filter>.tif' (e.g. NAME_masks.tif). Same base name, mask = base + Mask filter + extension.\n\n"
-            "Mask format: must be instance labels (see (?) next to 'Convert masks for Omnipose').",
+            "Mask format: must be instance labels (background = 0; each cell = a unique integer). When you click Start training, an 'omnipose_masks' folder is created automatically and used for training.\n\n"
+            "Tip: For large or sparse images, tile to ~512×512 and drop mostly-empty tiles before training; set Crop size (tyx) to ~half tile size.",
             d,
         )
         dir_layout.addWidget(dir_info)
@@ -700,6 +698,7 @@ class ProcessingTab(QWidget):
                 train_dir_edit.setText(path)
         browse_btn = QPushButton("Browse…")
         browse_btn.setAcceptDrops(False)
+        browse_btn.setToolTip("")  # No hover tooltip; use (?) only
         browse_btn.clicked.connect(browse_dir)
         dir_layout.addWidget(browse_btn)
         dir_group.setLayout(dir_layout)
@@ -721,75 +720,147 @@ class ProcessingTab(QWidget):
         filter_layout.addWidget(QLabel("Image filter:"))
         img_filter_edit = QLineEdit()
         img_filter_edit.setPlaceholderText("empty or _img")
-        img_filter_edit.setMaximumWidth(120)
-        filter_layout.addWidget(img_filter_edit)
+        img_filter_edit.setMinimumWidth(180)
+        filter_layout.addWidget(img_filter_edit, 1)
+        filter_layout.addSpacing(12)
         filter_layout.addWidget(QLabel("Mask filter:"))
         mask_filter_edit = QLineEdit()
         mask_filter_edit.setText("_mask")
-        mask_filter_edit.setMaximumWidth(120)
-        filter_layout.addWidget(mask_filter_edit)
-        make_masks_btn = QPushButton("Convert masks for Omnipose")
-        make_masks_btn.setFixedWidth(260)
-        make_masks_info = create_info_icon(
-            "Mask format: Omnipose needs instance label matrices, not binary. Background = 0; each cell = a unique integer (1, 2, 3, …). Do not use one value (e.g. 255) for all cells—Omnipose needs per-cell IDs to compute flow fields.\n\n"
-            "This button: Converts binary masks (e.g. 0 and 255 from Ilastik) to instance labels. Output (and image copies when naming matches) goes to subfolder 'omnipose_masks'; originals are never overwritten. When you Start training, we use omnipose_masks automatically.",
+        mask_filter_edit.setMinimumWidth(180)
+        filter_layout.addWidget(mask_filter_edit, 1)
+        filter_layout.addSpacing(12)
+        auto_detect_btn = QPushButton("Auto-detect filters")
+        auto_detect_btn.setFixedWidth(160)
+        auto_detect_btn.setToolTip("")  # No hover tooltip; use (?) only
+        filter_layout.addWidget(auto_detect_btn)
+        filter_layout.addSpacing(8)
+        filters_info = create_info_icon(
+            "Omnipose needs instance-label masks (background = 0; each cell = a unique integer 1, 2, 3, …). "
+            "When you click Start training, an 'omnipose_masks' folder is created automatically and used for training; no separate conversion step is needed.",
             d,
         )
-        filter_layout.addWidget(make_masks_btn)
-        filter_layout.addSpacing(8)
-        filter_layout.addWidget(make_masks_info)
-        def on_make_masks():
+        filter_layout.addWidget(filters_info)
+
+        def on_auto_detect_filters():
             folder_str = train_dir_edit.text().strip()
-            mask_filter = mask_filter_edit.text().strip()
-            img_filter = img_filter_edit.text().strip()
             if not folder_str:
                 QMessageBox.warning(d, "No folder", "Enter a training directory first.")
                 return
             folder = Path(folder_str)
-            converted, skipped, errors, out_dir = convert_masks_in_folder(
-                folder, mask_filter, img_filter=img_filter
-            )
-            total = converted + skipped
-            if total == 0 and not errors:
+            if not folder.is_dir():
+                QMessageBox.warning(d, "Invalid folder", "Training directory does not exist or is not a folder.")
+                return
+            img_filter, mask_filter = infer_training_filters(folder)
+            if img_filter is None and mask_filter is None:
                 QMessageBox.information(
                     d,
-                    "No masks found",
-                    f"No files matching *{mask_filter}.tif or *{mask_filter}.tiff in:\n{folder}",
+                    "Auto-detect filters",
+                    "Could not detect image/mask pairs. Ensure the folder contains paired files (e.g. 634_phase.tif and 634_masks.tif) and try again, or set the filters manually.",
                 )
                 return
-            msg = (
-                f"Converted masks + image copies: {out_dir}\n\n"
-                f"Converted: {converted}, already OK: {skipped}."
-            )
-            if errors:
-                err_text = "\n".join(errors[:10])
-                if len(errors) > 10:
-                    err_text += f"\n… and {len(errors) - 10} more."
-                QMessageBox.warning(d, "Mask conversion", f"{msg}\n\nErrors:\n{err_text}")
-                return
-            msg += (
-                "\n\nKeep the training directory as is. When you click Start training, "
-                "we will use the omnipose_masks subfolder automatically (and copy images there if needed)."
-            )
-            box = QMessageBox(d)
-            box.setWindowTitle("Masks ready")
-            box.setText(msg)
-            box.setIcon(QMessageBox.Icon.Information)
-            open_btn = box.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
-            box.addButton(QMessageBox.StandardButton.Ok)
-            box.exec()
-            if box.clickedButton() == open_btn:
-                try:
-                    if sys.platform == "darwin":
-                        subprocess.run(["open", str(out_dir)], check=False)
-                    elif sys.platform == "win32":
-                        subprocess.run(["explorer", str(out_dir)], check=False)
-                    else:
-                        subprocess.run(["xdg-open", str(out_dir)], check=False)
-                except Exception:
-                    pass
-        make_masks_btn.clicked.connect(on_make_masks)
+            img_filter_edit.setText(img_filter or "")
+            mask_filter_edit.setText(mask_filter or "_mask")
+
+        auto_detect_btn.clicked.connect(on_auto_detect_filters)
         layout.addLayout(filter_layout)
+
+        # Tile and prepare for training (button full width so (?) aligns right with Auto-detect filters (?))
+        tile_row = QHBoxLayout()
+        tile_btn = QPushButton("Tile and prepare for training")
+        tile_btn.setToolTip("")  # No hover tooltip; use (?) only
+        tile_info = create_info_icon(
+            "Split images into smaller tiles and drop mostly-empty tiles. Use when images are large or sparse "
+            "to avoid the model collapsing to 0 cells. Output goes to a separate folder; set training directory to it and Crop size (tyx) to half the tile size. "
+            "Each run clears the output folder first, so the folder always contains only the tiles from this run.",
+            d,
+        )
+        tile_row.addWidget(tile_btn, 1)  # stretch so button fills line; (?) at right
+        tile_row.addWidget(tile_info)
+        layout.addLayout(tile_row)
+
+        def on_tile_and_prepare():
+            train_dir = train_dir_edit.text().strip()
+            if not train_dir or not Path(train_dir).is_dir():
+                QMessageBox.warning(d, "No folder", "Set a valid training directory first.")
+                return
+            img_filter = img_filter_edit.text().strip()
+            mask_filter = mask_filter_edit.text().strip() or "_mask"
+            pairs = get_training_pairs(Path(train_dir), img_filter, mask_filter)
+            if not pairs:
+                QMessageBox.warning(
+                    d,
+                    "No pairs",
+                    "No image/mask pairs found. Set Image and Mask filters so each image has a matching mask.",
+                )
+                return
+            # Small dialog: tile size, min cells, output folder
+            tile_dlg = QDialog(d)
+            tile_dlg.setWindowTitle("Tile and prepare for training")
+            tile_layout = QVBoxLayout(tile_dlg)
+            tile_layout.addWidget(QLabel("Tile size (Y and X). Must be divisible by 8. Use 512 or 256."))
+            tile_size_spin = QSpinBox()
+            tile_size_spin.setRange(64, 512)
+            tile_size_spin.setSingleStep(8)
+            tile_size_spin.setValue(512)
+            tile_layout.addWidget(tile_size_spin)
+            tile_layout.addWidget(QLabel("Minimum cells per tile (tiles with fewer cells are skipped):"))
+            min_cells_spin = QSpinBox()
+            min_cells_spin.setRange(0, 50)
+            min_cells_spin.setValue(1)
+            tile_layout.addWidget(min_cells_spin)
+            tile_layout.addWidget(QLabel("Output folder (default: training_dir/omnipose_masks_tiled):"))
+            out_edit = QLineEdit()
+            out_edit.setText(str(Path(train_dir).resolve() / OMNIPOSE_MASKS_TILED_SUBDIR))
+            out_edit.setMinimumWidth(400)
+            tile_layout.addWidget(out_edit)
+            bb_tile = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            bb_tile.accepted.connect(tile_dlg.accept)
+            bb_tile.rejected.connect(tile_dlg.reject)
+            tile_layout.addWidget(bb_tile)
+            if tile_dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            tile_size = max(8, (tile_size_spin.value() // 8) * 8)
+            min_cells = min_cells_spin.value()
+            out_path = Path(out_edit.text().strip())
+            if not out_path:
+                out_path = Path(train_dir).resolve() / OMNIPOSE_MASKS_TILED_SUBDIR
+            try:
+                n_tiles, n_imgs, errs = tile_training_data(
+                    Path(train_dir).resolve(),
+                    img_filter,
+                    mask_filter,
+                    tile_size,
+                    min_cells,
+                    out_path,
+                )
+            except Exception as e:
+                QMessageBox.warning(d, "Tiling failed", str(e))
+                return
+            if errs:
+                msg = f"Written {n_tiles} tiles from {n_imgs} image(s) to:\n{out_path}\n\nWarnings:\n" + "\n".join(errs[:8])
+                if len(errs) > 8:
+                    msg += f"\n... and {len(errs) - 8} more."
+            else:
+                msg = f"Written {n_tiles} tiles from {n_imgs} image(s) to:\n{out_path}"
+            if n_tiles > 0:
+                tyx_half = max(8, (tile_size // 2 // 8) * 8)  # half tile size, divisible by 8
+                tyx_y_spin.setValue(tyx_half)
+                tyx_x_spin.setValue(tyx_half)
+                msg += f"\n\nCrop size (tyx) has been set to {tyx_half}×{tyx_half} (half the tile size)."
+            msg += f"\n\nNext: set Training directory to the folder above if not already, and keep the same Image/Mask filters."
+            QMessageBox.information(d, "Tiling done", msg)
+            # Optionally set training dir to output
+            if n_tiles > 0 and QMessageBox.question(
+                d,
+                "Set training directory?",
+                "Set Training directory to the tiled folder now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            ) == QMessageBox.StandardButton.Yes:
+                train_dir_edit.setText(str(out_path))
+
+        tile_btn.clicked.connect(on_tile_and_prepare)
+
         # Model name (required)
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Model name:"))
@@ -807,15 +878,19 @@ class ProcessingTab(QWidget):
         name_layout.addWidget(name_info)
         model_name_edit = QLineEdit()
         model_name_edit.setPlaceholderText("e.g. my_bacteria_v1")
-        name_layout.addWidget(model_name_edit)
+        model_name_edit.setMinimumWidth(220)
+        name_layout.addWidget(model_name_edit, 1)
         layout.addLayout(name_layout)
         # Start from (transfer learning)
         start_from_layout = QHBoxLayout()
         start_from_layout.addWidget(QLabel("Start from:"))
         pretrained_combo = QComboBox()
-        pretrained_combo.setMinimumWidth(200)
+        pretrained_combo.setMinimumWidth(260)
         for display_name, _ in _get_pretrained_training_options():
             pretrained_combo.addItem(display_name)
+        # Default to first pretrained (bact_phase_omni) so epochs/LR open at 200 and 0.01
+        if pretrained_combo.count() >= 2:
+            pretrained_combo.setCurrentIndex(1)
         start_from_info = create_info_icon(
             "Choose which checkpoint to start training from.\n\n"
             "From scratch: no pretrained model; network is initialized from scratch (nchan=2, nclasses=3).\n\n"
@@ -824,10 +899,11 @@ class ProcessingTab(QWidget):
             "bact_phase_omni and bact_fluor_omni → 2 channels, 3 classes.",
             d,
         )
-        start_from_layout.addWidget(pretrained_combo)
+        start_from_layout.addWidget(pretrained_combo, 1)
         start_from_layout.addWidget(start_from_info)
         check_compat_btn = QPushButton("Check compatibility")
         check_compat_btn.setFixedWidth(260)
+        check_compat_btn.setToolTip("")  # No hover tooltip; use (?) only
         start_from_layout.addWidget(check_compat_btn)
         start_from_layout.addSpacing(12)
         check_compat_info = create_info_icon(
@@ -836,57 +912,110 @@ class ProcessingTab(QWidget):
         )
         start_from_layout.addWidget(check_compat_info)
         layout.addLayout(start_from_layout)
-        # Hyperparameters
+        # Hyperparameters: two rows — row 1: Epochs, Learning rate, Batch size, Use GPU; row 2: Crop size (Y/X), Save every
         layout.addWidget(QLabel("Training parameters:"))
-        params_layout = QHBoxLayout()
-        params_layout.addWidget(QLabel("Epochs:"))
-        epochs_info = create_info_icon(
+        params_row1 = QHBoxLayout()
+        params_row1.addWidget(QLabel("Epochs:"))
+        params_row1.addWidget(create_info_icon(
             "Number of full passes over the training set.\n\n"
-            "Omnipose often benefits from more epochs (e.g. 4000 for bacteria).\n"
-            "Fewer epochs (500–1000) for quick tests; 4–20 for a fast sanity check.",
+            "From scratch: Omnipose paper uses 4000 epochs on a large dataset; fewer often yields no cells.\n"
+            "Fine-tuning: start with 50 epochs (default). Fewer epochs (50) usually keep the output head healthy ('likely segments'); "
+            "more epochs (200, 500) can improve accuracy but often drift the head ('may segment' or 'weak head' → 0 cells). "
+            "After training, run Check pipeline to see the verdict; if it says weak head or 0 cells, use fewer epochs or lower LR (0.005).",
             d,
-        )
-        params_layout.addWidget(epochs_info)
+        ))
         n_epochs_spin = QSpinBox()
         n_epochs_spin.setRange(1, 50000)
         n_epochs_spin.setSingleStep(100)
         n_epochs_spin.setValue(4000)
-        params_layout.addWidget(n_epochs_spin)
-        params_layout.addWidget(QLabel("Learning rate:"))
-        lr_info = create_info_icon(
-            "Step size for the optimizer (default 0.1).\n\n"
-            "Larger values train faster but can be unstable; smaller values are slower but more stable.",
+        n_epochs_spin.setMinimumWidth(90)
+        params_row1.addWidget(n_epochs_spin)
+        for preset_epochs, preset_label in [(50, "50"), (200, "200"), (500, "500")]:
+            preset_btn = QPushButton(preset_label)
+            preset_btn.setToolTip("")
+            preset_btn.clicked.connect(lambda checked=False, e=preset_epochs: n_epochs_spin.setValue(e))
+            params_row1.addWidget(preset_btn)
+        params_row1.addSpacing(16)
+        params_row1.addWidget(QLabel("Learning rate:"))
+        params_row1.addWidget(create_info_icon(
+            "Step size for the optimizer.\n\n"
+            "From scratch: 0.1 is typical. Fine-tuning: use a lower LR (e.g. 0.01) so the pretrained model "
+            "does not drift; 0.1 for many epochs can shift the output range and cause 0 cells.",
             d,
-        )
-        params_layout.addWidget(lr_info)
+        ))
         lr_spin = QDoubleSpinBox()
         lr_spin.setRange(0.001, 1.0)
         lr_spin.setValue(0.1)
         lr_spin.setDecimals(3)
-        params_layout.addWidget(lr_spin)
-        params_layout.addWidget(QLabel("Batch size:"))
-        batch_info = create_info_icon(
+        lr_spin.setMinimumWidth(90)
+        params_row1.addWidget(lr_spin)
+        params_row1.addSpacing(16)
+        params_row1.addWidget(QLabel("Batch size:"))
+        params_row1.addWidget(create_info_icon(
             "Number of image crops per training step.\n\n"
             "Larger batches (e.g. 16) train faster if you have enough GPU memory;\n"
             "smaller batches (e.g. 4–8) use less memory.",
             d,
-        )
-        params_layout.addWidget(batch_info)
+        ))
         batch_spin = QSpinBox()
         batch_spin.setRange(1, 128)
         batch_spin.setValue(16)
-        params_layout.addWidget(batch_spin)
+        batch_spin.setMinimumWidth(90)
+        params_row1.addWidget(batch_spin)
+        params_row1.addSpacing(16)
         use_gpu_cb = QCheckBox("Use GPU")
         use_gpu_cb.setChecked(True)
-        gpu_info = create_info_icon(
+        use_gpu_cb.setToolTip("")
+        params_row1.addWidget(use_gpu_cb)
+        params_row1.addWidget(create_info_icon(
             "Use GPU (CUDA or Apple MPS) if available for much faster training.\n"
             "Uncheck to train on CPU only.",
             d,
-        )
-        params_layout.addWidget(gpu_info)
-        params_layout.addWidget(use_gpu_cb)
-        params_layout.addStretch()
-        layout.addLayout(params_layout)
+        ))
+        params_row1.addStretch()
+        layout.addLayout(params_row1)
+        # Row 2: Crop size (tyx) with Y: [spin] X: [spin], Save every N epochs
+        params_row2 = QHBoxLayout()
+        params_row2.addWidget(QLabel("Crop size (tyx):"))
+        params_row2.addWidget(create_info_icon(
+            "Training crop size (Y, X) for random crops each epoch. Default 256×256. Must be divisible by 8.\n\n"
+            "Use ~half your image size: e.g. 128×128 for 256×256 tiles, 256×256 for ~512×512. "
+            "Large sparse images → many background crops → model can collapse (0 cells). "
+            "Prefer tiling images to ~512×512 and dropping empty tiles before training.",
+            d,
+        ))
+        params_row2.addWidget(QLabel("Y:"))
+        tyx_y_spin = QSpinBox()
+        tyx_y_spin.setRange(64, 512)
+        tyx_y_spin.setSingleStep(8)
+        tyx_y_spin.setValue(256)
+        tyx_y_spin.setMinimumWidth(72)
+        params_row2.addWidget(tyx_y_spin)
+        params_row2.addWidget(QLabel("X:"))
+        tyx_x_spin = QSpinBox()
+        tyx_x_spin.setRange(64, 512)
+        tyx_x_spin.setSingleStep(8)
+        tyx_x_spin.setValue(256)
+        tyx_x_spin.setMinimumWidth(72)
+        params_row2.addWidget(tyx_x_spin)
+        params_row2.addSpacing(16)
+        params_row2.addWidget(QLabel("Save every N epochs:"))
+        params_row2.addWidget(create_info_icon(
+            "Save a checkpoint every N epochs (0 = only final model). "
+            "Use e.g. 50 to compare epochs and pick the best instead of the last.\n\n"
+            "When N > 0: checkpoints are written to the folder 'models' inside your training directory (e.g. training_dir/models). "
+            "You get one file per save (epoch_0, epoch_N, epoch_2N, …). Omnipose may also save the last few epochs (e.g. 41–49 when training to 50). "
+            "The final model is also copied to your user models folder. When N = 0: only the final model is saved (temp folder, then copied to user models).",
+            d,
+        ))
+        save_each_spin = QSpinBox()
+        save_each_spin.setRange(0, 1000)
+        save_each_spin.setValue(0)
+        save_each_spin.setSpecialValueText("final only")
+        save_each_spin.setMinimumWidth(90)
+        params_row2.addWidget(save_each_spin)
+        params_row2.addStretch()
+        layout.addLayout(params_row2)
         # nchan/nclasses are fixed by "Start from"; hidden spinboxes updated by update_pretrained_lock
         nchan_spin = QSpinBox(d)
         nchan_spin.setRange(1, 8)
@@ -927,6 +1056,13 @@ class ProcessingTab(QWidget):
                 nclasses_spin.setStyleSheet(_normal_style)
                 nchan_spin.setToolTip("")
                 nclasses_spin.setToolTip("")
+            # Transfer-learning–friendly defaults: index 0 = From scratch (4000, 0.1); index >= 1 = pretrained (50, 0.01)
+            if idx == 0:
+                n_epochs_spin.setValue(4000)
+                lr_spin.setValue(0.1)
+            else:
+                n_epochs_spin.setValue(50)
+                lr_spin.setValue(0.01)
         pretrained_combo.currentIndexChanged.connect(update_pretrained_lock)
         update_pretrained_lock()
 
@@ -935,20 +1071,72 @@ class ProcessingTab(QWidget):
         layout.addWidget(log_label)
         log_text = QTextEdit()
         log_text.setReadOnly(True)
-        log_text.setMaximumHeight(120)
+        log_text.setMaximumHeight(180)
+        log_text.setFont(QFont("Menlo", 10) if sys.platform == "darwin" else QFont("Consolas", 9))
         layout.addWidget(log_text)
-        # Buttons
+
+        def _format_training_log_line(raw: str) -> str:
+            """Strip ANSI codes and reformat Omnipose 'Train epoch' lines for readability."""
+            # Remove ANSI escape sequences (\x1b or \033, then [0m, [38;5;74m, etc.)
+            stripped = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw)
+            stripped = re.sub(r"\033\[[0-9;]*[a-zA-Z]", "", stripped)
+            stripped = re.sub(r"\[0m|\[38;5;\d+m", "", stripped)
+            stripped = stripped.strip()
+            if not stripped:
+                return ""
+            # Drop [INFO] lines that are only a checkpoint save path (Omnipose logs path each epoch/save_each)
+            if "\t" in stripped:
+                parts = stripped.split("\t")
+                last = parts[-1].strip() if parts else ""
+                if last and ("/cellpose_" in last or "cellpose_residual" in last) and ("epoch_" in last or re.search(r"_\d{4}_\d{2}_\d{2}", last)):
+                    return ""
+            # If line has logger prefix (timestamp \t [INFO] \t ... \t line N \t message), keep message part
+            if "Train epoch:" in stripped and "\t" in stripped:
+                parts = stripped.split("\t")
+                msg = stripped
+                for i in range(len(parts) - 1, -1, -1):
+                    if "Train epoch:" in parts[i]:
+                        msg = parts[i].strip()
+                        break
+            else:
+                msg = stripped
+            # Keep "Train epoch: N | Time: ..." on one line; drop sec/batch and Last batch Loss (noisy per-batch stats)
+            if "Train epoch:" in msg and " | " in msg:
+                segments = [s.strip() for s in msg.split(" | ")]
+                # Exclude segments that only report sec/batch or Last batch Loss
+                segments = [
+                    s for s in segments
+                    if "sec/batch" not in s.lower() and "last batch loss" not in s.lower()
+                ]
+                if not segments:
+                    return ""
+                def _shorten(s: str) -> str:
+                    m = re.search(r"(Loss>:?\s*)([\d.]+)", s)
+                    if m:
+                        try:
+                            val = float(m.group(2))
+                            return s[: m.start(2)] + f"{val:.2f}"
+                        except ValueError:
+                            pass
+                    return s
+                segments = [_shorten(s) for s in segments]
+                return "  " + " | ".join(segments)
+            return msg
+
+        # Buttons (no hover tooltips; use (?) info only)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok)
         bb.setOrientation(Qt.Orientation.Horizontal)
         start_btn = bb.button(QDialogButtonBox.StandardButton.Ok)
         start_btn.setText("Start training")
+        start_btn.setToolTip("")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setToolTip("")
         bb.rejected.connect(d.reject)
 
         class TrainWorker(QThread):
             log_line = pyqtSignal(str)
             finished_with = pyqtSignal(bool, str, str)  # success, model_name, message
 
-            def __init__(self, cmd, env, cwd, save_dir, dest_file, model_name, nchan, nclasses):
+            def __init__(self, cmd, env, cwd, save_dir, dest_file, model_name, nchan, nclasses, keep_save_dir=False):
                 super().__init__()
                 self.cmd = cmd
                 self.env = env
@@ -958,24 +1146,22 @@ class ProcessingTab(QWidget):
                 self.model_name = model_name
                 self.nchan = int(nchan)
                 self.nclasses = int(nclasses)
+                self.keep_save_dir = keep_save_dir
 
             def _write_checkpoint_metadata(self):
-                """Persist the same nchan/nclasses we passed to training into the saved .pth so the loader can load it (Omnipose may not write them). No architecture change."""
+                """Save in same format as official Omnipose models (plain state_dict only) so loading
+                matches the working built-in. Loader infers nchan/nclasses from weights."""
                 try:
                     import torch
                     ckpt = torch.load(self.dest_file, map_location="cpu", weights_only=False)
-                    if not isinstance(ckpt, dict):
-                        ckpt = {"state_dict": ckpt, "nchan": self.nchan, "nclasses": self.nclasses}
-                        torch.save(ckpt, self.dest_file)
+                    state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+                    if not isinstance(state, dict):
                         return
-                    if "nchan" in ckpt and "nclasses" in ckpt:
-                        return
-                    state = ckpt.get("state_dict") or ckpt
-                    ckpt = dict(ckpt)
-                    ckpt["state_dict"] = state
-                    ckpt["nchan"] = self.nchan
-                    ckpt["nclasses"] = self.nclasses
-                    torch.save(ckpt, self.dest_file)
+                    # Strip 'module.' prefix if present (same as patched resnet_torch loader)
+                    first_key = next(iter(state.keys()), "")
+                    if first_key.startswith("module."):
+                        state = {k.replace("module.", "", 1): v for k, v in state.items()}
+                    torch.save(state, self.dest_file)
                 except Exception:
                     pass  # non-fatal; loading will still infer from state_dict
 
@@ -1013,8 +1199,12 @@ class ProcessingTab(QWidget):
                     newest = max(pth_files, key=lambda p: p.stat().st_mtime)
                     shutil.copy2(newest, self.dest_file)
                     self._write_checkpoint_metadata()
-                    shutil.rmtree(self.save_dir, ignore_errors=True)
-                    self.finished_with.emit(True, self.model_name, f"Saved to {self.dest_file}")
+                    if not self.keep_save_dir:
+                        shutil.rmtree(self.save_dir, ignore_errors=True)
+                    msg = f"Saved to {self.dest_file}"
+                    if self.keep_save_dir:
+                        msg += f". Intermediate checkpoints are in: {self.save_dir}"
+                    self.finished_with.emit(True, self.model_name, msg)
                 except Exception as e:
                     self.finished_with.emit(False, self.model_name, str(e))
 
@@ -1202,10 +1392,44 @@ class ProcessingTab(QWidget):
                                 QMessageBox.StandardButton.No,
                             ) != QMessageBox.StandardButton.Yes:
                                 return
+            n_epochs = n_epochs_spin.value()
+            # From-scratch with few epochs often yields 0 cells at inference (Omnipose improves until ~4000)
+            if pretrained_cli == "None" and n_epochs < 1000:
+                if QMessageBox.question(
+                    d,
+                    "From-scratch training",
+                    f"You chose \"From scratch\" with only {n_epochs} epochs. Omnipose from-scratch typically needs around 4000 epochs to detect cells; 200–400 often yields no cells at inference.\n\nContinue anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                ) != QMessageBox.StandardButton.Yes:
+                    return
+            # Fine-tuning with many epochs on small data can shift output-head and cause 0 cells (Omnipose expects a fixed output range)
+            if pretrained_cli and pretrained_cli != "None" and n_epochs > 500:
+                if QMessageBox.question(
+                    d,
+                    "Fine-tuning with many epochs",
+                    f"You are fine-tuning on top of a pretrained model with {n_epochs} epochs. "
+                    "Many epochs often drift the output head and cause 0 cells. "
+                    "Recommended: start with 50 epochs (default), then run Check pipeline; only try 200+ if you need more training and re-check the verdict.\n\nContinue anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                ) != QMessageBox.StandardButton.Yes:
+                    return
+            # When nchan>=2, Omnipose expects each image to have nchan channels (e.g. (2,Y,X)). Convert 1-channel images in-place.
+            nchan_val = nchan_spin.value()
+            n_chan_updated, chan_errors = ensure_training_images_nchan(
+                Path(train_dir_abs), img_filter, mask_filter, nchan_val
+            )
             start_btn.setEnabled(False)
             log_text.clear()
-            n_epochs = n_epochs_spin.value()
             log_text.append(f"Found {pairs_ok} image/mask pair(s). All will be used every epoch for {n_epochs} epochs.")
+            if chan_errors:
+                for err in chan_errors[:5]:
+                    log_text.append(f"Warning: {err}")
+                if len(chan_errors) > 5:
+                    log_text.append(f"... and {len(chan_errors) - 5} more.")
+            if n_chan_updated > 0:
+                log_text.append(f"Ensured {n_chan_updated} image(s) have {nchan_val} channels (CYX) for training.")
             # Pass through to Omnipose: same args as paper (--nchan 2 --nclasses 3). No architecture change.
             pretrained_arg = pretrained_cli if pretrained_cli is not None else CANONICAL_BACTERIAL_MODEL
             if pretrained_cli == "None":
@@ -1214,9 +1438,11 @@ class ProcessingTab(QWidget):
                 log_text.append(f"Transfer learning: starting from {pretrained_cli} (nchan/nclasses match that model).")
             else:
                 log_text.append(f"Initializing from {CANONICAL_BACTERIAL_MODEL} (same architecture), training on your data.")
-            log_text.append("Starting Omnipose training (this may take a long time)…")
-            # Same as Omnipose paper: --train --diameter 0 --n_epochs 4000 --learning_rate 0.1 --batch_size 16 --RAdam --nclasses 3
-            # (From scratch: --pretrained_model None; transfer: --pretrained_model bact_phase_omni or other). We pass --nchan/--nclasses through; no architecture change.
+            log_text.append("Starting Omnipose training (this may take a while)…")
+            # Align with Omnipose training docs: --dir (absolute), --img_filter, --mask_filter, --nchan, --nclasses,
+            # --all_channels + --channel_axis 0 when nchan>=2, --pretrained_model, --diameter 0, --n_epochs, --learning_rate,
+            # --RAdam, --batch_size; architecture: residual_on=1, style_on=1, concatenation=0.
+            # Optional in CLI only: --tyx, --look_one_level_down, --save_every/--save_each, --dataloader/--num_workers.
             cmd = [
                 sys.executable, "-m", "omnipose", "--train",
                 "--dir", train_dir_abs,
@@ -1228,29 +1454,50 @@ class ProcessingTab(QWidget):
                 "--batch_size", str(batch_spin.value()),
                 "--nchan", str(nchan_spin.value()),
                 "--nclasses", str(nclasses_spin.value()),
+                "--residual_on", "1",
+                "--style_on", "1",
+                "--concatenation", "0",
                 "--RAdam",
             ]
             if img_filter:
                 cmd.extend(["--img_filter", img_filter])
             if use_gpu_cb.isChecked():
                 cmd.append("--use_gpu")
-            # Channel axis: 0 = channels first (CYX). Only relevant when nchan > 1.
+            tyx_y = max(8, (tyx_y_spin.value() // 8) * 8)
+            tyx_x = max(8, (tyx_x_spin.value() // 8) * 8)
+            if tyx_y != 224 or tyx_x != 224:
+                cmd.extend(["--tyx", f"{tyx_y},{tyx_x}"])  # Omnipose expects one comma-separated string
+            save_every_val = save_each_spin.value()
+            # Omnipose: --save_every N = interval (epochs between saves), --save_each = flag (new file per save, not overwrite)
+            if save_every_val > 0:
+                cmd.extend(["--save_every", str(save_every_val), "--save_each"])
+            # Channel axis: 0 = channels first (CYX). Use all channels (Omnipose docs).
             if nchan_spin.value() >= 2:
-                cmd.extend(["--channel_axis", "0"])
+                cmd.extend(["--channel_axis", "0", "--all_channels"])
             import tempfile
-            save_dir = tempfile.mkdtemp(prefix="bactimate_train_")
+            if save_every_val > 0:
+                # Omnipose writes checkpoints to training_dir/models; use that so they persist
+                save_dir_path = Path(train_dir_abs) / "models"
+                save_dir_path.mkdir(parents=True, exist_ok=True)
+                save_dir = str(save_dir_path)
+                keep_save_dir = True
+            else:
+                save_dir = tempfile.mkdtemp(prefix="bactimate_train_")
+                keep_save_dir = False
             env = os.environ.copy()
             env["CELLPOSE_LOCAL_MODELS_PATH"] = save_dir
 
             worker = TrainWorker(
                 cmd, env, train_dir_abs, save_dir, dest_file, final_stem,
-                nchan_spin.value(), nclasses_spin.value(),
+                nchan_spin.value(), nclasses_spin.value(), keep_save_dir=keep_save_dir,
             )
             self._train_worker = worker  # Keep ref so thread isn't destroyed if dialog closes
 
             def on_log(line):
                 if log_text:
-                    log_text.append(line)
+                    formatted = _format_training_log_line(line)
+                    if formatted:
+                        log_text.append(formatted)
 
             def on_finished(success, name, msg):
                 start_btn.setEnabled(True)
@@ -1278,6 +1525,8 @@ class ProcessingTab(QWidget):
                         "It will appear in the model dropdown. "
                         "When using it: if no cells are detected, set Diameter (e.g. 30 px) in Processing; custom models do not support auto-diameter."
                     )
+                    if save_every_val > 0:
+                        done_msg += f"\n\nIntermediate checkpoints (every {save_every_val} epochs) are in:\n{Path(train_dir_abs) / 'models'}"
                     done_msg = f"(Initialized from {pretrained_arg})\n\n" + done_msg
                     QMessageBox.information(d, "Done", done_msg)
                     current = self.model_combo.currentText()
@@ -2162,9 +2411,13 @@ class ProcessingTab(QWidget):
                 # User models: diameter=0 triggers slow two-pass (estimate then segment). Use 30 so we run once; result is the same.
                 if pretrained_path is not None and (diameter_value is None or diameter_value <= 0):
                     diameter_value = 30.0
+                # User models: always use flow_threshold=0 (0.4 often yields 0 cells)
+                flow_val = float(self.flow_threshold.value())
+                if pretrained_path is not None and flow_val > 0:
+                    flow_val = 0.0
                 return {
                     "diameter": diameter_value if diameter_value and diameter_value > 0 else 0,
-                    "flow_threshold": self.flow_threshold.value(),
+                    "flow_threshold": flow_val,
                     "mask_threshold": self._get_effective_mask_threshold(),
                     "cluster": self.cluster.isChecked(),
                     "model_type": model_type,
@@ -2757,7 +3010,9 @@ class ProcessingTab(QWidget):
             def start_preview():
                 preview_dialog.raise_()
                 preview_dialog.activateWindow()
-                update_display(0, show_progress=True)
+                # Use show_progress=False for the initial frame to avoid a second progress dialog
+                # popping on top of the preview right after open (caused a visible "close/reopen" flicker)
+                update_display(0, show_progress=False)
                 # Clear "stay on top" after first display so the window doesn't stay on top forever
                 def clear_stay_on_top():
                     preview_dialog.setWindowFlags(
@@ -2765,7 +3020,9 @@ class ProcessingTab(QWidget):
                     )
                     preview_dialog.show()  # needed after changing flags
                 QTimer.singleShot(1500, clear_stay_on_top)
-            QTimer.singleShot(0, start_preview)
+            # Short delay so the preview window has time to paint before we run segmentation;
+            # avoids the window appearing to "flash" or close/reopen when the event loop runs start_preview
+            QTimer.singleShot(80, start_preview)
 
             # Show cache info in status
             def update_cache_status():
@@ -2849,7 +3106,307 @@ class ProcessingTab(QWidget):
                 get_logger().exception("Could not show preview error dialog")
                 print(f"CRITICAL ERROR in preview_segmentation: {error_msg}", file=sys.stderr)
             # Don't re-raise - PyQt6 will abort if we do
-    
+
+    def _open_check_pipeline_dialog(self):
+        """Open diagnostic dialog: check current model (or compare two), optional training dir, optional image. Can download built-in models if needed."""
+        from PyQt6.QtWidgets import (
+            QCheckBox,
+            QComboBox,
+            QDialog,
+            QFileDialog,
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QMessageBox,
+            QPushButton,
+            QTextEdit,
+            QVBoxLayout,
+        )
+        from PyQt6.QtGui import QFont
+
+        d = QDialog(self)
+        d.setWindowTitle("Check Omnipose pipeline")
+        d.setMinimumSize(620, 520)
+        layout = QVBoxLayout()
+        last_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
+        model_names = self._get_available_models()
+
+        # Mode: single check vs compare two models
+        download_cb = QCheckBox("Download built-in models if needed")
+        download_cb.setChecked(True)
+        download_cb.setToolTip("When a built-in model (e.g. bact_phase_omni) is selected, download it into the cache first so it can be checked or compared.")
+        layout.addWidget(download_cb)
+
+        compare_cb = QCheckBox("Compare two models")
+        compare_cb.setToolTip("Run model check on two models (Model A and Model B) and show both reports. Use to compare user vs user or user vs built-in.")
+        layout.addWidget(compare_cb)
+
+        # Single: current model (read-only label; snapshot when dialog opens)
+        single_group = QGroupBox("Single check (current tab model)")
+        single_layout = QVBoxLayout()
+        display = self.model_combo.currentText()
+        model_type, user_path = self._resolve_model_selection(display)
+        path = get_checkable_model_path(model_type, user_path, ensure_builtin_cached=False)
+        model_label = QLabel(f"Current model: {display}")
+        if path is None and (model_type or user_path):
+            if model_type:
+                model_label.setText(f"Current model: {display} (not cached — enable 'Download built-in…' and run, or run segmentation once)")
+            else:
+                model_label.setText(f"Current model: {display} (file not found)")
+        model_label.setWordWrap(True)
+        single_layout.addWidget(model_label)
+        single_group.setLayout(single_layout)
+        layout.addWidget(single_group)
+
+        # Compare: Model A and Model B combos
+        compare_group = QGroupBox("Compare two models")
+        compare_layout = QHBoxLayout()
+        compare_layout.addWidget(QLabel("Model A:"))
+        combo_a = QComboBox()
+        combo_a.addItems(model_names)
+        compare_layout.addWidget(combo_a)
+        compare_layout.addWidget(QLabel("Model B:"))
+        combo_b = QComboBox()
+        combo_b.addItems(model_names)
+        compare_layout.addWidget(combo_b)
+        compare_group.setLayout(compare_layout)
+        layout.addWidget(compare_group)
+        compare_group.setVisible(False)
+
+        def on_compare_toggled(checked):
+            compare_group.setVisible(checked)
+            single_group.setVisible(not checked)
+
+        compare_cb.toggled.connect(on_compare_toggled)
+        single_group.setVisible(True)
+
+        # Optional: training directory
+        train_group = QGroupBox("Training data (optional)")
+        train_layout = QVBoxLayout()
+        train_dir_edit = QLineEdit()
+        train_dir_edit.setPlaceholderText("Path to folder with image/mask pairs")
+        train_row = QHBoxLayout()
+        train_row.addWidget(train_dir_edit)
+        browse_train_btn = QPushButton("Browse…")
+        browse_train_btn.clicked.connect(lambda: _browse_train())
+        train_row.addWidget(browse_train_btn)
+        train_layout.addLayout(train_row)
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Image filter:"))
+        img_filter_edit = QLineEdit()
+        img_filter_edit.setPlaceholderText("e.g. _phase")
+        img_filter_edit.setFixedWidth(100)
+        filter_row.addWidget(img_filter_edit)
+        filter_row.addWidget(QLabel("Mask filter:"))
+        mask_filter_edit = QLineEdit()
+        mask_filter_edit.setText("_mask")
+        mask_filter_edit.setFixedWidth(100)
+        filter_row.addWidget(mask_filter_edit)
+        train_layout.addLayout(filter_row)
+        train_group.setLayout(train_layout)
+        layout.addWidget(train_group)
+
+        def _browse_train():
+            path = QFileDialog.getExistingDirectory(d, "Select training directory", last_dir)
+            if path:
+                train_dir_edit.setText(path)
+
+        # Optional: image for inference check
+        image_group = QGroupBox("Inference test image (optional)")
+        image_layout = QHBoxLayout()
+        image_edit = QLineEdit()
+        image_edit.setPlaceholderText("Path to an image to test with current / Model A")
+        image_layout.addWidget(image_edit)
+
+        def browse_image():
+            path, _ = QFileDialog.getOpenFileName(d, "Select image", last_dir, "Images (*.tif *.tiff *.png);;All (*)")
+            if path:
+                image_edit.setText(path)
+
+        browse_image_btn = QPushButton("Browse…")
+        browse_image_btn.clicked.connect(browse_image)
+        image_layout.addWidget(browse_image_btn)
+        image_group.setLayout(image_layout)
+        layout.addWidget(image_group)
+
+        # Report area
+        report = QTextEdit()
+        report.setReadOnly(True)
+        report.setFont(QFont("Monospace", 9))
+        report.setPlaceholderText("Click 'Run diagnostic'. Single: checks current tab model. Compare: checks Model A and Model B. Enable 'Download built-in…' to cache Omnipose models first.")
+        layout.addWidget(report)
+
+        # Run diagnostic in a worker thread so model loading cannot block or crash the GUI
+        class DiagnosticWorker(QThread):
+            result_ready = pyqtSignal(str)
+
+            def __init__(self, tab, is_compare, name_a, name_b, do_download,
+                         train_dir_str, img_filter, mask_filter, image_str, single_display):
+                super().__init__()
+                self.tab = tab
+                self.is_compare = is_compare
+                self.name_a = name_a
+                self.name_b = name_b
+                self.do_download = do_download
+                self.train_dir_str = train_dir_str
+                self.img_filter = img_filter
+                self.mask_filter = mask_filter
+                self.image_str = image_str
+                self.single_display = single_display
+
+            def run(self):
+                lines = []
+                primary_model_path = None
+                try:
+                    if self.is_compare:
+                        type_a, path_a = self.tab._resolve_model_selection(self.name_a)
+                        type_b, path_b = self.tab._resolve_model_selection(self.name_b)
+                        try:
+                            model_path_a = get_checkable_model_path(type_a, path_a, ensure_builtin_cached=self.do_download and bool(type_a))
+                        except Exception as e:
+                            model_path_a = None
+                            lines.append(f"Model A ({self.name_a}): failed to resolve — {e}")
+                            lines.append("")
+                        try:
+                            model_path_b = get_checkable_model_path(type_b, path_b, ensure_builtin_cached=self.do_download and bool(type_b))
+                        except Exception as e:
+                            model_path_b = None
+                            lines.append(f"Model B ({self.name_b}): failed to resolve — {e}")
+                            lines.append("")
+                        if model_path_a is None and not any("Model A" in ln for ln in lines):
+                            lines.append(f"Model A ({self.name_a}): no file (built-in not cached or user file missing).")
+                            lines.append("")
+                        elif model_path_a is not None:
+                            try:
+                                r = _check_model(Path(model_path_a))
+                                lines.append(f"=== Model A: {self.name_a} ===")
+                                lines.append(format_model_report(r))
+                                lines.append("")
+                            except Exception as e:
+                                lines.append(f"Model A check error: {e}")
+                                lines.append("")
+                            import gc
+                            gc.collect()
+                        if model_path_b is None and not any("Model B" in ln for ln in lines):
+                            lines.append(f"Model B ({self.name_b}): no file (built-in not cached or user file missing).")
+                            lines.append("")
+                        elif model_path_b is not None:
+                            try:
+                                r = _check_model(Path(model_path_b))
+                                lines.append(f"=== Model B: {self.name_b} ===")
+                                lines.append(format_model_report(r))
+                                lines.append("")
+                            except Exception as e:
+                                lines.append(f"Model B check error: {e}")
+                                lines.append("")
+                        primary_model_path = model_path_a if model_path_a is not None else model_path_b
+                    else:
+                        model_type, user_path = self.tab._resolve_model_selection(self.single_display)
+                        try:
+                            primary_model_path = get_checkable_model_path(model_type, user_path, ensure_builtin_cached=self.do_download and bool(model_type))
+                        except Exception as e:
+                            primary_model_path = None
+                            lines.append(f"Model resolve error: {e}")
+                            lines.append("")
+                        if primary_model_path is not None:
+                            try:
+                                r = _check_model(Path(primary_model_path))
+                                lines.append(format_model_report(r))
+                                lines.append("")
+                            except Exception as e:
+                                lines.append(f"Model check error: {e}")
+                                lines.append("")
+                        elif not any("Model resolve error" in ln for ln in lines):
+                            lines.append("Model check skipped: no model file (user model missing or built-in not cached).")
+                            lines.append("")
+                    # Checkpoint comparison (weight summary + output-head verdict) for resolved model(s)
+                    compare_paths = []
+                    compare_labels = []
+                    if self.is_compare:
+                        if model_path_a is not None and Path(model_path_a).is_file():
+                            compare_paths.append(Path(model_path_a))
+                            compare_labels.append(self.name_a)
+                        if model_path_b is not None and Path(model_path_b).is_file():
+                            compare_paths.append(Path(model_path_b))
+                            compare_labels.append(self.name_b)
+                    elif primary_model_path is not None and Path(primary_model_path).is_file():
+                        compare_paths.append(Path(primary_model_path))
+                        compare_labels.append(self.single_display)
+                    if len(compare_paths) >= 1:
+                        try:
+                            lines.append(run_checkpoint_comparison(compare_paths, compare_labels, brief=True))
+                            lines.append("")
+                        except Exception as e:
+                            lines.append(f"Checkpoint comparison error: {e}")
+                            lines.append("")
+                    if self.train_dir_str and Path(self.train_dir_str).is_dir():
+                        try:
+                            r = _check_training_data(
+                                Path(self.train_dir_str),
+                                img_filter=self.img_filter or "",
+                                mask_filter=self.mask_filter or "_mask",
+                                dry_run=True,
+                            )
+                            lines.append(format_training_report(r))
+                            lines.append("")
+                        except Exception as e:
+                            lines.append(f"Training data check error: {e}")
+                            lines.append("")
+                    if self.image_str and Path(self.image_str).is_file():
+                        if primary_model_path is None:
+                            lines.append("Inference check skipped: no model file available.")
+                        else:
+                            try:
+                                r = _check_inference(Path(primary_model_path), Path(self.image_str))
+                                lines.append(format_inference_report(r))
+                            except Exception as e:
+                                lines.append(f"Inference check error: {e}")
+                    elif self.image_str:
+                        lines.append("Inference check skipped: image path is not a file.")
+                        lines.append("")
+                except Exception as e:
+                    import traceback
+                    lines.append(f"Diagnostic error: {e}")
+                    lines.append("")
+                    lines.append(traceback.format_exc())
+                self.result_ready.emit("\n".join(lines))
+
+        worker = [None]  # use list so closure can rebind
+
+        def run_diagnostic():
+            report.clear()
+            report.append("Running diagnostic in background…")
+            run_btn.setEnabled(False)
+            w = DiagnosticWorker(
+                self,
+                compare_cb.isChecked(),
+                combo_a.currentText(),
+                combo_b.currentText(),
+                download_cb.isChecked(),
+                train_dir_edit.text().strip(),
+                img_filter_edit.text().strip() or "",
+                mask_filter_edit.text().strip() or "_mask",
+                image_edit.text().strip(),
+                self.model_combo.currentText(),
+            )
+            worker[0] = w
+
+            def on_done(text):
+                report.clear()
+                report.setText(text)
+                run_btn.setEnabled(True)
+
+            w.result_ready.connect(on_done)
+            w.finished.connect(lambda: run_btn.setEnabled(True))
+            w.start()
+
+        run_btn = QPushButton("Run diagnostic")
+        run_btn.clicked.connect(run_diagnostic)
+        layout.addWidget(run_btn)
+        d.setLayout(layout)
+        d.exec()
+
     def _get_effective_diameter_pixels(self) -> float:
         """Return diameter in pixels (the single Diameter field)."""
         return self.diameter.value()

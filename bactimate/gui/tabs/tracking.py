@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bactimate.gui.preferences import get_default_browse_dir
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 
@@ -254,7 +255,7 @@ class TrackingTab(QWidget):
     
     def select_mask_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Mask File", "",
+            self, "Select Mask File", get_default_browse_dir(),
             "TIFF Files (*.tif *.tiff);;All Files (*)"
         )
         if file_path:
@@ -263,7 +264,7 @@ class TrackingTab(QWidget):
     
     def select_original_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Original Data File", "",
+            self, "Select Original Data File", get_default_browse_dir(),
             "TIFF Files (*.tif *.tiff);;All Files (*)"
         )
         if file_path:
@@ -271,7 +272,7 @@ class TrackingTab(QWidget):
     
     def select_excel_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Excel Analysis File", "",
+            self, "Select Excel Analysis File", get_default_browse_dir(),
             "Excel Files (*.xlsx *.xls);;All Files (*)"
         )
         if file_path:

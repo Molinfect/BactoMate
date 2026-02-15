@@ -8,6 +8,13 @@ import warnings
 
 
 def run() -> None:
+    # Show "BactiMate" in macOS menu bar (and Dock/Activity Monitor) when run from .app bundle
+    try:
+        import setproctitle
+        setproctitle.setproctitle("BactiMate")
+    except Exception:
+        pass
+
     # --version / --smoke-test: exit before loading full GUI (used by CI / frozen builds)
     if len(sys.argv) >= 2 and sys.argv[1] in ("--version", "-v"):
         from bactimate import __version__

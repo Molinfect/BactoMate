@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bactimate.gui.preferences import get_default_browse_dir
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 
@@ -291,7 +292,7 @@ class SAM2SegmentTab(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select TIFF File",
-            "",
+            get_default_browse_dir(),
             "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)"
         )
         if file_path:
@@ -302,7 +303,7 @@ class SAM2SegmentTab(QWidget):
         folder_path = QFileDialog.getExistingDirectory(
             self,
             "Select Folder with TIFF Files",
-            ""
+            get_default_browse_dir()
         )
         if folder_path:
             self.file_path.setText(folder_path)
@@ -320,7 +321,7 @@ class SAM2SegmentTab(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select SAM2 Checkpoint File",
-            "",
+            get_default_browse_dir(),
             "PyTorch Files (*.pt *.pth);;All Files (*)"
         )
         if file_path:

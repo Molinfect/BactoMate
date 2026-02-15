@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS
+from bactimate.gui.preferences import get_default_browse_dir
 
 
 class SessionLogsTab(QWidget):
@@ -122,7 +123,7 @@ class SessionLogsTab(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open session log",
-            str(LOGS_DIR) if LOGS_DIR.exists() else "",
+            str(LOGS_DIR) if LOGS_DIR.exists() else get_default_browse_dir(),
             "JSON (*.json);;All files (*)",
         )
         if path:

@@ -199,6 +199,46 @@ def get_default_user_model_architecture() -> tuple[int, int]:
     return (2, 3)
 
 
+def convert_checkpoint_to_plain_state_dict(
+    pth_path: str | Path,
+    out_path: str | Path | None = None,
+) -> tuple[bool, str]:
+    """
+    Save a checkpoint as plain state_dict only (no nchan/nclasses wrapper).
+    Built-in Omnipose models are plain state_dict; BactiMate-trained checkpoints
+    are dicts with state_dict + nchan + nclasses. Some loaders expect the plain
+    format. BactiMate's patch (apply_all_patches) makes cellpose_omni unwrap
+    automatically; if you use an unpatched env or another tool, convert first.
+
+    Returns:
+        (success, message). On success, out_path is the path written (default: <stem>_plain.pth).
+    """
+    pth_path = Path(pth_path).resolve()
+    if not pth_path.is_file():
+        return (False, f"File not found: {pth_path}")
+    if out_path is None:
+        out_path = pth_path.parent / f"{pth_path.stem}_plain.pth"
+    else:
+        out_path = Path(out_path).resolve()
+    try:
+        import torch
+        ckpt = torch.load(str(pth_path), map_location="cpu", weights_only=False)
+    except Exception as e:
+        return (False, str(e))
+    state_dict = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+    if not isinstance(state_dict, dict):
+        return (False, "Checkpoint has no state_dict and is not a plain state_dict")
+    # Strip 'module.' prefix if present (same as patched loader)
+    first_key = next(iter(state_dict.keys()), "")
+    if first_key.startswith("module."):
+        state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+    try:
+        torch.save(state_dict, out_path)
+    except Exception as e:
+        return (False, str(e))
+    return (True, f"Saved plain state_dict to {out_path.name}")
+
+
 def ensure_omni_in_model_path(pth_path: str | Path) -> str:
     """
     Return a path to the same checkpoint whose filename stem contains "omni".

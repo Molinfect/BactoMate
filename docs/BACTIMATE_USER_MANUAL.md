@@ -258,18 +258,26 @@ Opened by **Train model** in the Model Parameters area.
 **Convert masks for Omnipose** — Converts binary masks to instance labels and writes (with image copies when naming matches) to subfolder `omnipose_masks`. Does **not** change the training directory path; when you click “Start training”, the app uses `omnipose_masks` automatically and copies images there if needed.
 - **Info (?) —** “Convert binary masks to instance label matrices. Converted masks (and image copies when naming matches) are written to subfolder 'omnipose_masks'. Keep the training directory as the folder that contains your images and masks. When you click Start training, we use the omnipose_masks subfolder automatically and copy images there if needed.”
 
+**Tile and prepare for training** — Button. Splits each image/mask pair into smaller tiles and writes only tiles with at least N cells (configurable). Use when images are large or sparse. Dialog: Tile size (64–512, default 512), Minimum cells per tile, Output folder (default: training_dir/omnipose_masks_tiled). Then set Training directory to the output folder and Crop size (tyx) to half the tile size (e.g. 256 for 512 tiles).
+
 **Model name:** Line edit; placeholder “e.g. my_bacteria_v1”. Required; no path separators. This is the **output** name: the trained checkpoint is saved as `<model_name>.pth` in the **user models folder** and appears in the model dropdown. User models folder: when running from the **repo** it is `<repo_root>/user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models` (macOS) or `%APPDATA%/BactiMate/Models` (Windows). The success dialog after training shows the full save path and, if you used transfer learning, a note “(Transfer learning from …)”.
 
 **Training parameters**
 
-- **Epochs:** Spin box [100, 50000]; default 4000. Info (?) — Full passes over training set; Omnipose often benefits from more (e.g. 4000 for bacteria).
-- **Learning rate:** Double spin [0.001, 1.0]; default 0.1. Info (?) — Step size; larger faster but unstable, smaller slower but stable.
+- **Epochs:** Spin box [1, 50000]; default 4000 (from scratch) or **50** (when a pretrained model is selected). Buttons **50** (recommended), **200**, **500** set the spin. Fine-tuning: start with 50; more epochs (200, 500) can drift the output head and cause 0 cells. After training, run **Check pipeline** to see the verdict.
+- **Learning rate:** Double spin [0.001, 1.0]; default 0.1 (from scratch) or 0.01 (when a pretrained model is selected). Info (?) — Step size; for fine-tuning use 0.01 to avoid output-head drift.
 - **Batch size:** Spin [1, 128]; default 16. Info (?) — Larger batches faster with enough GPU memory; smaller use less memory.
 - **Start from (transfer learning):** Dropdown. Options: **From scratch** (no pretrained model; nchan=2, nclasses=3); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint—you get a new model file (your name) trained on your data. **nchan** and **nclasses** are locked to match the chosen model (required by Omnipose). See the (?) tooltip for details.
 - **Check compatibility with selected model:** Button — Validates that the training folder has image/mask pairs and that image dimensions match the selected model (e.g. 2D images for bact_phase_omni). Use this before starting training when using transfer learning.
 - **Channels (nchan):** Spin [1, 8]; default **2** (grayscale duplicated; Omnipose/patch uses channels=[0,0]). Info (?) — 1 = grayscale only; 2 = two-channel like bact_phase_omni. Set nclasses to match when evaluating. **Locked** when a pretrained model is selected.
 - **Classes (nclasses):** Spin [2, 4]; default 3. Info (?) — 2 = flow+distance; 3 adds boundary. Use 3 for typical Omnipose bacteria models. **Locked** when a pretrained model is selected.
 - **Use GPU:** Check box; default checked. Info (?) — Use GPU (CUDA or Apple MPS) if available.
+- **Crop size (tyx):** Two spin boxes (Y, X); default 224×224; range 64–512, step 8. Info (?) — Training crop size for random crops each epoch. Use ~half your image size (e.g. 128×128 for 256×256 tiles). Large sparse images give many background crops and can cause the model to collapse (0 cells). Prefer tiling images to ~512×512 and dropping mostly-empty tiles before training.
+- **Save every N epochs:** Spin [0, 1000]; default 0 (final only). Info (?) — Set to e.g. 50 to save checkpoints every N epochs so you can pick the best epoch instead of the last.
+
+**Training data quality (tiling and density)** — Omnipose trains on random crops (default 224×224). If source images are large or sparse, many crops are mostly background; the model can then learn “predict background” and the distance map shifts → 0 cells at inference. For best results: (1) **Tile** training images to ~512×512 (or 256×256). (2) **Drop** tiles with too few cells (mostly-empty tiles hurt training). (3) Keep mask tiles as instance labels and aligned with image tiles. (4) Set **Crop size (tyx)** to ~half the tile size (e.g. 128×128 for 256×256 tiles; must be divisible by 8). (5) Use transfer learning first (50–100 epochs, LR 0.005–0.01), then scale up. Use **Tile and prepare for training** for one-click tiling and filtering; or preprocess in a script and point the training directory to that folder. The dialog also copies/converts data into `omnipose_masks` and ensures 2-channel when nchan=2.
+
+The training command follows the [Omnipose training docs](https://omnipose.readthedocs.io): **--dir** (absolute), **--channel_axis 0** and **--all_channels** when nchan≥2, **--diameter 0**, **--RAdam**, **--tyx** (from Crop size), **--save_each** (when Save every N > 0), and the same architecture flags. Optional CLI-only: **--look_one_level_down**, **--dataloader** / **--num_workers**.
 
 Before starting, the dialog checks for image/mask pairs. When you use a **pretrained model**, it also checks that images are 2D if the model is 2D (e.g. bact_phase_omni); 3D stacks trigger a warning and you can cancel or continue. If **Image filter** is empty and no pairs are found, it **infers** the image filter from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase) and fills the field so training can proceed. It also shows: “Found N image/mask pair(s). All will be used every epoch for M epochs.” (When using transfer learning it adds: “Transfer learning: starting from … (nchan/nclasses locked to match).”) Then it runs Omnipose training; log is shown in the dialog. **On success**, a dialog shows the full path where the model was saved (user models folder), and if you used transfer learning, a line “(Transfer learning from …)”. The model list is refreshed and the new model appears in the main tab’s model dropdown.
 
@@ -302,6 +310,7 @@ Inference must use the **same architecture** as training ([Omnipose docs](https:
 - **nclasses** (output classes): Training default is **nclasses=3**. Built-in bacteria models use nclasses=4. Wrong nclasses → wrong outputs.
 - **Diameter**: User models have no size model; **diameter=0** gives no cells. BactiMate uses diameter=30 when you leave it at 0, and **flow_threshold=0** for custom models.
 - **Flow threshold**: For custom models use **0**; 0.4 often removes all detections.
+- **From-scratch (4000 epochs) still 0 cells**: BactiMate now passes **--residual_on 1 --style_on 1 --concatenation 0** so the saved architecture matches the loader, and the loader strips a possible `module.` prefix and uses **strict=False**. Re-run `python setup/apply_all_patches.py` (with the project venv activated), restart BactiMate, then use **Flow 0**, **Mask 0**, **Diameter 30**. If it still fails, try transfer learning from **bact_phase_omni**.
 
 **Comparing user vs built-in**
 
@@ -314,7 +323,11 @@ If you see `nchan=1` or `nclasses=2` for a model you trained in BactiMate (which
 
 **Transfer learning (start from a pretrained model)**
 
-In the **Train model** dialog, **Start from** offers: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. Choosing a pretrained option adds your data on top of it; **nchan** and **nclasses** are locked to match (Omnipose requirement). Use **Check compatibility with selected model** to validate image/mask pairs and that image dimensions match (e.g. 2D for bact_phase_omni). See [Omnipose Training](https://omnipose.readthedocs.io).
+In the **Train model** dialog, **Start from** offers: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. Choosing a pretrained option adds your data on top of it; **nchan** and **nclasses** are locked to match (Omnipose requirement). Use **Check compatibility with selected model** to validate image/mask pairs and that image dimensions match (e.g. 2D for bact_phase_omni). See [Omnipose Training](https://omnipose.readthedocs.io) and [Omnipose GitHub](https://github.com/kevinjohncutler/omnipose).
+
+**Making fine-tuning predictable (avoid 0 cells)**
+
+Too many epochs can weaken the output head (last layer): **output.0.weight** shrinks and the distance map stays below the mask threshold → 0 cells. (1) Use the **default** when you select a pretrained model: **50 epochs**, LR 0.01. Fewer epochs (50) usually give “likely segments”; 200+ often drift. (2) Use the **50** (recommended), **200**, **500** buttons. (3) After training, run **Check pipeline**: if the verdict is “likely segments”, the model is good; if “weak head” or “may segment”, retrain with 50 epochs or lower LR (0.005).
 
 **Inspect a checkpoint manually**
 
@@ -331,6 +344,21 @@ python -m bactimate.scripts.inspect_omnipose_checkpoint path/to/your_model.pth
 User models folder: when running from the **repo** it is `<repo_root>/user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models` (macOS) or `%APPDATA%/BactiMate/Models` (Windows).
 
 This prints the checkpoint’s top-level keys, any stored nchan/nclasses, and the first conv layer shape (from which input channels can be inferred). Compare with BactiMate’s inference defaults: **nchan=2, nclasses=3**. Models trained with other tools may use different nchan/nclasses; those same values must be used at inference (future BactiMate versions may allow setting them in the UI).
+
+**Full pipeline diagnostic (model + training data + inference + checkpoint comparison)**
+
+In the Processing tab, **Check pipeline** (next to **Train model**) runs the same diagnostic: it checks the selected model (or compares Model A vs Model B), optionally training data and an image, and **always includes a checkpoint comparison** (weight summary, output-head stats, and verdict: likely segments vs likely 0 cells). From the command line you can run individual modes:
+
+```bash
+python -m bactimate.scripts.check_omnipose_pipeline model path/to/model_omni.pth
+python -m bactimate.scripts.check_omnipose_pipeline training /path/to/train_dir --img-filter _phase --mask-filter _masks
+python -m bactimate.scripts.check_omnipose_pipeline inference path/to/model_omni.pth path/to/image.tif
+python -m bactimate.scripts.check_omnipose_pipeline all path/to/model_omni.pth /path/to/train_dir --image path/to/test.tif
+# Compare two or more checkpoints (weight summary, output-head verdict)
+python -m bactimate.scripts.check_omnipose_pipeline compare a.pth b.pth [--builtin] [--forward image.tif]
+```
+
+This verifies: (1) the .pth has correct metadata and loads with Omnipose dynamics; (2) training directory has valid image/mask pairs and Omnipose-ready masks; (3) an image is compatible with the model and optionally runs one eval; (4) when comparing checkpoints, whether the output head has drifted (e.g. after many epochs) and is likely to give 0 cells. See **docs/README.md** (Troubleshooting → Omnipose pipeline diagnostic script) for details.
 
 **Why bact_phase_affinity works without "omni" in the name**
 
