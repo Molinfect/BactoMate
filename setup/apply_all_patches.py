@@ -8,7 +8,8 @@ Patches applied:
 4. cellpose_omni - register bact_phase_affinity (checkpoint is 1-channel; do not set nchan=2)
 5. cellpose_omni transforms - trim to nchan after reshape (so 1-channel models get 1-channel input)
 6. cellpose_omni io - NumPy 2.0 safe TIFF read (newbyteorder removed in NumPy 2.0)
-7. cellpose_omni models - Cellpose.__init__ accepts pretrained_model (path) for user-trained models
+7. cellpose_omni models - Cellpose.__init__ accepts pretrained_model (path) for user-trained models;
+   nchan/nclasses from checkpoint top-level only; nclasses 2 or 3 (default 3), never infer 4 from state_dict
 8. cellpose_omni __main__ - pass channels to model.train() when nchan==2 so grayscale is duplicated to 2 channels
 9. cellpose_omni core - DataParallel unwrap when saving model (self.net.module.save_model when wrapped)
 """
@@ -727,7 +728,8 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
             self.omni = True if omni is None else omni
             self.pretrained_model = pretrained_model
             self.diam_mean = 30.
-            # Infer nchan/nclasses from checkpoint (top-level or inside state_dict) so architecture matches
+            # BactiMate: user checkpoints must use nchan/nclasses from checkpoint top-level only (Omnipose training uses nclasses=3).
+            # Do NOT infer nclasses from state_dict (e.g. 4 output channels) or loader will show nclasses=4.
             user_nchan = 1
             user_nclasses = 3
             _ckpt = None
@@ -742,7 +744,10 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                             pass
                     if 'nclasses' in _ckpt:
                         try:
-                            user_nclasses = int(_ckpt['nclasses'])
+                            n = int(_ckpt['nclasses'])
+                            if n in (2, 3):
+                                user_nclasses = n
+                            # else: keep 3 (BactiMate/Omnipose default; avoid 4 which is wrong for our training)
                         except (TypeError, ValueError):
                             pass
                     # If nchan not at top level, infer from first 4D weight in state_dict (training saves nested)

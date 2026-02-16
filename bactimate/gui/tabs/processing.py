@@ -92,9 +92,8 @@ USER_MODEL_EXTENSION = ".pth"
 
 # Transfer learning: only offer models that exist in the main tab (BUILTIN_OMNIPOSE_MODELS).
 # (nchan, nclasses, dim) per Omnipose models table; used to lock nchan/nclasses when selected.
-# nclasses=3 is the Omnipose CLI parameter (flow + distance + boundary). The network output
-# layer has 4 channels; checkpoints/loader may show "4 output channels" or model.cp.nclasses=4 —
-# that is the same architecture, not a mismatch.
+# nclasses=3 is the Omnipose CLI parameter (flow + distance + boundary). The loader uses only
+# top-level nchan/nclasses from the checkpoint (default nclasses=3); it does not infer from state_dict.
 PRETRAINED_NCHAN_NCLASSES_DIM = {
     "bact_phase_omni": (2, 3, 2),
     "bact_fluor_omni": (2, 3, 2),

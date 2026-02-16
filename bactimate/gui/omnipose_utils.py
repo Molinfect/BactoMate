@@ -104,8 +104,8 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
                         pass
                     break
 
-        # Infer nclasses from output conv only when the file doesn't have it (avoid overwriting correct 3 with wrong 4).
-        # Output layer: 4D weight with shape[0] in (2,3,4); prefer key with "out" or smallest spatial.
+        # Infer nclasses only when the file doesn't have it. Omnipose uses nclasses=3 (flow+distance+boundary).
+        # Prefer 3, then 2; never infer 4 (BactiMate/Omnipose user models use 3).
         if out["nclasses"] is None:
             candidates: list[tuple[str, Any, int]] = []
             for k, v in state.items():
@@ -113,7 +113,7 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
                     continue
                 try:
                     s = v.shape
-                    if s[0] in (2, 3, 4):
+                    if s[0] in (2, 3):
                         spatial = int(s[2]) * int(s[3])
                         candidates.append((str(k), v, spatial))
                 except Exception:
@@ -124,6 +124,8 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
                     out["nclasses"] = int(candidates[0][1].shape[0])
                 except Exception:
                     pass
+            if out["nclasses"] is None:
+                out["nclasses"] = 3
 
     return out
 
