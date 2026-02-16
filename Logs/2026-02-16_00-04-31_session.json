@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-14 18:33:23",
+  "timestamp": "2026-02-16 00:04:31",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -19,21 +19,7 @@
       "use_gpu": true,
       "cluster": false,
       "create_overlay": true,
-      "trained_models_this_session": [
-        {
-          "model_name": "testagain_late_omni",
-          "n_epochs": 3,
-          "learning_rate": 0.1,
-          "batch_size": 16,
-          "nchan": 2,
-          "nclasses": 3,
-          "use_gpu": true,
-          "mask_filter": "_masks",
-          "img_filter": "_phase",
-          "train_dir": "/Users/philipppopp/Desktop/on_top",
-          "pretrained_model": "bact_phase_omni"
-        }
-      ]
+      "trained_models_this_session": []
     },
     "analyze_masks": {
       "pixel_size": 0.108,

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-14 09:16:39",
+  "timestamp": "2026-02-16 22:00:49",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -11,42 +11,15 @@
       "bleach_method": 0
     },
     "segmentation": {
-      "model": "mf_ontop_bact_phase",
-      "diameter": 30.0,
+      "model": "400",
+      "diameter": 0.0,
       "pixel_size_um": 0.0,
       "flow_threshold": 0.0,
-      "mask_threshold": -2.5,
+      "mask_threshold": 0.0,
       "use_gpu": true,
       "cluster": false,
       "create_overlay": true,
-      "trained_models_this_session": [
-        {
-          "model_name": "mf_ontop_bact_phase",
-          "n_epochs": 5000,
-          "learning_rate": 0.1,
-          "batch_size": 16,
-          "nchan": 2,
-          "nclasses": 3,
-          "use_gpu": true,
-          "mask_filter": "_masks",
-          "img_filter": "_phase",
-          "train_dir": "/Users/philipppopp/Desktop/on_top/",
-          "pretrained_model": "bact_phase_omni"
-        },
-        {
-          "model_name": "blub_omni",
-          "n_epochs": 4,
-          "learning_rate": 0.1,
-          "batch_size": 16,
-          "nchan": 2,
-          "nclasses": 3,
-          "use_gpu": true,
-          "mask_filter": "_masks",
-          "img_filter": "_phase",
-          "train_dir": "/Users/philipppopp/Desktop/on_top/",
-          "pretrained_model": "bact_phase_omni"
-        }
-      ]
+      "trained_models_this_session": []
     },
     "analyze_masks": {
       "pixel_size": 0.108,

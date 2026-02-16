@@ -702,6 +702,8 @@ class ProcessingTab(QWidget):
         d.setMinimumSize(_min_width, _min_height)
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, d)
         close_shortcut.activated.connect(d.reject)
+        minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), d)  # Cmd+M on macOS
+        minimize_shortcut.activated.connect(d.showMinimized)
         layout = QVBoxLayout()
         last_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_SEGMENTATION) or str(Path.home())
         # Training directory (drag-and-drop supported)
@@ -1347,16 +1349,20 @@ class ProcessingTab(QWidget):
             train_dir_abs = Path(train_dir).resolve()
             img_filter = img_filter_edit.text().strip()
             mask_filter = mask_filter_edit.text().strip() or "_mask"
-            # Populate omnipose_masks from the same pair discovery as _training_pairs so we always
-            # use converted masks when pairs exist (avoids glob mismatch: e.g. default _mask vs *_masks.tif).
-            parent_dir = train_dir_abs.parent if train_dir_abs.name == OMNIPOSE_MASKS_SUBDIR else train_dir_abs
-            train_path, n_from_pairs = prepare_omnipose_masks_from_pairs(
-                parent_dir, img_filter, mask_filter
-            )
-            if n_from_pairs == 0:
-                train_path = ensure_omnipose_masks_has_images(
-                    parent_dir, mask_filter, img_filter=img_filter
+            # If user already tiled (training dir = omnipose_masks_tiled), use it as-is — no duplicate copy into omnipose_masks.
+            if train_dir_abs.name == OMNIPOSE_MASKS_TILED_SUBDIR:
+                train_path = train_dir_abs
+            else:
+                # Populate omnipose_masks from the same pair discovery as _training_pairs so we always
+                # use converted masks when pairs exist (avoids glob mismatch: e.g. default _mask vs *_masks.tif).
+                parent_dir = train_dir_abs.parent if train_dir_abs.name == OMNIPOSE_MASKS_SUBDIR else train_dir_abs
+                train_path, n_from_pairs = prepare_omnipose_masks_from_pairs(
+                    parent_dir, img_filter, mask_filter
                 )
+                if n_from_pairs == 0:
+                    train_path = ensure_omnipose_masks_has_images(
+                        parent_dir, mask_filter, img_filter=img_filter
+                    )
             train_dir_abs = str(train_path)
             # Pre-check: Omnipose needs one mask file per image (base name + mask_filter + ext). Catch missing masks or bad names early.
             pairs_ok, first_img_path, image_candidates = _training_pairs(train_path, img_filter, mask_filter)
@@ -1873,14 +1879,12 @@ class ProcessingTab(QWidget):
             num_frames = images.shape[0]
             
             # Create preview dialog as top-level window (parent=None) so it opens in front
-            # on all platforms; non-modal so user can access main window
+            # on all platforms; non-modal so user can access main window.
+            # Avoid WindowStaysOnTopHint: clearing it later (setWindowFlags + show) causes a visible flicker.
             preview_dialog = QDialog(None)
             preview_dialog.setWindowTitle("Segmentation Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)
-            preview_dialog.setWindowFlags(
-                preview_dialog.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
-            )
             
             layout = QVBoxLayout()
 
@@ -2670,6 +2674,32 @@ class ProcessingTab(QWidget):
                             resample=True,
                             verbose=False
                         )
+                    # User model returned 0 cells: retry with relaxed cellprob (some trained models need negative threshold)
+                    n_cells_check = len(np.unique(mask)) - (1 if 0 in np.unique(mask) else 0)
+                    if params.get("pretrained_model") and n_cells_check == 0 and mask is not None:
+                        try:
+                            mask_retry, _, _, _ = preview_dialog.model.eval(
+                                frame,
+                                channels=[0, 0],
+                                diameter=diameter if diameter > 0 else 30.0,
+                                flow_threshold=0.0,
+                                mask_threshold=-1.0,
+                                cellprob_threshold=-2.0,
+                                do_3D=False,
+                                omni=True,
+                                cluster=cluster,
+                                net_avg=False,
+                                resample=True,
+                                verbose=False,
+                            )
+                            n_retry = len(np.unique(mask_retry)) - (1 if 0 in np.unique(mask_retry) else 0)
+                            if n_retry > 0:
+                                mask = mask_retry
+                                append_omnipose_debug(
+                                    "[BactiMate USER_MODEL] 0 cells with default thresholds; retry with cellprob=-2, flow=0, mask=-1 succeeded."
+                                )
+                        except Exception:
+                            pass
                     # Debug: log eval result for user vs built-in (see Logs/omnipose_debug.log)
                     try:
                         kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
@@ -3021,6 +3051,8 @@ class ProcessingTab(QWidget):
 
             close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
             close_shortcut.activated.connect(preview_dialog.close)
+            minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), preview_dialog)  # Cmd+M on macOS
+            minimize_shortcut.activated.connect(preview_dialog.showMinimized)
 
             preview_dialog.setLayout(layout)
 
@@ -3052,18 +3084,9 @@ class ProcessingTab(QWidget):
             def start_preview():
                 preview_dialog.raise_()
                 preview_dialog.activateWindow()
-                # Use show_progress=False for the initial frame to avoid a second progress dialog
-                # popping on top of the preview right after open (caused a visible "close/reopen" flicker)
+                # Use show_progress=False for the initial frame to avoid a progress dialog on top
                 update_display(0, show_progress=False)
-                # Clear "stay on top" after first display so the window doesn't stay on top forever
-                def clear_stay_on_top():
-                    preview_dialog.setWindowFlags(
-                        preview_dialog.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint
-                    )
-                    preview_dialog.show()  # needed after changing flags
-                QTimer.singleShot(1500, clear_stay_on_top)
-            # Short delay so the preview window has time to paint before we run segmentation;
-            # avoids the window appearing to "flash" or close/reopen when the event loop runs start_preview
+            # Short delay so the preview window has time to paint before we run segmentation
             QTimer.singleShot(80, start_preview)
 
             # Show cache info in status

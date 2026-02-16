@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-14 10:09:32",
+  "timestamp": "2026-02-16 21:52:08",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -11,10 +11,10 @@
       "bleach_method": 0
     },
     "segmentation": {
-      "model": "blub_omni",
+      "model": "bact_phase_omni",
       "diameter": 0.0,
       "pixel_size_um": 0.0,
-      "flow_threshold": 0.0,
+      "flow_threshold": 0.4,
       "mask_threshold": 0.0,
       "use_gpu": true,
       "cluster": false,

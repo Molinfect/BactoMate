@@ -1615,6 +1615,8 @@ class AnalyzeMasksTab(QWidget):
             
             close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
             close_shortcut.activated.connect(preview_dialog.close)
+            minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), preview_dialog)  # Cmd+M on macOS
+            minimize_shortcut.activated.connect(preview_dialog.showMinimized)
             
             # Close button
             close_btn = QPushButton("Close")

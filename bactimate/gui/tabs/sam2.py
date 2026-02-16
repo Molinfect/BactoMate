@@ -483,6 +483,8 @@ class SAM2SegmentTab(QWidget):
             layout.addWidget(canvas)
             close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
             close_shortcut.activated.connect(preview_dialog.close)
+            minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), preview_dialog)  # Cmd+M on macOS
+            minimize_shortcut.activated.connect(preview_dialog.showMinimized)
             close_btn = QPushButton("Close")
             close_btn.clicked.connect(preview_dialog.close)
             layout.addWidget(close_btn)

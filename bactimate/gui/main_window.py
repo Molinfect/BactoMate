@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Tuple, Type
 
 from PyQt6.QtCore import Qt, QCoreApplication, QTimer, QUrl
-from PyQt6.QtGui import QCursor, QFont, QPixmap, QAction, QKeySequence, QDesktopServices
+from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QGroupBox,
@@ -51,6 +51,26 @@ from bactimate.gui.tabs import (
 )
 from bactimate.gui.paths import get_app_root
 from bactimate.gui.styles import get_modern_stylesheet
+
+
+def _get_app_icon_path() -> Path | None:
+    """Path to app icon: BactiMate.icns in app root (bundle Resources) or img/logo2.png."""
+    root = get_app_root()
+    for candidate in (root / "BactiMate.icns", root / "img" / "logo2.png"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _set_macos_dock_icon(icon_path: Path) -> None:
+    """Set the Dock icon on macOS via Cocoa (Qt setWindowIcon does not update Dock)."""
+    try:
+        from AppKit import NSApp, NSImage  # type: ignore[import-untyped]
+        img = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+        if img is not None:
+            NSApp.setApplicationIconImage_(img)
+    except Exception:
+        pass
 
 
 def _prune_old_session_logs(logs_dir: Path, keep_count: int) -> None:
@@ -274,13 +294,18 @@ class MainWindow(QMainWindow):
                 tab.set_session_params(data[key])
 
     def _add_menu_bar(self) -> None:
-        """Minimal menu bar: app menu (About, Quit), File (Quit), Help (User manual)."""
+        """Minimal menu bar: app menu (About, Minimize, Quit), File, Help. On macOS the first menu is the app menu and shows the app name once."""
         menubar = self.menuBar()
-        app_menu = menubar.addMenu("BactiMate")
+        # First menu = application menu. On macOS the system shows the app name for it; use empty title to avoid duplicate "BactiMate"
+        app_menu = menubar.addMenu("" if sys.platform == "darwin" else "BactiMate")
         about_action = QAction("About BactiMate", self)
         about_action.triggered.connect(self._show_about)
         app_menu.addAction(about_action)
         app_menu.addSeparator()
+        minimize_action = QAction("Minimize", self)
+        minimize_action.setShortcut(QKeySequence("Ctrl+M"))  # Cmd+M on macOS (Qt maps Ctrl→Cmd)
+        minimize_action.triggered.connect(self.showMinimized)
+        app_menu.addAction(minimize_action)
         quit_action = QAction("Quit BactiMate", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -412,6 +437,12 @@ def main() -> None:
         app = QApplication(sys.argv)
         app.setApplicationName("BactiMate")
         app.setApplicationDisplayName("BactiMate")
+        # Icon: Dock and window (macOS Dock needs Cocoa; bundle may have BactiMate.icns or img/logo2.png)
+        icon_path = _get_app_icon_path()
+        if icon_path is not None:
+            app.setWindowIcon(QIcon(str(icon_path)))
+            if sys.platform == "darwin":
+                _set_macos_dock_icon(icon_path)
         # Re-apply process title after Qt init (Qt can overwrite it on macOS; menu bar shows process name)
         if sys.platform == "darwin":
             try:
@@ -422,6 +453,8 @@ def main() -> None:
         app.setStyle("Fusion")
         app.setStyleSheet(get_modern_stylesheet())
         window = MainWindow()
+        if icon_path is not None:
+            window.setWindowIcon(QIcon(str(icon_path)))
         window.show()
         # Re-apply process title once after show (macOS menu bar can be updated late)
         if sys.platform == "darwin":

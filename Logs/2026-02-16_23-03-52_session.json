@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-02-14 18:29:27",
+  "timestamp": "2026-02-16 23:03:52",
   "tabs": {
     "nd2": {
       "max_frames": 100,
@@ -11,15 +11,29 @@
       "bleach_method": 0
     },
     "segmentation": {
-      "model": "bact_phase_omni",
+      "model": "from_scratch_10_omni",
       "diameter": 0.0,
       "pixel_size_um": 0.0,
-      "flow_threshold": 0.4,
+      "flow_threshold": 0.0,
       "mask_threshold": 0.0,
       "use_gpu": true,
       "cluster": false,
       "create_overlay": true,
-      "trained_models_this_session": []
+      "trained_models_this_session": [
+        {
+          "model_name": "from_scratch_10_omni",
+          "n_epochs": 10,
+          "learning_rate": 0.1,
+          "batch_size": 16,
+          "nchan": 2,
+          "nclasses": 3,
+          "use_gpu": true,
+          "mask_filter": "_masks",
+          "img_filter": "_phase",
+          "train_dir": "/Users/philipppopp/Desktop/new_try/omnipose_masks_tiled",
+          "pretrained_model": "None"
+        }
+      ]
     },
     "analyze_masks": {
       "pixel_size": 0.108,
