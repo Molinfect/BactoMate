@@ -52,7 +52,13 @@ def _apply_pbr_patch() -> None:
 
 
 def _patch_omnipose_get_masks() -> None:
-    """Patch omnipose.core.get_masks to handle bd=None in frozen builds."""
+    """
+    Compatibility fix: ensure omnipose.core.get_masks never receives bd=None.
+    In some environments (frozen builds, certain user models) bd can be None,
+    causing TypeError (e.g. '>' not supported between 'NoneType' and 'int').
+    This only substitutes a fallback array when bd is None; it does not change
+    flow_threshold, mask_threshold, diameter, or any other Omnipose behavior.
+    """
     try:
         import omnipose.core as oc
         import numpy as np

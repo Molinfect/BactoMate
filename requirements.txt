@@ -59,3 +59,10 @@ trackastra>=0.1.0  # Cell tracking library for time-lapse data
 # Optional extras: pip install -e .[sam2] for SAM2 + compatible torch (see pyproject.toml)
 sam2>=0.1.0  # SAM2 for interactive and automatic segmentation
 huggingface_hub>=0.16.0  # For automatic SAM2 checkpoint download from Hugging Face
+
+# TensorFlow (for U-NET Segment tab: train and run patch-based U-Net segmentation)
+# Uses CPU by default. On Apple Silicon (M1/M2/M3), for GPU install tensorflow-metal;
+# it must match your TensorFlow version (e.g. TF 2.15 + tensorflow-metal 1.1.0).
+# If you see "dlopen ... libmetal_plugin" errors, try: pip uninstall tensorflow-metal (use CPU)
+# or reinstall a matching pair: pip install tensorflow==2.15.0 tensorflow-metal==1.1.0
+tensorflow>=2.12.0

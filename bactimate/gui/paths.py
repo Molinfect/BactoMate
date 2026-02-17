@@ -84,8 +84,8 @@ def _get_user_data_logs_dir() -> Path:
     return base / "BactiMate" / "Logs"
 
 
-def _get_user_data_models_dir() -> Path:
-    """Platform-specific user data dir for user-trained Omnipose models (persists across pip upgrades)."""
+def _get_user_data_models_base() -> Path:
+    """Platform-specific base dir for user-trained models (BactiMate/Models)."""
     if sys.platform == "darwin":
         base = Path(os.path.expanduser("~/Library/Application Support"))
     elif sys.platform == "win32":
@@ -95,16 +95,35 @@ def _get_user_data_models_dir() -> Path:
     return base / "BactiMate" / "Models"
 
 
-def get_user_models_dir() -> Path:
+def get_omnipose_user_models_dir() -> Path:
     """
-    Directory for user-trained Omnipose models. Created if missing.
-    - Installed: e.g. ~/Library/Application Support/BactiMate/Models (macOS).
-    - Dev/frozen: get_app_root() / "user_models".
+    Directory for user-trained Omnipose models (.pth). Created if missing.
+    - Installed: e.g. ~/Library/Application Support/BactiMate/Models/omnipose_user_models (macOS).
+    - Dev/frozen: get_app_root() / "omnipose_user_models".
     """
     if _is_installed():
-        path = _get_user_data_models_dir()
+        path = _get_user_data_models_base() / "omnipose_user_models"
     else:
-        path = get_app_root() / "user_models"
+        path = get_app_root() / "omnipose_user_models"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_user_models_dir() -> Path:
+    """Alias for get_omnipose_user_models_dir(). Prefer get_omnipose_user_models_dir() for clarity."""
+    return get_omnipose_user_models_dir()
+
+
+def get_unet_models_dir() -> Path:
+    """
+    Directory for user-trained U-Net models (.keras + patch_config.json). Created if missing.
+    - Installed: e.g. ~/Library/Application Support/BactiMate/Models/unet_user_models (macOS).
+    - Dev/frozen: get_app_root() / "unet_user_models".
+    """
+    if _is_installed():
+        path = _get_user_data_models_base() / "unet_user_models"
+    else:
+        path = get_app_root() / "unet_user_models"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

@@ -26,6 +26,9 @@ Usage:
   # Compare two or more checkpoints (weight stats + output-head verdict)
   python -m bactimate.scripts.check_omnipose_pipeline compare a.pth b.pth [c.pth ...] [--builtin] [--forward image.tif]
 
+  # Full diagnostic for flat/0-cell models (checkpoint, forward pass, training data, BactiMate vs Omnipose)
+  python -m bactimate.scripts.diagnose_flat_model omnipose_user_models/1000.pth [--image path/to/image.tif] [--training-dir path] [--compare-builtin bact_phase_omni]
+
 Runs inside BactiMate GUI ("Check pipeline" button) and from CLI.
 """
 from __future__ import annotations
@@ -348,89 +351,6 @@ def _check_inference(model_path: Path, image_path: Path) -> dict:
             n_cells = len(np.unique(masks)) - (1 if 0 in np.unique(masks) else 0)
         eval_ok = True
         eval_msg = f"Eval OK; mask shape {getattr(masks, 'shape', 'N/A')}, {max(0, n_cells)} objects"
-
-        # When 0 objects: try several negative thresholds and report flow/distance stats
-        retry_parts = []
-        flow_stats_msg = None
-        if n_cells == 0 and masks is not None:
-            # Try -2, -5, -10 to see if any threshold gives cells
-            for thr in (-2.0, -5.0, -10.0):
-                try:
-                    r2 = model.eval(
-                        frame,
-                        channels=[0, 0],
-                        diameter=0,
-                        flow_threshold=0.0,
-                        mask_threshold=thr,
-                        cellprob_threshold=0.0,
-                        do_3D=False,
-                        omni=True,
-                        cluster=False,
-                        net_avg=False,
-                        resample=True,
-                        verbose=False,
-                    )
-                    m2 = r2[0] if isinstance(r2, tuple) else r2
-                    n2 = 0
-                    if m2 is not None and hasattr(m2, "ndim"):
-                        n2 = len(np.unique(m2)) - (1 if 0 in np.unique(m2) else 0)
-                    retry_parts.append(f"mask_thr={thr}: {n2} objects")
-                except Exception:
-                    retry_parts.append(f"mask_thr={thr}: error")
-            if retry_parts:
-                eval_msg = eval_msg + "\n  " + "; ".join(retry_parts)
-            # Report flow/distance output range (helps see if model output is constant)
-            if flows is not None:
-                try:
-                    if isinstance(flows, (list, tuple)):
-                        arrs = [np.asarray(x) for x in flows if hasattr(x, "__array__") or hasattr(x, "shape")]
-                        f = np.concatenate([a.ravel() for a in arrs]) if arrs else np.array([])
-                    else:
-                        f = np.asarray(flows).ravel()
-                    if f.size > 0:
-                        fmin, fmax = float(np.min(f)), float(np.max(f))
-                        fmean = float(np.mean(f))
-                        flow_stats_msg = f"Flow/distance output: min={fmin:.3f} max={fmax:.3f} mean={fmean:.3f}"
-                        if abs(fmax - fmin) < 1e-5:
-                            flow_stats_msg += " (nearly constant → model may not be producing useful output)"
-                    else:
-                        flow_stats_msg = "Flow output empty or unreadable"
-                except Exception:
-                    flow_stats_msg = "Could not compute flow stats (flows type: {})".format(type(flows).__name__)
-            else:
-                flow_stats_msg = "No flow output returned"
-            if flow_stats_msg:
-                eval_msg = eval_msg + "\n  " + flow_stats_msg
-            # If all thresholds still 0: try fixed diameter and add hint
-            if all("0 objects" in p for p in retry_parts):
-                diam30_msg = None
-                try:
-                    r30 = model.eval(
-                        frame,
-                        channels=[0, 0],
-                        diameter=30.0,
-                        flow_threshold=0.0,
-                        mask_threshold=0.0,
-                        cellprob_threshold=0.0,
-                        do_3D=False,
-                        omni=True,
-                        cluster=False,
-                        net_avg=False,
-                        resample=True,
-                        verbose=False,
-                    )
-                    m30 = r30[0] if isinstance(r30, tuple) else r30
-                    n30 = 0
-                    if m30 is not None and hasattr(m30, "ndim"):
-                        n30 = len(np.unique(m30)) - (1 if 0 in np.unique(m30) else 0)
-                    diam30_msg = f"With diameter=30: {n30} objects."
-                    if n30 > 0:
-                        diam30_msg += " → Set Diameter to 30 (or 40) in BactiMate Processing tab."
-                except Exception as e30:
-                    diam30_msg = f"With diameter=30: error ({e30})"
-                if diam30_msg:
-                    eval_msg = eval_msg + "\n  " + diam30_msg
-                eval_msg = eval_msg + "\n  If still 0: retrain from 'bact_phase_omni' (transfer) on same images, or train longer from scratch."
     except Exception as e:
         eval_ok = False
         eval_msg = str(e)
@@ -617,23 +537,39 @@ def run_checkpoint_comparison(
                 st = _tensor_stats(s[k])
                 row += f" | {label[:8]} min={st['min']:.3f} max={st['max']:.3f} mean={st['mean']:.3f}"
             lines.append(row)
-        out0_bias_key = "output.0.bias"
-        out0_weight_key = "output.0.weight"
-        if out0_bias_key in states[0]:
+        # Resolve key: exact "output.0.bias" or any key ending with it (e.g. module.output.0.bias)
+        out0_bias_key = next((k for k in keys if k == "output.0.bias" or k.endswith(".output.0.bias")), None)
+        out0_weight_key = next((k for k in keys if k == "output.0.weight" or k.endswith(".output.0.weight")), None)
+        if out0_bias_key is not None and out0_bias_key in states[0]:
             lines.append("")
-            lines.append("=== Output head verdict (inference uses distance > 0) ===")
-            weight_max_ok = 0.2  # empirical: models that segment often have output.0.weight max above this
+            lines.append("=== Output head verdict (inference uses distance > mask_threshold) ===")
+            lines.append("  (Bias mean is from the checkpoint only. At inference, distance map = f(image); it can be much more negative than the bias. If 0 cells with low mask_threshold, check Logs/omnipose_debug.log for the actual distance range.)")
+            weight_max_ok = 0.2
             for s, label in zip(states, labels):
-                st_b = _tensor_stats(s[out0_bias_key])
+                t_b = s[out0_bias_key]
+                st_b = _tensor_stats(t_b)
                 mean_b = st_b["mean"]
-                w_max = _tensor_stats(s[out0_weight_key])["max"] if out0_weight_key in s else 0.0
+                arr = t_b.detach().cpu().numpy().ravel()
+                vals_str = ", ".join(f"{x:.3f}" for x in arr[:8]) + ("..." if arr.size > 8 else "")
+                w_max = _tensor_stats(s[out0_weight_key])["max"] if out0_weight_key and out0_weight_key in s else 0.0
+                lines.append(f"  [{label}] {out0_bias_key} shape={tuple(t_b.shape)} values=[{vals_str}] mean={mean_b:.3f}")
                 if mean_b >= 0:
-                    verdict = "likely segments (bias non-negative)"
+                    verdict = "likely segments (bias non-negative); if 0 cells try mask threshold -1 or -2"
                 elif w_max < weight_max_ok:
                     verdict = f"likely 0 cells (weak head: weight max = {w_max:.3f} < {weight_max_ok})"
                 else:
                     verdict = f"may segment (weight max = {w_max:.3f}); if 0 cells try mask threshold -1 or -2"
                 lines.append(f"  {label}: output.0.bias mean = {mean_b:.3f}, output.0.weight max = {w_max:.3f}  →  {verdict}")
+            # Also report final layer (output.2 = last conv that produces distance/cellprob channels)
+            out2_bias_key = next((k for k in keys if k == "output.2.bias" or k.endswith(".output.2.bias")), None)
+            if out2_bias_key and out2_bias_key in states[0]:
+                lines.append("")
+                lines.append("  Final layer (output.2) produces the 4-channel map (flow_y, flow_x, cellprob, distance); distance is compared to mask_threshold:")
+                for s, label in zip(states, labels):
+                    t2 = s[out2_bias_key]
+                    arr2 = t2.detach().cpu().numpy().ravel()
+                    vals2 = ", ".join(f"{x:.3f}" for x in arr2)
+                    lines.append(f"  [{label}] {out2_bias_key} shape={tuple(t2.shape)} values=[{vals2}] mean={float(arr2.mean()):.3f}")
             lines.append("")
             lines.append("  Tip: Start with 50 epochs at LR 0.01; run Check pipeline after training. If verdict is 'likely segments', the model is good. More epochs (200, 500) can drift the head (negative bias, smaller weight max → 0 cells); re-check the verdict if you increase epochs.")
     lines.append("")

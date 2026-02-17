@@ -260,7 +260,7 @@ Opened by **Train model** in the Model Parameters area.
 
 **Tile and prepare for training** — Button. Splits each image/mask pair into smaller tiles and writes only tiles with at least N cells (configurable). Use when images are large or sparse. Dialog: Tile size (64–512, default 512), Minimum cells per tile, Output folder (default: training_dir/omnipose_masks_tiled). Then set Training directory to the output folder and Crop size (tyx) to half the tile size (e.g. 256 for 512 tiles).
 
-**Model name:** Line edit; placeholder “e.g. my_bacteria_v1”. Required; no path separators. This is the **output** name: the trained checkpoint is saved as `<model_name>.pth` in the **user models folder** and appears in the model dropdown. User models folder: when running from the **repo** it is `<repo_root>/user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models` (macOS) or `%APPDATA%/BactiMate/Models` (Windows). The success dialog after training shows the full save path and, if you used transfer learning, a note “(Transfer learning from …)”.
+**Model name:** Line edit; placeholder “e.g. my_bacteria_v1”. Required; no path separators. This is the **output** name: the trained checkpoint is saved as `<model_name>.pth` in the **Omnipose user models folder** and appears in the model dropdown. Omnipose user models folder: when running from the **repo** it is `<repo_root>/omnipose_user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models/omnipose_user_models` (macOS) or `%APPDATA%/BactiMate/Models/omnipose_user_models` (Windows). U-Net models are stored in `unet_user_models/`. The success dialog after training shows the full save path and, if you used transfer learning, a note “(Transfer learning from …)”.
 
 **Training parameters**
 
@@ -279,7 +279,7 @@ Opened by **Train model** in the Model Parameters area.
 
 The training command follows the [Omnipose training docs](https://omnipose.readthedocs.io): **--dir** (absolute), **--channel_axis 0** and **--all_channels** when nchan≥2, **--diameter 0**, **--RAdam**, **--tyx** (from Crop size), **--save_each** (when Save every N > 0), and the same architecture flags. Optional CLI-only: **--look_one_level_down**, **--dataloader** / **--num_workers**.
 
-Before starting, the dialog checks for image/mask pairs. When you use a **pretrained model**, it also checks that images are 2D if the model is 2D (e.g. bact_phase_omni); 3D stacks trigger a warning and you can cancel or continue. If **Image filter** is empty and no pairs are found, it **infers** the image filter from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase) and fills the field so training can proceed. It also shows: “Found N image/mask pair(s). All will be used every epoch for M epochs.” (When using transfer learning it adds: “Transfer learning: starting from … (nchan/nclasses locked to match).”) Then it runs Omnipose training; log is shown in the dialog. **On success**, a dialog shows the full path where the model was saved (user models folder), and if you used transfer learning, a line “(Transfer learning from …)”. The model list is refreshed and the new model appears in the main tab’s model dropdown.
+Before starting, the dialog checks for image/mask pairs. When you use a **pretrained model**, it also checks that images are 2D if the model is 2D (e.g. bact_phase_omni); 3D stacks trigger a warning and you can cancel or continue. If **Image filter** is empty and no pairs are found, it **infers** the image filter from filenames (e.g. 634_phase.tif + 634_masks.tif → _phase) and fills the field so training can proceed. It also shows: “Found N image/mask pair(s). All will be used every epoch for M epochs.” (When using transfer learning it adds: “Transfer learning: starting from … (nchan/nclasses locked to match).”) Then it runs Omnipose training; log is shown in the dialog. **On success**, a dialog shows the full path where the model was saved (Omnipose user models folder), and if you used transfer learning, a line “(Transfer learning from …)”. The model list is refreshed and the new model appears in the main tab’s model dropdown.
 
 ### 4.5 Preview dialog (Omnipose)
 
@@ -325,9 +325,9 @@ If you see `nchan=1` or `nclasses=2` for a model you trained in BactiMate (which
 
 In the **Train model** dialog, **Start from** offers: **From scratch** (no pretrained model); or a built-in model by name (**bact_phase_omni**, **bact_fluor_omni**, **bact_phase_affinity**) to initialize from that checkpoint and train on your data. Choosing a pretrained option adds your data on top of it; **nchan** and **nclasses** are locked to match (Omnipose requirement). Use **Check compatibility with selected model** to validate image/mask pairs and that image dimensions match (e.g. 2D for bact_phase_omni). See [Omnipose Training](https://omnipose.readthedocs.io) and [Omnipose GitHub](https://github.com/kevinjohncutler/omnipose).
 
-**Making fine-tuning predictable (avoid 0 cells)**
+**Making fine-tuning predictable (avoid 0 cells and background detected)**
 
-Too many epochs can weaken the output head (last layer): **output.0.weight** shrinks and the distance map stays below the mask threshold → 0 cells. (1) Use the **default** when you select a pretrained model: **50 epochs**, LR 0.01. Fewer epochs (50) usually give “likely segments”; 200+ often drift. (2) Use the **50** (recommended), **200**, **500** buttons. (3) After training, run **Check pipeline**: if the verdict is “likely segments”, the model is good; if “weak head” or “may segment”, retrain with 50 epochs or lower LR (0.005).
+Too many epochs can **drift the output head** (last layer): the distance map can shift so you get **0 cells** (head too weak) or **background detected as cells** (head drifted the other way). You may see **100 and 200 epochs find cells, 300 and 400 don't, 500 finds some again** — that is head drift. **output.0.weight** can shrink and the distance map stays below the mask threshold → 0 cells. (1) Use the **default** when you select a pretrained model: **50 epochs**, LR 0.01. Fewer epochs (50) usually give “likely segments”; 200+ often drift. (2) Use the **50** (recommended), **200**, **500** buttons. (3) After training, run **Check pipeline**: if the verdict is “likely segments”, the model is good; if “weak head” or “may segment”, retrain with 50 epochs or lower LR (0.005). Use an **earlier checkpoint** (e.g. epoch 100 or 200) for inference if later ones give 0 cells. See **docs/TRAINING_TROUBLESHOOTING.md** for head drift and background-detected-as-cells.
 
 **Inspect a checkpoint manually**
 
@@ -341,7 +341,7 @@ python -m bactimate.scripts.inspect_omnipose_checkpoint --list-user-models
 python -m bactimate.scripts.inspect_omnipose_checkpoint path/to/your_model.pth
 ```
 
-User models folder: when running from the **repo** it is `<repo_root>/user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models` (macOS) or `%APPDATA%/BactiMate/Models` (Windows).
+Omnipose user models folder: when running from the **repo** it is `<repo_root>/omnipose_user_models/`; when **installed** it is `~/Library/Application Support/BactiMate/Models/omnipose_user_models` (macOS) or `%APPDATA%/BactiMate/Models/omnipose_user_models` (Windows). U-Net models use `unet_user_models/`.
 
 This prints the checkpoint’s top-level keys, any stored nchan/nclasses, and the first conv layer shape (from which input channels can be inferred). Compare with BactiMate’s inference defaults: **nchan=2, nclasses=3**. Models trained with other tools may use different nchan/nclasses; those same values must be used at inference (future BactiMate versions may allow setting them in the UI).
 
@@ -534,7 +534,7 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 ### 7.7 Create Growth Curve Video button
 
 - **Button:** “Create Growth Curve Video”. Enabled when: (1) Video input path is set, (2) Excel path is set, (3) At least one output format (TIFF, AVI, GIF, MP4) is checked.
-- **Behavior:** Reads the Excel Summary (Frame, Total Cell Area (Relative)), loads the TIFF sequence from the video path, builds the growth curve (time in hours from “Time per frame (min.)”), and renders a side-by-side layout (graph + video). Writes output files in the chosen formats (e.g. same base name with .tif, .avi, .gif, .mp4) to an output directory (often next to the Excel or the video input, with logic to go up one level if the path is inside a Tif_* or _segmentation folder).
+- **Behavior:** Reads the Excel Summary (Frame, Total Cell Area (Relative)), loads the TIFF sequence from the video path, builds the growth curve (time in hours from “Time per frame (min.)”), and renders a side-by-side layout (graph + video). Writes output files in the chosen formats (e.g. same base name with .tif, .avi, .gif, .mp4) to an output directory (often next to the Excel or the video input, with logic to go up one level if the path is inside a Tif_*, _omnipose_segmentation, _unet_segmentation, or _analysis folder).
 
 ---
 
@@ -583,6 +583,9 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 ---
 
 ## 10. Common scenarios and questions
+
+**Q: I upgraded and my Omnipose models are in an old "user_models" folder. What do I do?**  
+A: BactiMate now uses **omnipose_user_models** for Omnipose checkpoints. If you have an existing `user_models` folder (in the repo or under BactiMate/Models), rename it to **omnipose_user_models**. Your `.pth` files will then appear in the model dropdown. U-Net models use a separate folder **unet_user_models**.
 
 **Q: I have 634_phase.tif and 634_masks.tif; training says “No matching mask files found”.**  
 A: Set **Image filter** to `_phase` so the base name is “634” and the app looks for `634_masks.tif`. You can leave Image filter empty and click Start training; the dialog will try to infer `_phase` from the filenames and fill it in.
@@ -665,7 +668,7 @@ This appendix reproduces the **(?)** info icon texts as they appear in the appli
 “Convert binary masks (e.g. 0 and 255 from Ilastik) to instance label matrices. Converted masks (and image copies when naming matches) are written to a subfolder 'omnipose_masks'; your originals are never overwritten. Keep the training directory as the folder that contains your images and masks. When you click Start training, we use the omnipose_masks subfolder automatically and copy images there if needed.”
 
 **Train dialog — Model name (Section 4.4)**  
-“A short name for your model (letters, numbers, underscores). It will appear in the model dropdown and is used to save the .pth file. Example: my_bacteria_v1. Do not use path separators. Models are saved in BactiMate's user models folder. User models folder: [path shown].”
+“A short name for your model (letters, numbers, underscores). It will appear in the model dropdown and is used to save the .pth file. Example: my_bacteria_v1. Do not use path separators. Models are saved in BactiMate's Omnipose user models folder (omnipose_user_models). [path shown].”
 
 **Train dialog — Epochs (Section 4.4)**  
 “Number of full passes over the training set. Omnipose often benefits from more epochs (e.g. 4000 for bacteria). Fewer epochs (500–1000) can be used for quick tests.”

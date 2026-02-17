@@ -9,12 +9,12 @@ Usage:
   python -m bactimate.scripts.inspect_omnipose_checkpoint --list-user-models   # show BactiMate user models folder and list .pth files
   python -m bactimate.scripts.inspect_omnipose_checkpoint --list-builtin        # show cellpose_omni cache dir and built-in model paths (bact_phase_omni, etc.)
 
-You can inspect any checkpoint by path: user_models/*.pth or the cache paths from --list-builtin.
+You can inspect any checkpoint by path: omnipose_user_models/*.pth or the cache paths from --list-builtin.
 
-BactiMate user models folder:
-  - Running from repo:  <repo_root>/user_models/
-  - Installed (macOS):  ~/Library/Application Support/BactiMate/Models
-  - Installed (Windows): %APPDATA%/BactiMate/Models
+BactiMate Omnipose user models folder:
+  - Running from repo:  <repo_root>/omnipose_user_models/
+  - Installed (macOS):  ~/Library/Application Support/BactiMate/Models/omnipose_user_models
+  - Installed (Windows): %APPDATA%/BactiMate/Models/omnipose_user_models
 
 See: https://omnipose.readthedocs.io (Training, Settings).
 """
@@ -26,10 +26,10 @@ from pathlib import Path
 
 
 def _print_user_models_help() -> None:
-    """Print BactiMate's user models directory and list .pth files there."""
-    from bactimate.gui.paths import get_user_models_dir
-    user_dir = get_user_models_dir()
-    print(f"BactiMate user models folder:\n  {user_dir}")
+    """Print BactiMate's Omnipose user models directory and list .pth files there."""
+    from bactimate.gui.paths import get_omnipose_user_models_dir
+    user_dir = get_omnipose_user_models_dir()
+    print(f"BactiMate Omnipose user models folder:\n  {user_dir}")
     pth_files = sorted(user_dir.glob("*.pth"))
     if not pth_files:
         print("  (no .pth files found)")

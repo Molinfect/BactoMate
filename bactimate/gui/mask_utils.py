@@ -10,7 +10,7 @@ from typing import Literal, Tuple
 
 from bactimate.gui.utils import safe_imread
 
-# Match dialog pair discovery (processing._training_pairs): exts and suffixes
+# Match tab pair discovery (omnipose_seg._training_pairs): exts and suffixes
 _PAIR_EXTS = (".tif", ".tiff", ".png", ".npy", ".npz")
 _MASK_STEM_SUFFIXES = ("_cp_masks", "_cp_output", "_flows")
 
@@ -363,8 +363,107 @@ def ensure_training_images_nchan(
     return (n_updated, errors)
 
 
-# Default subfolder for tiled training data (so we don't overwrite omnipose_masks)
+# Default subfolder for tiled training data (Omnipose); do not overwrite omnipose_masks
 OMNIPOSE_MASKS_TILED_SUBDIR = "omnipose_masks_tiled"
+
+# Subfolder for U-Net tiled training data (separate from Omnipose)
+UNET_MASKS_TILED_SUBDIR = "unet_masks_tiled"
+
+# Subfolder for U-Net training: binary [0, 255] masks (and copied images)
+UNET_MASKS_BINARY_SUBDIR = "unet_masks_binary"
+
+
+def convert_single_mask_to_binary_unet(
+    mask_path: Path,
+    out_path: Path,
+) -> Tuple[Literal["converted", "skipped"], str] | Tuple[Literal["error"], str]:
+    """
+    Convert a mask to strict binary [0, 255] for U-Net training.
+    Background = 0 stays 0; any pixel value from 1 to whatever (e.g. instance IDs
+    or grayscale) becomes 255. No normalization or threshold: 0 → 0, non-zero → 255.
+    Returns ("converted", ""), ("skipped", ""), or ("error", message).
+    """
+    try:
+        data = tifffile.imread(str(mask_path))
+    except Exception as e:
+        return ("error", f"Could not read {mask_path.name}: {e}")
+
+    if data.ndim == 3:
+        if data.shape[-1] in (3, 4):
+            gray = np.max(data, axis=-1)
+        else:
+            gray = np.max(data, axis=0)
+    elif data.ndim == 2:
+        gray = data
+    else:
+        return ("error", f"Unsupported mask shape {data.shape}")
+
+    gray = np.asarray(gray, dtype=np.float64)
+    # 0 = background (0), anything from 1 onward = foreground (255)
+    binary = (gray > 0).astype(np.uint8) * 255
+
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tifffile.imwrite(str(out_path), binary)
+    except Exception as e:
+        return ("error", f"Could not write {out_path.name}: {e}")
+    return ("converted", "")
+
+
+def prepare_unet_masks_binary(
+    folder: Path,
+    img_filter: str,
+    mask_filter: str,
+    out_subdir: str = UNET_MASKS_BINARY_SUBDIR,
+) -> Tuple[int, int, list[str], Path]:
+    """
+    Convert all masks in folder to binary [0, 255] and copy images to out_subdir.
+    Same pairing logic as get_training_pairs. Original files are not modified.
+    Returns (converted_count, skipped_count, errors, out_dir).
+    """
+    if not folder.is_dir():
+        return (0, 0, [f"Not a directory: {folder}"], folder / out_subdir)
+    pairs = get_training_pairs(folder, img_filter, mask_filter)
+    if not pairs:
+        return (0, 0, ["No image/mask pairs found."], folder / out_subdir)
+    out_dir = folder / out_subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    converted = 0
+    skipped = 0
+    errors: list[str] = []
+    for img_path, mask_path in pairs:
+        out_mask = out_dir / mask_path.name
+        status, msg = convert_single_mask_to_binary_unet(mask_path, out_mask)
+        if status == "converted":
+            converted += 1
+        elif status == "skipped":
+            skipped += 1
+        else:
+            errors.append(msg)
+        dst_img = out_dir / img_path.name
+        if not dst_img.is_file() or dst_img.stat().st_mtime < img_path.stat().st_mtime:
+            try:
+                shutil.copy2(img_path, dst_img)
+            except Exception:
+                pass
+    return (converted, skipped, errors, out_dir)
+
+
+def _image_to_cyx(arr: np.ndarray) -> np.ndarray:
+    """
+    Normalize image to (C, Y, X) for Omnipose (channel_axis=0).
+    Handles (Y, X), (C, Y, X), (Y, X, C). Returns (C, Y, X) with C >= 1.
+    """
+    if arr.ndim == 2:
+        return arr[np.newaxis, :, :]  # (1, Y, X)
+    if arr.ndim != 3:
+        return arr
+    c, h, w = arr.shape[0], arr.shape[1], arr.shape[2]
+    if c in (1, 2, 3, 4, 5, 6, 7, 8) and min(h, w) > 4:
+        return arr.copy()
+    if arr.shape[-1] in (1, 2, 3, 4) and min(arr.shape[0], arr.shape[1]) > 4:
+        return np.transpose(arr, (2, 0, 1))
+    return arr.copy()
 
 
 def tile_training_data(
@@ -412,16 +511,8 @@ def tile_training_data(
         except Exception as e:
             errors.append(f"{img_path.name}: {e}")
             continue
-        # Spatial dimensions: last two axes (Y, X)
-        if img.ndim == 2:
-            h, w = img.shape
-            img_2d = img
-        elif img.ndim == 3:
-            h, w = img.shape[1], img.shape[2]
-            img_2d = None
-        else:
-            errors.append(f"{img_path.name}: unsupported image ndim {img.ndim}")
-            continue
+        img = _image_to_cyx(img)
+        h, w = img.shape[1], img.shape[2]
         if mask.ndim != 2:
             if mask.ndim == 3 and mask.shape[-1] in (1, 3, 4):
                 mask = np.max(mask, axis=-1) if mask.shape[-1] > 1 else mask[:, :, 0]
@@ -430,6 +521,11 @@ def tile_training_data(
         if mask.shape[0] != h or mask.shape[1] != w:
             errors.append(f"{img_path.name}: image shape {img.shape} vs mask shape {mask.shape}")
             continue
+        # Ensure mask is integer (background 0, labels 1,2,...) so tiled output stays int, not float
+        if mask.dtype.kind == "f":
+            mask = np.round(mask).astype(np.uint32)
+        else:
+            mask = np.asarray(mask, dtype=np.uint32)
 
         base_original = img_path.stem.replace(img_filter, "") if img_filter else img_path.stem
         if not base_original or base_original == ".":
@@ -440,10 +536,7 @@ def tile_training_data(
             for x0 in range(0, w, tile_size):
                 y1 = min(y0 + tile_size, h)
                 x1 = min(x0 + tile_size, w)
-                if img.ndim == 2:
-                    img_crop = img[y0:y1, x0:x1]
-                else:
-                    img_crop = img[:, y0:y1, x0:x1].copy()
+                img_crop = img[:, y0:y1, x0:x1].copy()
                 mask_crop = mask[y0:y1, x0:x1].copy()
                 # Relabel to instance 0, 1, 2, ...
                 unique_vals = np.unique(mask_crop)
@@ -471,18 +564,15 @@ def tile_training_data(
                         pad_w = tile_size - crop_w
                     else:
                         continue  # would be mostly black, skip
-                    if img.ndim == 2:
-                        img_crop = np.pad(img_crop, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
-                        relabeled = np.pad(relabeled, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
-                    else:
-                        img_crop = np.pad(img_crop, ((0, 0), (0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
-                        relabeled = np.pad(relabeled, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
+                    img_crop = np.pad(img_crop, ((0, 0), (0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
+                    relabeled = np.pad(relabeled, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=np.uint32(0))
                 stem = f"{base_original}_tile{tile_idx:03d}"
                 img_out = out_dir / f"{stem}{img_filter}{img_path.suffix}"
                 mask_out = out_dir / f"{stem}{mask_filter}{mask_path.suffix}"
                 try:
                     tifffile.imwrite(str(img_out), img_crop)
-                    tifffile.imwrite(str(mask_out), relabeled)
+                    mask_uint32 = np.asarray(relabeled, dtype=np.uint32)
+                    tifffile.imwrite(str(mask_out), mask_uint32)
                 except Exception as e:
                     errors.append(f"{stem}: {e}")
                     continue

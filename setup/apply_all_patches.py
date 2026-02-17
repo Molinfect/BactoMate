@@ -281,110 +281,63 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
     return True
 
 
-def patch_omnipose_core_constant_dist_workaround() -> bool:
-    """When dist is constant and negative (user model output bug), treat all pixels as foreground so flow/clustering can run."""
-    core_file = _find_in_syspath("omnipose/core.py")
-    if not core_file:
-        print("  WARNING: Could not find omnipose/core.py")
+def patch_omnipose_gpu_mps() -> bool:
+    """Improve MPS (Apple Silicon) GPU detection in omnipose/gpu.py: broader ARM check and log real exception when device test fails."""
+    gpu_file = _find_in_syspath("omnipose/gpu.py")
+    if not gpu_file:
+        print("  WARNING: Could not find omnipose/gpu.py")
         return False
-
-    content = core_file.read_text()
-    old = """            else:
-                iscell = dist > mask_threshold # analog to original iscell=(cellprob>cellprob_threshold)
-    
-    
-    # if nclasses>1, we can do instance segmentation. 
-    if np.any(iscell) and nclasses>1:"""
-    new = """            else:
-                iscell = dist > mask_threshold # analog to original iscell=(cellprob>cellprob_threshold)
-    
-    # BactiMate: if user model outputs constant negative dist (no spatial variation), treat all pixels as foreground so flow/clustering can run
-    if not np.any(iscell) and dist is not None and dist.size > 0:
-        _dmin, _dmax = np.min(dist), np.max(dist)
-        if _dmin == _dmax and _dmax < mask_threshold:
-            iscell = np.ones_like(dist, dtype=np.int32)
-            try:
-                _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
-                if _dp:
-                    with open(_dp, "a", encoding="utf-8") as _f:
-                        _f.write("[omnipose workaround] constant dist={:.4f} < mask_thr={}; treating all pixels as foreground\\n".format(_dmax, mask_threshold))
-            except Exception:
-                pass
-    
-    # if nclasses>1, we can do instance segmentation. 
-    if np.any(iscell) and nclasses>1:"""
-    if "BactiMate: if user model outputs constant negative dist" in content:
-        print("  ✓ omnipose core (constant dist workaround) already patched")
-        return True
-    if old not in content:
-        print("  WARNING: Could not find iscell/mask_threshold block in omnipose/core.py")
-        return False
-
-    content = content.replace(old, new)
-    core_file.write_text(content)
-    print("  ✓ Patched omnipose core (constant negative dist -> treat all as foreground)")
-    return True
-
-
-def patch_omnipose_core_no_cell_pixels_diagnostic() -> bool:
-    """When omnipose compute_masks finds no cell pixels, log dist map stats. Use single-line write so the string can never be split (SyntaxError). Repair any broken copy."""
-    import re
-    core_files = _find_all_in_syspath("omnipose/core.py")
-    if not core_files:
-        print("  WARNING: Could not find omnipose/core.py")
-        return False
-
-    # Single-line write so the patched file can never have an unterminated string (safe for copy/app bundle).
-    _one_line_write = '                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))'
-
-    repaired_any = False
-    for core_file in core_files:
-        content = core_file.read_text()
-        if "\r" in content:
-            content = content.replace("\r\n", "\n").replace("\r", "\n")
-
-        # 1) If file contains the diagnostic but the write spans multiple lines or is broken, normalize to one-line.
-        if "omnipose no cell pixels" in content and "_f.write" in content:
-            if _one_line_write in content:
-                continue  # already safe
-            # Match from optional leading whitespace + _f.write to end of .format(..., mask_threshold)) (handles broken split, any indent).
-            norm_re = re.compile(
-                r'\s*_f\.write\s*\(\s*"\[omnipose no cell pixels\] dist min=\{\:.4f\} max=\{\:.4f\} mean=\{\:.4f\} shape=\{\} mask_thr=\{\}[\s\S]*?mask_threshold\s*\)\s*\)',
-                re.DOTALL,
-            )
-            if norm_re.search(content):
-                new_content = norm_re.sub(_one_line_write, content, count=1)
-                if new_content != content:
-                    core_file.write_text(new_content)
-                    print("  ✓ Normalized omnipose core (no-cell-pixels to one-line): {}".format(core_file))
-                    repaired_any = True
-                    continue
-
-        # 2) Original patch: insert the full block (with one-line write so it never breaks).
-        old = """    else: # nothing to compute, just make it compatible
-        omnipose_logger.info('No cell pixels found.')"""
-        new = """    else: # nothing to compute, just make it compatible
-        try:
-            _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
-            if _dp and dist is not None:
-                _d = np.asarray(dist)
-                with open(_dp, "a", encoding="utf-8") as _f:
-                    _f.write("[omnipose no cell pixels] dist min={:.4f} max={:.4f} mean={:.4f} shape={} mask_thr={}\\n".format(float(np.min(_d)), float(np.max(_d)), float(np.mean(_d)), _d.shape, mask_threshold))
-        except Exception:
-            pass
-        omnipose_logger.info('No cell pixels found.')"""
-        if new in content:
-            continue
-        if old not in content:
-            continue
-        content = content.replace(old, new)
-        core_file.write_text(content)
-        print("  ✓ Patched omnipose core (no-cell-pixels diagnostic): {}".format(core_file))
-        repaired_any = True
-
-    if repaired_any:
-        return True
-    print("  ✓ omnipose core (no-cell-pixels diagnostic) already patched ({} copy/copies)".format(len(core_files)))
+    content = gpu_file.read_text()
+    patched = False
+    # 1) Broaden ARM detection (platform.processor() can vary; platform.machine() == 'arm64' is reliable on Mac)
+    old_arm = "ARM = 'arm' in platform.processor()"
+    new_arm = "ARM = ('arm' in platform.processor()) or (platform.machine() == 'arm64')"
+    if new_arm in content:
+        pass
+    elif old_arm in content:
+        content = content.replace(old_arm, new_arm, 1)
+        patched = True
+    # 2) Log actual exception when GPU test fails (upstream uses 1-space indent in omnipose/gpu.py)
+    for (old_except, new_except) in [
+        (
+            " except:# Exception as e:\n gpu_logger.info('TORCH GPU version not installed/working.')#, e)",
+            " except Exception as e:\n gpu_logger.info('TORCH GPU version not installed/working: %s', e)",
+        ),
+        (
+            "except:# Exception as e:\n    gpu_logger.info('TORCH GPU version not installed/working.')#, e)",
+            "except Exception as e:\n    gpu_logger.info('TORCH GPU version not installed/working: %s', e)",
+        ),
+        (
+            "except:# Exception as e:\n gpu_logger.info('TORCH GPU version not installed/working.')#, e)",
+            "except Exception as e:\n gpu_logger.info('TORCH GPU version not installed/working: %s', e)",
+        ),
+    ]:
+        if "not installed/working: %s" in content:
+            break
+        if old_except in content:
+            content = content.replace(old_except, new_except, 1)
+            patched = True
+            break
+    # 3) Regex fallback: match "except:" or "except Exception" followed by the info line (any indent)
+    if "not installed/working: %s" not in content and "gpu_logger.info('TORCH GPU version not installed/working." in content:
+        import re
+        # Match except with optional Exception as e, then the info line without %s
+        regex = re.compile(
+            r"(\s*)except\s*:?\s*#?\s*Exception as e:\s*\n\s*gpu_logger\.info\('TORCH GPU version not installed/working\.'\)\s*#?,?\s*e?\s*\)?",
+            re.MULTILINE,
+        )
+        def repl(m: re.Match) -> str:
+            indent = m.group(1) or " "
+            return f"{indent}except Exception as e:\n{indent}gpu_logger.info('TORCH GPU version not installed/working: %s', e)"
+        new_content = regex.sub(repl, content, count=1)
+        if new_content != content:
+            content = new_content
+            patched = True
+    if patched:
+        gpu_file.write_text(content)
+        print("  ✓ Patched omnipose gpu.py (MPS ARM detection and/or GPU exception logging)")
+    elif "not installed/working: %s" in content or new_arm in content:
+        print("  ✓ omnipose gpu.py (MPS) already patched")
     return True
 
 
@@ -1220,120 +1173,70 @@ def patch_cellpose_omni_core_save_model() -> bool:
     return False
 
 
+# Ordered list of (name, description, patch_func) for --only / --list. Names are used as: --only resnet_load,cellpose_pretrained
+PATCH_LIST = [
+    ("peakdetect", "peakdetect: scipy ifft compatibility", patch_peakdetect),
+    ("cellpose_omni", "cellpose_omni: model_type + model URL", patch_cellpose_omni),
+    ("transforms", "cellpose_omni transforms: nchan trim", patch_cellpose_omni_transforms),
+    ("io", "cellpose_omni io: NumPy 2.0 TIFF read", patch_cellpose_omni_io),
+    ("dynamics", "cellpose_omni dynamics: steps2D tr", patch_cellpose_omni_dynamics),
+    ("resnet_load", "cellpose_omni resnet_torch: load checkpoint unwrap", patch_cellpose_omni_resnet_load_checkpoint),
+    ("omnipose_gpu_mps", "omnipose gpu: MPS (Apple Silicon) detection + log GPU exception", patch_omnipose_gpu_mps),
+    ("omnipose_bce_boundary", "omnipose core: BCE boundary range (training)", patch_omnipose_core_bce_boundary_range),
+    ("omnipose_dtype", "omnipose core: grid_sample dtype", patch_omnipose_core_grid_sample_dtype),
+    ("omnipose_follow_flows", "omnipose core: follow_flows dtype", patch_omnipose_core_follow_flows_dtype),
+    ("cellpose_pretrained", "cellpose_omni Cellpose: pretrained_model path (user models)", patch_cellpose_omni_cellpose_pretrained),
+    ("train_channels", "cellpose_omni __main__: train channels for nchan==2", patch_cellpose_omni_main_train_channels),
+    ("cellpose_core_save", "cellpose_omni core: DataParallel save_model", patch_cellpose_omni_core_save_model),
+]
+
+
 def main() -> bool:
+    argv = list(sys.argv)
     # When building the app bundle, pass --target-site-packages so we patch the copied venv, not another path.
-    if len(sys.argv) >= 2 and sys.argv[1] == "--target-site-packages" and len(sys.argv) >= 3:
-        target = Path(sys.argv[2]).resolve()
+    if len(argv) >= 3 and argv[1] == "--target-site-packages":
+        target = Path(argv[2]).resolve()
         if target.is_dir():
             sys.path.insert(0, str(target))
             print("Target site-packages: {}".format(target))
+        argv = argv[3:]  # consume so --list/--only are visible
+    else:
+        argv = argv[1:]
+
+    only_names: set[str] | None = None
+    if argv and argv[0] == "--list":
+        print("Available patches (use with --only name1,name2):")
+        for name, desc, _ in PATCH_LIST:
+            print("  {}  {}".format(name, desc))
+        return True
+    if argv and argv[0] == "--only" and len(argv) >= 2:
+        only_names = {s.strip() for s in argv[1].split(",") if s.strip()}
+        valid = {n for n, _, _ in PATCH_LIST}
+        unknown = only_names - valid
+        if unknown:
+            print("Unknown patch names: {}. Use --list to see available names.".format(unknown))
+            return False
+
     print("=" * 50)
-    print("Applying BactiMate compatibility patches")
+    print("Applying BactiMate compatibility patches" + (" (selected only)" if only_names else ""))
     print("=" * 50)
 
-    ok_peak = False
-    ok_cellpose = False
-
-    print("\nPatching peakdetect (scipy compatibility)...")
-    try:
-        ok_peak = patch_peakdetect()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    print("\nPatching cellpose_omni (model_type + model URL)...")
-    try:
-        ok_cellpose = patch_cellpose_omni()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_transforms = False
-    print("\nPatching cellpose_omni transforms (nchan trim)...")
-    try:
-        ok_transforms = patch_cellpose_omni_transforms()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_io = False
-    print("\nPatching cellpose_omni io (NumPy 2.0 TIFF)...")
-    try:
-        ok_io = patch_cellpose_omni_io()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_dynamics = False
-    print("\nPatching cellpose_omni dynamics (steps2D tr)...")
-    try:
-        ok_dynamics = patch_cellpose_omni_dynamics()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_resnet_load = False
-    print("\nPatching cellpose_omni resnet_torch (load checkpoint unwrap)...")
-    try:
-        ok_resnet_load = patch_cellpose_omni_resnet_load_checkpoint()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_omnipose_workaround = False
-    print("\nPatching omnipose core (constant dist workaround)...")
-    try:
-        ok_omnipose_workaround = patch_omnipose_core_constant_dist_workaround()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_omnipose_diagnostic = False
-    print("\nPatching omnipose core (no-cell-pixels diagnostic)...")
-    try:
-        ok_omnipose_diagnostic = patch_omnipose_core_no_cell_pixels_diagnostic()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_omnipose_bce_boundary = False
-    print("\nPatching omnipose core (BCE boundary range for training)...")
-    try:
-        ok_omnipose_bce_boundary = patch_omnipose_core_bce_boundary_range()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_omnipose_dtype = False
-    print("\nPatching omnipose core (grid_sample dtype)...")
-    try:
-        ok_omnipose_dtype = patch_omnipose_core_grid_sample_dtype()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_omnipose_follow_flows = False
-    print("\nPatching omnipose core (follow_flows dtype)...")
-    try:
-        ok_omnipose_follow_flows = patch_omnipose_core_follow_flows_dtype()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_cellpose_pretrained = False
-    print("\nPatching cellpose_omni Cellpose (pretrained_model path)...")
-    try:
-        ok_cellpose_pretrained = patch_cellpose_omni_cellpose_pretrained()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_train_channels = False
-    print("\nPatching cellpose_omni __main__ (train channels for nchan==2)...")
-    try:
-        ok_train_channels = patch_cellpose_omni_main_train_channels()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
-
-    ok_cellpose_core_save = False
-    print("\nPatching cellpose_omni core (DataParallel save_model)...")
-    try:
-        ok_cellpose_core_save = patch_cellpose_omni_core_save_model()
-    except Exception as e:
-        print(f"  ✗ Error: {e}")
+    results: dict[str, bool] = {}
+    for name, desc, patch_func in PATCH_LIST:
+        if only_names is not None and name not in only_names:
+            continue
+        print("\nPatching {}...".format(desc))
+        try:
+            results[name] = patch_func()
+        except Exception as e:
+            print(f"  ✗ Error: {e}")
+            results[name] = False
 
     print("\n" + "=" * 50)
-    print(f"Done. peakdetect: {'OK' if ok_peak else 'skipped/failed'}; cellpose_omni: {'OK' if ok_cellpose else 'skipped/failed'}; transforms: {'OK' if ok_transforms else 'skipped/failed'}; io: {'OK' if ok_io else 'skipped/failed'}; dynamics: {'OK' if ok_dynamics else 'skipped/failed'}; resnet_load: {'OK' if ok_resnet_load else 'skipped/failed'}; omnipose_workaround: {'OK' if ok_omnipose_workaround else 'skipped/failed'}; omnipose_diagnostic: {'OK' if ok_omnipose_diagnostic else 'skipped/failed'}; omnipose_bce_boundary: {'OK' if ok_omnipose_bce_boundary else 'skipped/failed'}; omnipose_dtype: {'OK' if ok_omnipose_dtype else 'skipped/failed'}; omnipose_follow_flows: {'OK' if ok_omnipose_follow_flows else 'skipped/failed'}; Cellpose pretrained_model: {'OK' if ok_cellpose_pretrained else 'skipped/failed'}; train_channels: {'OK' if ok_train_channels else 'skipped/failed'}; cellpose_omni_core_save: {'OK' if ok_cellpose_core_save else 'skipped/failed'}")
+    summary = "; ".join("{}: {}".format(n, "OK" if r else "skipped/failed") for n, r in results.items())
+    print(summary)
     print("=" * 50)
-    return ok_peak or ok_cellpose or ok_io or ok_cellpose_pretrained or ok_cellpose_core_save
+    return any(results.values())
 
 
 if __name__ == "__main__":

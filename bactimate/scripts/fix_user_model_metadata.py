@@ -7,8 +7,8 @@ This script writes nchan/nclasses into the checkpoint in place.
 
 Usage:
   python -m bactimate.scripts.fix_user_model_metadata path/to/model_omni.pth
-  python -m bactimate.scripts.fix_user_model_metadata user_models/mf_ontop_bact_phase_omni.pth
-  python -m bactimate.scripts.fix_user_model_metadata user_models/mf_ontop_bact_phase_omni.pth --nclasses 3   # force nclasses=3
+  python -m bactimate.scripts.fix_user_model_metadata omnipose_user_models/mf_ontop_bact_phase_omni.pth
+  python -m bactimate.scripts.fix_user_model_metadata omnipose_user_models/mf_ontop_bact_phase_omni.pth --nclasses 3   # force nclasses=3
 
 After running, reload the model in BactiMate (e.g. reselect it in the dropdown).
 """
@@ -23,7 +23,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Add nchan/nclasses to a user .pth so it loads correctly in BactiMate."
     )
-    parser.add_argument("checkpoint", type=Path, help="Path to .pth file (e.g. user_models/my_model_omni.pth)")
+    parser.add_argument("checkpoint", type=Path, help="Path to .pth file (e.g. omnipose_user_models/my_model_omni.pth)")
     parser.add_argument("--nchan", type=int, default=None, help="Force nchan (e.g. 2)")
     parser.add_argument("--nclasses", type=int, default=None, help="Force nclasses (e.g. 3); use if Fix wrote wrong value")
     args = parser.parse_args()

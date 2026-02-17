@@ -18,6 +18,7 @@ LAST_DIR_ANALYZE_MASKS = "analyze_masks"
 LAST_DIR_TRACKING = "tracking"
 LAST_DIR_GROWTH_CURVE = "growth_curve_video"
 LAST_DIR_SESSION_LOGS = "session_logs"
+LAST_DIR_UNET_SEGMENT = "unet_segment"
 
 
 def _settings() -> QSettings:
@@ -79,3 +80,14 @@ def get_state() -> Optional[QByteArray]:
 def set_state(data: QByteArray) -> None:
     """Save main window state."""
     _settings().setValue("main_window/state", data)
+
+
+def get_building_unet_path() -> str:
+    """Return saved path to Building U-NET project, or empty string."""
+    val = _settings().value("building_unet_path", "")
+    return str(val) if val else ""
+
+
+def set_building_unet_path(path: str) -> None:
+    """Save path to Building U-NET project."""
+    _settings().setValue("building_unet_path", path)

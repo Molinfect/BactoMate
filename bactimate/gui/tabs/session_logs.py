@@ -1,21 +1,27 @@
 """
-Session Logs tab: list recent session log files, show overview, apply params to current session.
+Session Logs: list recent session log files, show overview, apply params to current session.
+SessionLogsPanel = compact widget for Status & Session logs area.
+SessionLogsTab = full tab (kept for backward compatibility if needed).
 """
 from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFileDialog,
     QGroupBox,
+    QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -23,6 +29,174 @@ from PyQt6.QtWidgets import (
 
 from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS
 from bactimate.gui.preferences import get_default_browse_dir
+
+
+_RECENT_LOGS_SHOWN = 5
+
+
+class SessionLogsPanel(QWidget):
+    """Compact session logs widget for the Status & Session logs area: list + log content preview + Load other + Apply."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.parent_window = parent
+        self._selected_path: Optional[str] = None
+        self._loaded_data: Optional[dict] = None
+        self._build_ui()
+        self._refresh_list()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("Session logs")
+        title.setStyleSheet("font-weight: bold; color: #4a9eff;")
+        layout.addWidget(title)
+        self.log_list = QListWidget()
+        # Fixed height for exactly 5 items so no scroll (avoids scroll gap below last entry)
+        self.log_list.setFixedHeight(22 * _RECENT_LOGS_SHOWN + 4)
+        self.log_list.setUniformItemSizes(True)
+        self.log_list.setStyleSheet("QListWidget { padding: 0; margin: 0; outline: none; }")
+        self.log_list.setToolTip(
+            f"Last {_RECENT_LOGS_SHOWN} session logs. Up to {MAX_SESSION_LOGS} are kept on disk; this list shows the {_RECENT_LOGS_SHOWN} most recent."
+        )
+        self.log_list.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.log_list)
+        content_label = QLabel("Log content")
+        content_label.setStyleSheet("color: #888; font-size: 10px;")
+        layout.addWidget(content_label)
+        content_row = QHBoxLayout()
+        self.content_text = QTextEdit()
+        self.content_text.setReadOnly(True)
+        self.content_text.setPlaceholderText("Select a log above or click Load other...")
+        self.content_text.setMinimumHeight(70)
+        self.content_text.setMaximumHeight(105)
+        self.content_text.setStyleSheet("font-size: 10px;")
+        content_row.addWidget(self.content_text, 1)
+        btn_col = QVBoxLayout()
+        load_btn = QPushButton("Load other...")
+        load_btn.setToolTip("Open a session log file not in the list")
+        load_btn.setMaximumHeight(22)
+        load_btn.setStyleSheet("font-size: 11px;")
+        load_btn.clicked.connect(self._load_other)
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.setToolTip("Apply parameters from the selected log to current session (parameters only)")
+        self.apply_btn.setMaximumHeight(22)
+        self.apply_btn.setStyleSheet("font-size: 11px;")
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.clicked.connect(self._apply_now)
+        btn_col.addWidget(load_btn)
+        btn_col.addWidget(self.apply_btn)
+        btn_col.addStretch()
+        content_row.addLayout(btn_col, 0)
+        layout.addLayout(content_row)
+        self.setLayout(layout)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        self.setMinimumWidth(200)
+
+    def _refresh_list(self) -> None:
+        self.log_list.clear()
+        self._selected_path = None
+        self._loaded_data = None
+        self.content_text.clear()
+        self.apply_btn.setEnabled(False)
+        if not LOGS_DIR.exists():
+            return
+        files = sorted(
+            LOGS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        for p in files[:_RECENT_LOGS_SHOWN]:
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime)
+                label = f"{mtime.strftime('%Y-%m-%d %H:%M')} — {p.name}"
+            except (OSError, ValueError):
+                label = p.name
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
+            self.log_list.addItem(item)
+
+    def _on_selection_changed(self) -> None:
+        items = self.log_list.selectedItems()
+        if not items:
+            self._selected_path = None
+            self._loaded_data = None
+            self.content_text.clear()
+            self.apply_btn.setEnabled(False)
+            return
+        path = items[0].data(Qt.ItemDataRole.UserRole)
+        self._load_and_show(path)
+
+    def _load_other(self) -> None:
+        try:
+            if not self or not self.parent_window:
+                return
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Open session log",
+                str(LOGS_DIR) if LOGS_DIR.exists() else get_default_browse_dir(),
+                "JSON (*.json);;All files (*)",
+            )
+            if path:
+                self._load_and_show(path)
+        except Exception:
+            from bactimate.gui.log_config import get_logger
+            get_logger().exception("Session logs: error in Load other")
+
+    def _format_overview(self, data: dict) -> str:
+        """Build overview text for the log content box (same format as full tab)."""
+        lines = []
+        schema = data.get("schema_version", "?")
+        ts = data.get("timestamp", "?")
+        lines.append(f"Schema: {schema}  |  Saved: {ts}\n")
+        tabs_data = data.get("tabs", data)
+        if not isinstance(tabs_data, dict):
+            tabs_data = {}
+        for key, tab_label in SESSION_TAB_KEYS:
+            if key not in tabs_data or not isinstance(tabs_data[key], dict):
+                continue
+            lines.append(f"\n——— {tab_label} ———")
+            for k, v in sorted(tabs_data[key].items()):
+                lines.append(f"  {k}: {v}")
+        return "\n".join(lines) if lines else "(No tab data)"
+
+    def _load_and_show(self, path: str) -> None:
+        self._selected_path = path
+        self._loaded_data = None
+        self.content_text.clear()
+        self.apply_btn.setEnabled(False)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            from bactimate.gui.log_config import get_logger
+            get_logger().warning("Could not load session file: %s — %s", path, e)
+            self.content_text.setPlainText(f"Error loading file:\n{e}")
+            return
+        self._loaded_data = data
+        self.content_text.setPlainText(self._format_overview(data))
+        self.apply_btn.setEnabled(True)
+
+    def _apply_now(self) -> None:
+        try:
+            if not self or not self._loaded_data or not self.parent_window:
+                return
+            apply_fn = getattr(self.parent_window, "apply_session_params", None)
+            if not callable(apply_fn):
+                return
+            tabs_data = self._loaded_data.get("tabs", self._loaded_data)
+            if isinstance(tabs_data, dict):
+                apply_fn(tabs_data)
+            QMessageBox.information(
+                self,
+                "Applied",
+                "Parameters from the selected session have been applied (parameters only; paths unchanged).",
+            )
+        except Exception:
+            from bactimate.gui.log_config import get_logger
+            get_logger().exception("Session logs: error in Apply")
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._refresh_list()
 
 
 class SessionLogsTab(QWidget):

@@ -21,6 +21,7 @@ CONVERT_ND2_SCRIPT = get_script_path("convert_nd2_to_tif.py")
 SESSION_TAB_KEYS = [
     ("nd2", "TIFF Conversion"),
     ("segmentation", "Omnipose Segment"),
+    ("unet_segment", "U-NET Segment"),
     ("analyze_masks", "Analyze Masks"),
     ("tracking", "Tracking"),
     ("growth_curve_video", "Video Graph"),
@@ -29,7 +30,8 @@ SESSION_TAB_KEYS = [
 # MainWindow attribute name for each tab key (so we can get widget with getattr(main_window, TAB_WIDGET_ATTR[key])).
 TAB_WIDGET_ATTR = {
     "nd2": "nd2_tab",
-    "segmentation": "processing_tab",
+    "segmentation": "omnipose_seg_tab",
+    "unet_segment": "unet_segment_tab",
     "sam2": "sam2_tab",
     "analyze_masks": "analyze_tab",
     "tracking": "tracking_tab",

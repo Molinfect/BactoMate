@@ -277,8 +277,7 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
                 print(f"\n⚠️  WARNING: Model '{model_type}' not found in GitHub repository (404 error).")
                 print(f"   This model may not be available in the Omnipose GitHub repository.")
                 print(f"   Trying to use cached model if available, or falling back to Cellpose server...")
-                # Check if model exists in cache
-                from pathlib import Path
+                # Check if model exists in cache (Path is imported at top of module)
                 from cellpose_omni.models import MODEL_DIR
                 torch_str = 'torch'
                 basename = f'{model_type}{torch_str}_0'
@@ -896,7 +895,7 @@ Examples:
     if args.output is None:
         input_dir = os.path.dirname(os.path.abspath(args.input))
         input_basename = Path(args.input).stem
-        output_dir = os.path.join(input_dir, f"{input_basename}_segmentation")
+        output_dir = os.path.join(input_dir, f"{input_basename}_omnipose_segmentation")
     else:
         output_dir = args.output
     
@@ -915,17 +914,8 @@ Examples:
         # Step 2: Process frames with Omnipose (--model can be type name or path to user .pth)
         pretrained = args.model if os.path.isfile(args.model) else None
         model_type = None if pretrained else args.model
-        # User-trained models have no size model: diameter=0 causes "No cell pixels found". Default to 30.
-        diameter = args.diameter if args.diameter > 0 else (30.0 if pretrained else args.diameter)
+        diameter = float(args.diameter)
         flow_threshold = float(args.flow_threshold)
-        if pretrained:
-            if args.diameter == 0:
-                print("Note: Custom model used with diameter=0; using default diameter=30 (set --diameter for your cell size).")
-            # Custom models need flow_threshold=0 (permissive); 0.4 often yields no cells
-            if flow_threshold > 0.2:
-                print("Note: Using flow_threshold=0 for custom model (higher values often yield no cells).")
-                flow_threshold = 0.0
-            print(f"Custom model inference: diameter={diameter}, flow_threshold={flow_threshold}")
         masks = process_frames_with_omnipose(
             frame_paths,
             model_type=model_type,

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Tuple, Type
 
-from PyQt6.QtCore import Qt, QCoreApplication, QTimer, QUrl
+from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QTimer, QUrl
 from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QMenuBar,
     QMessageBox,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QTabWidget,
     QTextEdit,
@@ -44,12 +45,13 @@ from bactimate.gui.tabs import (
     AnalyzeMasksTab,
     GrowthCurveVideoTab,
     ND2ConversionTab,
-    ProcessingTab,
+    OmniposeSegTab,
     SAM2SegmentTab,
-    SessionLogsTab,
+    SessionLogsPanel,
     TrackingTab,
+    UNetSegmentTab,
 )
-from bactimate.gui.paths import get_app_root
+from bactimate.gui.paths import get_app_root, get_omnipose_user_models_dir, get_unet_models_dir
 from bactimate.gui.styles import get_modern_stylesheet
 
 
@@ -93,7 +95,8 @@ def _get_tab_classes() -> Tuple[Type[Any], ...]:
     """Return tab classes (all from bactimate.gui.tabs)."""
     return (
         ND2ConversionTab,
-        ProcessingTab,
+        OmniposeSegTab,
+        UNetSegmentTab,
         AnalyzeMasksTab,
         TrackingTab,
         GrowthCurveVideoTab,
@@ -111,12 +114,16 @@ class MainWindow(QMainWindow):
 
     def init_ui(self) -> None:
         self.setWindowTitle("BactiMate")
+        # Ensure user model dirs exist on first launch (dev: repo/omnipose_user_models, unet_user_models; installed: BactiMate/Models/...)
+        get_omnipose_user_models_dir()
+        get_unet_models_dir()
         self.setMinimumSize(1200, 700)
         self.resize(1200, 900)
         self._center_window()
 
         central_widget = QWidget()
         main_layout = QVBoxLayout()
+        main_layout.setSpacing(0)
 
         title_bar = QWidget()
         title_bar.setProperty("class", "title_bar")
@@ -166,7 +173,8 @@ class MainWindow(QMainWindow):
 
         (
             ND2ConversionTab,
-            ProcessingTab,
+            OmniposeSegTab,
+            UNetSegmentTab,
             AnalyzeMasksTab,
             TrackingTab,
             GrowthCurveVideoTab,
@@ -175,49 +183,116 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         self.nd2_tab = ND2ConversionTab(self)
-        self.processing_tab = ProcessingTab(self)
+        self.omnipose_seg_tab = OmniposeSegTab(self)
+        self.unet_segment_tab = UNetSegmentTab(self)
         self.analyze_tab = AnalyzeMasksTab(self)
         self.tracking_tab = TrackingTab(self)
         self.growth_curve_tab = GrowthCurveVideoTab(self)
         self.sam2_tab = SAM2SegmentTab(self)
-        self.logs_tab = SessionLogsTab(self)
-
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
-        tabs.addTab(self.processing_tab, "Omnipose Segment")
+        tabs.addTab(self.omnipose_seg_tab, "Omnipose Segment")
+        tabs.addTab(self.unet_segment_tab, "U-NET Segment")
         # tabs.addTab(self.sam2_tab, "SAM2 Segment")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.growth_curve_tab, "Video Graph")
-        tabs.addTab(self.logs_tab, "Session Logs")
 
         main_layout.addWidget(tabs)
 
-        log_group = QGroupBox("Status & Log")
+        # Use native QGroupBox title (like "Extracted Metadata") so header aligns identically
+        log_group = QGroupBox("Status && Session logs  \u25B2")
         log_layout = QVBoxLayout()
+        self._log_content = QWidget()
+        log_content_layout = QHBoxLayout(self._log_content)
+        log_content_layout.setContentsMargins(0, 0, 0, 0)
+        # Left half: status / progress / log output
+        left_log = QWidget()
+        left_log_layout = QVBoxLayout(left_log)
+        left_log_layout.setContentsMargins(0, 0, 0, 0)
+        status_title = QLabel("Status (all tabs)")
+        status_title.setStyleSheet("font-weight: bold; color: #4a9eff;")
+        status_title.setToolTip("Activity log from all tabs: TIFF conversion, Omnipose/U-Net segmentation, Analyze Masks, Tracking, Video, etc.")
+        left_log_layout.addWidget(status_title)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("%p%")
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setVisible(False)
-        log_layout.addWidget(self.progress_bar)
-
+        left_log_layout.addWidget(self.progress_bar)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         monospace_font = QFont("Monaco", 11)
         if not monospace_font.exactMatch():
             monospace_font = QFont("Courier New", 11)
         self.log_text.setFont(monospace_font)
-        self.log_text.setMinimumHeight(100)
-        self.log_text.setMaximumHeight(150)
-        log_size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.log_text.setMinimumHeight(70)
+        log_size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.log_text.setSizePolicy(log_size_policy)
-        log_layout.addWidget(self.log_text)
+        left_log_layout.addWidget(self.log_text, 1)
+        log_content_layout.addWidget(left_log, 1)
+        # Right 2/3: session logs (compact list + log content + Load other + Apply)
+        self.logs_panel = SessionLogsPanel(self)
+        log_content_layout.addWidget(self.logs_panel, 2)
+        log_layout.addWidget(self._log_content)
         log_group.setLayout(log_layout)
         main_layout.addWidget(log_group)
 
+        _COLLAPSED_LINE_STYLE = (
+            "QGroupBox {"
+            " border: none; border-top: 1px solid #2d2d2d; border-radius: 0;"
+            " margin-top: 0; padding-top: 6px; padding-bottom: 6px; padding-left: 0;"
+            " background: #1a1a1a;"
+            "}"
+            " QGroupBox::title {"
+            " subcontrol-origin: padding; subcontrol-position: top left; left: 12px;"
+            " padding: 8px 0 0 0; color: #4a9eff; background: transparent;"
+            " }"
+        )
+
+        def toggle_log_visibility():
+            try:
+                if not self._log_content or not log_group:
+                    return
+                visible = self._log_content.isVisible()
+                self._log_content.setVisible(not visible)
+                log_group.setTitle("Status && Session logs  \u25B2" if visible else "Status && Session logs  \u25BC")
+                if visible:
+                    log_group.setFixedHeight(32)
+                    log_group.setStyleSheet(_COLLAPSED_LINE_STYLE)
+                else:
+                    log_group.setMinimumHeight(0)
+                    log_group.setMaximumHeight(16777215)
+                    log_group.setStyleSheet("")
+            except Exception:
+                pass
+
+        class _LogTitleClickFilter(QObject):
+            def __init__(self, group, content, parent=None):
+                super().__init__(parent)
+                self._group = group
+                self._content = content
+
+            def eventFilter(self, obj, event):
+                if obj is self._group and event.type() == QEvent.Type.MouseButtonPress:
+                    if event.position().y() < 28:
+                        toggle_log_visibility()
+                        return True
+                return False
+
+        log_group.installEventFilter(_LogTitleClickFilter(log_group, self._log_content, log_group))
+
+        # Start collapsed: thin line at bottom, no tooltip
+        self._log_content.setVisible(False)
+        log_group.setFixedHeight(32)
+        log_group.setStyleSheet(_COLLAPSED_LINE_STYLE)
+
         main_layout.setStretchFactor(tabs, 1)
         main_layout.setStretchFactor(log_group, 0)
+
+        # No bottom margin so Status & Session logs sits at rock bottom when collapsed
+        margins = main_layout.contentsMargins()
+        main_layout.setContentsMargins(margins.left(), margins.top(), margins.right(), 0)
 
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
@@ -226,7 +301,7 @@ class MainWindow(QMainWindow):
 
         self._restore_geometry_and_state()
 
-        self.statusBar().showMessage("Ready")
+        self.statusBar().hide()  # no "Ready" bar so no extra space below Status & Session logs
         self.log_output("Omnipose Batch Processing GUI started.\n")
         self.log_output("Select a tab and configure parameters to begin.\n\n")
 
@@ -272,6 +347,8 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             _prune_old_session_logs(LOGS_DIR, MAX_SESSION_LOGS)
+            if hasattr(self, "logs_panel") and self.logs_panel is not None:
+                self.logs_panel._refresh_list()
         except Exception:
             log_exception(get_logger(), "Failed to save session log")
 
@@ -304,7 +381,13 @@ class MainWindow(QMainWindow):
         app_menu.addSeparator()
         minimize_action = QAction("Minimize", self)
         minimize_action.setShortcut(QKeySequence("Ctrl+M"))  # Cmd+M on macOS (Qt maps Ctrl→Cmd)
-        minimize_action.triggered.connect(self.showMinimized)
+        def minimize_active_or_self():
+            active = QApplication.activeWindow()
+            if active and active is not self and (active.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint):
+                active.showMinimized()
+            else:
+                self.showMinimized()
+        minimize_action.triggered.connect(minimize_active_or_self)
         app_menu.addAction(minimize_action)
         quit_action = QAction("Quit BactiMate", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
@@ -378,6 +461,18 @@ class MainWindow(QMainWindow):
                 "reading frames",
                 "extracting frames",
                 "processing file",
+                "starting training",
+                "epoch ",
+                "u-net",
+                "running u-net",
+                "starting tracking",
+                "tracking completed",
+                "starting nd2 conversion",
+                "converted:",
+                "starting mask analysis",
+                "analysis complete",
+                "starting batch",
+                "create growth curve",
             ]
         ):
             if not self.progress_bar.isVisible():
@@ -388,9 +483,9 @@ class MainWindow(QMainWindow):
         pixel_size = self.shared_metadata.get("pixel_size")
         if pixel_size is None:
             return
-        if hasattr(self, "processing_tab") and hasattr(self.processing_tab, "pixel_size_um"):
-            self.processing_tab.pixel_size_um.setValue(pixel_size)
-            self.log_output(f"✓ Updated pixel size in Processing tab: {pixel_size:.4f} µm\n")
+        if hasattr(self, "omnipose_seg_tab") and hasattr(self.omnipose_seg_tab, "pixel_size_um"):
+            self.omnipose_seg_tab.pixel_size_um.setValue(pixel_size)
+            self.log_output(f"✓ Updated pixel size in Omnipose Segment tab: {pixel_size:.4f} µm\n")
         if hasattr(self, "analyze_tab") and hasattr(self.analyze_tab, "pixel_size"):
             self.analyze_tab.pixel_size.setValue(pixel_size)
             if hasattr(self.analyze_tab, "pixel_size_indicator"):
