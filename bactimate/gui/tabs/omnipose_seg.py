@@ -2954,6 +2954,19 @@ class OmniposeSegTab(QWidget):
                                   "2. Run from source: python main.py\n"
                                   "3. Use the processing features instead of preview\n\n"
                                   "Note: This has been fixed in the latest build. Please rebuild the app.")
+            # Handle Windows PyTorch DLL load failure (c10.dll / WinError 1114)
+            elif ('WinError 1114' in error_msg or 'c10.dll' in error_msg or
+                  'DLL initialization routine failed' in error_msg or 'dynamic link library' in error_msg.lower()):
+                QMessageBox.warning(self, "Preview Error",
+                                  "PyTorch failed to load on Windows (DLL error).\n\n"
+                                  "To keep using the GPU:\n\n"
+                                  "1. Install Microsoft Visual C++ Redistributable (64-bit, 2015–2022) from Microsoft.\n\n"
+                                  "2. Reinstall PyTorch with the correct CUDA index for your driver.\n"
+                                  "   Check version: nvidia-smi\n"
+                                  "   Example for CUDA 12.8:\n"
+                                  "   pip uninstall torch torchvision torchaudio -y\n"
+                                  "   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128\n\n"
+                                  "   For 12.4 use cu124, for 11.8 use cu118. See INSTALL_AND_LAUNCH_windows.md.")
             else:
                 QMessageBox.critical(self, "Preview Error", f"Could not preview segmentation:\n{error_msg}")
             import traceback

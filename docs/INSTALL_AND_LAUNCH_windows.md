@@ -110,13 +110,37 @@ This makes the `bactimate` command (and `python -m bactimate`) use your project 
 
 **Optional – NVIDIA GPU (CUDA) for faster segmentation and tracking**
 
-After step 4.1, install PyTorch with CUDA, for example:
+After step 4.1, install PyTorch with CUDA so Omnipose and tracking use the GPU. Check your driver CUDA version with:
 
 ```cmd
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+nvidia-smi
 ```
 
-Replace `cu118` with your CUDA version if different (e.g. `cu121`, `cu124`). To check: run `nvidia-smi` in a terminal. Common options: 11.8 → `cu118`, 12.1 → `cu121`, 12.4 → `cu124`.
+Then install the matching PyTorch wheel (use the **same** index for both torch and torchvision so they match):
+
+| Driver CUDA | Pip index |
+|-------------|-----------|
+| 11.8 | `cu118` |
+| 12.1 | `cu121` |
+| 12.4 | `cu124` |
+| 12.6 | `cu126` |
+| **12.8** | **`cu128`** |
+
+Example for **CUDA 12.8** (common on recent drivers):
+
+```cmd
+pip uninstall torch torchvision torchaudio -y
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+Example for CUDA 11.8:
+
+```cmd
+pip uninstall torch torchvision torchaudio -y
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+**If you see a DLL error (c10.dll / WinError 1114)** after installing the CUDA wheel: install **Microsoft Visual C++ Redistributable** (64-bit, 2015–2022) from Microsoft first, then run the `pip uninstall` and `pip install ... --index-url ... cu128` (or your version) again.
 
 ---
 
@@ -179,6 +203,7 @@ You do not need to run `pip install -r requirements.txt` or `pip install -e .` a
 | `No module named 'bactimate'` | From the BactiMate project root (folder that contains `pyproject.toml`), run `pip install -e .`. |
 | GUI does not open or crashes | Check the terminal for error messages. Try `python main.py` to see the full traceback. |
 | Dependency resolution errors | Try `pip install --use-deprecated=legacy-resolver -r requirements.txt`. |
+| **DLL error (c10.dll / WinError 1114)** when opening segmentation or preview | 1) Install **Microsoft Visual C++ Redistributable** (64-bit, 2015–2022) from Microsoft. 2) Reinstall PyTorch with the **correct CUDA index** for your driver (e.g. CUDA 12.8 → `pip uninstall torch torchvision torchaudio -y` then `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128`). Keep GPU; do not switch to CPU-only. |
 | Zeiss CZI support | After main install: `pip install aicspylibczi`. |
 
 ---

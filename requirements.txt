@@ -48,12 +48,13 @@ pytest>=7.0.0
 #   - Linux/macOS CPU
 #
 # For NVIDIA GPU (CUDA) on Windows/Linux:
-#   After installing requirements.txt, run:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-#   (Replace cu118 with your CUDA version: cu121, cu118, cu117, etc.)
+#   After installing requirements.txt, run (use index that matches your driver):
+#   pip uninstall torch torchvision torchaudio -y
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128   # CUDA 12.8
+#   (Or cu124, cu126, cu121, cu118 for other driver versions.)
 #
 # To check your CUDA version: nvidia-smi
-# Common CUDA versions: 11.8 (cu118), 12.1 (cu121), 12.4 (cu124)
+# If you get DLL error (WinError 1114 / c10.dll) on Windows: install VC++ Redistributable (64-bit), then reinstall with the correct cuXXX index.
 #
 # Note: SAM2 requires torch>=2.5.1 and torchvision>=0.20.1
 # Optional: pip install -e .[sam2] (see pyproject.toml) for SAM2 extra deps.
