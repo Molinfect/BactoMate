@@ -620,6 +620,12 @@ def main() -> None:
                 pass
         app.setStyle("Fusion")
         app.setStyleSheet(get_modern_stylesheet())
+        if sys.platform == "win32":
+            try:
+                from bactimate.gui.windows_patches import apply_after_ui
+                apply_after_ui(app)
+            except Exception:
+                pass
         window = MainWindow()
         if icon_path is not None:
             window.setWindowIcon(QIcon(str(icon_path)))

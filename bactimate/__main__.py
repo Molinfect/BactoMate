@@ -38,6 +38,11 @@ def run() -> None:
     # Patches (Qt paths, omnipose patch) must run before PyQt6
     import bactimate.gui.patches  # noqa: F401
 
+    # Windows-only: console encoding and UI fixes (ignored on macOS/Linux)
+    if sys.platform == "win32":
+        from bactimate.gui.windows_patches import apply_early
+        apply_early()
+
     warnings.filterwarnings("ignore", category=UserWarning, message=".*pkg_resources.*")
     warnings.filterwarnings("ignore", category=FutureWarning, message=".*area_threshold.*")
 
