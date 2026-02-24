@@ -118,8 +118,14 @@ class MainWindow(QMainWindow):
         # Ensure user model dirs exist on first launch (dev: repo/omnipose_user_models, unet_user_models; installed: BactiMate/Models/...)
         get_omnipose_user_models_dir()
         get_unet_models_dir()
-        self.setMinimumSize(1200, 700)
-        self.resize(1200, 900)
+        min_width, min_height = 1200, 700
+        initial_width, initial_height = 1200, 900
+        if sys.platform == "win32":
+            # Extra width so 140px button min-width doesn't cause horizontal scrollbar
+            min_width += 80
+            initial_width += 80
+        self.setMinimumSize(min_width, min_height)
+        self.resize(initial_width, initial_height)
         self._center_window()
 
         central_widget = QWidget()

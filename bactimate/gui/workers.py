@@ -84,9 +84,9 @@ class WorkerThread(QThread):
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             env["TQDM_DISABLE"] = "1"
-
-            process = subprocess.Popen(
-                cmd,
+            # On Windows, subprocess uses cp1252 for stdout; script print() with ✓/✗ then raises
+            # charmap encode error. Force child to use UTF-8 so conversion (and other scripts) can print safely.
+            popen_kw: dict = dict(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -94,6 +94,12 @@ class WorkerThread(QThread):
                 universal_newlines=True,
                 env=env,
             )
+            if sys.platform == "win32":
+                env["PYTHONIOENCODING"] = "utf-8"
+                popen_kw["encoding"] = "utf-8"
+                popen_kw["errors"] = "replace"
+
+            process = subprocess.Popen(cmd, **popen_kw)
             self._process = process
 
             output_lines = []
