@@ -15,6 +15,7 @@ from typing import Any, Optional
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -50,6 +51,7 @@ from bactimate.gui.mask_utils import (
 )
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon
+from bactimate.tiff_metadata import read_calibration_from_path_or_original
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.image_utils import build_segmentation_overlay, scale_for_preview, to_qpixmap
 
@@ -307,6 +309,7 @@ class UNetSegmentTab(QWidget):
         scroll_layout.addWidget(infer_group)
 
         self.file_path.textChanged.connect(self._update_button_states)
+        self.file_path.textChanged.connect(self._try_push_metadata_from_path)
         self._update_button_states()
 
         scroll_widget.setLayout(scroll_layout)
@@ -486,6 +489,34 @@ class UNetSegmentTab(QWidget):
         self.preview_btn.setEnabled(has_path)
         self.process_btn.setEnabled(has_path)
 
+    def _try_push_metadata_from_path(self) -> None:
+        """When path is a TIFF file (or folder with a TIFF), read calibration via tiff_metadata and push to shared_metadata."""
+        raw = (self.file_path.text() or "").strip()
+        if not raw:
+            return
+        path = Path(raw)
+        tiff_path = None
+        if path.is_file() and path.suffix.lower() in (".tif", ".tiff"):
+            tiff_path = path
+        elif path.is_dir():
+            for ext in ("*.tif", "*.tiff"):
+                first = next(path.glob(ext), None)
+                if first is not None and first.is_file():
+                    tiff_path = first
+                    break
+        if tiff_path is None:
+            return
+        try:
+            ps, tp = read_calibration_from_path_or_original(tiff_path)
+            if (ps > 0 or tp > 0) and hasattr(self, "parent_window") and getattr(self.parent_window, "shared_metadata", None) is not None:
+                if ps > 0:
+                    self.parent_window.shared_metadata["pixel_size"] = ps
+                if tp > 0:
+                    self.parent_window.shared_metadata["time_per_frame_min"] = tp
+                self.parent_window.update_all_tabs_with_metadata()
+        except Exception:
+            pass
+
     def _preview_segmentation(self) -> None:
         """Same flow as Omnipose preview: file picker when folder, then preview dialog with frame slider and overlay."""
         path_str = self.file_path.text().strip()
@@ -517,18 +548,59 @@ class UNetSegmentTab(QWidget):
             file_dialog.setWindowTitle("Select File for Preview")
             file_dialog.setMinimumSize(500, 400)
             layout = QVBoxLayout()
-            layout.addWidget(QLabel("Select a file to preview segmentation:"))
+            label = QLabel("Select a file to preview segmentation:")
+            label.setStyleSheet("color: #ffffff; font-size: 11pt; padding: 10px;")
+            layout.addWidget(label)
             file_list = QListWidget()
+            file_list.setStyleSheet(
+                "QListWidget {"
+                "background-color: #2b2b2b;"
+                "color: #ffffff;"
+                "font-size: 11pt;"
+                "border: 1px solid #555555;"
+                "border-radius: 4px;"
+                "padding: 5px;"
+                "}"
+                "QListWidget::item {"
+                "padding: 8px;"
+                "border-bottom: 1px solid #3a3a3a;"
+                "}"
+                "QListWidget::item:selected {"
+                "background-color: #5D6D7E;"
+                "color: #ffffff;"
+                "}"
+                "QListWidget::item:hover {"
+                "background-color: #3a3a3a;"
+                "}"
+            )
             for f in tiff_files:
                 file_list.addItem(f.name)
             if file_list.count() > 0:
                 file_list.setCurrentRow(0)
-            file_list.itemDoubleClicked.connect(lambda: file_dialog.accept())
+
+            def on_item_double_clicked(item):
+                file_dialog.accept()
+
+            file_list.itemDoubleClicked.connect(on_item_double_clicked)
             layout.addWidget(file_list)
-            bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-            bb.accepted.connect(file_dialog.accept)
-            bb.rejected.connect(file_dialog.reject)
-            layout.addWidget(bb)
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            button_box.accepted.connect(file_dialog.accept)
+            button_box.rejected.connect(file_dialog.reject)
+            button_box.setStyleSheet(
+                "QPushButton {"
+                "background-color: #5D6D7E;"
+                "color: white;"
+                "font-weight: bold;"
+                "padding: 8px 20px;"
+                "border: none;"
+                "border-radius: 4px;"
+                "min-width: 80px;"
+                "}"
+                "QPushButton:hover {"
+                "background-color: #34495E;"
+                "}"
+            )
+            layout.addWidget(button_box)
             file_dialog.setLayout(layout)
             if file_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -588,20 +660,21 @@ class UNetSegmentTab(QWidget):
             return
         progress.close()
         model_name = model_path.stem
-        d = QDialog(None)
-        d.setWindowTitle("U-Net Segmentation Preview")
+        main_win = self.window() if hasattr(self, "window") and callable(self.window) else None
+        d = QDialog(main_win)
+        d.setWindowTitle("Segmentation Preview")
         d.setMinimumSize(900, 700)
         d.setModal(False)
         layout = QVBoxLayout()
         title_label = QLabel("")
         title_label.setStyleSheet("font-weight: bold; color: #ddd;")
         layout.addWidget(title_label)
-        canvas = ImageCanvas()
-        canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
-        canvas.setMinimumSize(400, 300)
-        canvas.setStyleSheet("background-color: #1e1e1e;")
-        canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(canvas, 1)
+        image_canvas = ImageCanvas()
+        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
+        image_canvas.setMinimumSize(400, 300)
+        image_canvas.setStyleSheet("background-color: #1e1e1e;")
+        image_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(image_canvas, 1)
         d.images = images
         d.model = model
         d.cfg = cfg
@@ -626,15 +699,22 @@ class UNetSegmentTab(QWidget):
                     mask = (mask > 0).astype(np.uint8)
                     d.segmentation_cache[frame_idx] = mask
                 except Exception as e:
-                    title_label.setText(f"Frame {frame_idx + 1} of {num_frames} | Error: {e} | {d.file_name}")
+                    title_label.setText(
+                        f"Frame {frame_idx + 1} of {num_frames} | Error: {e} | {d.file_name}\n"
+                        f"Parameters: model={d.model_name}"
+                    )
                     return
             disp_frame = get_display_frame(frame_idx)
             disp, mask_scaled = scale_for_preview(disp_frame, mask)
             overlay = build_segmentation_overlay(disp, mask_scaled, alpha=0.5)
             pixmap = to_qpixmap(overlay)
             h, w = overlay.shape[:2]
-            canvas.set_pixmap(pixmap, (w, h), reset_view=False)
-            title_label.setText(f"Frame {frame_idx + 1} of {num_frames} | Model: {d.model_name} | {d.file_name}")
+            image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
+            num_cells = len(np.unique(mask)) - 1
+            title_label.setText(
+                f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {d.model_name} | {d.file_name}\n"
+                f"Parameters: model={d.model_name}"
+            )
 
         nav_layout = QHBoxLayout()
         nav_layout.addWidget(QLabel("Frame:"))
@@ -643,28 +723,64 @@ class UNetSegmentTab(QWidget):
         frame_spin.setValue(1)
         frame_spin.setPrefix("")
         nav_layout.addWidget(frame_spin)
+        nav_layout.addWidget(QLabel(f"of {num_frames}"))
+        scale_label = QLabel("")
+        nav_layout.addWidget(scale_label)
         nav_layout.addStretch()
         status_label = QLabel("Ready")
-        status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
+        status_label.setStyleSheet("color: #7F8C8D; font-size: 9pt; font-style: italic;")
         nav_layout.addWidget(status_label)
         layout.addLayout(nav_layout)
 
-        def on_frame_changed(value: int) -> None:
-            idx = value - 1
+        def go_to_frame(idx: int) -> None:
             if 0 <= idx < num_frames:
+                d.current_frame = idx
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(idx + 1)
+                frame_spin.blockSignals(False)
                 update_display(idx)
 
-        frame_spin.valueChanged.connect(on_frame_changed)
+        def on_frame_changed():
+            frame_num = frame_spin.value() - 1
+            if 0 <= frame_num < num_frames:
+                go_to_frame(frame_num)
+            else:
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(d.current_frame + 1)
+                frame_spin.blockSignals(False)
+
+        frame_spin.editingFinished.connect(on_frame_changed)
+        frame_spin._change_timer = QTimer()
+        frame_spin._change_timer.setSingleShot(True)
+        frame_spin._change_timer.timeout.connect(on_frame_changed)
+
+        def on_value_changed(v: int) -> None:
+            if 1 <= v <= num_frames:
+                frame_spin._change_timer.start(300)
+            else:
+                frame_spin._change_timer.stop()
+                frame_spin.blockSignals(True)
+                frame_spin.setValue(d.current_frame + 1)
+                frame_spin.blockSignals(False)
+
+        frame_spin.valueChanged.connect(on_value_changed)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(d.close)
         layout.addWidget(close_btn)
+        close_shortcut = QShortcut(QKeySequence.StandardKey.Close, d)
+        close_shortcut.activated.connect(d.close)
+        minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), d)
+        minimize_shortcut.activated.connect(d.showMinimized)
         d.setLayout(layout)
         disp0 = get_display_frame(0)
         empty = np.zeros(disp0.shape, dtype=np.uint8)
         disp0_s, _ = scale_for_preview(disp0, empty)
         overlay0 = build_segmentation_overlay(disp0_s, empty, alpha=0.0)
-        canvas.set_pixmap(to_qpixmap(overlay0), (overlay0.shape[1], overlay0.shape[0]), reset_view=True)
-        title_label.setText(f"Frame 1 of {num_frames} | Segmenting... | Model: {d.model_name} | {d.file_name}")
+        image_canvas.set_pixmap(to_qpixmap(overlay0), (overlay0.shape[1], overlay0.shape[0]), reset_view=True)
+        title_label.setText(
+            f"Frame 1 of {num_frames} | Segmenting... | Model: {d.model_name} | {d.file_name}\n"
+            f"Parameters: model={d.model_name}"
+        )
         d.show()
         d.raise_()
         d.activateWindow()
@@ -702,10 +818,14 @@ class UNetSegmentTab(QWidget):
             return
         if path.is_file():
             input_dir = path.parent
-            output_dir = path.parent / f"{path.stem}_unet_segmentation"
+            # When input is in a Tif_* folder, put masks in that folder's _segmentation_unet (like Omnipose uses _segmentation_omni)
+            if path.parent.name.startswith("Tif_"):
+                output_dir = path.parent / "_segmentation_unet"
+            else:
+                output_dir = path.parent / f"{path.stem}_unet_segmentation"
         else:
             input_dir = path
-            output_dir = path / "unet_segmentation"
+            output_dir = path / "_segmentation_unet"
         output_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
             sys.executable, "-m", "bactimate.scripts.unet_predict_patches",

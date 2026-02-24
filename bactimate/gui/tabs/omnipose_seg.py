@@ -80,6 +80,7 @@ from bactimate.gui.widgets import (
     show_file_selection_dialog,
 )
 from bactimate.gui.workers import WorkerThread
+from bactimate.tiff_metadata import read_calibration_from_path_or_original
 
 # Built-in Omnipose model types (no Cellpose-only). User-trained models are listed separately.
 BUILTIN_OMNIPOSE_MODELS = [
@@ -103,6 +104,16 @@ PRETRAINED_NCHAN_NCLASSES_DIM = {
 # When user selects "New model (same architecture)", we initialize from this so the result is
 # identical to the built-in model (same architecture, same init) but trained on their data.
 CANONICAL_BACTERIAL_MODEL = "bact_phase_omni"
+
+# Default (diameter, flow_threshold, mask_threshold) per built-in model; applied when user selects that model.
+SEGMENTATION_MODEL_DEFAULTS = {
+    "bact_phase_omni": (30.0, 0.4, 0.0),
+    "bact_fluor_omni": (30.0, 0.4, 0.0),
+    "bact_phase_affinity": (30.0, 0.4, 0.0),
+}
+# Fallback for other built-in names (e.g. bact_omni) or user models
+SEGMENTATION_DEFAULT_FALLBACK = (30.0, 0.4, 0.0)
+USER_MODEL_DEFAULTS = (30.0, 0.0, 0.0)  # diameter, flow, mask for user-trained models
 
 
 class _OmniposeTrainWorker(QThread):
@@ -213,6 +224,7 @@ class OmniposeSegTab(QWidget):
         self.file_path.textChanged.connect(self._update_overlay_checkbox_state)
         self._update_overlay_checkbox_state()
         self.file_path.textChanged.connect(self._update_button_states)
+        self.file_path.textChanged.connect(self._try_push_metadata_from_path)
         self._update_button_states()
 
         scroll_widget.setLayout(scroll_layout)
@@ -1066,11 +1078,11 @@ class OmniposeSegTab(QWidget):
         file_group = self._build_file_group()
         main_layout.addWidget(file_group)
 
-        # Parameters: all in one row (diameter, pixel size, flow, mask)
+        # Parameters: all in one row (diameter, flow, mask)
         params_row = QHBoxLayout()
         params_row.addWidget(QLabel("Diameter:"))
         params_row.addWidget(create_info_icon(
-            "Expected cell diameter in pixels. 0 = auto-detect. If you know size in µm: diameter_px = diameter_µm ÷ Pixel size (µm).",
+            "Expected cell diameter in pixels. 0 = auto-detect. Specify a value (e.g. 20–50 for bacteria) for more consistent results.",
             self,
         ))
         self.diameter = QDoubleSpinBox()
@@ -1079,20 +1091,6 @@ class OmniposeSegTab(QWidget):
         self.diameter.setDecimals(1)
         self.diameter.setFixedWidth(80)
         params_row.addWidget(self.diameter)
-        params_row.addSpacing(12)
-        params_row.addWidget(QLabel("Pixel size:"))
-        params_row.addWidget(create_info_icon(
-            "Pixel size in µm (for scale bar and calibration). Filled from file metadata when available.",
-            self,
-        ))
-        self.pixel_size_um = QDoubleSpinBox()
-        self.pixel_size_um.setRange(0, 10)
-        self.pixel_size_um.setValue(0)
-        self.pixel_size_um.setDecimals(3)
-        self.pixel_size_um.setSingleStep(0.01)
-        self.pixel_size_um.setFixedWidth(80)
-        self.pixel_size_um.setSpecialValueText("0")
-        params_row.addWidget(self.pixel_size_um)
         params_row.addSpacing(12)
         params_row.addWidget(QLabel("Flow:"))
         params_row.addWidget(create_info_icon(
@@ -1138,7 +1136,7 @@ class OmniposeSegTab(QWidget):
         self.use_gpu = QCheckBox("Use GPU")
         self.use_gpu.setChecked(True)
         options_row.addWidget(self.use_gpu)
-        options_row.addSpacing(127)
+        options_row.addSpacing(37)
         self.cluster = QCheckBox("Use DBSCAN clustering")
         self.cluster.setChecked(False)
         options_row.addWidget(self.cluster)
@@ -1146,12 +1144,12 @@ class OmniposeSegTab(QWidget):
             "Use DBSCAN clustering to help segment thin/elongated cells (e.g. bacteria, worms). Slightly increases processing time.",
             self,
         ))
-        options_row.addSpacing(127)
+        options_row.addSpacing(37)
         self.create_overlay = QCheckBox("Create overlay visualization")
         self.create_overlay.setChecked(True)
         options_row.addWidget(self.create_overlay)
         options_row.addWidget(create_info_icon(
-            "Create overlay TIFF (masks over original). Disable to speed up when you only need masks.",
+            "Create overlay TIFF (masks over original). Saved in an 'overlays' subfolder so the main folder has only mask files for Analyze Masks. Disable to speed up when you only need masks.",
             self,
         ))
         options_row.addStretch()
@@ -1164,7 +1162,10 @@ class OmniposeSegTab(QWidget):
                 if pretrained_path is not None:
                     self.model_status_label.setText("✓ User model")
                     self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
-                    self.flow_threshold.setValue(0.0)
+                    d, f, m = USER_MODEL_DEFAULTS
+                    self.diameter.setValue(d)
+                    self.flow_threshold.setValue(f)
+                    self.mask_threshold.setValue(m)
                     return
                 from cellpose_omni.models import MODEL_DIR
                 torch_str = "torch"
@@ -1176,7 +1177,11 @@ class OmniposeSegTab(QWidget):
                 else:
                     self.model_status_label.setText("Will download on first use")
                     self.model_status_label.setStyleSheet("color: #FF9800; font-size: 9pt;")
-                self.flow_threshold.setValue(0.4)
+                # Apply default diameter, flow, mask for this built-in model so user sees them
+                d, f, m = SEGMENTATION_MODEL_DEFAULTS.get(model_type or display, SEGMENTATION_DEFAULT_FALLBACK)
+                self.diameter.setValue(d)
+                self.flow_threshold.setValue(f)
+                self.mask_threshold.setValue(m)
             except Exception:
                 get_logger().debug("Model availability check failed", exc_info=True)
                 self.model_status_label.setText("")
@@ -1252,7 +1257,35 @@ class OmniposeSegTab(QWidget):
                 "When disabled: Skips overlay creation (faster processing).\n\n"
                 "Saved as: filename_overlay.tif"
             )
-    
+
+    def _try_push_metadata_from_path(self):
+        """When path is a TIFF file (or folder with a TIFF), read calibration via tiff_metadata and push to shared_metadata."""
+        raw = (self.file_path.text() or "").strip()
+        if not raw:
+            return
+        path = Path(raw)
+        tiff_path = None
+        if path.is_file() and path.suffix.lower() in (".tif", ".tiff"):
+            tiff_path = path
+        elif path.is_dir():
+            for ext in ("*.tif", "*.tiff"):
+                first = next(path.glob(ext), None)
+                if first is not None and first.is_file():
+                    tiff_path = first
+                    break
+        if tiff_path is None:
+            return
+        try:
+            ps, tp = read_calibration_from_path_or_original(tiff_path)
+            if (ps > 0 or tp > 0) and hasattr(self, "parent_window") and getattr(self.parent_window, "shared_metadata", None) is not None:
+                if ps > 0:
+                    self.parent_window.shared_metadata["pixel_size"] = ps
+                if tp > 0:
+                    self.parent_window.shared_metadata["time_per_frame_min"] = tp
+                self.parent_window.update_all_tabs_with_metadata()
+        except Exception:
+            pass
+
     def select_file(self):
         """Open file dialog to select a TIFF file"""
         try:
@@ -1344,16 +1377,23 @@ class OmniposeSegTab(QWidget):
         return (None, None)
 
     def reset_segmentation_defaults(self):
-        """Reset all segmentation parameters to their default values"""
+        """Reset all segmentation parameters to their default values (model + diameter/flow/mask for that model)."""
         # Set default model, fallback to first available if bact_phase_omni not available
         if 'bact_phase_omni' in [self.model_combo.itemText(i) for i in range(self.model_combo.count())]:
             self.model_combo.setCurrentText('bact_phase_omni')
         elif self.model_combo.count() > 0:
             self.model_combo.setCurrentIndex(0)
-        self.diameter.setValue(0)
-        self.pixel_size_um.setValue(0)
-        self.flow_threshold.setValue(0.4)
-        self.mask_threshold.setValue(0.0)
+        # currentTextChanged will run and set diameter/flow/mask from SEGMENTATION_MODEL_DEFAULTS;
+        # if it didn't fire (same text), apply defaults for current model here
+        display = self.model_combo.currentText()
+        model_type, pretrained_path = self._resolve_model_selection(display)
+        if pretrained_path is not None:
+            d, f, m = USER_MODEL_DEFAULTS
+        else:
+            d, f, m = SEGMENTATION_MODEL_DEFAULTS.get(model_type or display, SEGMENTATION_DEFAULT_FALLBACK)
+        self.diameter.setValue(d)
+        self.flow_threshold.setValue(f)
+        self.mask_threshold.setValue(m)
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
@@ -1363,7 +1403,6 @@ class OmniposeSegTab(QWidget):
         out = get_from_widgets([
             ("model", self.model_combo),
             ("diameter", self.diameter),
-            ("pixel_size_um", self.pixel_size_um),
             ("flow_threshold", self.flow_threshold),
             ("mask_threshold", self.mask_threshold),
             ("use_gpu", self.use_gpu),
@@ -1396,7 +1435,6 @@ class OmniposeSegTab(QWidget):
         apply_to_widgets(data, [
             ("model", self.model_combo),
             ("diameter", self.diameter),
-            ("pixel_size_um", self.pixel_size_um),
             ("flow_threshold", self.flow_threshold),
             ("mask_threshold", self.mask_threshold),
             ("use_gpu", self.use_gpu),
@@ -1567,7 +1605,10 @@ class OmniposeSegTab(QWidget):
             QApplication.processEvents()
             
             import tifffile
-            from bactimate.gui.image_utils import to_qpixmap, build_segmentation_overlay, scale_for_preview, draw_scale_bar
+            from bactimate.gui.image_utils import (
+                to_qpixmap, build_segmentation_overlay, scale_for_preview, draw_scale_bar,
+                downsample_for_preview_seg, upsample_mask_to_shape, PREVIEW_SEG_MAX_SIZE,
+            )
             from bactimate.gui.image_canvas import ImageCanvas
 
             # CRITICAL: Patch omnipose.core.OMNI_MODELS before cellpose_omni imports it
@@ -1635,10 +1676,9 @@ class OmniposeSegTab(QWidget):
             
             num_frames = images.shape[0]
             
-            # Create preview dialog as top-level window (parent=None) so it opens in front
-            # on all platforms; non-modal so user can access main window.
-            # Avoid WindowStaysOnTopHint: clearing it later (setWindowFlags + show) causes a visible flicker.
-            preview_dialog = QDialog(None)
+            # Non-modal so user can access main window; parent=main window so preview closes when app quits (e.g. Cmd+Q).
+            main_win = self.window() if hasattr(self, "window") and callable(self.window) else None
+            preview_dialog = QDialog(main_win)
             preview_dialog.setWindowTitle("Segmentation Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)
@@ -1707,6 +1747,22 @@ class OmniposeSegTab(QWidget):
                 )
                 if needs_reload:
                     preview_dialog.segmentation_cache.clear()
+                def set_loaded_status():
+                    """Set status label to show whether GPU is actually in use (CUDA / MPS / CPU)."""
+                    import torch
+                    if not current_use_gpu:
+                        status_label.setText("Model loaded (CPU – Use GPU unchecked)")
+                        return
+                    if torch.cuda.is_available():
+                        try:
+                            name = torch.cuda.get_device_name(0) or "CUDA"
+                        except Exception:
+                            name = "CUDA"
+                        status_label.setText(f"Model loaded (GPU: {name})")
+                    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                        status_label.setText("Model loaded (GPU: Apple MPS)")
+                    else:
+                        status_label.setText("Model loaded (CPU – GPU requested but not available)")
                 if needs_reload:
                     try:
                         import os
@@ -1718,10 +1774,11 @@ class OmniposeSegTab(QWidget):
                             # Debug: inspect checkpoint before load (see Logs/omnipose_debug.log)
                             try:
                                 inspect_info = inspect_omnipose_checkpoint(pretrained_path)
+                                ckpt_nout = inspect_info.get("output_layer_out_channels")
                                 append_omnipose_debug(
                                     f"[BactiMate USER_MODEL pre-load] path={pretrained_path!r} "
                                     f"inspect: nchan={inspect_info.get('nchan')} nclasses={inspect_info.get('nclasses')} "
-                                    f"first_layer_shape={inspect_info.get('first_layer_shape')} keys={inspect_info.get('keys', [])[:15]!r}"
+                                    f"ckpt_output_channels={ckpt_nout} first_layer_shape={inspect_info.get('first_layer_shape')} keys={inspect_info.get('keys', [])[:15]!r}"
                                 )
                             except Exception:
                                 pass
@@ -1740,6 +1797,11 @@ class OmniposeSegTab(QWidget):
                                 append_omnipose_debug(
                                     f"[BactiMate USER_MODEL post-load] model.cp.nchan={nchan} model.cp.nclasses={nclasses}"
                                 )
+                                if inspect_info.get("output_layer_out_channels") is not None and nclasses != inspect_info.get("output_layer_out_channels"):
+                                    append_omnipose_debug(
+                                        f"[BactiMate USER_MODEL] MISMATCH: checkpoint output head has {inspect_info['output_layer_out_channels']} channels but model.cp.nclasses={nclasses}. "
+                                        "This can cause crash or 0 cells. See docs/CUSTOM_MODEL_TROUBLESHOOTING.md or run: python -m bactimate.scripts.inspect_omnipose_checkpoint <path>"
+                                    )
                                 get_logger().info("User model loaded: nchan=%s nclasses=%s", nchan, nclasses)
                                 # If size model failed to load, diameter=0 won't rescale -> often 0 cells
                                 if getattr(preview_dialog.model, "pretrained_size", None) is None:
@@ -1752,6 +1814,7 @@ class OmniposeSegTab(QWidget):
                                 pass
                             preview_dialog._last_model_key = current_key
                             preview_dialog._last_use_gpu = current_use_gpu
+                            set_loaded_status()
                             return True
                         from cellpose_omni.models import model_path, MODEL_DIR
                         from pathlib import Path
@@ -1858,7 +1921,7 @@ class OmniposeSegTab(QWidget):
 
                         preview_dialog._last_model_key = current_key
                         preview_dialog._last_use_gpu = current_use_gpu
-                        status_label.setText("Model loaded")
+                        set_loaded_status()
                         QApplication.processEvents()
                     except RuntimeError as e:
                         error_msg = str(e)
@@ -2143,23 +2206,47 @@ class OmniposeSegTab(QWidget):
             
             # Cache for segmentation results: key = (frame_idx, diameter, flow_threshold, mask_threshold, cluster, model_type, use_gpu)
             preview_dialog.segmentation_cache = {}
-            
+            preview_dialog.display_cache_key = None  # None = show result for main-window params; else show this cached run
+
+            # Round floats for display/cache to avoid binary representation noise (e.g. 0.3 -> 0.30000000000004)
+            _PARAM_DECIMALS = 4  # cache key; display uses 2 decimals in format strings
+
+            def format_omnipose_params_from_key(key):
+                """Short param string from cache key for display/combo."""
+                if not key or len(key) < 7:
+                    return "?"
+                _, diameter, flow_threshold, mask_threshold, cluster, model_str, _ = key
+                model_short = Path(model_str).stem if model_str and getattr(Path(model_str), "suffix", "") else (model_str or "?")
+                return f"d={diameter:.2f} flow={flow_threshold:.2f} mask={mask_threshold:.2f} cluster={'on' if cluster else 'off'} {model_short}"
+
+            def format_omnipose_params_from_params(params):
+                """Short param string from params dict for display."""
+                d = params.get("diameter")
+                d = 0.0 if d is None or not isinstance(d, (int, float)) else float(d)
+                f = params.get("flow_threshold", 0.4)
+                f = 0.4 if f is None or not isinstance(f, (int, float)) else float(f)
+                m = params.get("mask_threshold", 0.0)
+                m = 0.0 if m is None or not isinstance(m, (int, float)) else float(m)
+                cluster = bool(params.get("cluster", False))
+                model_str = params.get("model_type") or params.get("pretrained_model") or "bact_phase_omni"
+                model_short = Path(model_str).stem if model_str and getattr(Path(model_str), "suffix", "") else (model_str or "?")
+                return f"d={d:.2f} flow={f:.2f} mask={m:.2f} cluster={'on' if cluster else 'off'} {model_short}"
+
             def get_cache_key(frame_idx, params):
-                """Generate cache key from frame index and parameters"""
-                # Ensure diameter is always a number (0 if None) for cache key consistency
+                """Generate cache key from frame index and parameters. Floats rounded to avoid 0.3 -> 0.30000000000004."""
                 diameter = params.get('diameter', 0)
                 if diameter is None or not isinstance(diameter, (int, float)):
                     diameter = 0.0
-                diameter = float(diameter)
+                diameter = round(float(diameter), _PARAM_DECIMALS)
                 
                 flow_threshold = params.get('flow_threshold', 0.4)
                 if flow_threshold is None or not isinstance(flow_threshold, (int, float)):
                     flow_threshold = 0.4
-                flow_threshold = float(flow_threshold)
+                flow_threshold = round(float(flow_threshold), _PARAM_DECIMALS)
                 mask_threshold = params.get('mask_threshold', 0.0)
                 if mask_threshold is None or not isinstance(mask_threshold, (int, float)):
                     mask_threshold = 0.0
-                mask_threshold = float(mask_threshold)
+                mask_threshold = round(float(mask_threshold), _PARAM_DECIMALS)
                 
                 return (frame_idx, diameter, flow_threshold, mask_threshold,
                        bool(params.get("cluster", False)),
@@ -2277,11 +2364,27 @@ class OmniposeSegTab(QWidget):
                 if frame.dtype != np.float32:
                     frame = frame.astype(np.float32)
                 
+                # Downsample for fast preview segmentation (model runs on smaller image; mask upscaled after)
+                seg_frame, seg_scale, (orig_h, orig_w) = downsample_for_preview_seg(frame, max_size=PREVIEW_SEG_MAX_SIZE)
+                if seg_scale < 1.0:
+                    get_logger().info(
+                        "Preview: downsampled frame for speed: %s -> %s (scale=%.3f)",
+                        (orig_h, orig_w), getattr(seg_frame, "shape", None), seg_scale,
+                    )
+                
                 # Extract parameters (already validated and converted above)
                 diameter = params['diameter']
                 flow_threshold = params['flow_threshold']
                 mask_threshold = params['mask_threshold']
                 cluster = params['cluster']
+                # When diameter is 0 (GUI "auto"), use model default so we don't pass 0 or clamp to 1
+                default_diameters_preview = {"bact_phase_omni": 30.0, "bact_omni": 30.0, "bact_fluor_omni": 30.0}
+                effective_diameter = (diameter if (diameter is not None and diameter > 0) else
+                                     default_diameters_preview.get(params.get("model_type") or "", 30.0))
+                # Diameter in downscaled image pixels (so Omnipose uses correct relative cell size)
+                diameter_seg = effective_diameter * seg_scale
+                if diameter_seg < 1:
+                    diameter_seg = max(1.0, diameter_seg)
                 
                 try:
                     # Final validation before calling model.eval()
@@ -2290,9 +2393,13 @@ class OmniposeSegTab(QWidget):
                     assert isinstance(flow_threshold, (int, float)) and flow_threshold is not None, f"Invalid flow_threshold: {flow_threshold}"
                     assert isinstance(mask_threshold, (int, float)) and mask_threshold is not None, f"Invalid mask_threshold: {mask_threshold}"
                     
-                    # Run segmentation (synchronously for now, but we can make it async later)
-                    # Pass all parameters explicitly to match working batch_process_tiff_sequence.py
-                    # Use a wrapper that catches the None comparison error and retries with workaround
+                    # Run segmentation (synchronously on main thread - if this hangs, GUI freezes)
+                    # Log so user can run from terminal and see progress (same code path for built-in and user models)
+                    kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
+                    get_logger().info(
+                        "Preview: running model.eval() (%s) frame_shape=%s diameter=%s flow_thr=%s",
+                        kind, getattr(seg_frame, "shape", None), diameter_seg, flow_threshold,
+                    )
                     import sys
                     is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
                     
@@ -2302,9 +2409,9 @@ class OmniposeSegTab(QWidget):
                         for attempt in range(max_retries):
                             try:
                                 mask, flows, styles, diams = preview_dialog.model.eval(
-                                    frame,
+                                    seg_frame,
                                     channels=[0, 0],
-                                    diameter=diameter if diameter > 0 else 30.0,  # Never use 0 in frozen builds
+                                    diameter=diameter_seg if (diameter_seg and diameter_seg > 0) else 30.0,  # Never use 0 in frozen builds
                                     flow_threshold=flow_threshold,
                                     mask_threshold=mask_threshold,
                                     cellprob_threshold=0.0,
@@ -2312,7 +2419,7 @@ class OmniposeSegTab(QWidget):
                                     omni=True,
                                     cluster=cluster,
                                     net_avg=False,
-                                    resample=True,
+                                    resample=False,  # Faster preview; full run uses resample=True
                                     verbose=False
                                 )
                                 break  # Success, exit retry loop
@@ -2321,6 +2428,7 @@ class OmniposeSegTab(QWidget):
                                     if attempt < max_retries - 1:
                                         # Try with a different diameter
                                         diameter = 30.0 + (attempt * 5.0)  # Try 30, 35, 40
+                                        diameter_seg = (diameter * seg_scale) if seg_scale < 1.0 else diameter
                                         continue
                                     else:
                                         # Last attempt failed, raise the error
@@ -2331,9 +2439,9 @@ class OmniposeSegTab(QWidget):
                     else:
                         # Not frozen build, use normal call
                         mask, flows, styles, diams = preview_dialog.model.eval(
-                            frame,
+                            seg_frame,
                             channels=[0, 0],
-                            diameter=diameter,
+                            diameter=diameter_seg,
                             flow_threshold=flow_threshold,
                             mask_threshold=mask_threshold,
                             cellprob_threshold=0.0,
@@ -2341,9 +2449,13 @@ class OmniposeSegTab(QWidget):
                             omni=True,
                             cluster=cluster,
                             net_avg=False,
-                            resample=True,
+                            resample=False,  # Faster preview; full run uses resample=True
                             verbose=False
                         )
+                    get_logger().info("Preview: model.eval() finished (mask shape %s)", getattr(mask, "shape", None))
+                    # Upscale mask to original frame size if we ran on downsampled image
+                    if seg_scale < 1.0 and mask is not None:
+                        mask = upsample_mask_to_shape(mask, orig_h, orig_w)
                     # Debug: log eval result for user vs built-in (see Logs/omnipose_debug.log)
                     try:
                         kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
@@ -2486,24 +2598,25 @@ class OmniposeSegTab(QWidget):
                         progress_dialog.setLabelText("Rendering display...")
                     QApplication.processEvents()
 
-                    # Scale down for preview so overlay + pixmap + paint stay fast
-                    disp_scaled, mask_scaled = scale_for_preview(display_frame, mask)
+                    # Scale down for preview so overlay + pixmap + zoom/pan paint stay fast (cap 1024)
+                    disp_scaled, mask_scaled = scale_for_preview(
+                        display_frame, mask, max_size=PREVIEW_SEG_MAX_SIZE
+                    )
                     overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
-                    pixel_size_um = self.pixel_size_um.value()
-                    if pixel_size_um > 0:
-                        scale_factor = disp_scaled.shape[1] / max(1, display_frame.shape[1])
-                        draw_scale_bar(overlay, pixel_size_um, scale_factor=scale_factor)
                     pixmap = to_qpixmap(overlay)
                     height, width = overlay.shape[:2]
                     image_canvas.set_pixmap(pixmap, (width, height), reset_view=False)
                     QApplication.processEvents()
 
+                    preview_dialog.display_cache_key = None  # showing current-params result
                     file_name = Path(file_path).name
                     num_cells = len(np.unique(mask)) - 1
                     params = get_current_parameters()
                     model_name = Path(params["pretrained_model"]).stem if params.get("pretrained_model") else params.get("model_type", "—")
+                    params_str = format_omnipose_params_from_params(params)
                     title_label.setText(
-                        f"Frame {frame_idx + 1} of {num_frames} | Cells detected: {num_cells} | Model: {model_name} | {file_name}"
+                        f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {model_name} | {file_name}\n"
+                        f"Parameters: {params_str}"
                     )
                     
                     # Close progress dialog
@@ -2534,6 +2647,7 @@ class OmniposeSegTab(QWidget):
                         else:
                             status_label.setText(f"Ready (cached: {cache_size})")
                         status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
+                    refresh_cached_runs_combo()
                 except Exception as e:
                     if progress_dialog:
                         progress_dialog.close()
@@ -2544,7 +2658,36 @@ class OmniposeSegTab(QWidget):
                     status_label.setText(f"Error: {str(e)}")
                     status_label.setStyleSheet("color: #FF0000; font-weight: bold;")
                     QMessageBox.warning(preview_dialog, "Preview Error", f"Could not update display:\n{str(e)}")
-            
+
+            def show_cached_run(cache_key):
+                """Display a cached segmentation (mask + params) without running model. Used when user picks a cached run from combo."""
+                if cache_key not in preview_dialog.segmentation_cache:
+                    return
+                frame_idx = cache_key[0]
+                mask = preview_dialog.segmentation_cache[cache_key]
+                frame = images[frame_idx]
+                if frame.ndim == 3:
+                    display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                else:
+                    display_frame = frame
+                disp_scaled, mask_scaled = scale_for_preview(
+                    display_frame, mask, max_size=PREVIEW_SEG_MAX_SIZE
+                )
+                overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
+                pixmap = to_qpixmap(overlay)
+                h, w = overlay.shape[:2]
+                image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
+                num_cells = len(np.unique(mask)) - 1
+                file_name = Path(file_path).name
+                params_str = format_omnipose_params_from_key(cache_key)
+                model_short = cache_key[5] if len(cache_key) > 5 else "—"
+                if model_short and getattr(Path(model_short), "suffix", None):
+                    model_short = Path(model_short).stem
+                title_label.setText(
+                    f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {model_short} | {file_name}\n"
+                    f"Parameters: {params_str}"
+                )
+
             # Frame navigation (spinbox only; no prev/next buttons)
             nav_layout = QHBoxLayout()
             frame_spin = QSpinBox()
@@ -2554,9 +2697,6 @@ class OmniposeSegTab(QWidget):
             nav_layout.addWidget(frame_spin)
             nav_layout.addWidget(QLabel(f"of {num_frames}"))
             scale_label = QLabel("")
-            if self.pixel_size_um.value() > 0:
-                scale_label.setText(f"Scale: {self.pixel_size_um.value():.3f} µm/px")
-                scale_label.setToolTip("Pixel size from Omnipose Segment tab (scale bar drawn on image).")
             nav_layout.addWidget(scale_label)
             # Add status label to navigation layout
             nav_layout.addStretch()
@@ -2580,6 +2720,7 @@ class OmniposeSegTab(QWidget):
                 
                 is_updating_frame = True
                 preview_dialog.current_frame = idx
+                preview_dialog.display_cache_key = None  # when changing frame, show current params for new frame
                 # Block signals to prevent recursive calls
                 frame_spin.blockSignals(True)
                 frame_spin.setValue(idx + 1)
@@ -2593,6 +2734,7 @@ class OmniposeSegTab(QWidget):
                     
                     # Only show progress if we need to recalculate
                     update_display(idx, show_progress=(not has_cache or force_recalc))
+                    refresh_cached_runs_combo()
                 except Exception as e:
                     import traceback
                     error_msg = f"Could not display frame {idx + 1}:\n{str(e)}"
@@ -2657,11 +2799,51 @@ class OmniposeSegTab(QWidget):
             )
             def on_clear_cache():
                 preview_dialog.segmentation_cache.clear()
+                preview_dialog.display_cache_key = None
                 status_label.setText("Cache cleared")
                 status_label.setStyleSheet("color: #2196F3; font-weight: bold;")
                 QTimer.singleShot(2000, lambda: status_label.setText("Ready") or status_label.setStyleSheet("color: #00FF00; font-weight: bold;"))
+                refresh_cached_runs_combo()
             clear_cache_btn.clicked.connect(on_clear_cache)
             nav_layout.addWidget(clear_cache_btn)
+
+            # Cached run switcher: show params for current view, switch between cached segmentations for this frame
+            nav_layout.addWidget(QLabel("Cached run:"))
+            cached_runs_combo = QComboBox()
+            cached_runs_combo.setToolTip(
+                "Current = main window parameters. Other entries = previously computed segmentations for this frame; select to view and compare parameters."
+            )
+            cached_runs_combo.setMinimumWidth(280)
+
+            def refresh_cached_runs_combo():
+                cur_frame = preview_dialog.current_frame
+                keys_for_frame = [k for k in preview_dialog.segmentation_cache if k[0] == cur_frame]
+                keys_for_frame.sort(key=lambda k: (k[1], k[2], k[3]))  # diameter, flow, mask
+                cached_runs_combo.blockSignals(True)
+                cached_runs_combo.clear()
+                cached_runs_combo.addItem("Current (main window)", None)
+                for k in keys_for_frame:
+                    cached_runs_combo.addItem(format_omnipose_params_from_key(k), k)
+                idx = 0
+                if preview_dialog.display_cache_key is not None:
+                    try:
+                        idx = 1 + keys_for_frame.index(preview_dialog.display_cache_key)
+                    except ValueError:
+                        pass
+                cached_runs_combo.setCurrentIndex(idx)
+                cached_runs_combo.blockSignals(False)
+
+            def on_cached_run_selected(index: int):
+                key = cached_runs_combo.currentData()
+                if key is None:
+                    preview_dialog.display_cache_key = None
+                    update_display(preview_dialog.current_frame, show_progress=False)
+                else:
+                    preview_dialog.display_cache_key = key
+                    show_cached_run(key)
+
+            cached_runs_combo.currentIndexChanged.connect(on_cached_run_selected)
+            nav_layout.addWidget(cached_runs_combo)
             
             layout.addLayout(nav_layout)
 
@@ -2677,27 +2859,27 @@ class OmniposeSegTab(QWidget):
 
             preview_dialog.setLayout(layout)
 
-            # Show first frame immediately (image only), scaled for fast display
+            # Show first frame immediately (image only), scaled for fast display and zoom/pan
             frame0 = images[0]
             if frame0.ndim == 3:
                 display_frame0 = frame0[0] if frame0.shape[0] < 10 else frame0[:, :, 0]
             else:
                 display_frame0 = frame0
             empty_mask = np.zeros(display_frame0.shape, dtype=np.int32)
-            disp0, _ = scale_for_preview(display_frame0, empty_mask)
+            disp0, _ = scale_for_preview(display_frame0, empty_mask, max_size=PREVIEW_SEG_MAX_SIZE)
             empty_scaled = np.zeros(disp0.shape, dtype=np.int32)
             initial_overlay = build_segmentation_overlay(disp0, empty_scaled, alpha=0.0)
-            pixel_size_um_0 = self.pixel_size_um.value()
-            if pixel_size_um_0 > 0:
-                scale_factor_0 = disp0.shape[1] / max(1, display_frame0.shape[1])
-                draw_scale_bar(initial_overlay, pixel_size_um_0, scale_factor=scale_factor_0)
             initial_pixmap = to_qpixmap(initial_overlay)
             h0, w0 = initial_overlay.shape[:2]
             image_canvas.set_pixmap(initial_pixmap, (w0, h0), reset_view=True)
             file_name = Path(file_path).name
             params0 = get_current_parameters()
             model_name0 = Path(params0["pretrained_model"]).stem if params0.get("pretrained_model") else params0.get("model_type", "—")
-            title_label.setText(f"Frame 1 of {num_frames} | Segmenting... | Model: {model_name0} | {file_name}")
+            params_str0 = format_omnipose_params_from_params(params0)
+            title_label.setText(
+                f"Frame 1 of {num_frames} | Segmenting... | Model: {model_name0} | {file_name}\n"
+                f"Parameters: {params_str0}"
+            )
             status_label.setText("Segmenting first frame...")
             loading_progress.close()
             preview_dialog.show()
@@ -3163,13 +3345,12 @@ class OmniposeSegTab(QWidget):
             script_path = str(script_dir / "scripts" / "batch_process_tiff_sequence.py")
             input_file = Path(self.file_path.text())
             
-            # Determine base directory (go up one level if input is in Tif_* folder)
+            # When input is in any Tif_* folder (Tif_files, Tif_files2, Tif_1-3, ...), save masks in that folder's _segmentation_omni subfolder
             base_dir = input_file.parent
             if base_dir.name.startswith('Tif_'):
-                base_dir = base_dir.parent
-            
-            # Create output directory at base level with _omnipose_segmentation suffix
-            output_dir = base_dir / f"{input_file.stem}_omnipose_segmentation"
+                output_dir = base_dir / "_segmentation_omni"
+            else:
+                output_dir = base_dir / f"{input_file.stem}_omnipose_segmentation"
             
             _mt, _path = self._resolve_model_selection(self.model_combo.currentText())
             if _path is not None:
@@ -3259,7 +3440,8 @@ class OmniposeSegTab(QWidget):
             self.cancel_btn.setEnabled(True)
             self.parent_window.log_output(f"Starting batch folder processing: {len(selected_files)} file(s) selected from {self.file_path.text()}\n")
             
-            self._last_output_dir = folder  # folder containing all _omnipose_segmentation outputs
+            # When folder is any Tif_* (Tif_files, Tif_1-3, ...), masks go into _segmentation_omni; else one subfolder per file
+            self._last_output_dir = (folder / "_segmentation_omni") if folder.name.startswith('Tif_') else folder
             # Process first file
             self._process_next_segmentation_file(script_path)
             return  # Early return, processing continues in _process_next_segmentation_file
@@ -3291,9 +3473,10 @@ class OmniposeSegTab(QWidget):
             self.parent_window.log_output(f"\n✓ Segmentation complete for all {len(self.folder_files)} file(s)!\n")
             msg = QMessageBox(self)
             msg.setWindowTitle("Processing Complete")
+            out_desc = "Output: _segmentation_omni folder (one mask file per image)." if (self.folder_files and Path(self.folder_files[0]).parent.name.startswith('Tif_')) else "Output: one _omnipose_segmentation subfolder per file (masks and overlay)."
             msg.setText(
                 f"Successfully processed {len(self.folder_files)} file(s).\n\n"
-                "Output: one _omnipose_segmentation subfolder per file (masks and overlay)."
+                f"{out_desc}"
             )
             msg.setIcon(QMessageBox.Icon.Information)
             open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
@@ -3306,13 +3489,12 @@ class OmniposeSegTab(QWidget):
         tiff_file = self.folder_files[self.current_file_index]
         self.parent_window.log_output(f"\nProcessing file {self.current_file_index + 1}/{len(self.folder_files)}: {tiff_file.name}\n")
         
-        # Determine base directory (go up one level if input is in Tif_* folder)
+        # When folder is any Tif_* (Tif_files, Tif_1-3, ...), all masks go into that folder's _segmentation_omni subfolder
         base_dir = tiff_file.parent
         if base_dir.name.startswith('Tif_'):
-            base_dir = base_dir.parent
-        
-        # Create output directory at base level with _omnipose_segmentation suffix
-        output_dir = base_dir / f"{tiff_file.stem}_omnipose_segmentation"
+            output_dir = base_dir / "_segmentation_omni"
+        else:
+            output_dir = base_dir / f"{tiff_file.stem}_omnipose_segmentation"
         
         _mt, _path = self._resolve_model_selection(self.model_combo.currentText())
         if _path is not None:

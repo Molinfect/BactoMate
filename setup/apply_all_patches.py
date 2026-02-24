@@ -281,6 +281,69 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
     return True
 
 
+def patch_omnipose_gpu_empty_except() -> bool:
+    """[DEBUG] omnipose/gpu.py: fix SyntaxError 'expected an indented block after except' (empty except block). Run with: --only omnipose_gpu_empty_except"""
+    gpu_file = _find_in_syspath("omnipose/gpu.py")
+    if not gpu_file:
+        print("  WARNING: Could not find omnipose/gpu.py")
+        return False
+    content = gpu_file.read_text()
+    lines = content.splitlines(keepends=True)
+    patched = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if not stripped.startswith("except") or ":" not in stripped:
+            continue
+        except_indent = line[: len(line) - len(stripped)]
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j >= len(lines):
+            break
+        next_line = lines[j]
+        next_indent = next_line[: len(next_line) - len(next_line.lstrip())]
+        # Only treat as empty when next line is strictly less indent (next stmt outside block). Same indent = block has content (upstream indent quirk).
+        if len(next_indent) < len(except_indent):
+            body_indent = except_indent + "    "
+            body = f"{body_indent}pass  # empty except fixed by BactiMate patch\n"
+            if "Exception as" not in stripped:
+                lines[i] = line.replace("except:", "except Exception as e:", 1).replace("except :", "except Exception as e:", 1)
+            lines.insert(i + 1, body)
+            content = "".join(lines)
+            patched = True
+            break
+    # Repair: if we previously inserted "pass" but the next line was gpu_logger.info at same indent as except, we broke the file. Remove our pass and indent the following block to proper body indent (except + 4 spaces).
+    if not patched and "pass  # empty except fixed by BactiMate patch" in content:
+        lines = content.splitlines(keepends=True)
+        for i, line in enumerate(lines):
+            if "pass  # empty except fixed by BactiMate patch" not in line:
+                continue
+            pass_indent = line[: len(line) - len(line.lstrip())]
+            body_indent = pass_indent  # our pass was at except_indent+4, so body indent = pass_indent (8 spaces)
+            except_indent_len = len(pass_indent) - 4  # except is 4 spaces less (e.g. 4)
+            lines.pop(i)
+            j = i
+            while j < len(lines):
+                if not lines[j].strip():
+                    j += 1
+                    continue
+                line_indent = lines[j][: len(lines[j]) - len(lines[j].lstrip())]
+                if len(line_indent) <= except_indent_len:
+                    break
+                if len(line_indent) < len(body_indent):
+                    lines[j] = body_indent + lines[j].lstrip()
+                j += 1
+            content = "".join(lines)
+            patched = True
+            break
+    if patched:
+        gpu_file.write_text(content)
+        print("  ✓ Patched omnipose gpu.py (empty except block fixed)")
+    else:
+        print("  ✓ omnipose gpu.py: no empty except block found (already OK)")
+    return True
+
+
 def patch_omnipose_gpu_mps() -> bool:
     """Improve MPS (Apple Silicon) GPU detection in omnipose/gpu.py: broader ARM check and log real exception when device test fails."""
     gpu_file = _find_in_syspath("omnipose/gpu.py")
@@ -333,6 +396,32 @@ def patch_omnipose_gpu_mps() -> bool:
         if new_content != content:
             content = new_content
             patched = True
+    # 4) Fix empty except block (SyntaxError: expected an indented block after 'except')
+    lines = content.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if not stripped.startswith("except") or ":" not in stripped:
+            continue
+        except_indent = line[: len(line) - len(stripped)]
+        # Find next non-empty line
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j >= len(lines):
+            break
+        next_line = lines[j]
+        next_indent = next_line[: len(next_line) - len(next_line.lstrip())]
+        # If next line is not indented more than except, the block is empty
+        if len(next_indent) <= len(except_indent):
+            body_indent = except_indent + "    "
+            body = f"{body_indent}pass  # empty except fixed by BactiMate patch\n"
+            # Normalize except to "except Exception as e:" so variable e exists if used below
+            if "Exception as" not in stripped:
+                lines[i] = line.replace("except:", "except Exception as e:", 1).replace("except :", "except Exception as e:", 1)
+            lines.insert(i + 1, body)
+            content = "".join(lines)
+            patched = True
+            break
     if patched:
         gpu_file.write_text(content)
         print("  ✓ Patched omnipose gpu.py (MPS ARM detection and/or GPU exception logging)")
@@ -1173,6 +1262,28 @@ def patch_cellpose_omni_core_save_model() -> bool:
     return False
 
 
+def patch_cellpose_omni_core_ntrain_label() -> bool:
+    """Rename training log label ntrain -> ntrain_img in cellpose_omni/core.py."""
+    core_files = _find_all_in_syspath("cellpose_omni/core.py")
+    if not core_files:
+        print("  WARNING: Could not find cellpose_omni/core.py")
+        return False
+    patched_any = False
+    for core_file in core_files:
+        content = core_file.read_text()
+        if "ntrain_img =" in content:
+            print("  ✓ cellpose_omni core (ntrain_img label) already patched")
+            patched_any = True
+            continue
+        if "ntrain =" not in content:
+            continue
+        content = content.replace(">>>> ntrain = ", ">>>> ntrain_img = ", 2)
+        core_file.write_text(content)
+        patched_any = True
+        print("  ✓ Patched cellpose_omni core (log label ntrain -> ntrain_img)")
+    return patched_any
+
+
 # Ordered list of (name, description, patch_func) for --only / --list. Names are used as: --only resnet_load,cellpose_pretrained
 PATCH_LIST = [
     ("peakdetect", "peakdetect: scipy ifft compatibility", patch_peakdetect),
@@ -1182,12 +1293,14 @@ PATCH_LIST = [
     ("dynamics", "cellpose_omni dynamics: steps2D tr", patch_cellpose_omni_dynamics),
     ("resnet_load", "cellpose_omni resnet_torch: load checkpoint unwrap", patch_cellpose_omni_resnet_load_checkpoint),
     ("omnipose_gpu_mps", "omnipose gpu: MPS (Apple Silicon) detection + log GPU exception", patch_omnipose_gpu_mps),
+    ("omnipose_gpu_empty_except", "[DEBUG] omnipose gpu: fix empty except SyntaxError only", patch_omnipose_gpu_empty_except),
     ("omnipose_bce_boundary", "omnipose core: BCE boundary range (training)", patch_omnipose_core_bce_boundary_range),
     ("omnipose_dtype", "omnipose core: grid_sample dtype", patch_omnipose_core_grid_sample_dtype),
     ("omnipose_follow_flows", "omnipose core: follow_flows dtype", patch_omnipose_core_follow_flows_dtype),
     ("cellpose_pretrained", "cellpose_omni Cellpose: pretrained_model path (user models)", patch_cellpose_omni_cellpose_pretrained),
     ("train_channels", "cellpose_omni __main__: train channels for nchan==2", patch_cellpose_omni_main_train_channels),
     ("cellpose_core_save", "cellpose_omni core: DataParallel save_model", patch_cellpose_omni_core_save_model),
+    ("core_ntrain_label", "cellpose_omni core: log label ntrain -> ntrain_img", patch_cellpose_omni_core_ntrain_label),
 ]
 
 

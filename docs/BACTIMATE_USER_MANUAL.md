@@ -21,6 +21,7 @@
 9. [File types, naming, and workflows](#9-file-types-naming-and-workflows)
 10. [Common scenarios and questions](#10-common-scenarios-and-questions)
 11. [References and further documentation](#11-references-and-further-documentation)
+- **Appendices:** [A: Verbatim info texts](#appendix-a-verbatim-info-texts-quick-reference), [B: Training troubleshooting](#appendix-b-training-troubleshooting-omnipose), [C: BactiMate and Omnipose (technical)](#appendix-c-bactimate-and-omnipose-technical-note)
 
 ---
 
@@ -327,7 +328,7 @@ In the **Train model** dialog, **Start from** offers: **From scratch** (no pretr
 
 **Making fine-tuning predictable (avoid 0 cells and background detected)**
 
-Too many epochs can **drift the output head** (last layer): the distance map can shift so you get **0 cells** (head too weak) or **background detected as cells** (head drifted the other way). You may see **100 and 200 epochs find cells, 300 and 400 don't, 500 finds some again** — that is head drift. **output.0.weight** can shrink and the distance map stays below the mask threshold → 0 cells. (1) Use the **default** when you select a pretrained model: **50 epochs**, LR 0.01. Fewer epochs (50) usually give “likely segments”; 200+ often drift. (2) Use the **50** (recommended), **200**, **500** buttons. (3) After training, run **Check pipeline**: if the verdict is “likely segments”, the model is good; if “weak head” or “may segment”, retrain with 50 epochs or lower LR (0.005). Use an **earlier checkpoint** (e.g. epoch 100 or 200) for inference if later ones give 0 cells. See **docs/TRAINING_TROUBLESHOOTING.md** for head drift and background-detected-as-cells.
+Too many epochs can **drift the output head** (last layer): the distance map can shift so you get **0 cells** (head too weak) or **background detected as cells** (head drifted the other way). You may see **100 and 200 epochs find cells, 300 and 400 don't, 500 finds some again** — that is head drift. **output.0.weight** can shrink and the distance map stays below the mask threshold → 0 cells. (1) Use the **default** when you select a pretrained model: **50 epochs**, LR 0.01. Fewer epochs (50) usually give “likely segments”; 200+ often drift. (2) Use the **50** (recommended), **200**, **500** buttons. (3) After training, run **Check pipeline**: if the verdict is “likely segments”, the model is good; if “weak head” or “may segment”, retrain with 50 epochs or lower LR (0.005). Use an **earlier checkpoint** (e.g. epoch 100 or 200) for inference if later ones give 0 cells. See **Appendix B** (Training troubleshooting) for head drift and background-detected-as-cells.
 
 **Inspect a checkpoint manually**
 
@@ -358,7 +359,7 @@ python -m bactimate.scripts.check_omnipose_pipeline all path/to/model_omni.pth /
 python -m bactimate.scripts.check_omnipose_pipeline compare a.pth b.pth [--builtin] [--forward image.tif]
 ```
 
-This verifies: (1) the .pth has correct metadata and loads with Omnipose dynamics; (2) training directory has valid image/mask pairs and Omnipose-ready masks; (3) an image is compatible with the model and optionally runs one eval; (4) when comparing checkpoints, whether the output head has drifted (e.g. after many epochs) and is likely to give 0 cells. See **docs/README.md** (Troubleshooting → Omnipose pipeline diagnostic script) for details.
+This verifies: (1) the .pth has correct metadata and loads with Omnipose dynamics; (2) training directory has valid image/mask pairs and Omnipose-ready masks; (3) an image is compatible with the model and optionally runs one eval; (4) when comparing checkpoints, whether the output head has drifted (e.g. after many epochs) and is likely to give 0 cells. See the project **README** (Troubleshooting) and **Appendix B** for details.
 
 **Why bact_phase_affinity works without "omni" in the name**
 
@@ -392,6 +393,27 @@ If **mf_test** gives random detections but **mf_lasse** gives none, possible cau
 - Different diameter or flow threshold; try diameter ≈ your cell size in pixels and flow_threshold=0 for both.
 - Different image type or normalization; keep training and inference image format and bit depth consistent.
 
+### 4.9 U-NET Segment tab
+
+**Purpose:** Alternative segmentation using U-Net models (trained via BactiMate or Building U-NET). Output is written to e.g. `_segmentation_unet/` or next to each input file.
+
+**Input:** File or folder — path line edit, Browse File, Browse Folder, drag-and-drop (same pattern as Omnipose Segment).
+
+**U-Net parameters:** Model dropdown (trained `.keras` from BactiMate’s U-Net models dir: `unet_user_models/`); Refresh; **Train new U-Net model...** button. Models are stored separately from Omnipose (`unet_user_models/` under repo or `~/Library/Application Support/BactiMate/Models/unet_user_models` on macOS).
+
+**Training dialog (Train new U-Net model):**
+
+- **Training directory** — folder with image/mask pairs. **Image filter** / **Mask filter** (e.g. `_img`, `_mask`, or `_Simple Segmentation` for Building U-NET) so the app can find pairs.
+- **Check for names** — validates and shows pair count (same idea as Omnipose).
+- **Make masks binary (U-Net)** — converts masks to strict [0, 255] and writes to `unet_masks_binary/` with image copies; use that folder as training dir if you need binary masks.
+- **Tile and prepare for training** — tiles image/mask pairs, filters by minimum cells per tile; output to e.g. `unet_masks_tiled/` (U-Net–specific). Set training directory to that folder and crop size accordingly.
+- **Building U-NET project path** — optional; when set, training and prediction delegate to your Building U-NET installation (GPU used there). Stored in preferences.
+- **Epochs, Batch size, Use GPU, Model name** — model is saved as `{name}.keras` and `{name}_patch_config.json` in the U-Net models dir. **Start training** runs patch-config analysis then training (with Building U-NET if path is set).
+
+**Preview / Process:** **Preview U-NET Segmentation** runs the model on the first frame/file; **Process File or Folder** runs batch prediction. Output is typically next to input or in a dedicated folder (e.g. `_segmentation_unet/` or `{stem}_unet_segmentation/`). For prediction with a Building U-NET path, the app copies model and config into that project and runs its predict script.
+
+Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET workflows. For Omnipose-based segmentation and training, use the main Omnipose Segment tab (Section 4).
+
 ---
 
 ## 5. Analyze Masks tab
@@ -400,7 +422,7 @@ If **mf_test** gives random detections but **mf_lasse** gives none, possible cau
 
 ### 5.1 Mask File/Folder input
 
-- **Group:** “Mask File/Folder” (drag-and-drop). Placeholder: “Select a mask TIFF file or folder... (or drag and drop)”. Browse File / Browse Folder set the path. Accepted: single TIFF or folder of mask TIFFs.
+- **Group:** “Mask File/Folder” (drag-and-drop). Placeholder: “Select a mask TIFF file or folder... (or drag and drop)”. Browse File / Browse Folder set the path. Accepted: single TIFF or folder of mask TIFFs. You can select the _segmentation_omni or _segmentation_unet folder; overlays/ and *_filter_visualization.tif there are ignored.
 
 ### 5.2 Combine group
 
@@ -439,9 +461,10 @@ If **mf_test** gives random detections but **mf_lasse** gives none, possible cau
 
 ### 5.6 Analyze FI (fluorescence intensity)
 
-- **Check box “Analyze FI”:** Default **unchecked**. When enabled, the FI file path and Contour FI options become active.
-- **Info (?) —** “Analyze fluorescence intensity (FI) from a separate FI channel image. When enabled: Requires selecting an FI channel TIFF file. The analysis will always add: Mean FI intensity (average pixel intensity within each cell). Optional (if 'Contour FI' is enabled): Contour FI intensity (average intensity at cell boundary), FI ratio (contour FI / mean FI). Use when: You have a separate fluorescence channel image and want to quantify fluorescence intensity per cell.”
-- **FI file path:** Line edit; placeholder “Select FI channel TIFF file... (or drag and drop)”. Browse FI File. Disabled until “Analyze FI” is checked.
+- **Check box “Analyze FI”:** Default **unchecked**. When enabled, the FI file path (or Batch FI) and Contour FI options become active.
+- **Check box “Batch FI”:** Default **unchecked**; visible when “Analyze FI” is checked. When **Batch FI** is checked: the app finds phase and FI TIFFs by **name** (same stem or base stem as each mask file) in the mask folder's parent; you do **not** set an FI file path. One merged Excel per mask is written to `_analysis/` with morphology + FI columns and **Logs** in the Summary sheet (column G). The single FI file path field is disabled when Batch FI is on. See **Section 9.4** for the full example scenario.
+- **Info (?) (Analyze FI) —** “Analyze fluorescence intensity (FI) from a separate FI channel image. When enabled: In single-FI mode, select one FI channel TIFF file; the analysis adds Mean FI intensity per cell (and optionally Contour FI / FI ratio if “Contour FI” is enabled). In **Batch FI** mode: phase and FI files are matched by filename to each mask; one merged Excel per mask is produced with Logs in Summary column G.”
+- **FI file path:** Line edit; placeholder “Select FI channel TIFF file... (or drag and drop)”. Browse FI File. Disabled until “Analyze FI” is checked; **disabled when “Batch FI” is checked** (Batch FI finds FI files by name).
 - **Contour FI:** Check box; default unchecked; disabled until “Analyze FI” is checked. When checked, analysis adds contour-based FI (boundary intensity and FI ratio).
 - **Info (?) (Contour FI) —** “Compute contour-based FI metrics (boundary intensity + FI ratio). When disabled: Only Mean FI Intensity will be calculated. Contour thickness is ignored.”
 - **Contour thickness (pixels):** Spin box [1, 10]; default 1. Info (?) — “Thickness of the contour region used for FI intensity calculation. Default: 1 pixel (single-pixel boundary). The contour is the region at the cell boundary. Increasing thickness includes more pixels near the boundary. Note: This affects both the preview visualization and the final analysis.” Disabled until Contour FI is relevant (e.g. when Analyze FI is on).
@@ -454,7 +477,7 @@ If **mf_test** gives random detections but **mf_lasse** gives none, possible cau
 
 ### 5.8 Session parameters (Analyze Masks)
 
-Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_file_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
+Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, batch_fi, fi_file_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
 
 ---
 
@@ -582,6 +605,39 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 
 ---
 
+### 9.4 Example scenario: ND2 with phase and two FI channels
+
+This section walks through **one concrete workflow**: an ND2 file with one phase channel and two fluorescence (FI) channels → TIFF conversion → segmentation → mask analysis with morphology and FI, ending with one Excel per condition and an optional combined summary.
+
+**Starting point:** One ND2 file (e.g. `EM13748_AnTC_003.nd2`) with Channel 0 = Phase, Channel 1 = GFP, Channel 2 = mScarlet.
+
+**1. TIFF Conversion tab**
+
+- **You:** Select the ND2 file (or folder); set channel handling to “Save channels separately”; set number of frames; click **Convert to TIFF**.
+- **BactiMate:** Creates one folder (e.g. **`Tif_files`**) and writes one multipage TIFF per channel, e.g. `EM13748_AnTC_003_Phase60X.tif`, `EM13748_AnTC_003_fi_GFP.tif`, `EM13748_AnTC_003_fi_mScarlet.tif`. Phase and FI files share a consistent stem in the same folder.
+
+**2. Omnipose Segment tab**
+
+- **You:** Set path to the folder (e.g. `Tif_files/`); choose model (e.g. bact_phase_omni), diameter, options; enable overlay if desired; click **Process File or Folder**.
+- **BactiMate:** Writes masks as `{stem}_masks.tif` (and optional overlays in `overlays/`) into e.g. `Tif_files/_segmentation_omni/`. Only the phase channel is segmented; FI TIFFs stay in the parent folder. Result: one mask file per condition (e.g. `EM13748_AnTC_003_Phase60X_masks.tif`) and two FI TIFFs in `Tif_files/`.
+
+**3. Analyze Masks tab (Batch FI)**
+
+- **You:** Set path to the **mask folder** (e.g. `Tif_files/_segmentation_omni`). Enable **Analyze FI** and **Batch FI**. Set pixel size and filters; optionally “Include detailed per-cell data” and “Create combined summary”. Click **Analyze Masks** and select the mask file(s) in the dialog.
+- **BactiMate:** For each mask `{stem}_masks.tif`, finds in the **parent** of the mask folder: (1) phase: `{stem}.tif` or `{base}.tif`; (2) FI: `{stem}_fi.tif` or `{stem}_fi_*.tif` / `{base}_fi.tif` or `{base}_fi_*.tif`. Runs one morphology-only task (phase) plus one per FI channel (e.g. 3 tasks: phase + GFP + mScarlet). Merges all runs for the same mask into **one Excel** per mask in **`_analysis/`** (e.g. `Tif_files/_analysis/EM13748_AnTC_003_Phase60X_analysis.xlsx`) with Summary (total area, cell count per frame; **column G = Logs**: mask → TIFF pairs and match count) and optional Per-Cell Data (morphology + Mean FI Intensity per channel). Per-channel Excel files are removed; only the merged file remains. If “Create combined summary” is checked, also writes e.g. `Tif_files/_analysis/Tif_files_combined_summary.xlsx`.
+
+**Resulting layout (example)**
+
+- `Tif_files/` — phase and FI TIFFs; `_segmentation_omni/` with `*_masks.tif` and `overlays/`; `_analysis/` with one merged Excel per mask and optional combined summary. Logs in each Excel Summary sheet, column G.
+
+**Naming rules to remember**
+
+- **Masks:** `*_masks.tif`.
+- **FI (Batch):** In the mask folder’s parent: `{stem}_fi.tif` or `{stem}_fi_Channel.tif`, or base stem if no exact match (e.g. `EM13748_AnTC_003_fi_GFP.tif` for mask stem `EM13748_AnTC_003_Phase60X`).
+- **Phase (non-FI):** `{stem}.tif` or `{base}.tif` in the same parent folder.
+
+---
+
 ## 10. Common scenarios and questions
 
 **Q: I upgraded and my Omnipose models are in an old "user_models" folder. What do I do?**  
@@ -624,9 +680,10 @@ A: After you load a **multi-channel** microscopy file, the tab builds a set of c
 - **Omnipose:** https://omnipose.readthedocs.io/ (models, training, settings).
 - **Omnipose models (GitHub):** https://github.com/kevinjohncutler/omnipose-models
 - **Trackastra:** https://github.com/weigertlab/trackastra (tracking models and modes).
-- **Project README:** `README.md` in the project root (installation, quick start, command-line, troubleshooting).
+- **Project README:** `docs/README.md` (installation, quick start, command-line, troubleshooting).
 - **Training mask format:** See `docs/TRAINING_MASKS.md` if present (instance vs binary masks).
-- **Custom model troubleshooting:** See `docs/CUSTOM_MODEL_TROUBLESHOOTING.md` if present (flow threshold, diameter, mask threshold for user models).
+- **Training troubleshooting (head drift, 0 cells, background as cells):** **Appendix B** in this manual.
+- **BactiMate and Omnipose (technical):** **Appendix C** in this manual.
 
 ---
 
@@ -726,6 +783,54 @@ Min/Max Area (µm²), Min/Max Width (µm), Min Length (µm): 0 means no limit; o
 
 **Session Logs — Apply (Section 8.3)**  
 “Apply the parameters from the selected log to all tabs (parameters only; file paths are not changed).”
+
+---
+
+## Appendix B: Training troubleshooting (Omnipose)
+
+When you fine-tune on top of **bact_phase_omni** (or another pretrained model), you may see: (1) **100 and 200 epochs find cells; 300 and 400 find no cells; 500 finds some again** — no obvious logic; (2) **Background is detected as cells** — the model predicts cells where there is only background.
+
+**Why do 100/200 work but 300/400 give 0 cells (and 500 works again)?**
+
+This is **output head drift** from fine-tuning with a high learning rate and many epochs. Omnipose's last layer produces a distance/cell-probability map; at inference, pixels with distance > threshold become cells. With many epochs (e.g. 300, 400) and LR 0.01, the output head can drift: at 100/200 weights are still close to pretrained → cells found; at 300/400 the head has drifted so the distance channel no longer crosses the threshold → 0 cells; at 500 it can drift back and give some detections again.
+
+**What to do:** Use an **earlier checkpoint** (e.g. epoch 100 or 200) for inference. For future training: **fewer epochs** (e.g. 50–100) and/or **lower learning rate** (e.g. 0.005). Use **Check pipeline** to compare checkpoints and prefer those with "likely segments". In the GUI, use **Save every N epochs** (e.g. 50) to pick the best checkpoint.
+
+**Why is background detected as cells?**
+
+(1) **Head drift the other way** — the distance channel becomes too high everywhere, including in background. (2) **Learning rate too high** — 0.01 is at the upper end for transfer learning; 0.005 or lower is safer. (3) **Mask format** — Omnipose expects **instance** labels (background=0, each cell = unique ID 1, 2, 3, …). Semantic masks (all cells = 1) lead to wrong learning.
+
+**What to do:** Fewer epochs and lower LR; use the checkpoint that segments well (e.g. 100 or 200); run **Check pipeline** on checkpoints; confirm masks are instance labels.
+
+**Quick reference**
+
+| Symptom | Likely cause | Action |
+|--------|----------------|--------|
+| 100/200 find cells, 300/400 don't, 500 finds some again | Output head drift | Use epoch 100 or 200; next time train with 50–100 epochs and/or LR 0.005 |
+| Background detected as cells | Head drifted; or LR too high; or mask format | Lower LR; fewer epochs; use earlier checkpoint; verify instance masks (0=bg, 1,2,3,…=cells) |
+| 0 cells at all checkpoints | Head too weak | Run Check pipeline; try mask threshold -1 or -2; retrain with 50 epochs, LR 0.01 or 0.005 |
+
+**Full diagnostic (flat distance/flow, 0 cells):**
+
+```bash
+python -m bactimate.scripts.diagnose_flat_model omnipose_user_models/YOUR_MODEL.pth [--image path/to/image.tif] [--training-dir /path/to/train] [--compare-builtin bact_phase_omni]
+```
+
+This reports checkpoint keys and output-head bias/weights, per-channel flow/distance stats, training data shape if provided, and recommendations.
+
+**How the "valid range" is determined:** At inference, pixels with distance **> mask_threshold** (default 0) are cell pixels; the rest are background. If the head drifts so the distance map is mostly below 0 → 0 cells; if mostly above 0 everywhere → background as cells. The **Check pipeline** verdict inspects the last layer's parameters (bias, weight max) as a heuristic for "likely segments" vs "likely 0 cells"; the real test is running inference.
+
+---
+
+## Appendix C: BactiMate and Omnipose (technical note)
+
+BactiMate does **not** call most of `omnipose.core` / `omnipose.utils` directly; those run **inside Omnipose** when we start training (CLI) or run segmentation (cellpose_omni API).
+
+**Training:** We run `python -m omnipose --train --dir <path> --nchan <n> --nclasses <n> --channel_axis 0 --all_channels ...`. Omnipose loads image/mask pairs, uses channel_axis and nchan for augmentation, builds training targets with labels_to_flows, and uses the loss from omnipose.core. We ensure: CYX channel format, `--channel_axis 0` when nchan ≥ 2, nchan/nclasses passed and locked for user models, instance-label masks; we patch `__main__.py` so nchan==2 gets grayscale duplicated (channels=[chan,chan]) for training.
+
+**Inference:** We use cellpose_omni's `CellposeModel.eval()`. That path calls `compute_masks` / `get_masks` in omnipose/core. We patch `get_masks` (handle bd=None in frozen builds) and OMNI_MODELS where needed. We do not call compute_masks/get_masks ourselves.
+
+**omnipose.utils:** We do not import or call it from BactiMate; normalization, tiling, etc. are used inside Omnipose/cellpose_omni. We pass the right model path, diameter, and thresholds.
 
 ---
 

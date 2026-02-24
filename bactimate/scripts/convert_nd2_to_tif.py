@@ -15,6 +15,11 @@ from scipy.ndimage import shift
 from skimage.registration import phase_cross_correlation
 from skimage.exposure import match_histograms
 
+try:
+    from bactimate.tiff_metadata import read_calibration_from_path
+except ImportError:
+    read_calibration_from_path = None  # e.g. when run as standalone script
+
 
 def drift_correct_stack(frames: np.ndarray, reference_frame: int = 0, method: str = 'frame_by_frame') -> np.ndarray:
     """
@@ -234,6 +239,11 @@ def bleach_correct_stack(
     raise ValueError(f"Unexpected frame shape: {frames.shape}")
 
 
+def _sanitize_channel_name_for_filename(name: str) -> str:
+    """Replace characters unsuitable for filenames with underscore."""
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name).strip("_") or "channel"
+
+
 def convert_nd2_to_tif(
     input_path: Path,
     output_dir: Optional[Path] = None,
@@ -245,15 +255,18 @@ def convert_nd2_to_tif(
     bleach_method: str = 'exponential',  # exponential | linear | histogram_matching | per_frame_minmax
     bleach_channel_indices: Optional[List[int]] = None,  # If set, only these channel indices get correction; else all
     pixel_size: Optional[float] = None,  # Pixel size in µm to save in metadata
+    time_per_frame_min: Optional[float] = None,  # Time per frame in minutes (for speed calibration); saved as finterval
     max_z_projection: bool = False,  # Max intensity projection across Z-slices
+    fi_channel_indices: Optional[List[int]] = None,  # Channel indices (0-based) to save with _fi in filename for Analyze FI batch
 ) -> None:
     """
     Convert ND2 files to multi-page TIFF files.
     
     Args:
         input_path: Path to directory containing ND2 files or a single ND2 file
-        output_dir: Optional output directory. If None, creates 'Tif_1-150' in input directory
+        output_dir: Optional output directory. If None, uses 'Tif_files' in input directory (reused if it exists)
         max_frames: Maximum number of frames to extract (default: 150)
+        fi_channel_indices: If set, channels at these indices get '_fi' in filename (e.g. stem_fi.tif) for batch FI pairing
     """
     input_path = Path(input_path)
     
@@ -274,10 +287,9 @@ def convert_nd2_to_tif(
         print(f"No ND2 files found in {input_path}")
         return
     
-    # Create output directory
+    # Create output directory: always use single folder "Tif_files" if not specified
     if output_dir is None:
-        # Dynamic folder name based on number of frames
-        output_dir = base_dir / f"Tif_1-{max_frames}"
+        output_dir = base_dir / "Tif_files"
     else:
         output_dir = Path(output_dir)
     
@@ -289,6 +301,18 @@ def convert_nd2_to_tif(
     # Process each ND2 file
     for nd2_file in nd2_files:
         print(f"\nProcessing: {nd2_file.name}")
+        
+        # Use same calibration extraction as GUI (tiff_metadata) so pixel size and time per frame match the log
+        extracted_pixel_size = pixel_size
+        extracted_time_per_frame = time_per_frame_min
+        if read_calibration_from_path is not None:
+            file_ps, file_tp = read_calibration_from_path(nd2_file)
+            if extracted_pixel_size is None and file_ps > 0:
+                extracted_pixel_size = float(file_ps)
+                print(f"  Calibration (from file): pixel size {extracted_pixel_size:.4f} µm")
+            if extracted_time_per_frame is None and file_tp > 0:
+                extracted_time_per_frame = float(file_tp)
+                print(f"  Calibration (from file): time per frame {extracted_time_per_frame:.4f} min")
         
         try:
             # Open ND2 file
@@ -328,29 +352,69 @@ def convert_nd2_to_tif(
                 frames_to_extract = min(max_frames, num_time)
                 print(f"  Extracting frames 1-{frames_to_extract}")
                 
-                # Extract pixel size from ND2 metadata if not provided
-                extracted_pixel_size = pixel_size
+                # Fallback: extract pixel size from ND2 metadata if still not set
                 if extracted_pixel_size is None:
                     try:
                         if hasattr(nd2_reader, 'metadata') and nd2_reader.metadata:
                             meta = nd2_reader.metadata
-                            # Pixel size is in volume.axesCalibration (first element is X, second is Y)
-                            # Both should be the same for square pixels
                             if hasattr(meta, 'channels') and meta.channels:
-                                # Get pixel size from first channel's volume
                                 first_channel = meta.channels[0]
                                 if hasattr(first_channel, 'volume') and first_channel.volume:
                                     vol = first_channel.volume
-                                    if hasattr(vol, 'axesCalibration') and vol.axesCalibration:
-                                        # axesCalibration is a list: [X, Y, Z] pixel sizes
-                                        if len(vol.axesCalibration) >= 2:
-                                            # Use X pixel size (should be same as Y for square pixels)
-                                            extracted_pixel_size = vol.axesCalibration[0]
-                            
-                            if extracted_pixel_size:
-                                print(f"  Extracted pixel size: {extracted_pixel_size:.4f} µm")
+                                    if hasattr(vol, 'axesCalibration') and vol.axesCalibration and len(vol.axesCalibration) >= 2:
+                                        extracted_pixel_size = float(vol.axesCalibration[0])
+                                        print(f"  Extracted pixel size: {extracted_pixel_size:.4f} µm")
                     except Exception as e:
                         print(f"  Warning: Could not extract pixel size: {e}")
+
+                # Fallback: extract time per frame from ND2 (TimeLoopParams.periodMs or NETimeLoopParams.periods[].periodMs)
+                if extracted_time_per_frame is None:
+                    try:
+                        if hasattr(nd2_reader, 'experiment') and nd2_reader.experiment and hasattr(nd2_reader.experiment, 'loops'):
+                            for loop in nd2_reader.experiment.loops:
+                                params = getattr(loop, 'parameters', None)
+                                if params is None:
+                                    continue
+                                period_ms = getattr(params, 'periodMs', None)
+                                if period_ms is not None and float(period_ms) > 0:
+                                    extracted_time_per_frame = float(period_ms) / 60000.0  # ms -> min
+                                    print(f"  Extracted time per frame: {extracted_time_per_frame:.6f} min ({float(period_ms)/1000:.4f} s)")
+                                    break
+                                periods = getattr(params, 'periods', None)
+                                if periods and len(periods) > 0:
+                                    p0 = periods[0]
+                                    period_ms = getattr(p0, 'periodMs', None)
+                                    if period_ms is not None and float(period_ms) > 0:
+                                        extracted_time_per_frame = float(period_ms) / 60000.0
+                                        print(f"  Extracted time per frame: {extracted_time_per_frame:.6f} min ({float(period_ms)/1000:.4f} s)")
+                                        break
+                                period_sec = getattr(params, 'period', None)
+                                if period_sec is not None and float(period_sec) > 0:
+                                    extracted_time_per_frame = float(period_sec) / 60.0
+                                    print(f"  Extracted time per frame: {extracted_time_per_frame:.4f} min")
+                                    break
+                        # Fallback: compute from frame_metadata() timestamps (relativeTimeMs)
+                        if (extracted_time_per_frame is None or extracted_time_per_frame <= 0) and num_time >= 2 and hasattr(nd2_reader, 'frame_metadata'):
+                            try:
+                                fm0 = nd2_reader.frame_metadata(0)
+                                fm1 = nd2_reader.frame_metadata(1)
+                                if not isinstance(fm0, dict) and not isinstance(fm1, dict):
+                                    ch0 = getattr(fm0, 'channels', None)
+                                    ch1 = getattr(fm1, 'channels', None)
+                                    if ch0 and ch1 and len(ch0) > 0 and len(ch1) > 0:
+                                        t0 = getattr(ch0[0], 'time', None)
+                                        t1 = getattr(ch1[0], 'time', None)
+                                        rel0 = getattr(t0, 'relativeTimeMs', None) if t0 else None
+                                        rel1 = getattr(t1, 'relativeTimeMs', None) if t1 else None
+                                        if rel0 is not None and rel1 is not None:
+                                            delta_ms = float(rel1) - float(rel0)
+                                            if delta_ms > 0:
+                                                extracted_time_per_frame = delta_ms / 60000.0
+                                                print(f"  Extracted time per frame (from timestamps): {extracted_time_per_frame:.6f} min ({delta_ms/1000:.4f} s)")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
                 
                 # Read all frames
                 print(f"  Reading frames...")
@@ -548,28 +612,34 @@ def convert_nd2_to_tif(
                         if len(all_frames.shape) == 4:  # TCYX
                             # Verify the channel dimension matches
                             if all_frames.shape[1] == num_channels:
+                                fi_set = set(fi_channel_indices or [])
                                 print(f"  Saving {num_channels} channels as separate files (each with {frames_to_extract} timepoints)")
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]  # Extract channel: TYX
                                     channel_name = channel_names[ch_idx]
-                                    
-                                    # Generate output filename with channel
-                                    output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                    # FI channels get _fi in filename for Analyze Masks batch pairing
+                                    if ch_idx in fi_set:
+                                        if len(fi_set) == 1:
+                                            output_filename = f"{nd2_file.stem}_fi.tif"
+                                        else:
+                                            safe_name = _sanitize_channel_name_for_filename(channel_name)
+                                            output_filename = f"{nd2_file.stem}_fi_{safe_name}.tif"
+                                    else:
+                                        output_filename = f"{nd2_file.stem}_{channel_name}.tif"
                                     output_path = output_dir / output_filename
-                                    
-                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape})")
-                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
+                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape}) -> {output_filename}")
+                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
                             else:
                                 print(f"  Warning: Shape mismatch - all_frames.shape[1]={all_frames.shape[1]} but num_channels={num_channels}")
                                 print(f"  Falling back to single file output")
                                 output_filename = nd2_file.stem + '.tif'
                                 output_path = output_dir / output_filename
-                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
+                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
                         elif len(all_frames.shape) == 3 and num_channels == 1:
                             # Single channel already extracted
                             output_filename = nd2_file.stem + '.tif'
                             output_path = output_dir / output_filename
-                            _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
+                            _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
                         else:
                             # Unexpected shape - try to handle it
                             print(f"  Warning: Unexpected shape {all_frames.shape} for {num_channels} channels")
@@ -580,18 +650,22 @@ def convert_nd2_to_tif(
                                 all_frames = all_frames.transpose(1, 0, 2, 3)
                                 print(f"  Transposed to TCYX, new shape: {all_frames.shape}")
                             if len(all_frames.shape) == 4 and all_frames.shape[1] == num_channels:
+                                fi_set = set(fi_channel_indices or [])
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]
                                     channel_name = channel_names[ch_idx]
-                                    output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                    if ch_idx in fi_set:
+                                        output_filename = f"{nd2_file.stem}_fi.tif" if len(fi_set) == 1 else f"{nd2_file.stem}_fi_{_sanitize_channel_name_for_filename(channel_name)}.tif"
+                                    else:
+                                        output_filename = f"{nd2_file.stem}_{channel_name}.tif"
                                     output_path = output_dir / output_filename
-                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name}")
-                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
+                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} -> {output_filename}")
+                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
                             else:
                                 # Fallback: save as single file
                                 output_filename = nd2_file.stem + '.tif'
                                 output_path = output_dir / output_filename
-                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
+                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
                     else:
                         # Save as single OME-TIFF file with all channels
                         output_filename = nd2_file.stem + '.tif'
@@ -603,7 +677,8 @@ def convert_nd2_to_tif(
                             frames_to_extract,
                             num_channels,
                             channel_names,
-                            pixel_size=extracted_pixel_size
+                            pixel_size=extracted_pixel_size,
+                            time_per_frame_min=extracted_time_per_frame
                         )
                 else:
                     # Single channel (either only one channel, or specific channel selected)
@@ -622,7 +697,7 @@ def convert_nd2_to_tif(
                         ch_idx = 0 if channel_index is None else channel_index
                         all_frames = all_frames[:, ch_idx, :, :]  # TYX
                     
-                    _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size)
+                    _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
             
         except Exception as e:
             print(f"  ✗ Error processing {nd2_file.name}: {e}")
@@ -640,6 +715,7 @@ def _save_multichannel_tiff_with_metadata(
     num_channels: int,
     channel_names: list,
     pixel_size: Optional[float] = None,
+    time_per_frame_min: Optional[float] = None,
 ) -> None:
     """
     Save multi-channel time series as TIFF with proper metadata.
@@ -684,10 +760,15 @@ def _save_multichannel_tiff_with_metadata(
     # Save as OME-TIFF with TCYX structure
     # Note: This will create T*C pages, but OME metadata tells software how to interpret it
     metadata = {'axes': 'TCYX'}  # Time, Channel, Y, X
-    if pixel_size is not None:
-        metadata['pixelSize'] = pixel_size
+    if pixel_size is not None and float(pixel_size) > 0:
+        ps = float(pixel_size)
+        metadata['pixelSize'] = ps
         metadata['unit'] = 'um'  # Use 'um' instead of 'µm' for ASCII compatibility
-        print(f"    Saving pixel size: {pixel_size:.4f} µm")
+        print(f"    Saving pixel size: {ps:.4f} µm")
+    if time_per_frame_min is not None and float(time_per_frame_min) > 0:
+        tp_min = float(time_per_frame_min)
+        metadata['finterval'] = tp_min * 60.0  # seconds for ImageJ
+        print(f"    Saving time per frame: {tp_min:.4f} min ({tp_min * 60:.1f} s)")
     
     tifffile.imwrite(
         str(output_path),
@@ -702,15 +783,22 @@ def _save_multichannel_tiff_with_metadata(
     print(f"      Software like ImageJ/Fiji and ilastik will interpret this as {num_frames} timepoints with {num_channels} channels each")
 
 
-def _save_tiff_with_metadata(output_path: Path, frames: np.ndarray, num_frames: int, pixel_size: Optional[float] = None) -> None:
+def _save_tiff_with_metadata(
+    output_path: Path,
+    frames: np.ndarray,
+    num_frames: int,
+    pixel_size: Optional[float] = None,
+    time_per_frame_min: Optional[float] = None,
+) -> None:
     """
-    Save frames as TIFF with proper time dimension metadata and pixel size.
+    Save frames as TIFF with proper time dimension metadata, pixel size, and time per frame.
     
     Args:
         output_path: Path to output file
         frames: Array of frames (should be TYX or YX)
         num_frames: Number of time frames
         pixel_size: Pixel size in µm (optional, will be saved in metadata)
+        time_per_frame_min: Time per frame in minutes (optional, saved as finterval for tracking/speed)
     """
     # Check if frames array is empty
     if frames.size == 0:
@@ -758,20 +846,35 @@ def _save_tiff_with_metadata(output_path: Path, frames: np.ndarray, num_frames: 
         'mode': 'grayscale',
     }
     
-    # Add pixel size to metadata if available
+    # Add pixel size and time per frame to metadata if available (coerce to float for consistent TIFF tags)
     # Note: Use 'um' instead of 'µm' because ImageJ metadata requires ASCII encoding
-    if pixel_size is not None:
-        metadata['pixelSize'] = pixel_size
+    # ImageJ expects finterval in seconds (so "Frame interval: X sec" displays correctly)
+    resolution = None
+    if pixel_size is not None and float(pixel_size) > 0:
+        ps = float(pixel_size)
+        metadata['pixelSize'] = ps
         metadata['unit'] = 'um'  # Use 'um' instead of 'µm' for ASCII compatibility
-        print(f"    Saving pixel size: {pixel_size:.4f} µm")
+        # TIFF Resolution tags (pixels per cm) so ImageJ/Fiji get scale even without parsing ImageDescription
+        resolution = (1e4 / ps, 1e4 / ps)  # 1e4 µm = 1 cm
+        print(f"    Saving pixel size: {ps:.4f} µm")
+    if time_per_frame_min is not None and float(time_per_frame_min) > 0:
+        tp_min = float(time_per_frame_min)
+        metadata['finterval'] = tp_min * 60.0  # seconds for ImageJ
+        print(f"    Saving time per frame: {tp_min:.4f} min ({tp_min * 60:.1f} s)")
     
     try:
-        tifffile.imwrite(
-            str(output_path),
-            frames,
+        imwrite_kw = dict(
             photometric='minisblack',
             metadata=metadata,
             imagej=True,
+        )
+        if resolution is not None:
+            imwrite_kw['resolution'] = resolution
+            imwrite_kw['resolutionunit'] = 3  # RESUNIT_CENTIMETER
+        tifffile.imwrite(
+            str(output_path),
+            frames,
+            **imwrite_kw,
         )
         
         # Verify the file was written correctly
@@ -802,7 +905,7 @@ def main() -> None:
         '-o', '--output',
         type=str,
         default=None,
-        help='Output directory (default: creates "Tif_1-150" folder in input directory)'
+        help='Output directory (default: "Tif_files" in input directory, reused if it exists)'
     )
     parser.add_argument(
         '-f', '--frames',
@@ -853,10 +956,25 @@ def main() -> None:
         help='Channel indices (0-based) to apply bleach correction to. If omitted and --bleach-correct is set, all channels are corrected. Example: --bleach-channels 0 2'
     )
     parser.add_argument(
+        '--fi-channels',
+        type=int,
+        nargs='*',
+        default=None,
+        metavar='N',
+        help='Channel indices (0-based) to save with _fi in filename (e.g. stem_fi.tif) for Analyze Masks batch FI pairing. Example: --fi-channels 1'
+    )
+    parser.add_argument(
         '--pixel-size',
         type=float,
         default=None,
         help='Pixel size in µm to save in TIFF metadata (if not provided, will try to extract from ND2)'
+    )
+    parser.add_argument(
+        '--time-per-frame',
+        type=float,
+        default=None,
+        metavar='MIN',
+        help='Time per frame in minutes to save in TIFF metadata (finterval). If not provided, will try to extract from ND2 experiment loops.'
     )
     parser.add_argument(
         '--max-z-projection',
@@ -881,7 +999,9 @@ def main() -> None:
             bleach_method=args.bleach_method,
             bleach_channel_indices=args.bleach_channels,
             pixel_size=args.pixel_size,
+            time_per_frame_min=args.time_per_frame,
             max_z_projection=args.max_z_projection,
+            fi_channel_indices=args.fi_channels,
         )
     except Exception as e:
         print(f"Error: {e}")

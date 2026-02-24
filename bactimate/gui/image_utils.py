@@ -11,6 +11,9 @@ from PyQt6.QtGui import QImage, QPixmap
 # Max dimension for preview (avoids huge overlays and slow QPixmap/paint)
 PREVIEW_MAX_SIZE = 2048
 
+# Max dimension for running segmentation in preview (speeds up model.eval(); mask is upscaled back)
+PREVIEW_SEG_MAX_SIZE = 1024  # Downsampling uses fast slicing; 1024 keeps preview quality reasonable
+
 
 def _to_uint8(image: np.ndarray) -> np.ndarray:
     """Normalize array to uint8 in [0, 255]. Handles 2D (grayscale) and 3D (H, W, C)."""
@@ -116,6 +119,54 @@ def _scale_with_sampling(
         scaled_image = image[::sy, ::sx, :].astype(np.float64)
     scaled_mask = mask[::sy, ::sx]
     return scaled_image, scaled_mask
+
+
+def downsample_for_preview_seg(
+    image: np.ndarray,
+    max_size: int = PREVIEW_SEG_MAX_SIZE,
+) -> Tuple[np.ndarray, float, Tuple[int, int]]:
+    """
+    Downsample image so longest side is at most max_size, for fast preview segmentation.
+    Uses integer-step slicing (no scipy.zoom) so it stays fast on large images (e.g. 2048x2048).
+    Returns (downsampled_image, scale_factor, (original_h, original_w)).
+    scale_factor = actual new_size / original_size.
+    """
+    h, w = image.shape[:2]
+    if max(h, w) <= max_size:
+        return image, 1.0, (h, w)
+    scale = max_size / max(h, w)
+    new_h = max(1, int(round(h * scale)))
+    new_w = max(1, int(round(w * scale)))
+    sy = max(1, h // new_h)
+    sx = max(1, w // new_w)
+    if image.ndim == 2:
+        small = np.ascontiguousarray(image[::sy, ::sx].astype(np.float32))
+    else:
+        small = np.ascontiguousarray(image[::sy, ::sx, :].astype(np.float32))
+    actual_h, actual_w = small.shape[0], small.shape[1]
+    actual_scale = (actual_h / h, actual_w / w)
+    scale = (actual_scale[0] + actual_scale[1]) / 2.0
+    return small, scale, (h, w)
+
+
+def upsample_mask_to_shape(
+    mask: np.ndarray,
+    target_h: int,
+    target_w: int,
+) -> np.ndarray:
+    """Upsample integer mask to target shape (nearest-neighbor to keep labels)."""
+    h, w = mask.shape[:2]
+    if h == target_h and w == target_w:
+        return mask
+    try:
+        from scipy.ndimage import zoom
+        out = zoom(mask.astype(np.float64), (target_h / h, target_w / w), order=0)
+        return out.astype(mask.dtype)
+    except ImportError:
+        # Fallback: repeat indices (nearest)
+        y = np.linspace(0, h - 1, target_h).astype(np.intp)
+        x = np.linspace(0, w - 1, target_w).astype(np.intp)
+        return mask[np.ix_(y, x)]
 
 
 def scale_for_preview(

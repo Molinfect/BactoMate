@@ -569,23 +569,37 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
     return masks
 
 
-def concatenate_masks(masks, output_path):
+def concatenate_masks(masks, output_path, source_image_path=None):
     """
     Concatenate individual masks into a single multipage TIFF.
-    
+    If source_image_path is provided, copies pixel size and time-per-frame metadata from the source image.
+
     Parameters:
     -----------
     masks : list
         List of mask arrays
     output_path : str
         Path to save concatenated masks
+    source_image_path : str or pathlib.Path, optional
+        Path to the source image TIFF for metadata transfer
     """
     print(f"\nConcatenating {len(masks)} masks...")
     masks_array = np.stack(masks, axis=0)
     print(f"Mask sequence shape: {masks_array.shape}")
-    
+
     print(f"Saving to: {output_path}")
-    tifffile.imwrite(output_path, masks_array.astype(np.uint16))
+    meta = None
+    try:
+        from bactimate.tiff_metadata import build_metadata_dict_for_mask_from_source
+        from pathlib import Path
+        src = Path(source_image_path) if source_image_path else None
+        meta = build_metadata_dict_for_mask_from_source(src, num_frames=len(masks))
+    except Exception:
+        pass
+    if meta:
+        tifffile.imwrite(output_path, masks_array.astype(np.uint16), metadata=meta, imagej=True)
+    else:
+        tifffile.imwrite(output_path, masks_array.astype(np.uint16))
     print("✓ Masks saved")
 
 
@@ -933,10 +947,12 @@ Examples:
         
         # Step 3: Concatenate masks
         masks_output = os.path.join(output_dir, f"{Path(args.input).stem}_masks.tif")
-        concatenate_masks(masks, masks_output)
+        concatenate_masks(masks, masks_output, source_image_path=args.input)
         
-        # Step 4: Create overlay (optional)
+        # Step 4: Create overlay (optional) in subfolder so segmentation folder has only masks for Analyze Masks
         if not args.no_overlay:
+            overlay_dir = os.path.join(output_dir, "overlays")
+            os.makedirs(overlay_dir, exist_ok=True)
             # Reload original images for overlay
             images = safe_imread(args.input)
             # Handle different formats
@@ -951,7 +967,7 @@ Examples:
                 elif images.shape[0] < 10:
                     images = images.transpose(1, 0, 2, 3)
             
-            overlay_output = os.path.join(output_dir, f"{Path(args.input).stem}_overlay.tif")
+            overlay_output = os.path.join(overlay_dir, f"{Path(args.input).stem}_overlay.tif")
             overlay_masks_on_images(images, masks, overlay_output)
         
         print(f"\n{'='*60}")

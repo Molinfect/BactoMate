@@ -1,14 +1,35 @@
 """
 Background workers for long-running tasks (subprocess runner, tracking, growth curve video, SAM2).
 """
+import logging
 import os
 import subprocess
 import sys
+import threading
+import time
 import traceback
+from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactimate.gui.log_config import get_logger, log_exception
+
+
+class _TrackingLogHandler(logging.Handler):
+    """Forwards log records to a TrackingWorker's progress signal so the GUI log shows trackastra status."""
+
+    def __init__(self, worker, progress_pct: int):
+        super().__init__(level=logging.INFO)
+        self._worker = worker
+        self._progress_pct = progress_pct
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage().strip()
+            if msg:
+                self._worker.progress.emit(self._progress_pct, msg)
+        except Exception:
+            pass
 
 
 class WorkerThread(QThread):
@@ -39,11 +60,23 @@ class WorkerThread(QThread):
         return ansi_escape.sub("", text)
 
     @staticmethod
-    def is_tqdm_progress_line(text: str) -> bool:
-        """Check if a line is a tqdm progress bar (e.g. '12%|#2        | 4/32')."""
+    def strip_log_prefix(text: str) -> str:
+        """Strip timestamp and [INFO]/[DEBUG] prefix so tqdm/progress detection and display fit in one line."""
         import re
-        tqdm_pattern = re.compile(r"^\s*\d+%\s*\|[#\s]+\|\s*\d+/\d+\s*\[.*\]\s*$")
-        return bool(tqdm_pattern.match(text.strip()))
+        s = text.strip()
+        s = re.sub(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\s+\[(?:INFO|DEBUG|WARNING|ERROR)\]\s*", "", s)
+        s = re.sub(r"^\[(?:INFO|DEBUG|WARNING|ERROR)\]\s*", "", s)
+        s = re.sub(r"^[\w.]+:(?:INFO|DEBUG|WARNING|ERROR):\s*", "", s)
+        s = re.sub(r"^line\s+\d+\s*[\t ]*", "", s)
+        return s.strip()
+
+    @staticmethod
+    def is_tqdm_progress_line(text: str) -> bool:
+        """Check if a line is a tqdm progress bar (e.g. '12%|#2        | 4/32' or after stripping log prefix)."""
+        import re
+        stripped = WorkerThread.strip_log_prefix(text)
+        tqdm_pattern = re.compile(r"^\d+%\s*\|[#\s]+\|\s*\d+/\d+\s*\[.*\]\s*$")
+        return bool(tqdm_pattern.match(stripped))
 
     def run(self) -> None:
         try:
@@ -74,10 +107,20 @@ class WorkerThread(QThread):
                 if line:
                     cleaned_line = self.strip_ansi_codes(line)
                     if self.is_tqdm_progress_line(cleaned_line):
+                        # Emit one short progress line so the status log fits in one line
+                        import re
+                        stripped = self.strip_log_prefix(cleaned_line)
+                        m = re.match(r"^(\d+)%\s*\|[#\s]+\|\s*(\d+)/(\d+)\s*\[([^\]]*)\]", stripped)
+                        if m:
+                            pct, cur, tot, rest = m.groups()
+                            eta = re.search(r"<(\d+):(\d+)", rest)
+                            short = f"  {pct}% ({cur}/{tot})  ETA {eta.group(1)}:{eta.group(2)}" if eta else f"  {pct}% ({cur}/{tot})"
+                            self.progress.emit(short + "\n")
                         continue
-                    if cleaned_line.strip():
+                    content = self.strip_log_prefix(cleaned_line) or cleaned_line.strip()
+                    if content:
                         output_lines.append(cleaned_line)
-                        self.progress.emit(cleaned_line)
+                        self.progress.emit(content + "\n")
 
             process.wait()
             self._process = None
@@ -98,7 +141,7 @@ class TrackingWorker(QThread):
     finished = pyqtSignal(bool, str)
     progress = pyqtSignal(int, str)  # progress percentage, status message
     
-    def __init__(self, mask_file, original_file, excel_file, model_name, mode, device, parent=None):
+    def __init__(self, mask_file, original_file, excel_file, model_name, mode, device, parent=None, output_dir=None):
         super().__init__(parent)
         self.mask_file = mask_file
         self.original_file = original_file
@@ -106,6 +149,7 @@ class TrackingWorker(QThread):
         self.model_name = model_name
         self.mode = mode
         self.device = device
+        self.output_dir = Path(output_dir) if output_dir else None
 
     def run(self) -> None:
         # Initialize debug output list
@@ -113,11 +157,14 @@ class TrackingWorker(QThread):
         debug_output.append("=== Tracking Debug Information ===")
         
         try:
+            # NumPy 2.0+ removed np.bool; geff (trackastra dependency) still uses it in typing
+            import numpy as np
+            if not hasattr(np, "bool"):
+                np.bool = np.bool_
             from trackastra.model import Trackastra
             from trackastra.tracking import graph_to_edge_table, graph_to_ctc, graph_to_napari_tracks
             import tifffile
             import pandas as pd
-            import numpy as np
             from pathlib import Path
             import networkx as nx
             
@@ -254,10 +301,43 @@ class TrackingWorker(QThread):
             # Initialize trackid_to_cellid mapping (will be set if Excel file is provided)
             trackid_to_cellid = None
             
+            # Forward trackastra logging (Extracting features, Building windows, etc.) to GUI status log
+            trackastra_logger = logging.getLogger("trackastra")
+            log_handler = _TrackingLogHandler(self, 55)
+            trackastra_logger.addHandler(log_handler)
             try:
-                self.progress.emit(55, "Running tracking algorithm...")
+                self.progress.emit(
+                    55,
+                    "Running tracking algorithm (feature extraction & linking — this may take several minutes, please wait)..."
+                )
                 debug_output.append("Calling model.track()...")
-                track_graph, masks_tracked = model.track(imgs, masks, mode=self.mode)
+                # Run model.track() in a background thread so we can emit "still running" updates
+                result_holder = [None, None, None]  # track_graph, masks_tracked, exception
+                def run_track():
+                    try:
+                        g, m = model.track(imgs, masks, mode=self.mode)
+                        result_holder[0], result_holder[1] = g, m
+                    except Exception as e:
+                        result_holder[2] = e
+                tracking_thread = threading.Thread(target=run_track, daemon=False)
+                tracking_thread.start()
+                elapsed_sec = 0
+                update_interval_sec = 15
+                while tracking_thread.is_alive():
+                    time.sleep(update_interval_sec)
+                    elapsed_sec += update_interval_sec
+                    if elapsed_sec < 60:
+                        time_str = f"{elapsed_sec} s"
+                    else:
+                        time_str = f"{elapsed_sec // 60} min"
+                    self.progress.emit(
+                        55,
+                        f"Still running… ({time_str}) — feature extraction and linking can take several minutes"
+                    )
+                tracking_thread.join()
+                if result_holder[2] is not None:
+                    raise result_holder[2]
+                track_graph, masks_tracked = result_holder[0], result_holder[1]
                 debug_output.append("✓ Tracking completed successfully")
                 self.progress.emit(70, "Tracking completed, processing results...")
                 
@@ -338,17 +418,26 @@ class TrackingWorker(QThread):
                 
                 self.finished.emit(False, error_msg)
                 return
+            finally:
+                trackastra_logger.removeHandler(log_handler)
             
             # Save tracking results
-            # Determine base directory (go up one level if input is in Tif_*, _segmentation, or _analysis folder)
             mask_path = Path(self.mask_file)
-            base_dir = mask_path.parent
-            if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name or '_analysis' in base_dir.name:
-                base_dir = base_dir.parent
-            
-            # Create output directory at base level with _tracking suffix
-            output_dir = base_dir / f"{mask_path.stem}_tracking"
-            output_dir.mkdir(exist_ok=True)
+            if self.output_dir is not None:
+                output_dir = self.output_dir
+            else:
+                # Fallback: determine base directory (go up one level if in Tif_*, _segmentation, or _analysis)
+                base_dir = mask_path.parent
+                if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name or base_dir.name == '_analysis':
+                    base_dir = base_dir.parent
+                output_dir = base_dir / "_tracking" / f"{mask_path.stem}_tracking"
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Read calibration from original or mask TIFF so we can preserve it in written TIFFs
+            from bactimate.tiff_metadata import read_calibration_from_path, build_metadata_dict
+            _cal_path = Path(self.original_file) if self.original_file else (Path(self.mask_file) if self.mask_file else None)
+            self._cal_ps, self._cal_tp = read_calibration_from_path(_cal_path)
             
             # Extract track information from the graph
             self.progress.emit(75, "Extracting track information...")
@@ -420,7 +509,7 @@ class TrackingWorker(QThread):
                         debug_output.append(f"✗ All extraction methods failed: {str(e2)}")
                         tracks_df = pd.DataFrame(columns=['track_id', 'frame', 'y', 'x'])
             
-            # Update tracks_df with analysis CellIDs if mapping was created
+            # Add analysis Cell_ID when we have an Excel from Analyze Masks (Omnipose/U-Net → Analyze Masks → Excel in _analysis)
             if trackid_to_cellid is not None and len(trackid_to_cellid) > 0:
                 if 'track_id' in tracks_df.columns:
                     tracks_df['Cell_ID'] = tracks_df['track_id'].map(trackid_to_cellid)
@@ -438,7 +527,8 @@ class TrackingWorker(QThread):
                     debug_output.append(f"  - Unique Cell IDs: {tracks_df['Cell_ID'].nunique()}")
                 debug_output.append(f"  - Frame range: {tracks_df['frame'].min() if 'frame' in tracks_df.columns else 'N/A'} to {tracks_df['frame'].max() if 'frame' in tracks_df.columns else 'N/A'}")
             
-            # Save tracks as CSV
+            # Save tracks as CSV: track_id, frame, y, x (and Cell_ID if analysis Excel was used).
+            # y,x come from Trackastra's track graph (centroid-like node positions; napari format or node centroid_y/x).
             self.progress.emit(80, "Saving tracks...")
             tracks_file = output_dir / f"{Path(self.mask_file).stem}_tracks.csv"
             tracks_df.to_csv(tracks_file, index=False)
@@ -450,39 +540,57 @@ class TrackingWorker(QThread):
             debug_output.append(f"\nSaving tracked masks...")
             debug_output.append(f"  - Shape: {masks_tracked.shape}")
             debug_output.append(f"  - Unique labels per frame: {[len(np.unique(masks_tracked[i])) for i in range(min(5, masks_tracked.shape[0]))]}")
-            tifffile.imwrite(str(masks_tracked_file), masks_tracked)
+            T = masks_tracked.shape[0]
+            _meta = build_metadata_dict(
+                pixel_size_um=self._cal_ps if self._cal_ps > 0 else None,
+                time_per_frame_min=self._cal_tp if self._cal_tp > 0 else None,
+                images=T, frames=T,
+            )
+            tifffile.imwrite(str(masks_tracked_file), masks_tracked, metadata=_meta, imagej=True)
             debug_output.append(f"✓ Saved tracked masks to: {masks_tracked_file}")
             
             # Create overlay with track IDs (consistent CellIDs across all outputs)
+            overlay_array = None
             if self.original_file:
                 self.progress.emit(87, "Creating overlay with track IDs...")
                 debug_output.append("\nCreating overlay with track IDs...")
                 try:
                     overlay_file = output_dir / f"{Path(self.mask_file).stem}_overlay_tracked.tif"
-                    self._create_overlay_with_track_ids(imgs, masks_tracked, overlay_file)
+                    def overlay_progress(frame_idx, total, _msg=None):
+                        pct = 87 + int((frame_idx + 1) / max(total, 1) * 2)  # 87–89%
+                        msg = f"Creating overlay: {frame_idx + 1}/{total}"
+                        self.progress.emit(pct, msg)
+                    overlay_array = self._create_overlay_with_track_ids(
+                        imgs, masks_tracked, overlay_file, progress_callback=overlay_progress
+                    )
                     debug_output.append(f"✓ Saved tracked overlay to: {overlay_file}")
                 except Exception as e:
                     import traceback
                     debug_output.append(f"⚠ Could not create tracked overlay: {str(e)}")
                     debug_output.append(f"  {traceback.format_exc()}")
             
-            # Create visualization with trajectories overlaid on original images
+            # Create visualization with trajectories overlaid (use overlay as base when available — much faster)
             if self.original_file:
                 self.progress.emit(90, "Creating trajectory visualization...")
                 debug_output.append("\nCreating trajectory visualization...")
-                debug_output.append("  (This may take a while for large datasets - optimizing...)")
+                if overlay_array is not None:
+                    debug_output.append("  (Using overlay as base — drawing trajectories only.)")
+                else:
+                    debug_output.append("  (This may take a while for large datasets - optimizing...)")
                 try:
                     vis_file = output_dir / f"{Path(self.mask_file).stem}_trajectories.tif"
-                    # Pass progress callback to visualization function
                     def progress_callback(pct, msg):
                         self.progress.emit(pct, msg)
-                    # Create visualization (with optimizations: compressed TIFF, faster line drawing)
-                    self._create_trajectory_visualization(imgs, masks_tracked, tracks_df, vis_file, progress_callback)
+                    self._create_trajectory_visualization(
+                        imgs, masks_tracked, tracks_df, vis_file, progress_callback,
+                        overlay_frames=overlay_array,
+                    )
                     debug_output.append(f"✓ Saved trajectory visualization to: {vis_file}")
                 except Exception as e:
                     import traceback
                     debug_output.append(f"⚠ Could not create trajectory visualization: {str(e)}")
                     debug_output.append(f"  {traceback.format_exc()}")
+                    self.progress.emit(96, f"WARNING: Trajectory file was not created: {e}")
             
             # Save in CTC format (Cell Tracking Challenge format)
             try:
@@ -525,7 +633,15 @@ class TrackingWorker(QThread):
             debug_output.append(f"\n✗ Import error: {str(e)}")
             error_msg = f"trackastra is not installed or import failed: {str(e)}\n\n"
             error_msg += "Debug information:\n" + "\n".join(debug_output)
-            error_msg += "\n\nPlease install it with: pip install trackastra"
+            err_str = str(e).lower()
+            if "cbuffer_sizes" in err_str and "numcodecs" in err_str:
+                error_msg += (
+                    "\n\nThis is a known numcodecs/zarr compatibility issue. Try one of:\n"
+                    "  1. Force-reinstall numcodecs:  pip install --force-reinstall numcodecs==0.15.1\n"
+                    "  2. Or use zarr 3 (no cbuffer_sizes):  pip install 'zarr>=3.0'\n"
+                )
+            else:
+                error_msg += "\n\nPlease install trackastra: pip install trackastra"
             self.finished.emit(False, error_msg)
         except Exception as e:
             log_exception(get_logger(), "TrackingWorker.run failed")
@@ -895,8 +1011,9 @@ class TrackingWorker(QThread):
         
         return merged
     
-    def _create_trajectory_visualization(self, images, masks_tracked, tracks_df, output_path, progress_callback=None):
-        """Create visualization showing original images with tracked cell IDs and trajectories"""
+    def _create_trajectory_visualization(self, images, masks_tracked, tracks_df, output_path, progress_callback=None, overlay_frames=None):
+        """Create visualization showing original images with tracked cell IDs and trajectories.
+        If overlay_frames is provided (T, H, W, 3), use it as base and only draw trajectories — much faster."""
         import numpy as np
         import matplotlib.pyplot as plt
         from matplotlib.colors import ListedColormap
@@ -904,50 +1021,46 @@ class TrackingWorker(QThread):
         from scipy.ndimage import label, binary_dilation
         import tifffile
         
-        # Use progress callback if provided, otherwise check for attribute
         if progress_callback is None and hasattr(self, '_progress_callback'):
             progress_callback = self._progress_callback
         
         debug_output = []
         debug_output.append("Creating trajectory visualization...")
+        use_overlay_base = overlay_frames is not None and overlay_frames.ndim == 4
         
-        num_frames = images.shape[0]
-        height, width = images.shape[1], images.shape[2]
+        if use_overlay_base:
+            num_frames, height, width = overlay_frames.shape[0], overlay_frames.shape[1], overlay_frames.shape[2]
+            debug_output.append("  - Using overlay as base (trajectories only)")
+        else:
+            num_frames = images.shape[0]
+            height, width = images.shape[1], images.shape[2]
+            if progress_callback:
+                progress_callback(91, "Normalizing images...")
+            img_min = images.min(axis=(1, 2), keepdims=True)
+            img_max = images.max(axis=(1, 2), keepdims=True)
+            img_range = img_max - img_min
+            img_range[img_range == 0] = 1
+            images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
         
-        # Normalize images for display (vectorized for speed)
-        if progress_callback:
-            progress_callback(91, "Normalizing images...")
-        
-        # Vectorized normalization across all frames
-        img_min = images.min(axis=(1, 2), keepdims=True)
-        img_max = images.max(axis=(1, 2), keepdims=True)
-        # Avoid division by zero
-        img_range = img_max - img_min
-        img_range[img_range == 0] = 1  # Avoid division by zero
-        images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
-        
-        # Get unique track IDs
+        # Get unique track IDs and colormap
         if 'track_id' in tracks_df.columns:
             unique_tracks = tracks_df['track_id'].unique()
             num_tracks = len(unique_tracks)
             debug_output.append(f"  - Found {num_tracks} unique tracks")
         else:
             unique_tracks = np.unique(masks_tracked)
-            unique_tracks = unique_tracks[unique_tracks > 0]  # Remove background
+            unique_tracks = unique_tracks[unique_tracks > 0]
             num_tracks = len(unique_tracks)
             debug_output.append(f"  - Found {num_tracks} unique track IDs in masks")
         
-        # Generate colormap for tracks
         cmap = plt.get_cmap('gist_ncar')
         track_colors = {}
         for i, track_id in enumerate(unique_tracks):
             color = cmap(i / max(num_tracks, 1))
             track_colors[int(track_id)] = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
         
-        # Create RGB visualization
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
         
-        # Group tracks by frame for trajectory drawing
         if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns:
             tracks_by_frame = {}
             for _, row in tracks_df.iterrows():
@@ -962,195 +1075,217 @@ class TrackingWorker(QThread):
                 tracks_by_frame[frame][track_id].append((y, x))
         
         for frame_idx in range(num_frames):
-            # Update progress if we have a callback
-            if progress_callback:
-                progress_pct = int(90 + (frame_idx / num_frames) * 10)  # 90-100%
-                progress_callback(progress_pct, f"Creating visualization: {frame_idx + 1}/{num_frames} ({progress_pct}%)")
-            
-            # Start with normalized image as grayscale RGB
-            img = images_norm[frame_idx]
-            vis_frame = np.stack([img, img, img], axis=-1)
-            
-            # Overlay tracked masks with colors
-            mask_frame = masks_tracked[frame_idx]
-            for track_id in unique_tracks:
-                track_id_int = int(track_id)
-                if track_id_int in track_colors:
-                    color = track_colors[track_id_int]
-                    mask_region = (mask_frame == track_id_int)
-                    vis_frame[mask_region, 0] = np.clip(vis_frame[mask_region, 0] * 0.5 + color[0] * 0.5, 0, 255)
-                    vis_frame[mask_region, 1] = np.clip(vis_frame[mask_region, 1] * 0.5 + color[1] * 0.5, 0, 255)
-                    vis_frame[mask_region, 2] = np.clip(vis_frame[mask_region, 2] * 0.5 + color[2] * 0.5, 0, 255)
-            
-            # Draw trajectories up to current frame (only for tracks visible in this frame)
-            # Pre-filter tracks to only those present in current frame for speed
-            if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns:
-                # Get tracks that have points up to current frame
-                tracks_in_frame = tracks_df[
-                    (tracks_df['frame'] <= frame_idx) & 
-                    (tracks_df['track_id'].isin(unique_tracks))
-                ]['track_id'].unique()
+            try:
+                if progress_callback:
+                    progress_pct = int(90 + (frame_idx / num_frames) * 10)
+                    progress_callback(progress_pct, f"Creating visualization: {frame_idx + 1}/{num_frames} ({progress_pct}%)")
                 
-                for track_id_int in tracks_in_frame:
-                    track_id_int = int(track_id_int)
-                    if track_id_int not in track_colors:
-                        continue
+                if use_overlay_base:
+                    vis_frame = np.ascontiguousarray(overlay_frames[frame_idx].copy())
+                else:
+                    img = images_norm[frame_idx]
+                    vis_frame = np.stack([img, img, img], axis=-1)
+                    mask_frame = masks_tracked[frame_idx]
+                    for track_id in unique_tracks:
+                        track_id_int = int(track_id)
+                        if track_id_int in track_colors:
+                            color = track_colors[track_id_int]
+                            mask_region = (mask_frame == track_id_int)
+                            vis_frame[mask_region, 0] = np.clip(vis_frame[mask_region, 0] * 0.5 + color[0] * 0.5, 0, 255)
+                            vis_frame[mask_region, 1] = np.clip(vis_frame[mask_region, 1] * 0.5 + color[1] * 0.5, 0, 255)
+                            vis_frame[mask_region, 2] = np.clip(vis_frame[mask_region, 2] * 0.5 + color[2] * 0.5, 0, 255)
+                
+                # Draw trajectories up to current frame (only for tracks visible in this frame)
+                # Pre-filter tracks to only those present in current frame for speed
+                if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns and 'y' in tracks_df.columns and 'x' in tracks_df.columns:
+                    # Get tracks that have points up to current frame
+                    tracks_in_frame = tracks_df[
+                        (tracks_df['frame'] <= frame_idx) & 
+                        (tracks_df['track_id'].isin(unique_tracks))
+                    ]['track_id'].unique()
                     
-                    # Get all points for this track up to current frame
-                    track_points = tracks_df[
-                        (tracks_df['track_id'] == track_id_int) & 
-                        (tracks_df['frame'] <= frame_idx)
-                    ]
-                    
-                    if len(track_points) > 1:
-                        color = track_colors[track_id_int]
-                        # Draw lines connecting consecutive points using vectorized operations
-                        points = track_points[['y', 'x']].values.astype(int)
-                        # Clip points to valid bounds
-                        points[:, 0] = np.clip(points[:, 0], 0, height - 1)
-                        points[:, 1] = np.clip(points[:, 1], 0, width - 1)
+                    for track_id_int in tracks_in_frame:
+                        track_id_int = int(track_id_int)
+                        if track_id_int not in track_colors:
+                            continue
                         
-                        # Draw lines between consecutive points using optimized approach
-                        # For speed, we'll draw lines more efficiently
-                        for i in range(len(points) - 1):
-                            y1, x1 = points[i]
-                            y2, x2 = points[i + 1]
+                        # Get all points for this track up to current frame
+                        track_points = tracks_df[
+                            (tracks_df['track_id'] == track_id_int) & 
+                            (tracks_df['frame'] <= frame_idx)
+                        ]
+                        
+                        if len(track_points) > 1:
+                            color = track_colors[track_id_int]
+                            # Draw lines connecting consecutive points using vectorized operations
+                            points = track_points[['y', 'x']].values.astype(int)
+                            # Clip points to valid bounds
+                            points[:, 0] = np.clip(points[:, 0], 0, height - 1)
+                            points[:, 1] = np.clip(points[:, 1], 0, width - 1)
                             
-                            # Calculate line length
-                            dy = abs(y2 - y1)
-                            dx = abs(x2 - x1)
-                            
-                            if dx == 0 and dy == 0:
-                                continue
-                            
-                            # Optimize: Use fewer points for long lines (subsample)
-                            max_steps = max(dx, dy)
-                            # For very long lines, subsample more aggressively
-                            if max_steps > 200:
-                                step_size = max(1, max_steps // 200)  # Very aggressive subsampling
-                            elif max_steps > 50:
-                                step_size = max(1, max_steps // 50)  # Moderate subsampling
-                            else:
-                                step_size = 1  # Full resolution for short lines
-                            
-                            num_steps = max_steps // step_size + 1
-                            
-                            # Generate line points using numpy (much faster than loops)
-                            if dx > dy:
-                                # Horizontal line
-                                x_coords = np.linspace(x1, x2, num_steps, dtype=int)
-                                y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
-                            else:
-                                # Vertical line
-                                y_coords = np.linspace(y1, y2, num_steps, dtype=int)
-                                x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
-                            
-                            # Clip coordinates
-                            y_coords = np.clip(y_coords, 1, height - 2)  # Keep 1 pixel margin for 3x3 drawing
-                            x_coords = np.clip(x_coords, 1, width - 2)
-                            
-                            # Draw thick line using vectorized operations (batch process all points)
-                            # Use advanced indexing for speed
-                            for y, x in zip(y_coords, x_coords):
-                                # Direct assignment is faster than clipping each time
-                                y_start, y_end = y - 1, y + 2
-                                x_start, x_end = x - 1, x + 2
-                                vis_frame[y_start:y_end, x_start:x_end, 0] = (
-                                    vis_frame[y_start:y_end, x_start:x_end, 0] * 0.3 + color[0] * 0.7
-                                ).astype(np.uint8)
-                                vis_frame[y_start:y_end, x_start:x_end, 1] = (
-                                    vis_frame[y_start:y_end, x_start:x_end, 1] * 0.3 + color[1] * 0.7
-                                ).astype(np.uint8)
-                                vis_frame[y_start:y_end, x_start:x_end, 2] = (
-                                    vis_frame[y_start:y_end, x_start:x_end, 2] * 0.3 + color[2] * 0.7
-                                ).astype(np.uint8)
-                    
-                    # Draw track ID label and marker at current position
-                    current_track = track_points[track_points['frame'] == frame_idx]
-                    if len(current_track) > 0:
-                        y = int(current_track.iloc[0]['y'])
-                        x = int(current_track.iloc[0]['x'])
-                        if 0 <= y < height and 0 <= x < width:
-                            # Draw a more visible colored dot with white outline for contrast
-                            dot_size = 5  # Larger dot for better visibility
-                            outline_size = 2  # White outline thickness
-                            
-                            # Draw white outline first (for contrast against dark backgrounds)
-                            y_outline_start = max(0, y - dot_size - outline_size)
-                            y_outline_end = min(height, y + dot_size + outline_size + 1)
-                            x_outline_start = max(0, x - dot_size - outline_size)
-                            x_outline_end = min(width, x + dot_size + outline_size + 1)
-                            
-                            # Create outline mask (ring shape)
-                            yy, xx = np.ogrid[y_outline_start:y_outline_end, x_outline_start:x_outline_end]
-                            center_y, center_x = y - y_outline_start, x - x_outline_start
-                            dist_sq = (yy - center_y)**2 + (xx - center_x)**2
-                            outline_mask = (dist_sq <= (dot_size + outline_size)**2) & (dist_sq > dot_size**2)
-                            
-                            # Draw white outline
-                            vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][outline_mask] = [255, 255, 255]
-                            
-                            # Draw colored center dot
-                            dot_mask = dist_sq <= dot_size**2
-                            vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][dot_mask] = color
-                            
-                            # Try to add text label if PIL is available
-                            try:
-                                from PIL import Image, ImageDraw, ImageFont
-                                # Convert numpy array to PIL Image
-                                pil_img = Image.fromarray(vis_frame)
-                                draw = ImageDraw.Draw(pil_img)
+                            # Draw lines between consecutive points using optimized approach
+                            # For speed, we'll draw lines more efficiently
+                            for i in range(len(points) - 1):
+                                y1, x1 = points[i]
+                                y2, x2 = points[i + 1]
                                 
-                                # Try to use a nice font, fallback to default if not available
+                                # Calculate line length
+                                dy = abs(y2 - y1)
+                                dx = abs(x2 - x1)
+                                
+                                if dx == 0 and dy == 0:
+                                    continue
+                                
+                                # Optimize: Use fewer points for long lines (subsample)
+                                max_steps = max(dx, dy)
+                                # For very long lines, subsample more aggressively
+                                if max_steps > 200:
+                                    step_size = max(1, max_steps // 200)  # Very aggressive subsampling
+                                elif max_steps > 50:
+                                    step_size = max(1, max_steps // 50)  # Moderate subsampling
+                                else:
+                                    step_size = 1  # Full resolution for short lines
+                                
+                                num_steps = max_steps // step_size + 1
+                                
+                                # Generate line points using numpy (much faster than loops)
+                                if dx > dy:
+                                    # Horizontal line
+                                    x_coords = np.linspace(x1, x2, num_steps, dtype=int)
+                                    y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
+                                else:
+                                    # Vertical line
+                                    y_coords = np.linspace(y1, y2, num_steps, dtype=int)
+                                    x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
+                                
+                                # Clip coordinates
+                                y_coords = np.clip(y_coords, 1, height - 2)  # Keep 1 pixel margin for 3x3 drawing
+                                x_coords = np.clip(x_coords, 1, width - 2)
+                                
+                                # Draw thick line using vectorized operations (batch process all points)
+                                # Use advanced indexing for speed
+                                for y, x in zip(y_coords, x_coords):
+                                    # Direct assignment is faster than clipping each time
+                                    y_start, y_end = y - 1, y + 2
+                                    x_start, x_end = x - 1, x + 2
+                                    vis_frame[y_start:y_end, x_start:x_end, 0] = (
+                                        vis_frame[y_start:y_end, x_start:x_end, 0] * 0.3 + color[0] * 0.7
+                                    ).astype(np.uint8)
+                                    vis_frame[y_start:y_end, x_start:x_end, 1] = (
+                                        vis_frame[y_start:y_end, x_start:x_end, 1] * 0.3 + color[1] * 0.7
+                                    ).astype(np.uint8)
+                                    vis_frame[y_start:y_end, x_start:x_end, 2] = (
+                                        vis_frame[y_start:y_end, x_start:x_end, 2] * 0.3 + color[2] * 0.7
+                                    ).astype(np.uint8)
+                        
+                        # Draw track ID label and marker at current position
+                        current_track = track_points[track_points['frame'] == frame_idx]
+                        if len(current_track) > 0:
+                            y = int(current_track.iloc[0]['y'])
+                            x = int(current_track.iloc[0]['x'])
+                            if 0 <= y < height and 0 <= x < width:
+                                # Draw a more visible colored dot with white outline for contrast
+                                dot_size = 5  # Larger dot for better visibility
+                                outline_size = 2  # White outline thickness
+                                
+                                # Draw white outline first (for contrast against dark backgrounds)
+                                y_outline_start = max(0, y - dot_size - outline_size)
+                                y_outline_end = min(height, y + dot_size + outline_size + 1)
+                                x_outline_start = max(0, x - dot_size - outline_size)
+                                x_outline_end = min(width, x + dot_size + outline_size + 1)
+                                
+                                # Create outline mask (ring shape)
+                                yy, xx = np.ogrid[y_outline_start:y_outline_end, x_outline_start:x_outline_end]
+                                center_y, center_x = y - y_outline_start, x - x_outline_start
+                                dist_sq = (yy - center_y)**2 + (xx - center_x)**2
+                                outline_mask = (dist_sq <= (dot_size + outline_size)**2) & (dist_sq > dot_size**2)
+                                
+                                # Draw white outline
+                                vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][outline_mask] = [255, 255, 255]
+                                
+                                # Draw colored center dot
+                                dot_mask = dist_sq <= dot_size**2
+                                vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][dot_mask] = color
+                                
+                                # Try to add text label if PIL is available
                                 try:
-                                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
-                                except:
+                                    from PIL import Image, ImageDraw, ImageFont
+                                    # Convert numpy array to PIL Image
+                                    pil_img = Image.fromarray(vis_frame)
+                                    draw = ImageDraw.Draw(pil_img)
+                                    
+                                    # Try to use a nice font, fallback to default if not available
                                     try:
-                                        font = ImageFont.truetype("arial.ttf", 10)
+                                        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
                                     except:
-                                        font = ImageFont.load_default()
-                                
-                                # Draw track ID text with shadow for readability
-                                track_id_str = str(track_id_int)
-                                text_x, text_y = x + dot_size + outline_size + 2, y - 5
-                                
-                                # Draw text shadow (black)
-                                draw.text((text_x + 1, text_y + 1), track_id_str, fill=(0, 0, 0), font=font)
-                                # Draw text (white)
-                                draw.text((text_x, text_y), track_id_str, fill=(255, 255, 255), font=font)
-                                
-                                # Convert back to numpy array
-                                vis_frame = np.array(pil_img)
-                            except ImportError:
-                                # PIL not available, skip text rendering
-                                pass
-                            except Exception:
-                                # If text rendering fails for any reason, just continue without it
-                                pass
-            
-            visualization[frame_idx] = vis_frame
+                                        try:
+                                            font = ImageFont.truetype("arial.ttf", 10)
+                                        except:
+                                            font = ImageFont.load_default()
+                                    
+                                    # Draw track ID text with shadow for readability
+                                    track_id_str = str(track_id_int)
+                                    text_x, text_y = x + dot_size + outline_size + 2, y - 5
+                                    
+                                    # Draw text shadow (black)
+                                    draw.text((text_x + 1, text_y + 1), track_id_str, fill=(0, 0, 0), font=font)
+                                    # Draw text (white)
+                                    draw.text((text_x, text_y), track_id_str, fill=(255, 255, 255), font=font)
+                                    
+                                    # Convert back to numpy array
+                                    vis_frame = np.array(pil_img)
+                                except ImportError:
+                                    # PIL not available, skip text rendering
+                                    pass
+                                except Exception:
+                                    # If text rendering fails for any reason, just continue without it
+                                    pass
+                
+                visualization[frame_idx] = vis_frame
+            except Exception as e:
+                debug_output.append(f"  Frame {frame_idx}: trajectory drawing failed: {e}")
+                if use_overlay_base:
+                    vis_frame = np.ascontiguousarray(overlay_frames[frame_idx].copy())
+                else:
+                    img = images_norm[frame_idx]
+                    vis_frame = np.stack([img, img, img], axis=-1)
+                visualization[frame_idx] = vis_frame
         
         # Save visualization with compression for faster I/O
         # Use compression to reduce file size and write time
         if progress_callback:
             progress_callback(99, "Saving visualization file...")
         
+        T = visualization.shape[0]
+        meta = None
         try:
-            # Try saving with compression (faster for large files)
-            tifffile.imwrite(
-                str(output_path),
-                visualization,
-                compression='zlib'  # Use zlib compression
+            from bactimate.tiff_metadata import build_metadata_dict
+            ps = getattr(self, '_cal_ps', 0) or 0
+            tp = getattr(self, '_cal_tp', 0) or 0
+            # axes TYXC so metadata matches 4D shape (T, H, W, 3); avoids tifffile "axes do not match shape" warning
+            meta = build_metadata_dict(
+                pixel_size_um=ps if ps > 0 else None,
+                time_per_frame_min=tp if tp > 0 else None,
+                axes="TYXC",
+                images=T,
+                frames=T,
             )
+        except Exception:
+            pass
+        try:
+            if meta:
+                tifffile.imwrite(str(output_path), visualization, metadata=meta, compression='zlib')
+            else:
+                tifffile.imwrite(str(output_path), visualization, compression='zlib')
             debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (compressed)")
         except Exception as e:
-            # Fallback to uncompressed if compression fails
             debug_output.append(f"⚠ Compression failed, saving uncompressed: {str(e)}")
-            tifffile.imwrite(str(output_path), visualization)
+            tifffile.imwrite(str(output_path), visualization, metadata=meta if meta else {})
             debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (uncompressed)")
     
-    def _create_overlay_with_track_ids(self, images, masks_tracked, output_path):
-        """Create overlay visualization with track IDs as CellIDs (consistent with tracking visualization)"""
+    def _create_overlay_with_track_ids(self, images, masks_tracked, output_path, progress_callback=None):
+        """Create overlay visualization with track IDs as CellIDs (consistent with tracking visualization).
+        If progress_callback(frame_idx, total, msg) is given, it is called each frame and tqdm is disabled."""
         import numpy as np
         import matplotlib.pyplot as plt
         from tqdm import tqdm
@@ -1189,8 +1324,11 @@ class TrackingWorker(QThread):
         except ImportError:
             PIL_AVAILABLE = False
         
+        use_callback = callable(progress_callback)
         overlays = []
-        for frame_idx in tqdm(range(num_frames), desc="Creating tracked overlay"):
+        for frame_idx in tqdm(range(num_frames), desc="Creating tracked overlay", disable=use_callback):
+            if use_callback:
+                progress_callback(frame_idx, num_frames, "Creating overlay")
             img = images_norm[frame_idx]
             mask = masks_tracked[frame_idx]
             
@@ -1250,7 +1388,23 @@ class TrackingWorker(QThread):
             overlays.append(overlay)
         
         overlay_array = np.stack(overlays, axis=0)
-        tifffile.imwrite(str(output_path), overlay_array, compression='zlib')
+        T = overlay_array.shape[0]
+        try:
+            from bactimate.tiff_metadata import build_metadata_dict
+            ps = getattr(self, '_cal_ps', 0) or 0
+            tp = getattr(self, '_cal_tp', 0) or 0
+            # axes TYXC so metadata matches 4D RGB stack (T, H, W, 3); avoids tifffile "axes do not match shape" warning
+            meta = build_metadata_dict(
+                pixel_size_um=ps if ps > 0 else None,
+                time_per_frame_min=tp if tp > 0 else None,
+                axes="TYXC",
+                images=T,
+                frames=T,
+            )
+            tifffile.imwrite(str(output_path), overlay_array, metadata=meta, compression='zlib')
+        except Exception:
+            tifffile.imwrite(str(output_path), overlay_array, compression='zlib')
+        return overlay_array
 
 
 class GrowthCurveVideoWorker(QThread):
@@ -1954,7 +2108,16 @@ class SAM2SegmentWorker(QThread):
             output_stem = input_path.stem if input_path.is_file() else input_path.name
             masks_output = output_dir / f"{output_stem}_sam2_masks.tif"
             masks_array = np.stack(all_masks, axis=0)
-            tifffile.imwrite(str(masks_output), masks_array.astype(np.uint16))
+            try:
+                from bactimate.tiff_metadata import build_metadata_dict_for_mask_from_source
+                source_for_meta = tiff_files[0] if tiff_files else (input_path if input_path.is_file() else None)
+                meta = build_metadata_dict_for_mask_from_source(
+                    Path(source_for_meta) if source_for_meta else None,
+                    num_frames=len(all_masks),
+                )
+                tifffile.imwrite(str(masks_output), masks_array.astype(np.uint16), metadata=meta, imagej=True)
+            except Exception:
+                tifffile.imwrite(str(masks_output), masks_array.astype(np.uint16))
             self.progress.emit(f"Masks saved to: {masks_output}")
             
             # Create overlay if requested

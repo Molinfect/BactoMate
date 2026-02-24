@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -109,7 +110,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.shared_metadata = {"pixel_size": None}
+        self.shared_metadata = {"pixel_size": None, "time_per_frame_min": None}
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
             monospace_font = QFont("Courier New", 11)
         self.log_text.setFont(monospace_font)
         self.log_text.setMinimumHeight(70)
+        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         log_size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.log_text.setSizePolicy(log_size_policy)
         left_log_layout.addWidget(self.log_text, 1)
@@ -237,6 +239,7 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self._log_content)
         log_group.setLayout(log_layout)
         main_layout.addWidget(log_group)
+        self._log_group = log_group
 
         _COLLAPSED_LINE_STYLE = (
             "QGroupBox {"
@@ -305,7 +308,29 @@ class MainWindow(QMainWindow):
         self.log_output("Omnipose Batch Processing GUI started.\n")
         self.log_output("Select a tab and configure parameters to begin.\n\n")
 
+    def expand_status_log(self) -> None:
+        """Expand the Status & Session logs panel if it is collapsed (e.g. when starting long-running tracking)."""
+        if not getattr(self, "_log_content", None) or not getattr(self, "_log_group", None):
+            return
+        if self._log_content.isVisible():
+            return
+        self._log_content.setVisible(True)
+        self._log_group.setTitle("Status && Session logs  \u25B2")
+        self._log_group.setMinimumHeight(0)
+        self._log_group.setMaximumHeight(16777215)
+        self._log_group.setStyleSheet("")
+
     def closeEvent(self, event):
+        # Wait for tracking worker to finish so we never destroy a running QThread
+        tracking_tab = getattr(self, "tracking_tab", None)
+        if tracking_tab is not None and getattr(tracking_tab, "worker", None) is not None:
+            worker = tracking_tab.worker
+            if worker.isRunning():
+                old_title = self.windowTitle()
+                self.setWindowTitle("Waiting for tracking to finish…")
+                QApplication.processEvents()
+                worker.wait(300000)  # wait up to 5 minutes
+                self.setWindowTitle(old_title)
         self._save_geometry_and_state()
         self._save_session_log()
         super().closeEvent(event)
@@ -445,8 +470,45 @@ class MainWindow(QMainWindow):
             frame_geometry.moveCenter(center_point)
             self.move(frame_geometry.topLeft())
 
+    @staticmethod
+    def _format_status_line(line: str) -> str:
+        """Strip log prefixes (timestamp, [INFO]) and condense tqdm progress to one short line for the status window."""
+        if not line or not line.strip():
+            return line
+        s = line.strip()
+        # Strip common logging prefix: "2026-02-19 12:49:28,644	[INFO]  " or "[INFO]  " or "bactimate:INFO: "
+        s = re.sub(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\s+\[(?:INFO|DEBUG|WARNING|ERROR)\]\s*", "", s)
+        s = re.sub(r"^\[(?:INFO|DEBUG|WARNING|ERROR)\]\s*", "", s)
+        s = re.sub(r"^[\w.]+:(?:INFO|DEBUG|WARNING|ERROR):\s*", "", s)
+        s = s.strip()
+        # Strip tqdm position prefix "line  46	" or "line 46 "
+        s = re.sub(r"^line\s+\d+\s*[\t ]*", "", s)
+        s = s.strip()
+        # Condense tqdm-style progress to one short line: "28% (9/32) ETA 1:09"
+        tqdm_match = re.match(
+            r"^(\d+)%\s*\|[#\s]+\|\s*(\d+)/(\d+)\s*\[([^\]]*)\]",
+            s,
+        )
+        if tqdm_match:
+            pct, current, total, rest = tqdm_match.groups()
+            eta_match = re.search(r"<(\d+):(\d+)", rest)
+            if eta_match:
+                return f"  {pct}% ({current}/{total})  ETA {eta_match.group(1)}:{eta_match.group(2)}"
+            return f"  {pct}% ({current}/{total})"
+        # If we stripped everything (line was only timestamp/[INFO]), skip it
+        return s if s else ""
+
     def log_output(self, message: str) -> None:
-        self.log_text.append(message)
+        # Normalize each line for display: strip log prefixes, condense tqdm
+        lines = message.split("\n")
+        formatted = [self._format_status_line(line) for line in lines]
+        formatted = [f for f in formatted if f]
+        text = "\n".join(formatted)
+        if not text:
+            return
+        if not text.endswith("\n") and message.endswith("\n"):
+            text += "\n"
+        self.log_text.append(text)
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
         message_lower = message.lower()
@@ -481,25 +543,36 @@ class MainWindow(QMainWindow):
 
     def update_all_tabs_with_metadata(self):
         pixel_size = self.shared_metadata.get("pixel_size")
-        if pixel_size is None:
+        time_per_frame_min = self.shared_metadata.get("time_per_frame_min")
+        if pixel_size is None and time_per_frame_min is None:
             return
-        if hasattr(self, "omnipose_seg_tab") and hasattr(self.omnipose_seg_tab, "pixel_size_um"):
-            self.omnipose_seg_tab.pixel_size_um.setValue(pixel_size)
-            self.log_output(f"✓ Updated pixel size in Omnipose Segment tab: {pixel_size:.4f} µm\n")
-        if hasattr(self, "analyze_tab") and hasattr(self.analyze_tab, "pixel_size"):
-            self.analyze_tab.pixel_size.setValue(pixel_size)
-            if hasattr(self.analyze_tab, "pixel_size_indicator"):
-                self.analyze_tab.pixel_size_indicator.setText("(from metadata)")
-                self.analyze_tab.pixel_size_indicator.setStyleSheet(
-                    "color: #4CAF50; font-size: 9pt;"
-                )
-                self.analyze_tab.pixel_size_indicator.setFixedWidth(100)
-                self.analyze_tab.pixel_size_indicator.setAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                )
-                self.analyze_tab.pixel_size_indicator.show()
-                self.analyze_tab.pixel_size_metadata_loaded = True
-            self.log_output(f"✓ Updated pixel size in Analyze Masks tab: {pixel_size:.4f} µm\n")
+        if pixel_size is not None:
+            if hasattr(self, "omnipose_seg_tab") and hasattr(self.omnipose_seg_tab, "pixel_size_um"):
+                self.omnipose_seg_tab.pixel_size_um.setValue(pixel_size)
+                self.log_output(f"✓ Updated pixel size in Omnipose Segment tab: {pixel_size:.4f} µm\n")
+            if hasattr(self, "analyze_tab") and hasattr(self.analyze_tab, "pixel_size"):
+                self.analyze_tab.pixel_size.setValue(pixel_size)
+                if hasattr(self.analyze_tab, "pixel_size_indicator"):
+                    self.analyze_tab.pixel_size_indicator.setText("(from metadata)")
+                    self.analyze_tab.pixel_size_indicator.setStyleSheet(
+                        "color: #4CAF50; font-size: 9pt;"
+                    )
+                    self.analyze_tab.pixel_size_indicator.setFixedWidth(100)
+                    self.analyze_tab.pixel_size_indicator.setAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    self.analyze_tab.pixel_size_indicator.show()
+                    self.analyze_tab.pixel_size_metadata_loaded = True
+                self.log_output(f"✓ Updated pixel size in Analyze Masks tab: {pixel_size:.4f} µm\n")
+            if hasattr(self, "tracking_tab") and hasattr(self.tracking_tab, "filter_pixel_size"):
+                self.tracking_tab.filter_pixel_size.setValue(pixel_size)
+                self.log_output(f"✓ Updated pixel size in Tracking tab: {pixel_size:.4f} µm\n")
+        if time_per_frame_min is not None and time_per_frame_min > 0:
+            if hasattr(self, "tracking_tab") and hasattr(self.tracking_tab, "filter_time_per_frame"):
+                self.tracking_tab.filter_time_per_frame.setValue(time_per_frame_min)
+                if hasattr(self.tracking_tab, "filter_time_per_frame_unit"):
+                    self.tracking_tab.filter_time_per_frame_unit.setCurrentText("min")
+                self.log_output(f"✓ Updated time per frame in Tracking tab: {time_per_frame_min:.4f} min\n")
 
 
 def main() -> None:

@@ -44,6 +44,7 @@ from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 from bactimate.gui.workers import WorkerThread
 
+
 class ND2ConversionTab(QWidget):
     """Tab for converting microscopy files (ND2, LIF, CZI) to TIFF with metadata extraction"""
 
@@ -109,16 +110,16 @@ class ND2ConversionTab(QWidget):
     def _build_file_group(self) -> QWidget:
         """Build the microscopy file selection group (Path + info, same layout as segmentation tabs)."""
         file_group = DragDropGroupBox(
-            "Microscopy File Selection",
+            "Run convert microscopy file",
             parent=self,
-            on_drop_callback=self.handle_dropped_path
+            on_drop_callback=self.handle_dropped_path,
         )
         file_layout = QHBoxLayout()
         file_layout.addWidget(QLabel("Path:"))
         file_layout.addWidget(create_info_icon(
             "Path to the microscopy file or folder to convert (ND2, LIF, CZI, or TIFF).\n\n"
-            "Converted TIFF files are saved automatically: for a single file, next to the file in a "
-            "'Tif_1' (or 'Tif_2', ...) folder in the same directory; for a folder, in that folder.",
+            "Converted TIFFs are saved in a single folder in the same directory: 'Tif_files' "
+            "(reused if it already exists). For a single file, that folder is next to the file; for a folder, inside it.",
             self,
         ))
         self.file_path = QLineEdit()
@@ -165,25 +166,17 @@ class ND2ConversionTab(QWidget):
         self.separate_channels = QCheckBox("Save channels separately")
         self.separate_channels.setChecked(True)
         top_row.addWidget(self.separate_channels)
-        top_row.addSpacing(16)
-        self.max_z_projection = QCheckBox("Max intensity projection for multiple Z stack")
-        self.max_z_projection.setChecked(False)
-        top_row.addWidget(self.max_z_projection)
-        z_projection_info_icon = create_info_icon(
-            "Apply maximum intensity projection across Z-slices when Z > 1.\n\n"
-            "When enabled: For each pixel, takes the maximum intensity value across all Z-slices."
-            "This creates a single 2D image from a 3D Z-stack.\n\n"
-            "When disabled: Uses only the first Z-slice (Z=1).\n\n"
-            "Use when: You have Z-stack data and want to combine all slices into one image.",
-            parent_widget=self
-        )
-        top_row.addWidget(z_projection_info_icon)
         top_row.addStretch()
         params_layout.addLayout(top_row)
-        self.channel_select = QComboBox()
-        self.channel_select.addItem("All channels")
-        self.channel_select.setEnabled(False)
-        params_layout.addWidget(self.channel_select)
+        # Channel options: visible when file has multiple channels; one row per channel with FI / Z / Bleach checkboxes
+        self.channel_options_group = QGroupBox("Channel options")
+        self.channel_options_layout = QVBoxLayout()
+        self.channel_options_group.setLayout(self.channel_options_layout)
+        self.channel_options_group.setVisible(False)
+        self.fi_channel_checks: list[QCheckBox] = []
+        self.zproject_channel_checks: list[QCheckBox] = []
+        self.bleach_channel_checks: list[QCheckBox] = []
+        params_layout.addWidget(self.channel_options_group)
         corrections_group = QGroupBox("Image Corrections")
         # Override padding so layout margins actually move the content (global style uses padding-top: 14px)
         corrections_group.setStyleSheet(
@@ -230,9 +223,8 @@ class ND2ConversionTab(QWidget):
         self.bleach_method_combo.setToolTip("Method used for bleach correction. See info icon for details.")
         bleach_info_icon = create_info_icon(
             "Photobleaching correction (inspired by CorrectBleach: https://github.com/fiji/CorrectBleach).\n\n"
-            "Which channels: Tick only the channels that are fluorescence (e.g. GFP, mScarlet); "
-            "bleach correction is applied only to those. Leave phase/transmission unticked. "
-            "Checkboxes appear here after loading a multi-channel file.\n\n"
+            "Which channels: Open the 'Channel' dropdown and tick the 'Bleach' checkbox for each fluorescence channel (e.g. GFP, mScarlet); "
+            "bleach correction is applied only to those. Leave phase/transmission unticked.\n\n"
             "Methods:\n"
             "• Exponential: I(t)=I₀×exp(-t/τ), normalizes to first frame. Use for intensity quantification.\n"
             "• Linear: Linear decay fit, then scale to first frame.\n"
@@ -245,16 +237,20 @@ class ND2ConversionTab(QWidget):
         corrections_layout.addWidget(QLabel("Method:"))
         corrections_layout.addWidget(self.bleach_method_combo)
         corrections_layout.addWidget(bleach_info_icon)
-        self.bleach_channel_widget = QWidget()
-        self.bleach_channel_layout = QHBoxLayout()
-        self.bleach_channel_layout.setContentsMargins(0, 0, 0, 0)
-        self.bleach_channel_checks = []
-        self.bleach_channel_widget.setLayout(self.bleach_channel_layout)
-        self.bleach_channel_widget.setVisible(False)
-        corrections_layout.addWidget(self.bleach_channel_widget)
+        corrections_layout.addSpacing(24)
+        self.max_z_projection = QCheckBox("Max intensity projection for multiple Z stack")
+        self.max_z_projection.setChecked(False)
+        corrections_layout.addWidget(self.max_z_projection)
+        z_projection_info_icon = create_info_icon(
+            "Apply maximum intensity projection across Z-slices when Z > 1.\n\n"
+            "When enabled: For each pixel, takes the maximum intensity value across all Z-slices. "
+            "This creates a single 2D image from a 3D Z-stack.\n\n"
+            "When disabled: Uses only the first Z-slice (Z=1).\n\n"
+            "Use when: You have Z-stack data and want to combine all slices into one image.",
+            parent_widget=self
+        )
+        corrections_layout.addWidget(z_projection_info_icon)
         corrections_layout.addStretch()
-        margins = corrections_layout.contentsMargins()
-        corrections_group.setLayout(corrections_layout)
         corrections_group.setLayout(corrections_layout)
         params_layout.addWidget(corrections_group)
         params_group.setLayout(params_layout)
@@ -325,24 +321,70 @@ class ND2ConversionTab(QWidget):
                 self.metadata_text.setText("No supported microscopy files (ND2, LIF, CZI, TIFF) found in dropped folder")
                 self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
     
-    def _rebuild_bleach_channel_checks(self, channel_names, num_channels):
-        """Populate fluorescence channel checkboxes (which channels get bleach correction). All checked by default."""
-        # Remove old checkboxes
-        for cb in self.bleach_channel_checks:
-            self.bleach_channel_layout.removeWidget(cb)
-            cb.deleteLater()
+    def _rebuild_channel_options(self, channel_names, num_channels):
+        """Populate Channel options panel: one row per channel with FI-channel / Z-channel / Bleach correct checkboxes. Shown when num_channels > 1."""
+        self.fi_channel_checks.clear()
+        self.zproject_channel_checks.clear()
         self.bleach_channel_checks.clear()
+        while self.channel_options_layout.count():
+            item = self.channel_options_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
         if num_channels <= 1:
-            self.bleach_channel_widget.setVisible(False)
+            self.channel_options_group.setVisible(False)
             return
+        info_label = QLabel(
+            "Tick per channel: FI-channel adds \"_fi\" in filename (for Analyze Masks batch later on); "
+            "Z-channel = max Z-projection; Bleach correct = photobleaching correction. Only ticked channels are affected."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #a0a0a0; font-size: 10pt;")
+        self.channel_options_layout.addWidget(info_label)
+        self.channel_options_layout.addSpacing(12)
         for i, name in enumerate(channel_names):
-            cb = QCheckBox(f"Ch{i+1}: {name}")
-            cb.setChecked(False)  # Default: none selected; user ticks fluorescence channels
-            cb.setToolTip("Tick if this channel is fluorescence and should get bleach correction")
-            self.bleach_channel_layout.addWidget(cb)
-            self.bleach_channel_checks.append(cb)
-        self.bleach_channel_widget.setVisible(True)
-    
+            row_widget = QWidget()
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 2, 0, 2)
+            row_widget.setLayout(row)
+            ch_label = QLabel(f"Channel {i+1}: {name}")
+            ch_label.setFixedWidth(200)
+            row.addWidget(ch_label)
+            row.addSpacing(12)
+            fi_cb = QCheckBox("FI-channel")
+            fi_cb.setToolTip("Save this channel with \"_fi\" in filename (e.g. stem_fi.tif) for Analyze Masks batch later on")
+            z_cb = QCheckBox("Z-channel")
+            z_cb.setToolTip("Apply max Z-projection for this channel (when Z stack > 1)")
+            bleach_cb = QCheckBox("Bleach correct")
+            bleach_cb.setToolTip("Apply bleach correction to this channel")
+            row.addWidget(fi_cb)
+            row.addWidget(z_cb)
+            row.addWidget(bleach_cb)
+            row.addStretch()
+            self.channel_options_layout.addWidget(row_widget)
+            self.fi_channel_checks.append(fi_cb)
+            self.zproject_channel_checks.append(z_cb)
+            self.bleach_channel_checks.append(bleach_cb)
+            z_cb.stateChanged.connect(self._sync_z_projection_from_channels)
+            bleach_cb.stateChanged.connect(self._sync_bleach_from_channels)
+        self.channel_options_group.setVisible(True)
+
+    def _sync_z_projection_from_channels(self):
+        """When any Z-channel is ticked, enable Max intensity projection; when all unticked, disable it."""
+        if not getattr(self, "zproject_channel_checks", None):
+            return
+        any_checked = any(cb.isChecked() for cb in self.zproject_channel_checks)
+        if getattr(self, "max_z_projection", None) is not None:
+            self.max_z_projection.setChecked(any_checked)
+
+    def _sync_bleach_from_channels(self):
+        """When any Bleach correct is ticked, enable Apply photobleaching correction; when all unticked, disable it."""
+        if not getattr(self, "bleach_channel_checks", None):
+            return
+        any_checked = any(cb.isChecked() for cb in self.bleach_channel_checks)
+        if getattr(self, "bleach_correct", None) is not None:
+            self.bleach_correct.setChecked(any_checked)
+
     def load_folder_info(self, folder_path, supported_files):
         """Load and display information for all files in a folder"""
         folder = Path(folder_path)
@@ -389,25 +431,27 @@ class ND2ConversionTab(QWidget):
                 'num_channels': first_file_info['num_channels'],
                 'num_z': first_file_info['num_z'],
                 'channel_names': first_file_info['channel_names'],
-                'pixel_size': first_file_info['pixel_size']
+                'pixel_size': first_file_info.get('pixel_size'),
+                'time_per_frame_min': first_file_info.get('time_per_frame_min'),
             }
             # Update UI with first file's parameters (user can adjust)
             self.max_frames.setMaximum(first_file_info['num_time'])
             self.max_frames.setValue(first_file_info['num_time'])  # Automatically set to maximum
-            self.channel_select.clear()
-            self.channel_select.addItem("All channels")
-            for i, name in enumerate(first_file_info['channel_names']):
-                self.channel_select.addItem(f"Channel {i+1}: {name}")
-            self.channel_select.setEnabled(first_file_info['num_channels'] > 1)
-            # Fluorescence channel checkboxes: one per channel, all checked by default (bleach applies to all unless user unticks)
-            self._rebuild_bleach_channel_checks(first_file_info['channel_names'], first_file_info['num_channels'])
+            # Channel options panel (FI / Z / Bleach per channel)
+            self._rebuild_channel_options(first_file_info['channel_names'], first_file_info['num_channels'])
             self.preview_btn.setEnabled(True)
             self.convert_btn.setEnabled(True)
             
-            # Use pixel size from first file if available
-            if first_file_info['pixel_size']:
+            # Push pixel size and time per frame to shared metadata (used by Tracking, Analyze Masks, etc.)
+            if first_file_info.get('pixel_size'):
                 self.parent_window.shared_metadata['pixel_size'] = first_file_info['pixel_size']
-                self.parent_window.update_all_tabs_with_metadata()
+            else:
+                self.parent_window.shared_metadata['pixel_size'] = None
+            if first_file_info.get('time_per_frame_min'):
+                self.parent_window.shared_metadata['time_per_frame_min'] = first_file_info['time_per_frame_min']
+            else:
+                self.parent_window.shared_metadata['time_per_frame_min'] = None
+            self.parent_window.update_all_tabs_with_metadata()
         else:
             self.metadata_text.setText("No files could be read from the selected folder.\n" + 
                                      "\n".join(errors) if errors else "")
@@ -428,6 +472,11 @@ class ND2ConversionTab(QWidget):
                 metadata_content += f"  Pixel Size: {info['pixel_size']:.4f} µm\n"
             else:
                 metadata_content += f"  Pixel Size: Not found in metadata\n"
+            if info.get('time_per_frame_min') is not None and info['time_per_frame_min'] > 0:
+                tp = info['time_per_frame_min']
+                metadata_content += f"  Time per frame: {tp:.6f} min ({tp * 60:.4f} s)\n"
+            else:
+                metadata_content += f"  Time per frame: Not found in metadata\n"
             
             # Show differences if files have different properties
             if i > 1:
@@ -454,56 +503,26 @@ class ND2ConversionTab(QWidget):
         self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 10pt;")
     
     def _get_nd2_info(self, file_path):
-        """Extract ND2 file info without updating UI (for folder scanning)"""
+        """Extract ND2 file info without updating UI (for folder scanning). Uses tiff_metadata.read_metadata_from_path."""
         try:
-            import nd2
-            with nd2.ND2File(file_path) as nd2_reader:
-                sizes = nd2_reader.sizes
-                try:
-                    shape = nd2_reader.shape
-                    num_time = shape[0] if len(shape) > 0 else sizes.get('T', 1)
-                except Exception:
-                    num_time = sizes.get('T', 1)
-                
-                num_channels = sizes.get('C', 1)
-                num_z = sizes.get('Z', 1)
-                
-                channel_names = []
-                try:
-                    if hasattr(nd2_reader, 'metadata') and nd2_reader.metadata:
-                        meta = nd2_reader.metadata
-                        if hasattr(meta, 'channels') and meta.channels:
-                            channel_names = [ch.channel.name if hasattr(ch, 'channel') and hasattr(ch.channel, 'name') 
-                                           else f'Channel_{i+1}' 
-                                           for i, ch in enumerate(meta.channels)]
-                except Exception:
-                    pass
-                
-                if not channel_names or len(channel_names) != num_channels:
-                    channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                
-                pixel_size = None
-                try:
-                    if hasattr(nd2_reader, 'metadata') and nd2_reader.metadata:
-                        meta = nd2_reader.metadata
-                        if hasattr(meta, 'channels') and meta.channels:
-                            first_channel = meta.channels[0]
-                            if hasattr(first_channel, 'volume') and first_channel.volume:
-                                vol = first_channel.volume
-                                if hasattr(vol, 'axesCalibration') and vol.axesCalibration:
-                                    if len(vol.axesCalibration) >= 2:
-                                        pixel_size = vol.axesCalibration[0]
-                except Exception:
-                    pass
-                
-                return {
-                    'file_type': 'nd2',
-                    'num_time': num_time,
-                    'num_channels': num_channels,
-                    'num_z': num_z,
-                    'channel_names': channel_names,
-                    'pixel_size': pixel_size
-                }
+            from pathlib import Path
+            from bactimate.tiff_metadata import read_metadata_from_path
+            meta = read_metadata_from_path(Path(file_path))
+            num_time = meta.get("frame_count") or 1
+            num_channels = meta.get("channel_count") or 1
+            num_z = meta.get("z_count") or 1
+            channel_names = meta.get("channel_names") or []
+            if len(channel_names) != num_channels:
+                channel_names = [f"Channel_{i+1}" for i in range(num_channels)]
+            return {
+                "file_type": "nd2",
+                "num_time": num_time,
+                "num_channels": num_channels,
+                "num_z": num_z,
+                "channel_names": channel_names,
+                "pixel_size": meta.get("pixel_size_um"),
+                "time_per_frame_min": meta.get("time_per_frame_min"),
+            }
         except Exception:
             return None
     
@@ -690,97 +709,204 @@ class ND2ConversionTab(QWidget):
         except Exception:
             return None
     
-    def _get_czi_info(self, file_path):
-        """Extract CZI file info without updating UI (for folder scanning)"""
+    def _czi_dims_from_axes(self, axes, shape):
+        """Return (num_time, num_channels, num_z) from czifile axes string and shape.
+        CZI dimension order is file-dependent (e.g. TZCYX, TCZYX, BSTCZYX0); we read T,C,Z from axes."""
+        if not axes or not shape or len(axes) != len(shape):
+            return 1, 1, 1
         try:
-            import numpy as np
-            from aicsimageio import AICSImage
-            # AICSImage doesn't support context manager protocol, use direct instantiation
-            czi_reader = AICSImage(file_path)
-            try:
-                # Get dimensions - handle both old and new aicsimageio API
-                dims = czi_reader.dims
-                
-                # Try to get dimension order as string
-                if hasattr(dims, 'order'):
-                    dims_str = dims.order
-                elif isinstance(dims, str):
-                    dims_str = dims
-                elif isinstance(dims, (list, tuple)):
-                    dims_str = ''.join(str(d) for d in dims)
-                else:
-                    dims_str = str(dims)
-                
-                # Get shape - try different methods depending on aicsimageio version
-                try:
-                    # Try accessing as dictionary-like (newer versions)
-                    if hasattr(czi_reader, 'get_xarray_data'):
-                        xdata = czi_reader.get_xarray_data()
-                        num_time = int(xdata.sizes.get('T', 1))
-                        num_channels = int(xdata.sizes.get('C', 1))
-                        num_z = int(xdata.sizes.get('Z', 1))
-                    else:
-                        # Fallback to shape attribute
-                        shape = czi_reader.shape
-                        # Convert shape to tuple/list if needed
-                        if not isinstance(shape, (tuple, list)):
-                            shape = tuple(shape) if hasattr(shape, '__iter__') else (shape,)
-                        
-                        # Access dimensions by index in dims string
-                        num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
-                        num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
-                        num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
-                except (KeyError, IndexError, AttributeError, TypeError) as e:
-                    # If dimension access fails, try to get from shape directly
-                    shape = czi_reader.shape
-                    if isinstance(shape, dict):
-                        # Shape is a dictionary - access by dimension name
-                        num_time = shape.get('T', 1) if isinstance(shape.get('T'), (int, np.integer)) else 1
-                        num_channels = shape.get('C', 1) if isinstance(shape.get('C'), (int, np.integer)) else 1
-                        num_z = shape.get('Z', 1) if isinstance(shape.get('Z'), (int, np.integer)) else 1
-                    else:
-                        # Fallback: assume standard order and try indexing
-                        shape_list = list(shape) if hasattr(shape, '__iter__') else [shape]
-                        num_time = shape_list[dims_str.index('T')] if 'T' in dims_str and len(shape_list) > dims_str.index('T') else 1
-                        num_channels = shape_list[dims_str.index('C')] if 'C' in dims_str and len(shape_list) > dims_str.index('C') else 1
-                        num_z = shape_list[dims_str.index('Z')] if 'Z' in dims_str and len(shape_list) > dims_str.index('Z') else 1
-                
-                channel_names = []
-                try:
-                    if hasattr(czi_reader, 'channel_names'):
-                        channel_names = czi_reader.channel_names
-                except:
-                    pass
-                
-                if not channel_names or len(channel_names) != num_channels:
-                    channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                
-                pixel_size = None
-                try:
-                    if hasattr(czi_reader, 'physical_pixel_sizes'):
-                        if czi_reader.physical_pixel_sizes and len(czi_reader.physical_pixel_sizes) >= 3:
-                            pixel_size = float(czi_reader.physical_pixel_sizes[2])
-                except:
-                    pass
-                
-                return {
-                    'file_type': 'czi',
-                    'num_time': num_time,
-                    'num_channels': num_channels,
-                    'num_z': num_z,
-                    'channel_names': channel_names,
-                    'pixel_size': pixel_size
-                }
-            finally:
-                # Clean up if needed (AICSImage may have resources to close)
-                if hasattr(czi_reader, 'close'):
+            num_time = int(shape[axes.index("T")]) if "T" in axes else 1
+            num_channels = int(shape[axes.index("C")]) if "C" in axes else 1
+            num_z = int(shape[axes.index("Z")]) if "Z" in axes else 1
+            return num_time, num_channels, num_z
+        except (ValueError, IndexError, TypeError):
+            return 1, 1, 1
+
+    @staticmethod
+    def _czi_pixel_size_from_metadata(czi_file):
+        """Extract pixel size (µm) from CZI metadata XML. Returns None if not found."""
+        try:
+            meta = czi_file.metadata(raw=True) if callable(getattr(czi_file, "metadata", None)) else getattr(czi_file, "metadata", None)
+            if not meta or not isinstance(meta, str):
+                return None
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(meta)
+            # CZI uses namespaces; match by local name
+            for elem in root.iter():
+                tag = (elem.tag or "").split("}")[-1]
+                if tag != "Distance":
+                    continue
+                did = (elem.get("Id") or elem.get("id") or "").strip()
+                if did != "X":
+                    continue
+                val_el = elem.find("Value")
+                if val_el is None:
+                    val_el = next((c for c in elem if (c.tag or "").split("}")[-1] == "Value"), None)
+                if val_el is not None and getattr(val_el, "text", None):
                     try:
-                        czi_reader.close()
-                    except:
+                        scale_x = float(val_el.text.strip())
+                        if scale_x > 0 and scale_x < 1e-4:
+                            scale_x *= 1e6
+                        return scale_x if scale_x > 0 else None
+                    except ValueError:
                         pass
+            return None
         except Exception:
             return None
-    
+
+    @staticmethod
+    def _czi_slice_to_t_y_x(arr, axes, z_index=0, c_index=0):
+        """Reduce CZI array to (T, Y, X) by taking channel c_index and z_index. axes matches arr.shape.
+        Preserves time dimension (never squeezes to 0 frames). Transposes to (T, Y, X) so preview is never a thin line."""
+        if not axes or len(axes) != len(arr.shape):
+            return arr
+        indices = []
+        for i, ax in enumerate(axes):
+            if ax == "C" and arr.shape[i] > 0:
+                ci = min(int(c_index), arr.shape[i] - 1) if c_index is not None else 0
+                indices.append(max(0, ci))
+            elif ax == "Z" and arr.shape[i] > 0:
+                zi = min(int(z_index), arr.shape[i] - 1) if z_index is not None else 0
+                indices.append(max(0, zi))
+            else:
+                indices.append(slice(None))
+        out = arr[tuple(indices)]
+        # Which axes remain (in order)? We dropped C and Z.
+        remaining_axes = [axes[i] for i in range(len(axes)) if axes[i] not in ("C", "Z")]
+        # Transpose to (T, Y, X) so the preview always gets [frame_idx, :, :] = (Y, X), never a thin strip.
+        if len(remaining_axes) >= 3 and "T" in remaining_axes and "Y" in remaining_axes and "X" in remaining_axes:
+            t_pos = remaining_axes.index("T")
+            y_pos = remaining_axes.index("Y")
+            x_pos = remaining_axes.index("X")
+            # Put T first, Y second, X third; any other dims (S, R, etc.) at end for squeezing
+            other = [i for i in range(len(remaining_axes)) if remaining_axes[i] not in ("T", "Y", "X")]
+            perm = [t_pos, y_pos, x_pos] + other
+            out = np.transpose(out, perm)
+        # Remove trailing sample dim (e.g. RGB)
+        while out.ndim > 3 and out.shape[-1] in (1, 3, 4):
+            out = out[..., 0]
+        # Squeeze only non-leading singleton dims so we keep (T, Y, X) with T>=1
+        while out.ndim > 3:
+            squeezed = out.squeeze()
+            if squeezed.ndim < 3:
+                break
+            out = squeezed
+        # Ensure at least (1, Y, X)
+        if out.ndim == 2:
+            out = out[np.newaxis, ...]
+        return out
+
+    @staticmethod
+    def _czi_find_first_nonempty_plane(arr, axes):
+        """Find the (channel, z) plane that is best for preview: first plane with any pixel > 0.
+        If that would be too dim, uses the plane with maximum total intensity (most informative slice).
+        Loops over Z then C. Returns (c_index, z_index); (0, 0) if none or no C/Z in axes."""
+        if not axes or len(axes) != len(arr.shape):
+            return 0, 0
+        c_axis = axes.index("C") if "C" in axes else -1
+        z_axis = axes.index("Z") if "Z" in axes else -1
+        if c_axis < 0 and z_axis < 0:
+            return 0, 0
+        n_c = arr.shape[c_axis] if c_axis >= 0 else 1
+        n_z = arr.shape[z_axis] if z_axis >= 0 else 1
+        best_c, best_z = 0, 0
+        best_sum = -1.0
+        for z in range(n_z):
+            for c in range(n_c):
+                indices = [slice(None)] * len(arr.shape)
+                if c_axis >= 0:
+                    indices[c_axis] = c
+                if z_axis >= 0:
+                    indices[z_axis] = z
+                plane = np.asarray(arr[tuple(indices)])
+                if plane.size == 0:
+                    continue
+                s = float(np.sum(plane))
+                if s > best_sum:
+                    best_sum = s
+                    best_c, best_z = c, z
+        return best_c, best_z
+
+    @staticmethod
+    def _czi_slice_to_t_c_y_x(arr, axes, max_frames=None):
+        """Reduce CZI array to (T, C, Y, X) by taking first Z only. axes matches arr.shape.
+        Returns (array, dims_str). Limits T to max_frames if set."""
+        if not axes or len(axes) != len(arr.shape):
+            return arr, ""
+        indices = []
+        t_idx = axes.index("T") if "T" in axes else None
+        for i, ax in enumerate(axes):
+            if ax == "Z" and arr.shape[i] > 0:
+                indices.append(0)
+            elif ax == "T" and t_idx is not None and max_frames is not None:
+                size = arr.shape[i]
+                indices.append(slice(0, min(int(size), max_frames)))
+            else:
+                indices.append(slice(None))
+        out = arr[tuple(indices)]
+        while out.ndim > 4 and out.shape[-1] in (1, 3, 4):
+            out = out[..., 0] if out.shape[-1] == 1 else out[..., 0]
+        dims_str = "".join(ax for ax in axes if ax not in ("Z", "0"))
+        return out, dims_str if dims_str else "TCYX"
+
+    @staticmethod
+    def _czi_slice_to_t_c_z_y_x(arr, axes, max_frames=None):
+        """Reduce CZI array to (T, C, Z, Y, X) keeping Z dimension. axes matches arr.shape.
+        Returns (array, dims_str, z_axis) where z_axis is the index of Z in the returned array.
+        Use for conversion when max Z-projection is needed."""
+        if not axes or len(axes) != len(arr.shape):
+            return arr, "", -1
+        indices = []
+        t_idx = axes.index("T") if "T" in axes else None
+        z_idx_in_axes = axes.index("Z") if "Z" in axes else -1
+        for i, ax in enumerate(axes):
+            if ax == "T" and t_idx is not None and max_frames is not None:
+                size = arr.shape[i]
+                indices.append(slice(0, min(int(size), max_frames)))
+            else:
+                indices.append(slice(None))
+        out = arr[tuple(indices)]
+        while out.ndim > 5 and out.shape[-1] in (1, 3, 4):
+            out = out[..., 0] if out.shape[-1] == 1 else out[..., 0]
+        dims_str = "".join(ax for ax in axes if ax not in ("0",))
+        if "Z" not in dims_str:
+            return out, dims_str, -1
+        z_axis = dims_str.index("Z")
+        return out, dims_str, z_axis
+
+    def _get_czi_info_via_czifile(self, file_path):
+        """Extract CZI file info using the czifile library (https://pypi.org/project/czifile/).
+        Uses the file's axes string so T, C, Z are interpreted correctly regardless of dimension order."""
+        try:
+            import czifile
+            with czifile.CziFile(file_path) as czi_file:
+                shape = getattr(czi_file, "shape", None)
+                axes = getattr(czi_file, "axes", None)
+                if shape and axes and len(axes) == len(shape):
+                    num_time, num_channels, num_z = self._czi_dims_from_axes(axes, shape)
+                else:
+                    num_time, num_channels, num_z = 1, 1, 1
+                    if shape and len(shape) >= 3:
+                        num_time = int(shape[0])
+                        num_channels = int(shape[1]) if len(shape) > 1 else 1
+                        num_z = int(shape[2]) if len(shape) > 2 else 1
+                channel_names = [f"Channel_{i+1}" for i in range(num_channels)]
+                pixel_size = self._czi_pixel_size_from_metadata(czi_file)
+                return {
+                    "file_type": "czi",
+                    "num_time": num_time,
+                    "num_channels": num_channels,
+                    "num_z": num_z,
+                    "channel_names": channel_names,
+                    "pixel_size": pixel_size,
+                }
+        except Exception:
+            return None
+
+    def _get_czi_info(self, file_path):
+        """Extract CZI file info without updating UI (for folder scanning). Uses czifile only."""
+        return self._get_czi_info_via_czifile(file_path)
+
     def load_file_info(self, file_path):
         """Load and display microscopy file information (ND2, LIF, CZI, or TIFF)"""
         file_path_obj = Path(file_path)
@@ -807,100 +933,37 @@ class ND2ConversionTab(QWidget):
             self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 10pt;")
     
     def _load_nd2_info(self, file_path):
-        """Load and display ND2 file information"""
+        """Load and display ND2 file information. All metadata from tiff_metadata (single source of truth)."""
         try:
-            # Lazy import to avoid loading if not needed
-            import nd2
-            
+            from pathlib import Path
+            from bactimate.tiff_metadata import read_metadata_from_path, format_metadata_for_display
+
             self.parent_window.log_output(f"Loading ND2 file info: {file_path}\n")
-            
-            with nd2.ND2File(file_path) as nd2_reader:
-                sizes = nd2_reader.sizes
-                # Use sizes dictionary directly - it properly maps dimension names to counts
-                # Don't assume dimension order from shape[0] as ND2 files can have different orders
-                num_time = sizes.get('T', 1)
-                num_channels = sizes.get('C', 1)
-                num_z = sizes.get('Z', 1)
-                
-                # Verify by checking actual data if needed (but trust sizes first)
-                # Sometimes ND2 files report dimensions incorrectly, so double-check with shape
-                try:
-                    shape = nd2_reader.shape
-                    # Get dimension order from ND2 reader
-                    if hasattr(nd2_reader, 'sizes') and hasattr(nd2_reader.sizes, 'keys'):
-                        # Check if shape matches reported sizes
-                        # If shape[0] matches channels instead of time, sizes might be wrong
-                        # But we'll trust sizes.get() as it's the proper way
-                        pass
-                except Exception:
-                    pass
-                
-                # Get channel names
-                channel_names = []
-                try:
-                    if hasattr(nd2_reader, 'metadata') and nd2_reader.metadata:
-                        meta = nd2_reader.metadata
-                        # Metadata is an object, not a dict - access channels attribute
-                        if hasattr(meta, 'channels') and meta.channels:
-                            channel_names = [ch.channel.name if hasattr(ch, 'channel') and hasattr(ch.channel, 'name') 
-                                           else f'Channel_{i+1}' 
-                                           for i, ch in enumerate(meta.channels)]
-                except Exception as e:
-                    # Silently fail - will use default names
-                    pass
-                
-                if not channel_names or len(channel_names) != num_channels:
-                    channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                
-                # Extract pixel size from metadata
-                pixel_size = None
-                metadata_str = "Metadata:\n"
-                
-                try:
-                    if hasattr(nd2_reader, 'metadata') and nd2_reader.metadata:
-                        meta = nd2_reader.metadata
-                        
-                        # Pixel size is in volume.axesCalibration (first element is X, second is Y)
-                        # Both should be the same for square pixels
-                        if hasattr(meta, 'channels') and meta.channels:
-                            # Get pixel size from first channel's volume
-                            first_channel = meta.channels[0]
-                            if hasattr(first_channel, 'volume') and first_channel.volume:
-                                vol = first_channel.volume
-                                if hasattr(vol, 'axesCalibration') and vol.axesCalibration:
-                                    # axesCalibration is a list: [X, Y, Z] pixel sizes
-                                    if len(vol.axesCalibration) >= 2:
-                                        # Use X pixel size (should be same as Y for square pixels)
-                                        pixel_size = vol.axesCalibration[0]
-                        
-                        # Format metadata for display
-                        if pixel_size:
-                            metadata_str += f"  Pixel Size: {pixel_size:.4f} µm\n"
-                        else:
-                            metadata_str += "  Pixel Size: Not found in metadata\n"
-                        
-                        # Add other metadata if available
-                        if hasattr(meta, 'contents') and meta.contents:
-                            if hasattr(meta.contents, 'frameCount'):
-                                metadata_str += f"  Frame Count: {meta.contents.frameCount}\n"
-                            if hasattr(meta.contents, 'channelCount'):
-                                metadata_str += f"  Channel Count: {meta.contents.channelCount}\n"
-                        
-                except Exception as e:
-                    metadata_str += f"  Error reading metadata: {str(e)}\n"
-                
-                # Use common UI update function
-                self._update_file_info_ui(file_path, 'nd2', num_time, num_channels, num_z, 
-                                        channel_names, pixel_size, metadata_str)
-                
+            meta = read_metadata_from_path(Path(file_path))
+            num_time = meta.get("frame_count") or 1
+            num_channels = meta.get("channel_count") or 1
+            num_z = meta.get("z_count") or 1
+            channel_names = meta.get("channel_names") or []
+            if len(channel_names) != num_channels:
+                channel_names = [f"Channel_{i+1}" for i in range(num_channels)]
+            pixel_size = meta.get("pixel_size_um")
+            time_per_frame_min = meta.get("time_per_frame_min")
+            metadata_str = format_metadata_for_display(meta)
+            self._update_file_info_ui(
+                file_path, "nd2", num_time, num_channels, num_z,
+                channel_names, pixel_size, metadata_str, time_per_frame_min=time_per_frame_min,
+            )
+            return
         except ImportError:
-            QMessageBox.warning(self, "ND2 Library Missing", 
-                              "The 'nd2' library is not installed.\n\n"
-                              "Install it with: pip install nd2")
+            QMessageBox.warning(
+                self, "ND2 Library Missing",
+                "The 'nd2' library is not installed.\n\nInstall it with: pip install nd2",
+            )
+            return
         except Exception as e:
             QMessageBox.critical(self, "Error Loading ND2", f"Could not load ND2 file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
-    
+            return
     def _load_lif_info(self, file_path):
         """Load and display LIF file information"""
         try:
@@ -1021,149 +1084,45 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _load_czi_info(self, file_path):
-        """Load and display CZI file information"""
+        """Load and display CZI file information using czifile (https://pypi.org/project/czifile/)."""
         try:
-            # Try using aicsimageio for CZI files
-            try:
-                import numpy as np
-                from aicsimageio import AICSImage
-                self.parent_window.log_output(f"Loading CZI file info: {file_path}\n")
-                
-                # AICSImage doesn't support context manager protocol, use direct instantiation
-                czi_reader = AICSImage(file_path)
-                try:
-                    # Get dimensions - handle both old and new aicsimageio API
-                    dims = czi_reader.dims
-                    
-                    # Try to get dimension order as string
-                    if hasattr(dims, 'order'):
-                        dims_str = dims.order
-                    elif isinstance(dims, str):
-                        dims_str = dims
-                    elif isinstance(dims, (list, tuple)):
-                        dims_str = ''.join(str(d) for d in dims)
-                    else:
-                        dims_str = str(dims)
-                    
-                    # Get shape - try different methods depending on aicsimageio version
-                    try:
-                        # Try accessing as dictionary-like (newer versions)
-                        if hasattr(czi_reader, 'get_xarray_data'):
-                            xdata = czi_reader.get_xarray_data()
-                            num_time = int(xdata.sizes.get('T', 1))
-                            num_channels = int(xdata.sizes.get('C', 1))
-                            num_z = int(xdata.sizes.get('Z', 1))
-                        else:
-                            # Fallback to shape attribute
-                            shape = czi_reader.shape
-                            # Convert shape to tuple/list if needed
-                            if not isinstance(shape, (tuple, list)):
-                                shape = tuple(shape) if hasattr(shape, '__iter__') else (shape,)
-                            
-                            # Access dimensions by index in dims string
-                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
-                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
-                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
-                    except (KeyError, IndexError, AttributeError, TypeError) as e:
-                        # If dimension access fails, try to get from shape directly
-                        shape = czi_reader.shape
-                        if isinstance(shape, dict):
-                            # Shape is a dictionary - access by dimension name
-                            num_time = shape.get('T', 1) if isinstance(shape.get('T'), (int, np.integer)) else 1
-                            num_channels = shape.get('C', 1) if isinstance(shape.get('C'), (int, np.integer)) else 1
-                            num_z = shape.get('Z', 1) if isinstance(shape.get('Z'), (int, np.integer)) else 1
-                        else:
-                            # Fallback: assume standard order and try indexing
-                            shape_list = list(shape) if hasattr(shape, '__iter__') else [shape]
-                            num_time = shape_list[dims_str.index('T')] if 'T' in dims_str and len(shape_list) > dims_str.index('T') else 1
-                            num_channels = shape_list[dims_str.index('C')] if 'C' in dims_str and len(shape_list) > dims_str.index('C') else 1
-                            num_z = shape_list[dims_str.index('Z')] if 'Z' in dims_str and len(shape_list) > dims_str.index('Z') else 1
-                    
-                    # Get channel names if available
-                    channel_names = []
-                    try:
-                        if hasattr(czi_reader, 'channel_names'):
-                            channel_names = czi_reader.channel_names
-                    except:
-                        pass
-                    
-                    if not channel_names or len(channel_names) != num_channels:
-                        channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                    
-                    # Extract pixel size
-                    pixel_size = None
-                    try:
-                        if hasattr(czi_reader, 'physical_pixel_sizes'):
-                            if czi_reader.physical_pixel_sizes and len(czi_reader.physical_pixel_sizes) >= 3:
-                                pixel_size = float(czi_reader.physical_pixel_sizes[2])  # X dimension
-                    except:
-                        pass
-                    
-                    self._update_file_info_ui(file_path, 'czi', num_time, num_channels, num_z,
-                                            channel_names, pixel_size)
-                finally:
-                    # Clean up if needed (AICSImage may have resources to close)
-                    if hasattr(czi_reader, 'close'):
-                        try:
-                            czi_reader.close()
-                        except:
-                            pass
-                    
-            except ImportError:
-                # Fallback to czifile if aicsimageio not available
-                try:
-                    import czifile
-                    self.parent_window.log_output(f"Loading CZI file info: {file_path}\n")
-                    
-                    with czifile.CziFile(file_path) as czi_file:
-                        # Get metadata
-                        metadata = czi_file.metadata()
-                        # Parse dimensions from metadata
-                        # This is simplified - czifile metadata parsing can be complex
-                        num_time = 1
-                        num_channels = 1
-                        num_z = 1
-                        channel_names = ['Channel_1']
-                        pixel_size = None
-                        
-                        # Try to extract from shape
-                        if hasattr(czi_file, 'shape'):
-                            shape = czi_file.shape
-                            # CZI shape is typically (T, C, Z, Y, X) or similar
-                            if len(shape) >= 3:
-                                num_time = shape[0] if len(shape) > 0 else 1
-                                num_channels = shape[1] if len(shape) > 1 else 1
-                                num_z = shape[2] if len(shape) > 2 else 1
-                        
-                        channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                        
-                        self._update_file_info_ui(file_path, 'czi', num_time, num_channels, num_z,
-                                                channel_names, pixel_size)
-                except ImportError:
-                    QMessageBox.warning(self, "CZI Library Missing",
-                                      "The 'aicsimageio' or 'czifile' library is not installed.\n\n"
-                                      "Install with: pip install aicsimageio czifile")
+            import czifile
+        except ImportError:
+            QMessageBox.warning(
+                self, "CZI Library Missing",
+                "CZI support requires the 'czifile' package.\n\nInstall with: pip install czifile"
+            )
+            return
+        try:
+            self.parent_window.log_output(f"Loading CZI file info: {file_path}\n")
+            info = self._get_czi_info_via_czifile(file_path)
+            if info is None:
+                raise RuntimeError("Could not read CZI file")
+            self._update_file_info_ui(
+                file_path, "czi",
+                info["num_time"], info["num_channels"], info["num_z"],
+                info["channel_names"], info["pixel_size"]
+            )
         except Exception as e:
             QMessageBox.critical(self, "Error Loading CZI", f"Could not load CZI file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _load_tiff_info(self, file_path):
-        """Load and display TIFF file information"""
+        """Load and display TIFF file information. Uses tiff_metadata for calibration."""
         try:
             import tifffile
             import numpy as np
+            from bactimate.tiff_metadata import read_calibration_from_path
             self.parent_window.log_output(f"Loading TIFF file info: {file_path}\n")
+            
+            # Read calibration from central module (pixel size + time per frame)
+            pixel_size, time_per_frame_min = read_calibration_from_path(Path(file_path))
             
             # Read TIFF file to get dimensions
             with tifffile.TiffFile(file_path) as tif:
                 # Get shape from first page
                 first_page = tif.pages[0]
                 shape = first_page.shape
-                
-                # Try to get metadata
-                metadata = {}
-                if hasattr(tif, 'imagej_metadata') and tif.imagej_metadata:
-                    metadata = tif.imagej_metadata
                 
                 # Determine dimensions from shape
                 ndim = len(shape)
@@ -1209,23 +1168,22 @@ class ND2ConversionTab(QWidget):
                     num_z = shape[1] if len(shape) > 1 else 1
                     num_channels = shape[2] if len(shape) > 2 else 1
                 
-                # Get pixel size from metadata if available
-                pixel_size = None
-                if 'pixelSize' in metadata:
-                    pixel_size = float(metadata['pixelSize'])
-                
                 channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
                 
-                self._update_file_info_ui(file_path, 'tiff', num_time, num_channels, num_z,
-                                        channel_names, pixel_size)
+                # pixel_size and time_per_frame_min already from read_calibration_from_path above
+                self._update_file_info_ui(
+                    file_path, 'tiff', num_time, num_channels, num_z,
+                    channel_names, pixel_size if pixel_size > 0 else None,
+                    time_per_frame_min=time_per_frame_min if time_per_frame_min > 0 else None
+                )
                 
         except Exception as e:
             QMessageBox.critical(self, "Error Loading TIFF", f"Could not load TIFF file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
-    def _update_file_info_ui(self, file_path, file_type, num_time, num_channels, num_z, 
-                            channel_names, pixel_size, metadata_str=None):
-        """Update UI with file information (common for all file types)"""
+    def _update_file_info_ui(self, file_path, file_type, num_time, num_channels, num_z,
+                            channel_names, pixel_size, metadata_str=None, time_per_frame_min=None):
+        """Update UI with file information (common for all file types)."""
         # Store info
         self.file_info = {
             'path': file_path,
@@ -1234,20 +1192,16 @@ class ND2ConversionTab(QWidget):
             'num_channels': num_channels,
             'num_z': num_z,
             'channel_names': channel_names,
-            'pixel_size': pixel_size
+            'pixel_size': pixel_size,
+            'time_per_frame_min': time_per_frame_min,
         }
         
         # Update frame selector - automatically set to max frames
         self.max_frames.setMaximum(num_time)
         self.max_frames.setValue(num_time)  # Automatically set to maximum
         
-        # Update channel selector
-        self.channel_select.clear()
-        self.channel_select.addItem("All channels")
-        for i, name in enumerate(channel_names):
-            self.channel_select.addItem(f"Channel {i+1}: {name}")
-        self.channel_select.setEnabled(num_channels > 1)
-        self._rebuild_bleach_channel_checks(channel_names, num_channels)
+        # Channel options panel (FI / Z / Bleach per channel)
+        self._rebuild_channel_options(channel_names, num_channels)
         
         # Update metadata display (now includes file name and dimensions)
         metadata_content = f"File: {Path(file_path).name} ({file_type.upper()})\n"
@@ -1262,19 +1216,19 @@ class ND2ConversionTab(QWidget):
                 metadata_content += f"  Pixel Size: {pixel_size:.4f} µm\n"
             else:
                 metadata_content += "  Pixel Size: Not found in metadata\n"
+            if time_per_frame_min is not None and time_per_frame_min > 0:
+                metadata_content += f"  Time per frame: {time_per_frame_min:.6f} min ({time_per_frame_min * 60:.4f} s)\n"
+            else:
+                metadata_content += "  Time per frame: Not found in metadata\n"
         else:
             metadata_content += metadata_str
         
         self.metadata_text.setText(metadata_content)
         self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 10pt;")
         
-        if pixel_size:
-            # Update shared metadata and propagate to all tabs
-            self.parent_window.shared_metadata['pixel_size'] = pixel_size
-            self.parent_window.update_all_tabs_with_metadata()
-        else:
-            # Clear shared metadata
-            self.parent_window.shared_metadata['pixel_size'] = None
+        self.parent_window.shared_metadata['pixel_size'] = pixel_size if pixel_size else None
+        self.parent_window.shared_metadata['time_per_frame_min'] = time_per_frame_min if (time_per_frame_min is not None and time_per_frame_min > 0) else None
+        self.parent_window.update_all_tabs_with_metadata()
         
         self.preview_btn.setEnabled(True)
         self.convert_btn.setEnabled(True)
@@ -1466,7 +1420,10 @@ class ND2ConversionTab(QWidget):
         bleach_apply=False, bleach_method='exponential', bleach_channel_indices=None,
     ):
         """Create unified preview UI with improved histogram layout (used by all file types).
-        When bleach_apply is True, optional checkbox 'Show bleach correction' toggles live preview of correction."""
+        When bleach_apply is True, optional checkbox 'Show bleach correction' toggles live preview of correction.
+
+        Callers must pass all_frames that own their data (e.g. .copy() taken while reader was open);
+        otherwise later .copy() in this UI or in bleach correction can segfault."""
         import numpy as np
         import sys
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -1474,6 +1431,11 @@ class ND2ConversionTab(QWidget):
         from PyQt6.QtCore import QTimer
         from PyQt6.QtGui import QKeySequence, QShortcut
 
+        # Ensure we own a contiguous copy so we don't hold references to reader memory (e.g. ND2/CZI
+        # after reader.close()). Otherwise later .copy() (e.g. in bleach correction) can segfault.
+        all_frames = np.ascontiguousarray(all_frames)
+        if not all_frames.flags.owndata:
+            all_frames = all_frames.copy()
         raw_frames = all_frames
         display_frames_ref = {'data': all_frames}  # update_frame reads from this; we can swap to corrected
 
@@ -2180,6 +2142,7 @@ class ND2ConversionTab(QWidget):
         """Preview ND2 file in a dialog with frame navigation"""
         
         try:
+            import numpy as np
             import nd2
             
             file_path = self.file_path.text()
@@ -2199,8 +2162,11 @@ class ND2ConversionTab(QWidget):
                 num_channels = sizes.get('C', 1)
                 num_z = sizes.get('Z', 1)
                 
-                # Load all frames (for navigation)
-                all_frames = nd2_reader.asarray()
+                # Load all frames and take an owned copy while reader is still open.
+                # nd2_reader.asarray() can return a view into reader-backed memory; after the
+                # context exits the reader closes and that memory is invalid. Any later .copy()
+                # (e.g. in preview or bleach correction) would then segfault.
+                all_frames = np.ascontiguousarray(nd2_reader.asarray()).copy()
             
             # Use unified preview UI (with optional bleach preview from tab settings)
             self._create_unified_preview_ui(
@@ -2305,6 +2271,8 @@ class ND2ConversionTab(QWidget):
                     # Likely (Y, X, T) - transpose
                     all_frames = all_frames.transpose(2, 0, 1)
                 
+                # Own a contiguous copy so preview/bleach code never touches reader-backed memory (avoids segfault on .copy()).
+                all_frames = np.ascontiguousarray(all_frames).copy()
                 # Use unified preview UI with full LUT controls (and optional bleach preview)
                 self._create_unified_preview_ui(
                     preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
@@ -2327,10 +2295,82 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _preview_czi(self):
-        """Preview CZI file (stub - to be implemented)"""
-        QMessageBox.information(self, "CZI Preview", 
-                              "CZI file preview is not yet fully implemented.\n"
-                              "Please use ND2, LIF, or TIFF files for preview.")
+        """Preview CZI file in a dialog with frame navigation. Uses czifile (https://pypi.org/project/czifile/)."""
+        try:
+            import numpy as np
+            import czifile
+        except ImportError:
+            QMessageBox.warning(
+                self, "Library Missing",
+                "CZI preview requires the 'czifile' package.\n\nInstall with: pip install czifile"
+            )
+            return
+        try:
+            file_path = self.file_path.text()
+            if not file_path:
+                QMessageBox.warning(self, "No File", "Please select a CZI file or folder first.")
+                return
+            path = Path(file_path)
+            if path.is_dir():
+                czi_in_dir = sorted(path.glob("*.czi")) + sorted(path.glob("*.CZI"))
+                if not czi_in_dir:
+                    QMessageBox.warning(self, "CZI Preview", "No CZI files found in the selected folder.")
+                    return
+                file_path = str(czi_in_dir[0])
+            preview_dialog = QDialog(self)
+            preview_dialog.setWindowTitle("File Preview")
+            preview_dialog.setMinimumSize(900, 700)
+            preview_dialog.setModal(False)
+            layout = QVBoxLayout()
+
+            all_frames = None
+            num_time = num_channels = num_z = 1
+            with czifile.CziFile(file_path) as czi_file:
+                axes = getattr(czi_file, "axes", None)
+                shape = getattr(czi_file, "shape", None)
+                if axes and shape and len(axes) == len(shape):
+                    num_time, num_channels, num_z = self._czi_dims_from_axes(axes, shape)
+                arr = czi_file.asarray() if hasattr(czi_file, "asarray") else None
+                if arr is not None and arr.size > 0:
+                    arr = np.ascontiguousarray(arr).copy()
+            if arr is not None and arr.size > 0:
+                if axes and len(axes) == len(arr.shape):
+                    c_preview, z_preview = self._czi_find_first_nonempty_plane(arr, axes)
+                    all_frames = self._czi_slice_to_t_y_x(arr, axes, z_index=z_preview, c_index=c_preview)
+                else:
+                    # Fallback when axes don't match array shape
+                    sh = arr.shape
+                    if len(sh) >= 5:
+                        all_frames = arr[:, 0, 0, :, :]
+                    elif len(sh) == 4:
+                        all_frames = arr[:, 0, :, :]
+                    elif len(sh) == 3:
+                        all_frames = arr
+                    else:
+                        all_frames = arr
+                    if axes and shape and len(axes) == len(shape):
+                        num_time, num_channels, num_z = self._czi_dims_from_axes(axes, shape)
+            if all_frames is not None and getattr(all_frames, "size", 0) == 0:
+                all_frames = None
+
+            if all_frames is None or all_frames.size == 0:
+                QMessageBox.warning(
+                    self, "CZI Preview",
+                    "Could not load CZI image data.\n\nInstall: pip install czifile"
+                )
+                return
+            if len(all_frames.shape) == 2:
+                all_frames = all_frames[np.newaxis, ...]
+            all_frames = np.ascontiguousarray(all_frames).copy()
+            self._create_unified_preview_ui(
+                preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                **self._get_bleach_preview_kwargs()
+            )
+            preview_dialog.setLayout(layout)
+            preview_dialog.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error Previewing CZI", f"Could not preview CZI file:\n{str(e)}")
+            self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _preview_tiff(self):
         """Preview TIFF file in a dialog with frame navigation"""
@@ -2421,6 +2461,8 @@ class ND2ConversionTab(QWidget):
             if len(all_frames.shape) == 2:
                 all_frames = all_frames[np.newaxis, ...]
             
+            # Own a contiguous copy so preview/bleach code never touches file-backed memory (avoids segfault on .copy()).
+            all_frames = np.ascontiguousarray(all_frames).copy()
             # Use unified preview UI with full LUT controls (and optional bleach preview)
             self._create_unified_preview_ui(
                 preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
@@ -2531,11 +2573,7 @@ class ND2ConversionTab(QWidget):
         if self.max_z_projection.isChecked():
             cmd_args.append('--max-z-projection')
         
-        # Channel selection
-        selected_channel = self.channel_select.currentIndex() - 1  # -1 means all
-        if selected_channel >= 0:
-            cmd_args.extend(['--channel', str(selected_channel)])
-        
+        # All channels are converted (no single-channel selection)
         if self.drift_correct.isChecked():
             cmd_args.append('--drift-correct')
         
@@ -2544,17 +2582,24 @@ class ND2ConversionTab(QWidget):
             bleach_methods = ['exponential', 'linear', 'histogram_matching', 'per_frame_minmax']
             cmd_args.append('--bleach-method')
             cmd_args.append(bleach_methods[self.bleach_method_combo.currentIndex()])
-            # Only pass --bleach-channels when user has flagged specific fluorescence channels
+            # Only pass --bleach-channels when user flagged specific channels in Channel options
             if getattr(self, 'bleach_channel_checks', None):
                 indices = [i for i, cb in enumerate(self.bleach_channel_checks) if cb.isChecked()]
                 if indices and len(indices) < len(self.bleach_channel_checks):
-                    # Not all channels selected: pass only the flagged ones
                     cmd_args.append('--bleach-channels')
                     cmd_args.extend(str(i) for i in indices)
+        # FI channels: only when saving channels separately
+        if self.separate_channels.isChecked() and getattr(self, 'fi_channel_checks', None):
+            fi_indices = [i for i, cb in enumerate(self.fi_channel_checks) if cb.isChecked()]
+            if fi_indices:
+                cmd_args.append('--fi-channels')
+                cmd_args.extend(str(i) for i in fi_indices)
         
-        # Pass pixel size if extracted
+        # Pass pixel size and time per frame if extracted (for TIFF metadata)
         if self.file_info and self.file_info.get('pixel_size'):
             cmd_args.extend(['--pixel-size', str(self.file_info['pixel_size'])])
+        if self.file_info and self.file_info.get('time_per_frame_min'):
+            cmd_args.extend(['--time-per-frame', str(self.file_info['time_per_frame_min'])])
         
         # Run in thread
         self.convert_btn.setEnabled(False)
@@ -2717,9 +2762,6 @@ class ND2ConversionTab(QWidget):
                 cmd_args.append('--combine-channels')
             if self.max_z_projection.isChecked():
                 cmd_args.append('--max-z-projection')
-            selected_channel = self.channel_select.currentIndex() - 1
-            if selected_channel >= 0:
-                cmd_args.extend(['--channel', str(selected_channel)])
             if self.drift_correct.isChecked():
                 cmd_args.append('--drift-correct')
             if self.bleach_correct.isChecked():
@@ -2731,6 +2773,11 @@ class ND2ConversionTab(QWidget):
                     if indices and len(indices) < len(self.bleach_channel_checks):
                         cmd_args.append('--bleach-channels')
                         cmd_args.extend(str(i) for i in indices)
+            if self.separate_channels.isChecked() and getattr(self, 'fi_channel_checks', None):
+                fi_indices = [i for i, cb in enumerate(self.fi_channel_checks) if cb.isChecked()]
+                if fi_indices:
+                    cmd_args.append('--fi-channels')
+                    cmd_args.extend(str(i) for i in fi_indices)
             if self.file_info and self.file_info.get('pixel_size'):
                 cmd_args.extend(['--pixel-size', str(self.file_info['pixel_size'])])
             self.parent_window.log_output(f"Starting ND2 conversion: {next_path.name} (file {self._conversion_current_index + 1}/{len(queue)})\n")
@@ -2794,7 +2841,6 @@ class ND2ConversionTab(QWidget):
             # Get conversion parameters
             max_frames = self.max_frames.value()
             separate_channels = self.separate_channels.isChecked()
-            selected_channel = self.channel_select.currentIndex() - 1  # -1 means all
 
             # Show progress
             self.convert_btn.setEnabled(False)
@@ -2845,19 +2891,7 @@ class ND2ConversionTab(QWidget):
                             indices[t_idx] = slice(0, num_time)
                             all_frames = all_frames[tuple(indices)]
                         
-                        # Handle channel selection - validate bounds first
-                        if selected_channel >= 0 and num_channels > 1:
-                            if 'C' in dims_str:
-                                c_idx = dims_str.index('C')
-                                # Validate bounds before accessing
-                                if c_idx < len(all_frames.shape) and selected_channel < all_frames.shape[c_idx]:
-                                    indices = [slice(None)] * len(all_frames.shape)
-                                    indices[c_idx] = selected_channel
-                                    all_frames = all_frames[tuple(indices)]
-                                    num_channels = 1
-                                else:
-                                    self.parent_window.log_output(f"  Warning: Selected channel {selected_channel + 1} is out of bounds (shape: {all_frames.shape}, channel dim: {c_idx}). Using all channels.\n")
-                        
+                        # All channels converted (no single-channel selection)
                         # Take first z-slice if multiple z-slices
                         if num_z > 1 and 'Z' in dims_str:
                             z_idx = dims_str.index('Z')
@@ -3025,12 +3059,11 @@ class ND2ConversionTab(QWidget):
             self.parent_window.progress_bar.setVisible(False)
     
     def _convert_czi(self):
-        """Convert CZI file(s) to TIFF"""
+        """Convert CZI file(s) to TIFF using czifile (https://pypi.org/project/czifile/)."""
         try:
             import numpy as np
             import tifffile
-            from aicsimageio import AICSImage
-            
+            import czifile
             file_path = Path(self.file_path.text())
             
             # Check if it's a folder or single file
@@ -3067,7 +3100,7 @@ class ND2ConversionTab(QWidget):
             # Get conversion parameters
             max_frames = self.max_frames.value()
             separate_channels = self.separate_channels.isChecked()
-            selected_channel = self.channel_select.currentIndex() - 1  # -1 means all
+            max_z_projection = self.max_z_projection.isChecked()
 
             # Show progress
             self.convert_btn.setEnabled(False)
@@ -3084,198 +3117,158 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.progress_bar.setValue(progress)
                     QApplication.processEvents()
                     
-                    # Load CZI file
-                    czi_reader = AICSImage(str(czi_file))
-                    try:
-                        # Get dimensions
-                        dims = czi_reader.dims
-                        if hasattr(dims, 'order'):
-                            dims_str = dims.order
-                        elif isinstance(dims, str):
-                            dims_str = dims
+                    # Load CZI file with czifile; use axes so T, C, Z are interpreted correctly
+                    with czifile.CziFile(str(czi_file)) as czi_f:
+                        axes = getattr(czi_f, "axes", None)
+                        shape = getattr(czi_f, "shape", None)
+                        if axes and shape and len(axes) == len(shape):
+                            num_time, num_channels, num_z = self._czi_dims_from_axes(axes, shape)
                         else:
-                            dims_str = str(dims)
-                        
-                        # Get data
-                        if hasattr(czi_reader, 'get_xarray_data'):
-                            xdata = czi_reader.get_xarray_data()
-                            all_frames = np.array(xdata)
-                            num_time = int(xdata.sizes.get('T', 1))
-                            num_channels = int(xdata.sizes.get('C', 1))
-                            num_z = int(xdata.sizes.get('Z', 1))
-                        else:
-                            all_frames = np.array(czi_reader.data)
-                            shape = all_frames.shape
-                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
-                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
-                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
-                        
-                        # Limit frames
+                            num_time, num_channels, num_z = 1, 1, 1
+                        arr = czi_f.asarray() if hasattr(czi_f, 'asarray') else np.array(czi_f)
+                    if arr is None or arr.size == 0:
+                        raise RuntimeError("czifile returned empty array")
+                    if axes and len(axes) == len(arr.shape):
                         num_time = min(num_time, max_frames)
-                        if 'T' in dims_str:
-                            t_idx = dims_str.index('T')
-                            indices = [slice(None)] * len(all_frames.shape)
-                            indices[t_idx] = slice(0, num_time)
-                            all_frames = all_frames[tuple(indices)]
-                        
-                        # Handle channel selection - validate bounds first
-                        if selected_channel >= 0 and num_channels > 1:
-                            if 'C' in dims_str:
-                                c_idx = dims_str.index('C')
-                                # Validate bounds before accessing
-                                if c_idx < len(all_frames.shape) and selected_channel < all_frames.shape[c_idx]:
-                                    indices = [slice(None)] * len(all_frames.shape)
-                                    indices[c_idx] = selected_channel
-                                    all_frames = all_frames[tuple(indices)]
-                                    num_channels = 1
-                                else:
-                                    self.parent_window.log_output(f"  Warning: Selected channel {selected_channel + 1} is out of bounds (shape: {all_frames.shape}, channel dim: {c_idx}). Using all channels.\n")
-                        
-                        # Take first z-slice if multiple z-slices
-                        if num_z > 1 and 'Z' in dims_str:
-                            z_idx = dims_str.index('Z')
-                            if z_idx < len(all_frames.shape):
-                                indices = [slice(None)] * len(all_frames.shape)
-                                indices[z_idx] = 0
-                                all_frames = all_frames[tuple(indices)]
-                                num_z = 1
-                        
-                        # Reshape to (T, C, Y, X) or (T, Y, X)
-                        # Don't use all_frames[0] as it might remove time dimension!
-                        # Instead, find and remove only non-time singleton dimensions
-                        if len(all_frames.shape) > 4:
-                            # Find time dimension first
-                            time_dim_idx = None
-                            if 'T' in dims_str:
-                                time_dim_idx = dims_str.index('T')
-                            
-                            # Remove dimensions that are not time, starting from the end
-                            while len(all_frames.shape) > 4:
-                                # Find a dimension to remove (not time dimension)
-                                dim_to_remove = None
-                                for i in range(len(all_frames.shape) - 1, -1, -1):  # Start from end
-                                    if time_dim_idx is None or i != time_dim_idx:
-                                        if all_frames.shape[i] == 1:
-                                            dim_to_remove = i
-                                            break
-                                
-                                if dim_to_remove is not None:
-                                    # Remove singleton dimension
-                                    all_frames = np.squeeze(all_frames, axis=dim_to_remove)
-                                    # Update dims_str if needed
-                                    if dim_to_remove < len(dims_str):
-                                        dims_str = dims_str[:dim_to_remove] + dims_str[dim_to_remove+1:]
-                                        if time_dim_idx is not None and dim_to_remove < time_dim_idx:
-                                            time_dim_idx -= 1
-                                else:
-                                    # No singleton dimensions found, take first of a non-time dimension
-                                    for i in range(len(all_frames.shape) - 1, -1, -1):
-                                        if time_dim_idx is None or i != time_dim_idx:
-                                            # Create indices to take first element of this dimension
-                                            indices = [slice(None)] * len(all_frames.shape)
-                                            indices[i] = 0
-                                            all_frames = all_frames[tuple(indices)]
-                                            # Update dims_str
-                                            if i < len(dims_str):
-                                                dims_str = dims_str[:i] + dims_str[i+1:]
-                                                if time_dim_idx is not None and i < time_dim_idx:
-                                                    time_dim_idx -= 1
-                                            break
-                        
-                        # Create output filename
-                        output_file = output_base / f"{czi_file.stem}.tif"
-                        
-                        # Save as TIFF - use more robust dimension handling
-                        current_shape = all_frames.shape
-                        channel_dim = None
-                        
-                        # Try to find channel dimension - look for dimension matching num_channels
-                        if num_channels > 1:
-                            for i, size in enumerate(current_shape):
-                                if size == num_channels:
-                                    channel_dim = i
-                                    break
-                        
-                        # Find time dimension to preserve it
-                        time_dim = None
-                        if 'T' in dims_str:
-                            t_idx = dims_str.index('T')
-                            # After slicing, find which dimension corresponds to time
-                            # Look for dimension with size matching num_time
-                            for i, size in enumerate(current_shape):
-                                if size == num_time and num_time > 1:
-                                    time_dim = i
-                                    break
-                            # If time dimension not found by size, try original position
-                            if time_dim is None and t_idx < len(current_shape):
-                                time_dim = t_idx
-                        
-                        if separate_channels and num_channels > 1 and channel_dim is not None:
-                            # Save each channel separately
-                            max_channels = min(num_channels, current_shape[channel_dim])
-                            for ch in range(max_channels):
-                                # Create indexing that selects one channel
-                                indices = [slice(None)] * len(current_shape)
-                                indices[channel_dim] = ch
-                                channel_data = all_frames[tuple(indices)]
-                                
-                                # Remove singleton dimensions but preserve time dimension
-                                # Only squeeze dimensions that are size 1 and not the time dimension
-                                axes_to_squeeze = []
-                                for i, size in enumerate(channel_data.shape):
-                                    if size == 1 and (time_dim is None or i != time_dim):
-                                        axes_to_squeeze.append(i)
-                                if axes_to_squeeze:
-                                    channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
-                                
-                                # Ensure we have at least 2D (add time dimension if needed)
-                                if len(channel_data.shape) == 2:
-                                    channel_data = channel_data[np.newaxis, ...]
-                                
-                                ch_output = output_base / f"{czi_file.stem}_ch{ch+1}.tif"
-                                tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
-                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
+                        if num_z > 1 and max_z_projection:
+                            # Keep Z, then max over Z so conversion respects "Max intensity projection" regardless of preview
+                            all_frames, dims_str, z_axis = self._czi_slice_to_t_c_z_y_x(arr, axes, max_frames=max_frames)
+                            if z_axis >= 0:
+                                all_frames = np.max(all_frames, axis=z_axis).astype(all_frames.dtype)
+                            dims_str = "".join(a for a in dims_str if a != "Z") or "TCYX"
                         else:
-                            # Combine channels or single channel
-                            if channel_dim is not None and num_channels > 1 and current_shape[channel_dim] > 1:
-                                # Use max projection across channels
-                                combined = np.max(all_frames, axis=channel_dim)
+                            # First Z only (or single Z)
+                            all_frames, dims_str = self._czi_slice_to_t_c_y_x(arr, axes, max_frames=max_frames)
+                        all_frames = np.ascontiguousarray(all_frames)
+                    else:
+                        # Fallback when axes not available
+                        sh = arr.shape
+                        dims_str = ""
+                        if len(sh) >= 5:
+                            num_time = min(int(sh[0]), max_frames)
+                            num_channels = int(sh[1])
+                            num_z = int(sh[2])
+                            all_frames = arr[:num_time, :, :, :, :]
+                            if max_z_projection and num_z > 1:
+                                all_frames = np.max(all_frames, axis=2).astype(all_frames.dtype)
                             else:
-                                # Single channel or no channel dimension
-                                combined = all_frames
+                                all_frames = all_frames[:, :, 0, :, :]
+                            all_frames = np.ascontiguousarray(all_frames)
+                            dims_str = "TCYX"
+                        elif len(sh) == 4:
+                            num_time = min(int(sh[0]), max_frames)
+                            num_channels = int(sh[1])
+                            num_z = 1
+                            all_frames = np.ascontiguousarray(arr[:num_time, :, :, :])
+                            dims_str = "TCYX"
+                        elif len(sh) == 3:
+                            num_time = min(int(sh[0]), max_frames)
+                            num_channels = 1
+                            num_z = 1
+                            all_frames = np.ascontiguousarray(arr[:num_time, :, :][:, np.newaxis, :, :])
+                            dims_str = "TCYX"
+                        else:
+                            raise RuntimeError(f"Unexpected CZI shape: {sh}")
+                    
+                    if all_frames is None or all_frames.size == 0:
+                        raise RuntimeError("No image data loaded")
+                    
+                    # Reshape to (T, C, Y, X) or (T, Y, X)
+                    if len(all_frames.shape) > 4:
+                        # Find time dimension first
+                        time_dim_idx = None
+                        if 'T' in dims_str:
+                            time_dim_idx = dims_str.index('T')
+                        
+                        # Remove dimensions that are not time, starting from the end
+                        while len(all_frames.shape) > 4:
+                            dim_to_remove = None
+                            for i in range(len(all_frames.shape) - 1, -1, -1):
+                                if time_dim_idx is None or i != time_dim_idx:
+                                    if all_frames.shape[i] == 1:
+                                        dim_to_remove = i
+                                        break
                             
-                            # Remove singleton dimensions but preserve time dimension
-                            # Only squeeze dimensions that are size 1 and not the time dimension
+                            if dim_to_remove is not None:
+                                all_frames = np.squeeze(all_frames, axis=dim_to_remove)
+                                if dim_to_remove < len(dims_str):
+                                    dims_str = dims_str[:dim_to_remove] + dims_str[dim_to_remove+1:]
+                                    if time_dim_idx is not None and dim_to_remove < time_dim_idx:
+                                        time_dim_idx -= 1
+                            else:
+                                for i in range(len(all_frames.shape) - 1, -1, -1):
+                                    if time_dim_idx is None or i != time_dim_idx:
+                                        indices = [slice(None)] * len(all_frames.shape)
+                                        indices[i] = 0
+                                        all_frames = all_frames[tuple(indices)]
+                                        if i < len(dims_str):
+                                            dims_str = dims_str[:i] + dims_str[i+1:]
+                                            if time_dim_idx is not None and i < time_dim_idx:
+                                                time_dim_idx -= 1
+                                        break
+                    
+                    # Create output filename
+                    output_file = output_base / f"{czi_file.stem}.tif"
+                    
+                    # Save as TIFF - use more robust dimension handling
+                    current_shape = all_frames.shape
+                    channel_dim = None
+                    
+                    if num_channels > 1:
+                        for i, size in enumerate(current_shape):
+                            if size == num_channels:
+                                channel_dim = i
+                                break
+                    
+                    time_dim = None
+                    if 'T' in dims_str:
+                        t_idx = dims_str.index('T')
+                        for i, size in enumerate(current_shape):
+                            if size == num_time and num_time > 1:
+                                time_dim = i
+                                break
+                        if time_dim is None and t_idx < len(current_shape):
+                            time_dim = t_idx
+                    
+                    if separate_channels and num_channels > 1 and channel_dim is not None:
+                        max_channels = min(num_channels, current_shape[channel_dim])
+                        for ch in range(max_channels):
+                            indices = [slice(None)] * len(current_shape)
+                            indices[channel_dim] = ch
+                            channel_data = all_frames[tuple(indices)]
                             axes_to_squeeze = []
-                            for i, size in enumerate(combined.shape):
+                            for i, size in enumerate(channel_data.shape):
                                 if size == 1 and (time_dim is None or i != time_dim):
                                     axes_to_squeeze.append(i)
                             if axes_to_squeeze:
-                                combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
-                            
-                            # Ensure we have at least 2D (add time dimension if needed)
-                            if len(combined.shape) == 2:
-                                combined = combined[np.newaxis, ...]
-                            
-                            # Log shape for debugging
-                            self.parent_window.log_output(f"  Saving with shape: {combined.shape}\n")
-                            
-                            tifffile.imwrite(str(output_file), combined, photometric='minisblack')
-                            self.parent_window.log_output(f"  Saved: {output_file.name}\n")
-                        
-                        self.parent_window.log_output(f"✓ Converted: {czi_file.name}\n")
-                        
-                    finally:
-                        if hasattr(czi_reader, 'close'):
-                            try:
-                                czi_reader.close()
-                            except:
-                                pass
+                                channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                            if len(channel_data.shape) == 2:
+                                channel_data = channel_data[np.newaxis, ...]
+                            ch_output = output_base / f"{czi_file.stem}_ch{ch+1}.tif"
+                            tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
+                            self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
+                    else:
+                        if channel_dim is not None and num_channels > 1 and current_shape[channel_dim] > 1:
+                            combined = np.max(all_frames, axis=channel_dim)
+                        else:
+                            combined = all_frames
+                        axes_to_squeeze = []
+                        for i, size in enumerate(combined.shape):
+                            if size == 1 and (time_dim is None or i != time_dim):
+                                axes_to_squeeze.append(i)
+                        if axes_to_squeeze:
+                            combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
+                        if len(combined.shape) == 2:
+                            combined = combined[np.newaxis, ...]
+                        self.parent_window.log_output(f"  Saving with shape: {combined.shape}\n")
+                        tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                        self.parent_window.log_output(f"  Saved: {output_file.name}\n")
+                    
+                    self.parent_window.log_output(f"✓ Converted: {czi_file.name}\n")
                 
                 except Exception as e:
                     self.parent_window.log_output(f"✗ Error converting {czi_file.name}: {str(e)}\n")
-                    QMessageBox.warning(self, "Conversion Error", 
-                                      f"Error converting {czi_file.name}:\n{str(e)}")
+                    QMessageBox.warning(self, "Conversion Error", f"Error converting {czi_file.name}:\n{str(e)}")
             
             # Complete
             self.parent_window.progress_bar.setValue(100)
@@ -3284,8 +3277,8 @@ class ND2ConversionTab(QWidget):
             
         except ImportError:
             QMessageBox.warning(self, "Library Missing", 
-                              "CZI conversion requires 'aicsimageio' and 'tifffile' libraries.\n\n"
-                              "Install with: pip install aicsimageio tifffile")
+                              "CZI conversion requires 'tifffile' and 'czifile'.\n\n"
+                              "Install with: pip install tifffile czifile")
         except Exception as e:
             QMessageBox.critical(self, "Conversion Error", f"CZI conversion failed:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
@@ -3307,6 +3300,10 @@ class ND2ConversionTab(QWidget):
             out["bleach_method"] = self.bleach_method_combo.currentIndex()
         if getattr(self, "bleach_channel_checks", None):
             out["bleach_fluorescence_channels"] = [cb.isChecked() for cb in self.bleach_channel_checks]
+        if getattr(self, "fi_channel_checks", None):
+            out["fi_channels"] = [cb.isChecked() for cb in self.fi_channel_checks]
+        if getattr(self, "zproject_channel_checks", None):
+            out["zproject_channels"] = [cb.isChecked() for cb in self.zproject_channel_checks]
         return out
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -3328,9 +3325,28 @@ class ND2ConversionTab(QWidget):
         if "bleach_fluorescence_channels" in data and getattr(self, "bleach_channel_checks", None):
             try:
                 states = data["bleach_fluorescence_channels"]
-                if isinstance(states, list) and len(states) == len(self.bleach_channel_checks):
-                    for cb, checked in zip(self.bleach_channel_checks, states):
-                        cb.setChecked(bool(checked))
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.bleach_channel_checks):
+                            self.bleach_channel_checks[i].setChecked(bool(checked))
+            except (TypeError, ValueError):
+                pass
+        if "fi_channels" in data and getattr(self, "fi_channel_checks", None):
+            try:
+                states = data["fi_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.fi_channel_checks):
+                            self.fi_channel_checks[i].setChecked(bool(checked))
+            except (TypeError, ValueError):
+                pass
+        if "zproject_channels" in data and getattr(self, "zproject_channel_checks", None):
+            try:
+                states = data["zproject_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.zproject_channel_checks):
+                            self.zproject_channel_checks[i].setChecked(bool(checked))
             except (TypeError, ValueError):
                 pass
 

@@ -1059,11 +1059,14 @@ Examples:
     # Get input mask filename stem for output naming
     input_mask_stem = Path(args.masks).stem
     
-    # Create output folder for organized file storage
-    output_dir = output_path.parent / f"{input_mask_stem}_analysis"
-    output_dir.mkdir(exist_ok=True)
+    # Use a single _analysis folder when --output is already inside _analysis; else one subfolder per mask
+    if output_path.parent.name == "_analysis":
+        output_dir = output_path.parent
+    else:
+        output_dir = output_path.parent / f"{input_mask_stem}_analysis"
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Move Excel file to output folder
+    # Excel path: same directory (no extra subfolder when using _analysis)
     excel_in_folder = output_dir / output_path.name
     # We'll save directly to the folder, so update output_path
     output_path = excel_in_folder

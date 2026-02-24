@@ -23,7 +23,7 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
           - "error": str if loading failed
     """
     pth_path = Path(pth_path)
-    out: dict[str, Any] = {"keys": [], "nchan": None, "nclasses": None, "first_layer_shape": None}
+    out: dict[str, Any] = {"keys": [], "nchan": None, "nclasses": None, "first_layer_shape": None, "output_layer_out_channels": None}
     try:
         import torch
         try:
@@ -126,6 +126,19 @@ def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
                     pass
             if out["nclasses"] is None:
                 out["nclasses"] = 3
+
+        # Output head: CPnet has self.output = batchconv(..., nout, ...); state_dict key is "output.conv.*" or "output.proj.*"
+        # First dimension of output weight = nout (3 or 4). Use this to confirm checkpoint matches built model (model.cp.nclasses).
+        for k, v in state.items():
+            key_str = str(k)
+            if "output" in key_str.lower() and "weight" in key_str and hasattr(v, "shape"):
+                try:
+                    s = getattr(v, "shape", ())
+                    if len(s) >= 2:
+                        out["output_layer_out_channels"] = int(s[0])
+                        break
+                except Exception:
+                    pass
 
     return out
 

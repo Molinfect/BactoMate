@@ -46,6 +46,7 @@ from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 from bactimate.gui.workers import WorkerThread
+from bactimate.tiff_metadata import read_calibration_from_path_or_original
 
 class AnalyzeMasksTab(QWidget):
     """Tab for analyzing existing masks"""
@@ -69,16 +70,93 @@ class AnalyzeMasksTab(QWidget):
         file_group = self._build_file_group()
         scroll_layout.addWidget(file_group)
 
-        combine_group = self._build_combine_group()
-        scroll_layout.addWidget(combine_group)
+        # Analyze FI — directly below Run analysis on masks (full width)
+        fi_group = DragDropGroupBox(
+            "Analyze FI",
+            parent=self,
+            on_drop_callback=self.handle_dropped_fi_file
+        )
+        fi_layout = QVBoxLayout()
+        fi_checkbox_layout = QHBoxLayout()
+        self.analyze_fi = QCheckBox("Analyze FI")
+        self.analyze_fi.setChecked(False)
+        fi_info_icon = create_info_icon(
+            "Analyze fluorescence intensity (FI) from a separate FI channel image.\n\n"
+            "The analysis adds Mean FI intensity (and optionally Contour FI + FI ratio if 'Contour FI' is on).\n\n"
+            "• With Batch (folder mode): No path needed. FI files are found by name next to the mask (see Batch (?) for naming). Works for one mask or many.\n"
+            "• Without Batch: Select one FI file (Browse FI File). Use when that same FI image applies to the current mask only, or to all masks in the folder.",
+            parent_widget=self
+        )
+        fi_checkbox_layout.addWidget(self.analyze_fi)
+        fi_checkbox_layout.addWidget(fi_info_icon)
+        self.analyze_fi_contour = QCheckBox("Contour FI")
+        self.analyze_fi_contour.setChecked(False)
+        self.analyze_fi_contour.setEnabled(False)
+        contour_fi_info_icon = create_info_icon(
+            "Compute contour-based FI metrics (boundary intensity + FI ratio).\n\n"
+            "When disabled: Only Mean FI Intensity will be calculated.\n"
+            "Contour thickness is ignored.",
+            parent_widget=self
+        )
+        fi_checkbox_layout.addWidget(self.analyze_fi_contour)
+        fi_checkbox_layout.addWidget(contour_fi_info_icon)
+        contour_thickness_label = QLabel("Contour thickness (pixels):")
+        contour_thickness_info_icon = create_info_icon(
+            "Thickness of the contour region used for FI intensity calculation (1-10 pixels).",
+            parent_widget=self
+        )
+        fi_checkbox_layout.addWidget(contour_thickness_label)
+        fi_checkbox_layout.addWidget(contour_thickness_info_icon)
+        self.fi_contour_thickness = QSpinBox()
+        self.fi_contour_thickness.setRange(1, 10)
+        self.fi_contour_thickness.setValue(1)
+        self.fi_contour_thickness.setEnabled(False)
+        self.fi_contour_thickness.setFixedWidth(80)
+        fi_checkbox_layout.addWidget(self.fi_contour_thickness)
+        self.batch_fi = QCheckBox("Batch")
+        self.batch_fi.setChecked(False)
+        self.batch_fi.setEnabled(False)
+        fi_checkbox_layout.addWidget(self.batch_fi)
+        batch_fi_info_icon = create_info_icon(
+            "Folder mode: pair each mask with FI files by name — no need to select an FI path.\n\n"
+            "Naming (FI files in same folder as mask, or parent if mask is in _segmentation_omni/unet):\n"
+            "• Mask: name_masks.tif → FI: name_fi.tif or name_fi_Channel.tif (e.g. name_fi_GFP.tif)\n"
+            "• If no match: try base stem (e.g. Sample_Phase60X_masks → Sample_fi_GFP.tif)\n"
+            "• Non-FI (phase): name.tif or base.tif is used for a morphology-only run and logged.\n\n"
+            "All matches are merged into one Excel per mask with Logs in the Summary sheet. Disable Batch to use one FI file for all masks (Browse FI File).",
+            parent_widget=self,
+        )
+        fi_checkbox_layout.addWidget(batch_fi_info_icon)
+        fi_checkbox_layout.addStretch()
+        fi_layout.addLayout(fi_checkbox_layout)
+        fi_file_layout = QHBoxLayout()
+        self.fi_file_path = QLineEdit()
+        self.fi_file_path.setPlaceholderText("Select FI channel TIFF file... (or drag and drop)")
+        self.fi_file_path.setMinimumWidth(200)
+        self.fi_file_path.setFont(file_font)
+        self.fi_file_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.fi_file_path.setEnabled(False)
+        self.fi_file_btn = QPushButton("Browse FI File...")
+        self.fi_file_btn.setFixedWidth(120)
+        self.fi_file_btn.setEnabled(False)
+        self.fi_file_btn.clicked.connect(self.select_fi_file)
+        fi_file_layout.addWidget(self.fi_file_path, 1)
+        fi_file_layout.addWidget(self.fi_file_btn, 0)
+        fi_layout.addLayout(fi_file_layout)
+        self.analyze_fi.toggled.connect(self._update_fi_file_state)
+        self.analyze_fi_contour.toggled.connect(self._update_fi_contour_state)
+        self.batch_fi.toggled.connect(self._update_fi_file_state)
+        fi_group.setLayout(fi_layout)
+        fi_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        scroll_layout.addWidget(fi_group)
 
-        # Analysis parameters - side-by-side layout (compact to avoid horizontal scroll)
+        # Analysis Parameters — below Analyze FI (Morphological, Size, Options, Reset) with spacing between blocks
         analysis_group = QGroupBox("Analysis Parameters")
         analysis_container_layout = QHBoxLayout()
-        analysis_container_layout.setSpacing(8)
+        analysis_container_layout.setSpacing(12)
         analysis_container_layout.setContentsMargins(6, 6, 6, 6)
-        
-        # First box: Basic and Morphological filters (fused into one)
+
+        # First box: Morphological filters
         morph_params_group = QGroupBox("Morphological Filters")
         morph_params_layout = QVBoxLayout()
         
@@ -242,8 +320,9 @@ class AnalyzeMasksTab(QWidget):
         morph_params_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         morph_params_group.setContentsMargins(4, 6, 4, 6)
         analysis_container_layout.addWidget(morph_params_group)
-        
-        # Second box: Size filters (side-by-side)
+        analysis_container_layout.addSpacing(16)
+
+        # Second box: Size filters
         size_group = QGroupBox("Size Filters")
         size_layout = QVBoxLayout()
         
@@ -386,199 +465,76 @@ class AnalyzeMasksTab(QWidget):
         size_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         size_group.setContentsMargins(4, 6, 4, 6)
         analysis_container_layout.addWidget(size_group)
-        
-        # Reset to defaults button for analysis parameters (at end of horizontal row)
-        reset_analysis_btn = QPushButton("Reset to Default")
-        reset_analysis_btn.setStyleSheet(
-            "QPushButton {"
-            "background-color: #7D8C9E;"
-            "color: white;"
-            "font-weight: bold;"
-            "padding: 6px;"
-            "border: none;"
-            "border-radius: 4px;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #6C7B8C;"
-            "}"
+        analysis_container_layout.addSpacing(16)
+
+        # Third box: Options (4 tick boxes stacked vertically)
+        options_group = QGroupBox("Options")
+        options_layout = QVBoxLayout()
+        options_layout.setSpacing(4)
+        detailed_row = QHBoxLayout()
+        self.detailed = QCheckBox("Detailed per-cell data")
+        self.detailed.setChecked(True)
+        detailed_info_icon = create_info_icon(
+            "Include detailed per-cell measurements in the Excel output (sheet 'Per-Cell Data').\n\n"
+            "When enabled, each row is one cell with:\n"
+            "• Frame, Cell ID, Cell Label\n"
+            "• Area (µm²), Length (µm), Width (µm)\n"
+            "• Aspect ratio, Eccentricity, Solidity\n"
+            "• If Analyze FI is used: Mean FI intensity, Contour FI intensity, FI ratio (Contour/Mean)\n\n"
+            "When disabled: Only the Summary sheet (total area and cell count per frame) is included.",
+            parent_widget=self
         )
+        detailed_row.addWidget(self.detailed)
+        detailed_row.addWidget(detailed_info_icon)
+        detailed_row.addStretch()
+        options_layout.addLayout(detailed_row)
+        vis_row = QHBoxLayout()
+        self.create_vis = QCheckBox("Create filter visualization")
+        self.create_vis.setChecked(True)
+        vis_info_icon = create_info_icon(
+            "Create visualization TIFF (green = accepted, red = rejected). Saved as filename_filter_visualization.tif.",
+            parent_widget=self
+        )
+        vis_row.addWidget(self.create_vis)
+        vis_row.addWidget(vis_info_icon)
+        vis_row.addStretch()
+        options_layout.addLayout(vis_row)
+        combined_summary_row = QHBoxLayout()
+        self.create_combined_summary = QCheckBox("Combine summary")
+        self.create_combined_summary.setChecked(False)
+        combined_summary_info_icon = create_info_icon(
+            "When analyzing a folder: create one extra Excel combining all Summary sheets ({folder_name}_combined_summary.xlsx).",
+            parent_widget=self
+        )
+        combined_summary_row.addWidget(self.create_combined_summary)
+        combined_summary_row.addWidget(combined_summary_info_icon)
+        combined_summary_row.addStretch()
+        options_layout.addLayout(combined_summary_row)
+        exclude_border_row = QHBoxLayout()
+        self.exclude_border_cb = QCheckBox("Exclude masks at borders")
+        self.exclude_border_cb.setChecked(False)
+        exclude_border_info_icon = create_info_icon(
+            "Exclude mask regions touching the image border from counts and area.",
+            parent_widget=self
+        )
+        exclude_border_row.addWidget(self.exclude_border_cb)
+        exclude_border_row.addWidget(exclude_border_info_icon)
+        exclude_border_row.addStretch()
+        options_layout.addLayout(exclude_border_row)
+        options_group.setLayout(options_layout)
+        options_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        options_group.setContentsMargins(4, 6, 4, 6)
+        analysis_container_layout.addWidget(options_group)
+        
+        # Reset to default — same blue as other BactiMate buttons (no custom grey style)
+        reset_analysis_btn = QPushButton("Reset to Default")
         reset_analysis_btn.setToolTip("Reset all analysis parameters to their default values")
         reset_analysis_btn.clicked.connect(self.reset_analysis_defaults)
         analysis_container_layout.addWidget(reset_analysis_btn)
         
         analysis_group.setLayout(analysis_container_layout)
         scroll_layout.addWidget(analysis_group)
-        
-        # Options and Analyze FI (side by side)
-        options_container_layout = QHBoxLayout()
-        
-        # Left box: Options
-        options_group = QGroupBox("Options")
-        options_layout = QVBoxLayout()
-        
-        # Row 1: Include detailed per-cell data + Create filter visualization
-        options_row1 = QHBoxLayout()
-        detailed_layout = QHBoxLayout()
-        self.detailed = QCheckBox("Include detailed per-cell data")
-        self.detailed.setChecked(True)  # Default to checked
-        detailed_info_icon = create_info_icon(
-            "Include detailed per-cell measurements in the Excel output.\n\n"
-            "Default: Enabled (checked)\n"
-            "Source: Optional output mode\n\n"
-            "When enabled: Excel file includes a separate sheet with measurements for each cell:\n"
-            "- Cell ID, area, width, length, aspect ratio, eccentricity, solidity, etc.\n\n"
-            "When disabled: Only summary data (total area per frame) is included.\n\n"
-            "Use when: You need individual cell measurements for further analysis.\n"
-            "Note: Creates larger Excel files but provides more detailed information.",
-            parent_widget=self
-        )
-        detailed_layout.addWidget(self.detailed)
-        detailed_layout.addWidget(detailed_info_icon)
-        detailed_layout.addStretch()
-        options_row1.addLayout(detailed_layout)
-        
-        vis_layout = QHBoxLayout()
-        self.create_vis = QCheckBox("Create filter visualization")
-        self.create_vis.setChecked(True)
-        vis_info_icon = create_info_icon(
-            "Create visualization TIFF showing which cells were accepted/rejected.\n\n"
-            "Default: Enabled (checked)\n"
-            "Source: Recommended for quality control\n\n"
-            "When enabled: Creates a TIFF file where:\n"
-            "- Green = accepted cells (passed all filters)\n"
-            "- Red = rejected cells (failed one or more filters)\n\n"
-            "Saved as: filename_filter_visualization.tif\n\n"
-            "Use to: Verify that filters are working correctly and adjust parameters if needed.\n"
-            "Note: Increases processing time but very useful for validation.",
-            parent_widget=self
-        )
-        vis_layout.addWidget(self.create_vis)
-        vis_layout.addWidget(vis_info_icon)
-        vis_layout.addStretch()
-        options_row1.addLayout(vis_layout)
-        options_layout.addLayout(options_row1)
-        
-        # Row 2: same structure as row 1 (two sub-layouts with stretch) so spacing matches
-        options_row2 = QHBoxLayout()
-        combined_summary_layout = QHBoxLayout()
-        self.create_combined_summary = QCheckBox("Create combined summary")
-        self.create_combined_summary.setChecked(False)
-        combined_summary_info_icon = create_info_icon(
-            "When analyzing a folder of mask files, create one extra Excel that combines all Summary sheets.\n\n"
-            "Output: {folder_name}_combined_summary.xlsx with one sheet:\n"
-            "- 'Combined Summary (wide)': one row per frame, one set of columns per file.\n\n"
-            "Use for: Downstream plotting, stats, or comparing many samples in one table.",
-            parent_widget=self
-        )
-        combined_summary_layout.addWidget(self.create_combined_summary)
-        combined_summary_layout.addWidget(combined_summary_info_icon)
-        combined_summary_layout.addStretch()
-        options_row2.addLayout(combined_summary_layout)
-        exclude_border_layout = QHBoxLayout()
-        self.exclude_border_cb = QCheckBox("Exclude masks at borders")
-        self.exclude_border_cb.setChecked(False)
-        exclude_border_info_icon = create_info_icon(
-            "When enabled, any mask region that touches the top, bottom, left or right edge of the image "
-            "is excluded from counts and area (useful to avoid partial cells at the border).",
-            parent_widget=self
-        )
-        exclude_border_layout.addWidget(self.exclude_border_cb)
-        exclude_border_layout.addWidget(exclude_border_info_icon)
-        exclude_border_layout.addStretch()
-        options_row2.addLayout(exclude_border_layout)
-        options_layout.addLayout(options_row2)
-        
-        options_group.setLayout(options_layout)
-        options_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        options_container_layout.addWidget(options_group)
-        
-        # Right box: Analyze FI (with drag-and-drop support)
-        fi_group = DragDropGroupBox(
-            "Analyze FI",
-            parent=self,
-            on_drop_callback=self.handle_dropped_fi_file
-        )
-        fi_layout = QVBoxLayout()
-        
-        fi_checkbox_layout = QHBoxLayout()
-        self.analyze_fi = QCheckBox("Analyze FI")
-        self.analyze_fi.setChecked(False)
-        fi_info_icon = create_info_icon(
-            "Analyze fluorescence intensity (FI) from a separate FI channel image.\n\n"
-            "When enabled: Requires selecting an FI channel TIFF file.\n"
-            "The analysis will always add:\n"
-            "- Mean FI intensity (average pixel intensity within each cell)\n\n"
-            "Optional (if 'Contour FI' is enabled):\n"
-            "- Contour FI intensity (average intensity at cell boundary)\n"
-            "- FI ratio (contour FI / mean FI)\n\n"
-            "Use when: You have a separate fluorescence channel image and want to quantify\n"
-            "fluorescence intensity per cell.",
-            parent_widget=self
-        )
-        fi_checkbox_layout.addWidget(self.analyze_fi)
-        fi_checkbox_layout.addWidget(fi_info_icon)
-        
-        # Optional contour FI analysis toggle + contour thickness (same line)
-        self.analyze_fi_contour = QCheckBox("Contour FI")
-        # Keep it OFF until Analyze FI is enabled (prevents confusing "checked but disabled" state)
-        self.analyze_fi_contour.setChecked(False)
-        self.analyze_fi_contour.setEnabled(False)  # Disabled until Analyze FI is enabled
-        contour_fi_info_icon = create_info_icon(
-            "Compute contour-based FI metrics (boundary intensity + FI ratio).\n\n"
-            "When disabled: Only Mean FI Intensity will be calculated.\n"
-            "Contour thickness is ignored.",
-            parent_widget=self
-        )
-        fi_checkbox_layout.addWidget(self.analyze_fi_contour)
-        fi_checkbox_layout.addWidget(contour_fi_info_icon)
 
-        contour_thickness_label = QLabel("Contour thickness (pixels):")
-        contour_thickness_info_icon = create_info_icon(
-            "Thickness of the contour region used for FI intensity calculation.\n\n"
-            "Default: 1 pixel (single-pixel boundary)\n"
-            "Range: 1-10 pixels\n\n"
-            "The contour is the region at the cell boundary.\n"
-            "Increasing thickness includes more pixels near the boundary.\n\n"
-            "Note: This affects both the preview visualization and the final analysis.",
-            parent_widget=self
-        )
-        fi_checkbox_layout.addWidget(contour_thickness_label)
-        fi_checkbox_layout.addWidget(contour_thickness_info_icon)
-        self.fi_contour_thickness = QSpinBox()
-        self.fi_contour_thickness.setRange(1, 10)
-        self.fi_contour_thickness.setValue(1)  # Default: 1 pixel (current behavior)
-        self.fi_contour_thickness.setEnabled(False)  # Disabled by default
-        self.fi_contour_thickness.setFixedWidth(80)
-        fi_checkbox_layout.addWidget(self.fi_contour_thickness)
-        fi_checkbox_layout.addStretch()
-        fi_layout.addLayout(fi_checkbox_layout)
-        
-        # FI file browse (only enabled when checkbox is checked) with drag-and-drop
-        fi_file_layout = QHBoxLayout()
-        self.fi_file_path = QLineEdit()
-        self.fi_file_path.setPlaceholderText("Select FI channel TIFF file... (or drag and drop)")
-        self.fi_file_path.setMinimumWidth(400)  # Slightly smaller since it's in a side box
-        self.fi_file_path.setFont(file_font)
-        self.fi_file_path.setSizePolicy(size_policy)
-        self.fi_file_path.setEnabled(False)  # Disabled by default
-        self.fi_file_btn = QPushButton("Browse FI File...")
-        self.fi_file_btn.setFixedWidth(120)
-        self.fi_file_btn.setEnabled(False)  # Disabled by default
-        self.fi_file_btn.clicked.connect(self.select_fi_file)
-        fi_file_layout.addWidget(self.fi_file_path, 0)
-        fi_file_layout.addWidget(self.fi_file_btn, 0)
-        fi_layout.addLayout(fi_file_layout)
-        
-        # Connect checkbox(es) to enable/disable FI file selection and contour options
-        self.analyze_fi.toggled.connect(self._update_fi_file_state)
-        self.analyze_fi_contour.toggled.connect(self._update_fi_contour_state)
-        
-        fi_group.setLayout(fi_layout)
-        fi_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        options_container_layout.addWidget(fi_group)
-        
-        scroll_layout.addLayout(options_container_layout)
-        
         # Preview and Analyze buttons
         # Preview button - modern styling applied via global stylesheet
         self.preview_btn = QPushButton("Preview Filter Effects")
@@ -593,8 +549,10 @@ class AnalyzeMasksTab(QWidget):
         self.analyze_btn.clicked.connect(self.analyze_masks)
         scroll_layout.addWidget(self.analyze_btn)
         
-        # Connect file path changes to update button states
+        # Connect file path changes to update button states and try to load metadata from TIFF
         self.file_path.textChanged.connect(self._update_analyze_button_state)
+        self.file_path.textChanged.connect(lambda: self._update_fi_file_state(None))
+        self.file_path.textChanged.connect(self._try_fill_metadata_from_path)
         # Initialize state
         self._update_analyze_button_state()
         
@@ -605,9 +563,9 @@ class AnalyzeMasksTab(QWidget):
         self.setLayout(layout)
 
     def _build_file_group(self) -> QWidget:
-        """Build the mask file/folder input group with path line edit and browse buttons."""
+        """Build the mask file/folder input group: Path + info (same as other tabs), path line edit, browse buttons."""
         file_group = DragDropGroupBox(
-            "Mask File/Folder",
+            "Run analysis on masks",
             parent=self,
             on_drop_callback=self.handle_dropped_path_analyze
         )
@@ -615,47 +573,43 @@ class AnalyzeMasksTab(QWidget):
         file_font.setPointSize(12)
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         file_layout = QHBoxLayout()
+        file_layout.addWidget(QLabel("Path:"))
+        file_layout.addWidget(create_info_icon(
+            "Path to a mask TIFF file or folder of mask TIFFs to analyze.\n\n"
+            "Single file: one *_analysis.xlsx and optional filter visualization TIFF.\n"
+            "Folder: one analysis Excel per mask file (and optional combined summary if enabled in Options).\n\n"
+            "You can select the _segmentation_omni or _segmentation_unet folder even if it contains an overlays/ "
+            "subfolder or *_filter_visualization.tif files — those are ignored; only *_masks.tif (and similar) are used.",
+            self,
+        ))
         self.file_path = QLineEdit()
         self.file_path.setPlaceholderText("Select a mask TIFF file or folder... (or drag and drop)")
-        self.file_path.setMinimumWidth(500)
+        self.file_path.setMinimumWidth(200)
         self.file_path.setFont(file_font)
-        self.file_path.setSizePolicy(size_policy)
+        self.file_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         file_btn = QPushButton("Browse File...")
         file_btn.setFixedWidth(120)
         file_btn.clicked.connect(self.select_file)
         folder_btn = QPushButton("Browse Folder...")
         folder_btn.setFixedWidth(130)
         folder_btn.clicked.connect(self.select_folder)
-        file_layout.addWidget(self.file_path, 0)
+        file_layout.addWidget(self.file_path, 1)
         file_layout.addWidget(file_btn, 0)
         file_layout.addWidget(folder_btn, 0)
+        # Combine uses the same folder as Path (from Browse Folder); add info + button as last in block
+        file_layout.addWidget(create_info_icon(
+            "Combine: merge Summary sheets from analysis Excel files in the folder currently in Path.\n\n"
+            "Use Browse Folder to select a folder that contains *_analysis.xlsx (or subfolders). "
+            "Saves {folder_name}_combined_summary.xlsx in that folder with sheet 'Combined Summary (wide)'.",
+            self,
+        ))
+        combine_btn = QPushButton("Combine")
+        combine_btn.setFixedWidth(100)
+        combine_btn.setToolTip("Combine Summary sheets from the folder in Path (select a folder with Browse Folder first).")
+        combine_btn.clicked.connect(self._combine_summaries_from_folder)
+        file_layout.addWidget(combine_btn, 0)
         file_group.setLayout(file_layout)
         return file_group
-
-    def _build_combine_group(self) -> QGroupBox:
-        """Build the combine summaries from folder group."""
-        file_font = QFont()
-        file_font.setPointSize(12)
-        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        combine_group = QGroupBox("Combine existing summaries from folder")
-        combine_layout = QHBoxLayout()
-        self.combine_folder_path = QLineEdit()
-        self.combine_folder_path.setPlaceholderText("Folder with *_analysis.xlsx (subfolders)...")
-        self.combine_folder_path.setMinimumWidth(500)
-        self.combine_folder_path.setFont(file_font)
-        self.combine_folder_path.setSizePolicy(size_policy)
-        combine_browse_btn = QPushButton("Browse...")
-        combine_browse_btn.setFixedWidth(120)
-        combine_browse_btn.clicked.connect(self._browse_combine_folder)
-        combine_btn = QPushButton("Combine")
-        combine_btn.setFixedWidth(130)
-        combine_btn.setToolTip("Read all Summary sheets from analysis Excel files in the selected folder and its subfolders, combine into one wide-format table, and save as {folder_name}_combined_summary.xlsx in the selected folder.")
-        combine_btn.clicked.connect(self._combine_summaries_from_folder)
-        combine_layout.addWidget(self.combine_folder_path, 0)
-        combine_layout.addWidget(combine_browse_btn, 0)
-        combine_layout.addWidget(combine_btn, 0)
-        combine_group.setLayout(combine_layout)
-        return combine_group
     
     def _update_analyze_button_state(self):
         """Update analyze and preview button enabled state based on whether file/folder is selected"""
@@ -664,7 +618,50 @@ class AnalyzeMasksTab(QWidget):
             self.analyze_btn.setEnabled(has_path)
         if hasattr(self, 'preview_btn'):
             self.preview_btn.setEnabled(has_path)
-    
+
+    def _try_fill_metadata_from_path(self):
+        """When path is a TIFF file (or folder with a TIFF), read calibration from tiff_metadata and fill pixel size."""
+        path_text = (self.file_path.text() or "").strip()
+        if not path_text:
+            return
+        path = Path(path_text)
+        tiff_path = None
+        if path.is_file() and path.suffix.lower() in (".tif", ".tiff"):
+            tiff_path = path
+        elif path.is_dir():
+            # Prefer mask/source TIFFs over trajectory TIFFs so calibration comes from acquisition metadata
+            all_tifs = sorted(path.glob("*.tif")) + sorted(path.glob("*.tiff"))
+            for f in all_tifs:
+                if not f.is_file():
+                    continue
+                if f.name.endswith("_trajectories.tif"):
+                    continue
+                tiff_path = f
+                break
+            else:
+                tiff_path = next((f for f in all_tifs if f.is_file()), None)
+        if tiff_path is None:
+            return
+        try:
+            ps, tp = read_calibration_from_path_or_original(tiff_path)
+            if ps > 0 or tp > 0:
+                if ps > 0:
+                    self.pixel_size.setValue(ps)
+                    self.pixel_size_indicator.setText("(from file)")
+                    self.pixel_size_indicator.setStyleSheet("color: #4CAF50; font-size: 9pt;")
+                    self.pixel_size_indicator.setFixedWidth(100)
+                    self.pixel_size_indicator.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.pixel_size_indicator.show()
+                    self.pixel_size_metadata_loaded = True
+                if hasattr(self, "parent_window") and getattr(self.parent_window, "shared_metadata", None) is not None:
+                    if ps > 0:
+                        self.parent_window.shared_metadata["pixel_size"] = ps
+                    if tp > 0:
+                        self.parent_window.shared_metadata["time_per_frame_min"] = tp
+                    self.parent_window.update_all_tabs_with_metadata()
+        except Exception:
+            pass
+
     def select_file(self):
         """Open file dialog to select a mask TIFF file"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -713,17 +710,22 @@ class AnalyzeMasksTab(QWidget):
             QMessageBox.warning(self, "Invalid File", 
                               "Please drop a valid TIFF file (.tif or .tiff).")
     
-    def _update_fi_file_state(self, checked):
-        """Enable/disable FI file selection and contour thickness based on checkbox state"""
-        self.fi_file_path.setEnabled(checked)
+    def _update_fi_file_state(self, checked=None):
+        """Enable/disable FI file selection, Batch checkbox, and contour thickness based on state."""
+        if checked is None:
+            checked = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+        batch_on = bool(getattr(self, "batch_fi", None) and self.batch_fi.isChecked())
+        # Batch only available when Path is a folder and Analyze FI is on
+        if hasattr(self, "batch_fi"):
+            self.batch_fi.setEnabled(checked and self._is_folder_mode())
+        # Single FI path row: enabled only when Analyze FI on and Batch off
+        self.fi_file_path.setEnabled(checked and not batch_on)
         if hasattr(self, 'fi_file_btn'):
-            self.fi_file_btn.setEnabled(checked)
+            self.fi_file_btn.setEnabled(checked and not batch_on)
         if hasattr(self, 'analyze_fi_contour'):
             self.analyze_fi_contour.setEnabled(checked)
-            # When FI is disabled, force contour FI off to avoid a confusing checked state
             if not checked:
                 self.analyze_fi_contour.setChecked(False)
-            # When FI is enabled, default contour FI to ON only if user hasn't chosen yet
             elif checked and not self.analyze_fi_contour.isChecked() and not getattr(self, "_fi_contour_user_set", False):
                 self.analyze_fi_contour.setChecked(True)
         self._update_fi_contour_state()
@@ -744,18 +746,128 @@ class AnalyzeMasksTab(QWidget):
             return False
         path = Path(self.file_path.text())
         return path.exists() and path.is_dir()
+
+    def _resolve_fi_paths_for_mask(self, mask_path: Path) -> list[Path]:
+        """For batch FI: find all FI files for this mask.
+        Tries: stem_fi / stem_fi_* (e.g. EM13748_AnTC_003_Phase60X_fi.tif).
+        If none found, tries base stem: base_fi / base_fi_* where base = stem without last segment
+        (e.g. EM13748_AnTC_003_Phase60X -> base EM13748_AnTC_003 -> EM13748_AnTC_003_fi_GFP.tif).
+        Search dir: mask's parent, or parent's parent if mask is in _segmentation*.
+        """
+        parent = mask_path.parent
+        if parent.name.startswith("_segmentation"):
+            search_dir = parent.parent
+        else:
+            search_dir = parent
+        stem = mask_path.stem.replace("_masks", "")
+
+        def matches_stem(name: str, s: str) -> bool:
+            if name == f"{s}_fi":
+                return True
+            if name.startswith(f"{s}_fi_"):
+                return True
+            return False
+
+        found: list[Path] = []
+        for f in search_dir.iterdir():
+            if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                continue
+            if matches_stem(f.stem, stem):
+                found.append(f)
+        if not found and "_" in stem:
+            base = stem.rsplit("_", 1)[0]
+            for f in search_dir.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if matches_stem(f.stem, base):
+                    found.append(f)
+        return sorted(found, key=lambda p: p.name.lower())
+
+    def _resolve_phase_path_for_mask(self, mask_path: Path) -> Path | None:
+        """For batch FI: find the non-FI (phase/original) TIFF that matches this mask, if any.
+        Looks for stem.tif or base.tif in the same search dir as FI, excluding any file with _fi in the name.
+        """
+        parent = mask_path.parent
+        if parent.name.startswith("_segmentation"):
+            search_dir = parent.parent
+        else:
+            search_dir = parent
+        stem = mask_path.stem.replace("_masks", "")
+        for f in search_dir.iterdir():
+            if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                continue
+            if "_fi" in f.stem.lower():
+                continue
+            if f.stem == stem:
+                return f
+        if "_" in stem:
+            base = stem.rsplit("_", 1)[0]
+            for f in search_dir.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if "_fi" in f.stem.lower():
+                    continue
+                if f.stem == base:
+                    return f
+        return None
+
+    def _fi_output_suffix(self, fi_path: Path | None, stem: str) -> str:
+        """Return suffix for analysis output filename: '' for single stem_fi, '_ChannelName' for stem_fi_ChannelName.tif.
+        Also supports base stem (e.g. stem=EM13748_AnTC_003_Phase60X, fi=EM13748_AnTC_003_fi_GFP -> _GFP).
+        """
+        if fi_path is None:
+            return ""
+        name = fi_path.stem
+        if name == f"{stem}_fi":
+            return ""
+        prefix = f"{stem}_fi_"
+        if name.startswith(prefix):
+            return "_" + name[len(prefix):]
+        base = stem.rsplit("_", 1)[0] if "_" in stem else stem
+        if name == f"{base}_fi":
+            return "_fi"
+        if name.startswith(f"{base}_fi_"):
+            return "_" + name[len(base) + 4:]
+        return "_fi"
     
-    def _browse_combine_folder(self):
-        """Open folder dialog for 'Combine summaries from folder' path."""
-        folder_path = QFileDialog.getExistingDirectory(
-            self, "Select Folder Containing Analysis Excel Files", get_default_browse_dir()
-        )
-        if folder_path:
-            self.combine_folder_path.setText(folder_path)
-    
-    def _build_combined_summary_excel(self, excel_paths, output_path):
-        """Build long + wide combined summary from a list of analysis Excel paths. Returns True on success."""
+    def _match_log_from_folder_tasks(self) -> tuple[int, int, list[str]]:
+        """Build (n_masks, n_tif, lines) from folder_fi_tasks and folder_results for the Logs column."""
+        tasks = getattr(self, "folder_fi_tasks", [])
+        results = getattr(self, "folder_results", [])
+        if len(results) != len(tasks):
+            return 0, 0, []
+        phase_per_mask = getattr(self, "folder_phase_per_mask", {})
+        seen_stem: set[str] = set()
+        lines: list[str] = []
+        mask_stems: set[str] = set()
+        n_tif = 0
+        for i, (mask_file, fi_path, _out) in enumerate(tasks):
+            if not results[i]:
+                continue
+            stem = mask_file.stem.replace("_masks", "")
+            if fi_path is not None:
+                tif_name = fi_path.name
+                n_tif += 1
+            else:
+                phase_path = phase_per_mask.get(mask_file)
+                tif_name = phase_path.name if phase_path else "—"
+                if phase_path:
+                    n_tif += 1
+            mask_stems.add(stem)
+            if stem not in seen_stem:
+                seen_stem.add(stem)
+                lines.append(f"{stem}_masks -> {tif_name}")
+            else:
+                lines.append(f"{stem}_masks with {tif_name}")
+        return len(mask_stems), n_tif, lines
+
+    def _build_combined_summary_excel(self, excel_paths, output_path, match_log=None):
+        """Build long + wide combined summary from a list of analysis Excel paths. Returns True on success.
+        If match_log is (n_masks, n_tif, lines), writes Logs in column G (G1=Logs, G2=count, G3+=lines).
+        If output_path exists and already has Logs in G, appends the new lines to column G instead of overwriting.
+        """
         import pandas as pd
+        from openpyxl import load_workbook
         if not excel_paths:
             return False
         frames_long = []
@@ -775,11 +887,9 @@ class AnalyzeMasksTab(QWidget):
         if not frames_long:
             return False
         long_df = pd.concat(frames_long, ignore_index=True)
-        # Ensure column order: File, Frame, then rest
         cols = [c for c in ["File", "Frame"] if c in long_df.columns]
         cols += [c for c in long_df.columns if c not in cols]
         long_df = long_df[cols]
-        # Wide format: one row per frame, one set of columns per file
         wide_df = None
         try:
             frames = sorted(long_df["Frame"].dropna().unique().astype(int).tolist())
@@ -794,22 +904,214 @@ class AnalyzeMasksTab(QWidget):
             wide_df = None
         if wide_df is None or wide_df.empty:
             return False
+        out_path = Path(output_path)
+        existing_log_lines: list[str] = []
+        if out_path.exists() and match_log is not None:
+            try:
+                wb = load_workbook(output_path, data_only=True)
+                sheet_name = "Combined Summary (wide)"
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    for r in range(2, min(ws.max_row + 1, 5000)):
+                        val = ws.cell(row=r, column=7).value
+                        if val is None or not str(val).strip():
+                            continue
+                        s = str(val).strip()
+                        # Keep only pair lines (mask -> tif / mask with tif), not count lines
+                        if " -> " in s or " with " in s:
+                            existing_log_lines.append(s)
+                wb.close()
+            except Exception:
+                pass
         try:
             with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
                 wide_df.to_excel(writer, sheet_name="Combined Summary (wide)", index=False)
+            if match_log is not None:
+                n_masks, n_tif, lines = match_log
+                wb = load_workbook(output_path)
+                ws = wb["Combined Summary (wide)"]
+                ws["G1"] = "Logs"
+                ws["G2"] = f"{n_masks} mask(s) and {n_tif} tif file(s) matched"
+                # Append: existing pair lines (previous runs) then this run's pairs
+                row = 3
+                for line in existing_log_lines:
+                    ws.cell(row=row, column=7, value=line)
+                    row += 1
+                for line in lines:
+                    ws.cell(row=row, column=7, value=line)
+                    row += 1
+                wb.save(output_path)
+                wb.close()
         except Exception:
             return False
         return True
-    
+
+    def _write_logs_to_individual_excel(self, output_path: Path, mask_file: Path, fi_path: Path | None, display_tif_name: str | None = None) -> None:
+        """Write Logs to column G of the Summary sheet (G1=Logs, G2=mask -> tif). Use display_tif_name when fi_path is None (e.g. phase file name)."""
+        if not output_path.exists():
+            return
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(output_path)
+            if "Summary" not in wb.sheetnames:
+                wb.close()
+                return
+            ws = wb["Summary"]
+            stem = mask_file.stem.replace("_masks", "")
+            tif_name = fi_path.name if fi_path else (display_tif_name if display_tif_name else "—")
+            ws["G1"] = "Logs"
+            ws["G2"] = f"{stem}_masks -> {tif_name}"
+            wb.save(output_path)
+            wb.close()
+        except Exception:
+            pass
+
+    def _merge_fi_channels_into_one_excel(self) -> None:
+        """After folder analysis: one Excel per mask with all FI columns and Logs in Summary.
+        - 1 FI channel: copy that file to stem_analysis.xlsx, add Logs, remove suffixed file.
+        - 2+ FI channels: merge Per-Cell Data (morphology + FI columns), one Summary with Logs, remove per-channel files.
+        """
+        import shutil
+        import pandas as pd
+        tasks = getattr(self, "folder_fi_tasks", [])
+        results = getattr(self, "folder_results", [])
+        if len(results) != len(tasks):
+            return
+        path_replacements: dict[str, str] = {}  # per-channel path -> merged path (for folder_output_paths)
+        by_stem: dict[str, list[tuple[Path, Path, str]]] = {}
+        for i, (mask_file, fi_path, output_path) in enumerate(tasks):
+            if not results[i] or not output_path.exists():
+                continue
+            stem = mask_file.stem.replace("_masks", "")
+            if stem not in by_stem:
+                by_stem[stem] = []
+            channel_label = "FI"
+            if fi_path is not None:
+                suffix = self._fi_output_suffix(fi_path, stem)
+                channel_label = (suffix[1:] if suffix.startswith("_") else "FI") or "FI"
+            by_stem[stem].append((output_path, fi_path, channel_label))
+        phase_per_mask = getattr(self, "folder_phase_per_mask", {})
+        for stem, group in by_stem.items():
+            phase_entries = [(p, fp, lbl) for p, fp, lbl in group if fp is None]
+            fi_entries = [(p, fp, lbl) for p, fp, lbl in group if fp is not None]
+            if not fi_entries:
+                continue
+            analysis_dir = group[0][0].parent
+            merged_path = analysis_dir / f"{stem}_analysis.xlsx"
+            if len(fi_entries) == 1 and not phase_entries:
+                # Single FI: copy to stem_analysis.xlsx, add Logs, remove suffixed file
+                single_path, single_fp, _ = fi_entries[0]
+                if single_path != merged_path:
+                    try:
+                        shutil.copy2(single_path, merged_path)
+                        self._write_logs_to_individual_excel(merged_path, Path(stem + "_masks.tif"), single_fp)
+                        path_replacements[str(single_path)] = str(merged_path)
+                        single_path.unlink()
+                        self.parent_window.log_output(f"Single FI channel -> {merged_path.name}\n")
+                    except Exception as e:
+                        get_logger().debug("Single-FI consolidate failed: %s", e, exc_info=True)
+                else:
+                    try:
+                        from openpyxl import load_workbook
+                        wb = load_workbook(merged_path)
+                        if "Summary" in wb.sheetnames:
+                            ws = wb["Summary"]
+                            ws["G1"] = "Logs"
+                            ws["G2"] = f"{stem}_masks -> {single_fp.name}"
+                            wb.save(merged_path)
+                            wb.close()
+                    except Exception:
+                        pass
+                continue
+            # 2+ FI channels (or 1 phase + 1+ FI): merge into one Excel
+            try:
+                summary_df = None
+                merged = None
+                first_excel = phase_entries[0][0] if phase_entries else fi_entries[0][0]
+                key_cols = ["Frame", "Cell_ID"] if "Cell_ID" in pd.read_excel(first_excel, sheet_name="Per-Cell Data", nrows=0).columns else ["Frame", "Cell Label"]
+                fi_col_names = ["Mean FI Intensity", "Contour FI Intensity", "FI Ratio (Contour/Mean)"]
+                if phase_entries:
+                    phase_path = phase_entries[0][0]
+                    df_phase = pd.read_excel(phase_path, sheet_name="Per-Cell Data")
+                    summary_df = pd.read_excel(phase_path, sheet_name="Summary")
+                    if df_phase is not None and not df_phase.empty:
+                        merged = df_phase.copy()
+                for idx, (excel_path, _fp, channel_label) in enumerate(fi_entries):
+                    df = pd.read_excel(excel_path, sheet_name="Per-Cell Data")
+                    if df is None or df.empty:
+                        continue
+                    if summary_df is None:
+                        summary_df = pd.read_excel(excel_path, sheet_name="Summary")
+                    has_fi = [c for c in fi_col_names if c in df.columns]
+                    if not has_fi:
+                        continue
+                    rename = {c: f"{c} ({channel_label})" for c in has_fi}
+                    sub = df.rename(columns=rename)
+                    if merged is None:
+                        merged = sub.copy()
+                    else:
+                        merge_on = [c for c in key_cols if c in merged.columns and c in sub.columns]
+                        fi_new = [c for c in sub.columns if c not in merge_on and "FI" in c and c not in merged.columns]
+                        if merge_on and fi_new:
+                            merged = merged.merge(sub[merge_on + fi_new], on=merge_on, how="outer")
+                if summary_df is not None and merged is not None and not merged.empty and "Frame" in merged.columns:
+                    with pd.ExcelWriter(merged_path, engine="openpyxl") as writer:
+                        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+                        merged.to_excel(writer, sheet_name="Per-Cell Data", index=False)
+                    n_matched = len(fi_entries) + (1 if phase_entries else 0)
+                    phase_path_display = next(
+                        (phase_per_mask[m].name for m in phase_per_mask if m.stem.replace("_masks", "") == stem and phase_per_mask.get(m)),
+                        None,
+                    )
+                    try:
+                        from openpyxl import load_workbook
+                        wb = load_workbook(merged_path)
+                        if "Summary" in wb.sheetnames:
+                            ws = wb["Summary"]
+                            ws["G1"] = "Logs"
+                            ws["G2"] = f"1 mask(s) and {n_matched} tif file(s) matched"
+                            row = 3
+                            if phase_path_display:
+                                ws.cell(row=row, column=7, value=f"{stem}_masks -> {phase_path_display}")
+                                row += 1
+                            for i, (_p, fp, _lbl) in enumerate(fi_entries):
+                                line = f"{stem}_masks -> {fp.name}" if (row == 3) else f"{stem}_masks with {fp.name}"
+                                ws.cell(row=row, column=7, value=line)
+                                row += 1
+                            wb.save(merged_path)
+                        wb.close()
+                    except Exception:
+                        pass
+                    self.parent_window.log_output(f"Merged {n_matched} run(s) into {merged_path.name}\n")
+                    for excel_path, _fp, _lbl in phase_entries + fi_entries:
+                        if excel_path != merged_path and excel_path.exists():
+                            path_replacements[str(excel_path)] = str(merged_path)
+                            try:
+                                excel_path.unlink()
+                                self.parent_window.log_output(f"  Removed {excel_path.name}\n")
+                            except Exception:
+                                pass
+            except Exception as e:
+                get_logger().debug("Merge FI channels failed: %s", e, exc_info=True)
+        # So combined summary and completion message use the merged path(s)
+        if path_replacements and getattr(self, "folder_output_paths", None):
+            self.folder_output_paths = list(dict.fromkeys([path_replacements.get(p, p) for p in self.folder_output_paths]))
+
     def _combine_summaries_from_folder(self):
-        """Combine Summary sheets from all analysis Excel files in the folder given by combine_folder_path."""
-        path_text = self.combine_folder_path.text().strip()
+        """Combine Summary sheets from the folder in Path (same as Browse Folder)."""
+        path_text = self.file_path.text().strip()
         if not path_text:
-            QMessageBox.warning(self, "No Folder", "Please select a folder (Browse...) that contains analysis Excel files.")
+            QMessageBox.warning(
+                self, "No Folder",
+                "Select a folder in Path first (use Browse Folder). Combine uses that folder.",
+            )
             return
         folder = Path(path_text)
         if not folder.exists() or not folder.is_dir():
-            QMessageBox.warning(self, "Invalid Folder", "The selected path is not an existing folder.")
+            QMessageBox.warning(
+                self, "Invalid Folder",
+                "Path must be a folder for Combine. Use Browse Folder to select a folder.",
+            )
             return
         # Search in folder and all subfolders (one Excel per subfolder layout)
         excel_paths = list(folder.rglob("*_analysis.xlsx")) + list(folder.rglob("*_masks_analysis.xlsx"))
@@ -887,6 +1189,8 @@ class AnalyzeMasksTab(QWidget):
             d["create_combined_summary"] = self.create_combined_summary.isChecked()
         if hasattr(self, "analyze_fi"):
             d["analyze_fi"] = self.analyze_fi.isChecked()
+        if hasattr(self, "batch_fi"):
+            d["batch_fi"] = self.batch_fi.isChecked()
         if hasattr(self, "analyze_fi_contour"):
             d["analyze_fi_contour"] = self.analyze_fi_contour.isChecked()
         if hasattr(self, "fi_contour_thickness"):
@@ -914,6 +1218,8 @@ class AnalyzeMasksTab(QWidget):
             self.create_combined_summary.setChecked(bool(data["create_combined_summary"]))
         if "analyze_fi" in data and hasattr(self, "analyze_fi"):
             self.analyze_fi.setChecked(bool(data["analyze_fi"]))
+        if "batch_fi" in data and hasattr(self, "batch_fi"):
+            self.batch_fi.setChecked(bool(data["batch_fi"]))
         if "analyze_fi_contour" in data and hasattr(self, "analyze_fi_contour"):
             self.analyze_fi_contour.setChecked(bool(data["analyze_fi_contour"]))
         if "fi_contour_thickness" in data and hasattr(self, "fi_contour_thickness"):
@@ -949,9 +1255,10 @@ class AnalyzeMasksTab(QWidget):
             all_tif_files = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | \
                            set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
             
-            # Filter out files that already have _masks in name and filter visualization files
+            # Filter out files that already have _masks in name and exclude visualization/overlay files (not masks)
             for f in all_tif_files:
-                if "_masks" not in f.name.lower() and "_filter_visualization" not in f.name.lower():
+                name_lower = f.name.lower()
+                if "_masks" not in name_lower and "_filter_visualization" not in name_lower and "_overlay" not in name_lower:
                     mask_files_set.add(f)
             
             # Convert to sorted list
@@ -1639,13 +1946,16 @@ class AnalyzeMasksTab(QWidget):
             QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
             return
         
+        # Run the package script as a module so we always use bactimate.scripts.analyze_cell_areas
+        script_path = "-m"
+        script_module = "bactimate.scripts.analyze_cell_areas"
+        self._analyze_script_module = script_module
         script_dir = PROJECT_ROOT
-        script_path = str(PROJECT_ROOT / "scripts" / "analyze_cell_areas.py")
-        
+
         is_folder = self._is_folder_mode()
         if is_folder:
-            # Folder mode: process all mask files in the folder
-            folder = Path(self.file_path.text())
+            # Folder mode: resolve to absolute path so the subprocess finds files regardless of cwd
+            folder = Path(self.file_path.text()).resolve()
             # Look for mask files - use set to avoid duplicates
             mask_files_set = set()
             
@@ -1659,9 +1969,10 @@ class AnalyzeMasksTab(QWidget):
             all_tif_files = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | \
                            set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
             
-            # Filter out files that already have _masks in name and filter visualization files
+            # Filter out files that already have _masks in name and exclude visualization/overlay files (not masks)
             for f in all_tif_files:
-                if "_masks" not in f.name.lower() and "_filter_visualization" not in f.name.lower():
+                name_lower = f.name.lower()
+                if "_masks" not in name_lower and "_filter_visualization" not in name_lower and "_overlay" not in name_lower:
                     mask_files_set.add(f)
             
             # Convert to sorted list
@@ -1682,12 +1993,19 @@ class AnalyzeMasksTab(QWidget):
             )
             
             if selected_files is None:
-                # User cancelled or no files selected
+                # User cancelled the file selection dialog
+                self.parent_window.log_output("Analysis cancelled (no mask files selected).\n")
                 return
-            
+
             if len(selected_files) == 0:
                 QMessageBox.warning(self, "No Files Selected", 
                                   "Please select at least one file to analyze.")
+                return
+            if self.analyze_fi.isChecked() and not (getattr(self, "batch_fi", None) and self.batch_fi.isChecked()) and not self.fi_file_path.text().strip():
+                QMessageBox.warning(self, "FI File Required",
+                                  "Analyze FI is on but no FI file is selected.\n\n"
+                                  "• Enable Batch to have FI files found by name (works for one mask or many; see Batch (?) for naming).\n"
+                                  "• Or select one FI file (Browse FI File) to use the same FI for all masks in the folder.")
                 return
             
             # Process each file sequentially
@@ -1695,34 +2013,71 @@ class AnalyzeMasksTab(QWidget):
             self.analyze_btn.setText(f"Analyzing... (0/{len(selected_files)})")
             self.parent_window.log_output(f"Starting mask analysis for {len(selected_files)} file(s) selected from folder: {folder}\n")
             
-            # Show progress bar
+            # Show progress bar (range = number of tasks, which can be > selected_files when Batch FI has multiple FI per mask)
             self.parent_window.progress_bar.setVisible(True)
-            self.parent_window.progress_bar.setRange(0, len(selected_files))
+            self.parent_window.progress_bar.setRange(0, 100)
             self.parent_window.progress_bar.setValue(0)
             
-            # Store files, current index, and output paths (for combined summary)
+            # Build list of tasks: (mask_path, fi_path or None, output_path). One task per (mask, FI) pair; multiple FI per mask = multiple tasks.
             self.folder_files = selected_files
-            self.current_file_index = 0
             self.folder_results = []
             self.folder_output_paths = []
-            
-            # Process first file
+            batch_fi_on = getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked() and getattr(self, "batch_fi", None) and self.batch_fi.isChecked()
+            single_fi_path = Path(self.fi_file_path.text()) if (self.analyze_fi.isChecked() and self.fi_file_path.text()) else None
+            if single_fi_path and not single_fi_path.exists():
+                single_fi_path = None
+            self.folder_fi_tasks: list[tuple[Path, Path | None, Path]] = []
+            self.folder_phase_per_mask: dict[Path, Path | None] = {}  # for logging (mask -> phase.tif)
+            for mask_path in selected_files:
+                # Use resolved paths so the subprocess finds files regardless of current working directory
+                mask_path = mask_path.resolve()
+                base_dir = mask_path.parent
+                if base_dir.name.startswith("Tif_") or "_segmentation" in base_dir.name:
+                    base_dir = base_dir.parent
+                stem = mask_path.stem.replace("_masks", "")
+                analysis_dir = base_dir / "_analysis"
+                if batch_fi_on:
+                    fi_paths = self._resolve_fi_paths_for_mask(mask_path)
+                    if not fi_paths:
+                        self.folder_fi_tasks.append((mask_path, None, analysis_dir / f"{stem}_analysis.xlsx"))
+                        self.folder_phase_per_mask[mask_path] = None
+                        self.parent_window.log_output(f"  No FI file for {mask_path.name} (expected e.g. {stem}_fi.tif or {stem}_fi_*.tif in parent folder)\n")
+                    else:
+                        phase_path = self._resolve_phase_path_for_mask(mask_path)
+                        self.folder_phase_per_mask[mask_path] = phase_path
+                        if phase_path is not None:
+                            self.folder_fi_tasks.append((mask_path, None, analysis_dir / f"{stem}_analysis_phase.xlsx"))
+                        for fi_path in fi_paths:
+                            suffix = self._fi_output_suffix(fi_path, stem)
+                            out = analysis_dir / f"{stem}_analysis{suffix}.xlsx"
+                            self.folder_fi_tasks.append((mask_path, fi_path, out))
+                else:
+                    out = analysis_dir / f"{stem}_analysis.xlsx"
+                    self.folder_fi_tasks.append((mask_path, single_fi_path, out))
+            if not self.folder_fi_tasks:
+                self.parent_window.log_output("No tasks to run (no mask files or FI pairs).\n")
+                self.analyze_btn.setEnabled(True)
+                self.analyze_btn.setText("Analyze Masks")
+                return
+            self.current_task_index = 0
+            self.parent_window.log_output(f"Running {len(self.folder_fi_tasks)} task(s) (script: {script_module})\n")
+            # Process first task
             self._process_next_folder_file(script_path)
         else:
-            # Single file mode
-            input_file = Path(self.file_path.text())
-            
+            # Single file mode (use resolved path so subprocess finds the file)
+            input_file = Path(self.file_path.text()).resolve()
+
             # Determine base directory (go up one level if input is in Tif_* or _segmentation folder)
             base_dir = input_file.parent
             if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
                 base_dir = base_dir.parent
             
-            # Create output path at base level with _analysis suffix
-            output_path = base_dir / f"{input_file.stem}_analysis.xlsx"
+            # Create output path in single _analysis folder
+            output_path = base_dir / "_analysis" / f"{input_file.stem}_analysis.xlsx"
             
-            # Build command arguments
+            # Build command arguments (use resolved input path)
             cmd_args = [
-                self.file_path.text(),
+                str(input_file),
                 '--output', str(output_path),
                 '--pixel-size', str(self.pixel_size.value()),
                 '--min-aspect-ratio', str(self.min_aspect_ratio.value()),
@@ -1773,9 +2128,9 @@ class AnalyzeMasksTab(QWidget):
             self.parent_window.progress_bar.setVisible(True)
             self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range
             self.parent_window.progress_bar.setValue(0)
-            
+            run_args = [getattr(self, "_analyze_script_module", "bactimate.scripts.analyze_cell_areas")] + cmd_args if script_path == "-m" else cmd_args
             # Store reference to prevent garbage collection
-            self.worker = WorkerThread(script_path, cmd_args, parent=self)
+            self.worker = WorkerThread(script_path, run_args, parent=self)
             self.worker.finished.connect(self.on_finished)
             self.worker.progress.connect(self._parse_analyze_progress)
             self.worker.start()
@@ -1805,39 +2160,60 @@ class AnalyzeMasksTab(QWidget):
                 self.parent_window.progress_bar.setValue(min(90, current + 1))
     
     def _process_next_folder_file(self, script_path):
-        """Process next file in folder mode"""
-        if self.current_file_index >= len(self.folder_files):
-            # All files processed
+        """Process next task in folder mode (one task = one mask + one FI file, or mask without FI)."""
+        if self.current_task_index >= len(self.folder_fi_tasks):
+            # All tasks processed
             self.analyze_btn.setEnabled(True)
             self.analyze_btn.setText("Analyze Masks")
             self.parent_window.progress_bar.setVisible(False)
-            self.parent_window.log_output(f"\n✓ Analysis complete for all {len(self.folder_files)} file(s)!\n")
-            # Create combined summary if option was enabled and we have output paths
-            if getattr(self, "create_combined_summary", None) and getattr(self, "create_combined_summary").isChecked():
+            n_tasks = len(self.folder_fi_tasks)
+            n_masks = len(self.folder_files)
+            n_ok = sum(1 for r in getattr(self, "folder_results", []) if r)
+            n_fail = n_tasks - n_ok
+            # Script writes to output_path.parent (single _analysis folder) or parent / stem_analysis
+            success_dirs = []
+            for i, (mask_file, _fi, output_path) in enumerate(self.folder_fi_tasks):
+                if getattr(self, "folder_results", []) and i < len(self.folder_results) and self.folder_results[i]:
+                    actual_dir = output_path.parent if output_path.parent.name == "_analysis" else output_path.parent / f"{Path(mask_file).stem}_analysis"
+                    success_dirs.append(str(actual_dir))
+            success_dirs = list(dict.fromkeys(success_dirs))  # deduplicate (e.g. all in _analysis)
+            self.parent_window.log_output(f"\n✓ Analysis complete: {n_ok}/{n_tasks} task(s) succeeded ({n_masks} mask file(s)).\n")
+            if success_dirs:
+                self.parent_window.log_output("Output folder(s):\n  " + "\n  ".join(success_dirs) + "\n")
+            if n_fail > 0:
+                self.parent_window.log_output(f"  {n_fail} task(s) failed — check log above for errors.\n")
+            # Merge multiple FI channel outputs into one Excel per mask (one table with two FI columns)
+            self._merge_fi_channels_into_one_excel()
+            if getattr(self, "create_combined_summary", None) and getattr(self, "create_combined_summary").isChecked() and n_ok > 0:
                 paths = getattr(self, "folder_output_paths", [])
                 if paths and self.folder_files:
-                    folder = self.folder_files[0].parent
-                    out_path = folder / f"{folder.name}_combined_summary.xlsx"
-                    if self._build_combined_summary_excel(paths, str(out_path)):
+                    folder = Path(self.folder_files[0]).parent
+                    if folder.name.startswith("_segmentation"):
+                        folder = folder.parent
+                    out_path = folder / "_analysis" / f"{folder.name}_combined_summary.xlsx"
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    match_log = self._match_log_from_folder_tasks()
+                    if self._build_combined_summary_excel(paths, str(out_path), match_log=match_log):
                         self.parent_window.log_output(f"Combined summary saved to: {out_path}\n")
-                        QMessageBox.information(self, "Analysis Complete", 
-                            f"Successfully analyzed {len(self.folder_files)} mask file(s).\n\n"
-                            f"Combined summary saved to:\n{out_path.name}")
-                        return
-            QMessageBox.information(self, "Analysis Complete", 
-                                  f"Successfully analyzed {len(self.folder_files)} mask file(s).")
+            msg = f"Completed: {n_ok}/{n_tasks} task(s) succeeded."
+            if n_fail > 0:
+                msg += f"\n{n_fail} task(s) failed — see Log for errors."
+            if success_dirs:
+                msg += "\n\nExcel files are in these folders:"
+                for d in success_dirs[:5]:
+                    msg += f"\n  • {Path(d).name}"
+                if len(success_dirs) > 5:
+                    msg += f"\n  ... and {len(success_dirs) - 5} more (see Log)."
+            QMessageBox.information(self, "Analysis Complete", msg)
             return
-        
-        mask_file = self.folder_files[self.current_file_index]
-        self.parent_window.log_output(f"\nProcessing file {self.current_file_index + 1}/{len(self.folder_files)}: {mask_file.name}\n")
-        
-        # Determine base directory (go up one level if input is in Tif_* or _segmentation folder)
-        base_dir = mask_file.parent
-        if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
-            base_dir = base_dir.parent
-        
-        # Create output path at base level with _analysis suffix
-        output_path = base_dir / f"{mask_file.stem}_analysis.xlsx"
+
+        mask_file, fi_path, output_path = self.folder_fi_tasks[self.current_task_index]
+        fi_label = fi_path.stem if fi_path else "no FI"
+        self.parent_window.log_output(f"\nProcessing task {self.current_task_index + 1}/{len(self.folder_fi_tasks)}: {mask_file.name} + {fi_label}\n")
+        if fi_path is not None:
+            self.parent_window.log_output(f"  FI image: {fi_path}\n")
+        else:
+            self.parent_window.log_output(f"  No FI image for this task (morphology only). Enable Batch and use stem_fi.tif or stem_fi_Channel.tif in the mask folder's parent.\n")
         self.folder_output_paths.append(str(output_path))
         
         # Build command arguments
@@ -1868,10 +2244,9 @@ class AnalyzeMasksTab(QWidget):
         if self.exclude_border_cb.isChecked():
             cmd_args.append('--exclude-border')
         
-        # Add FI image path if FI analysis is enabled
-        if self.analyze_fi.isChecked() and self.fi_file_path.text():
-            fi_path = Path(self.fi_file_path.text())
-            if fi_path.exists():
+        # Add FI image path if FI analysis is enabled (from current task)
+        if self.analyze_fi.isChecked():
+            if fi_path is not None:
                 cmd_args.extend(['--fi-image', str(fi_path)])
                 do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
                 if do_fi_contour:
@@ -1879,41 +2254,39 @@ class AnalyzeMasksTab(QWidget):
                     cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
                 else:
                     cmd_args.append('--no-fi-contour')
-            else:
-                QMessageBox.warning(self, "FI File Not Found", 
-                                  f"The selected FI file does not exist:\n{fi_path}")
-                return
         
         self.parent_window.log_output(f"Output file: {output_path}\n")
-        
-        # Update progress (for folder mode, show file progress)
-        file_progress = int((self.current_file_index / len(self.folder_files)) * 100)
+        file_progress = int((self.current_task_index / len(self.folder_fi_tasks)) * 100)
         self.parent_window.progress_bar.setValue(file_progress)
-        self.analyze_btn.setText(f"Analyzing... ({self.current_file_index + 1}/{len(self.folder_files)})")
-        
+        self.analyze_btn.setText(f"Analyzing... ({self.current_task_index + 1}/{len(self.folder_fi_tasks)})")
+        run_args = [getattr(self, "_analyze_script_module", "bactimate.scripts.analyze_cell_areas")] + cmd_args if script_path == "-m" else cmd_args
         # Store reference to prevent garbage collection
-        self.worker = WorkerThread(script_path, cmd_args, parent=self)
+        self.worker = WorkerThread(script_path, run_args, parent=self)
         self.worker.finished.connect(lambda success, msg: self._on_folder_file_finished(success, msg, script_path))
         self.worker.progress.connect(self.parent_window.log_output)
         self.worker.start()
     
     def _on_folder_file_finished(self, success, message, script_path):
-        """Handle completion of a single file in folder mode"""
+        """Handle completion of a single task in folder mode"""
         self.parent_window.log_output(message)
         if success:
             self.folder_results.append(True)
-            self.parent_window.log_output(f"✓ File {self.current_file_index + 1} completed successfully\n")
+            self.parent_window.log_output(f"✓ Task {self.current_task_index + 1}/{len(self.folder_fi_tasks)} completed successfully\n")
+            # Write Logs to this task's Excel (Summary sheet column G)
+            mask_file, fi_path, output_path = self.folder_fi_tasks[self.current_task_index]
+            display_tif = None
+            if fi_path is None:
+                phase_path = getattr(self, "folder_phase_per_mask", {}).get(mask_file)
+                if phase_path is not None:
+                    display_tif = phase_path.name
+            self._write_logs_to_individual_excel(output_path, mask_file, fi_path, display_tif_name=display_tif)
         else:
             self.folder_results.append(False)
-            self.parent_window.log_output(f"✗ File {self.current_file_index + 1} failed: {message}\n")
-        
-        # Clean up worker thread
+            self.parent_window.log_output(f"✗ Task {self.current_task_index + 1}/{len(self.folder_fi_tasks)} failed: {message}\n")
         if hasattr(self, 'worker'):
             self.worker.wait()
             self.worker = None
-        
-        # Process next file
-        self.current_file_index += 1
+        self.current_task_index += 1
         self._process_next_folder_file(script_path)
     
     def on_finished(self, success, message):

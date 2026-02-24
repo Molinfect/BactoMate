@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -32,6 +32,118 @@ from bactimate.gui.preferences import get_default_browse_dir
 
 
 _RECENT_LOGS_SHOWN = 5
+
+# Default values for session params (matches initial widget values). Used to show " (default)" in overview.
+# Only params listed here are annotated; others are shown without a default hint.
+SESSION_PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
+    "nd2": {
+        "bleach_correct": False,
+        "bleach_method": 0,
+        "drift_correct": False,
+        "max_frames": 100,
+        "max_z_projection": False,
+        "separate_channels": True,
+    },
+    "segmentation": {
+        "cluster": False,
+        "create_overlay": True,
+        "diameter": 30.0,
+        "flow_threshold": 0.4,
+        "mask_threshold": 0.0,
+        "model": "bact_phase_omni",
+        "omnipose_batch": 16,
+        "omnipose_lr": 0.01,
+        "omnipose_n_epochs": 50,
+        "omnipose_pretrained": "bact_phase_omni",
+        "omnipose_save_each": 0,
+        "omnipose_tyx_x": 256,
+        "omnipose_tyx_y": 256,
+        "omnipose_use_gpu": True,
+        "omnipose_use_tiled": True,
+        "use_gpu": True,
+    },
+    "unet_segment": {
+        "unet_batch_size": 16,
+        "unet_epochs": 50,
+        "unet_img_filter": "",
+        "unet_mask_filter": "_mask",
+        "unet_model": "",
+        "unet_model_name": "",
+        "unet_use_gpu": True,
+    },
+    "analyze_masks": {
+        "analyze_fi": False,
+        "analyze_fi_contour": False,
+        "batch_fi": False,
+        "create_combined_summary": False,
+        "create_vis": True,
+        "detailed": True,
+        "exclude_border": True,
+        "fi_contour_thickness": 1,
+        "max_area": 0.0,
+        "max_aspect_ratio": 10.0,
+        "max_width": 0.0,
+        "min_area": 0.0,
+        "min_aspect_ratio": 1.5,
+        "min_eccentricity": 0.5,
+        "min_length": 0.0,
+        "min_solidity": 0.7,
+        "min_width": 0.0,
+        "pixel_size": 0.108,
+    },
+    "tracking": {
+        "device": "CPU",
+        "mode": "greedy",
+        "model": "general_2d",
+        "filter_pixel_size": 0.108,
+        "filter_time_per_frame": 1.0,
+        "filter_time_per_frame_unit": "min",
+    },
+    "growth_curve_video": {
+        "format_avi": True,
+        "format_gif": False,
+        "format_mp4": False,
+        "format_tif": True,
+        "fps": 5.0,
+        "time_interval": 10.0,
+        "yaxis_max": 0.0,
+        "yaxis_min": 0.0,
+    },
+}
+
+
+def _values_equal(saved: Any, default: Any) -> bool:
+    """Compare saved value to default (handles int/float, list)."""
+    if type(saved) == type(default):
+        if isinstance(saved, list):
+            return saved == default
+        return saved == default
+    if isinstance(saved, (int, float)) and isinstance(default, (int, float)):
+        return float(saved) == float(default)
+    return False
+
+
+def format_session_overview(data: dict) -> str:
+    """Build overview text for a session log (with ' (default)' on values that match app defaults)."""
+    lines = []
+    schema = data.get("schema_version", "?")
+    ts = data.get("timestamp", "?")
+    lines.append(f"Schema: {schema}  |  Saved: {ts}")
+    lines.append("All values below are what was saved/used (reproducible). (default) = same as app default.\n")
+    tabs_data = data.get("tabs", data)
+    if not isinstance(tabs_data, dict):
+        tabs_data = {}
+    for key, tab_label in SESSION_TAB_KEYS:
+        if key not in tabs_data or not isinstance(tabs_data[key], dict):
+            continue
+        lines.append(f"\n——— {tab_label} ———")
+        defaults = SESSION_PARAM_DEFAULTS.get(key, {})
+        for k, v in sorted(tabs_data[key].items()):
+            default_val = defaults.get(k)
+            is_default = default_val is not None and _values_equal(v, default_val)
+            suffix = "  (default)" if is_default else ""
+            lines.append(f"  {k}: {v}{suffix}")
+    return "\n".join(lines) if lines else "(No tab data)"
 
 
 class SessionLogsPanel(QWidget):
@@ -142,21 +254,8 @@ class SessionLogsPanel(QWidget):
             get_logger().exception("Session logs: error in Load other")
 
     def _format_overview(self, data: dict) -> str:
-        """Build overview text for the log content box (same format as full tab)."""
-        lines = []
-        schema = data.get("schema_version", "?")
-        ts = data.get("timestamp", "?")
-        lines.append(f"Schema: {schema}  |  Saved: {ts}\n")
-        tabs_data = data.get("tabs", data)
-        if not isinstance(tabs_data, dict):
-            tabs_data = {}
-        for key, tab_label in SESSION_TAB_KEYS:
-            if key not in tabs_data or not isinstance(tabs_data[key], dict):
-                continue
-            lines.append(f"\n——— {tab_label} ———")
-            for k, v in sorted(tabs_data[key].items()):
-                lines.append(f"  {k}: {v}")
-        return "\n".join(lines) if lines else "(No tab data)"
+        """Build overview text for the log content box (same format as full tab; shows ' (default)' where applicable)."""
+        return format_session_overview(data)
 
     def _load_and_show(self, path: str) -> None:
         self._selected_path = path
@@ -318,20 +417,7 @@ class SessionLogsTab(QWidget):
             self.overview_text.setPlainText(f"Could not load file:\n{e}")
             return
         self._loaded_data = data
-        lines = []
-        schema = data.get("schema_version", "?")
-        ts = data.get("timestamp", "?")
-        lines.append(f"Schema version: {schema}  |  Saved: {ts}\n")
-        tabs_data = data.get("tabs", data)
-        if not isinstance(tabs_data, dict):
-            tabs_data = {}
-        for key, tab_label in SESSION_TAB_KEYS:
-            if key not in tabs_data or not isinstance(tabs_data[key], dict):
-                continue
-            lines.append(f"\n——— {tab_label} ———")
-            for k, v in sorted(tabs_data[key].items()):
-                lines.append(f"  {k}: {v}")
-        self.overview_text.setPlainText("\n".join(lines) if lines else "(No tab data)")
+        self.overview_text.setPlainText(format_session_overview(data))
         self.apply_btn.setEnabled(True)
 
     def _apply_now(self):

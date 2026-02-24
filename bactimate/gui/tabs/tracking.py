@@ -7,12 +7,19 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+import numpy as np
+import pandas as pd
+
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDoubleSpinBox,
     QFileDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,16 +29,25 @@ from PyQt6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from bactimate.gui.image_canvas import ImageCanvas
+from bactimate.gui.image_utils import scale_for_preview, to_qpixmap
 from bactimate.gui.preferences import get_default_browse_dir
+from bactimate.gui.utils import safe_imread
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
+from bactimate.tiff_metadata import read_metadata_from_path, resolve_calibration_from_trajectories_path
 
 from bactimate.gui.workers import TrackingWorker
+
+# Time per frame unit conversion to minutes (for speed in µm/min)
+TIME_UNIT_TO_MINUTES = {"min": 1.0, "h": 60.0, "s": 1.0 / 60.0, "ms": 1.0 / 60000.0}
 
 
 class TrackingTab(QWidget):
@@ -40,7 +56,6 @@ class TrackingTab(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.parent_window = parent
-        self.device_mapping = {}  # Initialize device mapping
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -54,17 +69,24 @@ class TrackingTab(QWidget):
         tracking_group = self._build_tracking_params()
         scroll_layout.addWidget(tracking_group)
 
-        # Process button - modern styling applied via global stylesheet
         self.process_btn = QPushButton("Run Tracking")
-        self.process_btn.setEnabled(False)  # Disabled until mask file is selected
+        self.process_btn.setEnabled(False)
         self.process_btn.clicked.connect(self.run_tracking)
         scroll_layout.addWidget(self.process_btn)
-        
-        # Connect mask path changes to update button state
-        self.mask_path.textChanged.connect(self._update_tracking_button_state)
-        # Initialize state
+
+        self._build_preview_section(scroll_layout)
+
+        self.file_path.textChanged.connect(self._update_tracking_button_state)
+        self.file_path.textChanged.connect(self._update_export_filtered_button_state)
+        self.file_path.textChanged.connect(self._update_filter_ranges_from_trajectory)
+        self.preview_path.textChanged.connect(self._update_preview_button_state)
+        self.preview_path.textChanged.connect(self._update_export_filtered_button_state)
+        self.preview_path.textChanged.connect(self._update_filter_ranges_from_trajectory)
+        self.batch_cb.toggled.connect(self._update_tracking_button_state)
         self._update_tracking_button_state()
-        
+        self._update_export_filtered_button_state()
+        QTimer.singleShot(0, self._update_filter_ranges_from_trajectory)
+
         scroll_widget.setLayout(scroll_layout)
         scroll.setWidget(scroll_widget)
         scroll.setWidgetResizable(True)
@@ -72,81 +94,284 @@ class TrackingTab(QWidget):
         self.setLayout(layout)
 
     def _build_input_groups(self, scroll_layout: QVBoxLayout) -> None:
-        """Build mask, original, and Excel file input groups and add them to scroll_layout."""
+        """Build Path group only (mask file or folder). Original/Excel are resolved automatically."""
         file_font = QFont()
         file_font.setPointSize(11)
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
-        mask_group = DragDropGroupBox(
-            "Mask File",
+        path_group = DragDropGroupBox(
+            "Run tracking with TrackAstra",
             parent=self,
-            on_drop_callback=self.handle_dropped_mask_file
+            on_drop_callback=self.handle_dropped_path
         )
-        mask_layout = QHBoxLayout()
-        self.mask_path = QLineEdit()
-        self.mask_path.setPlaceholderText("Select mask TIFF file (time series)... (or drag and drop)")
-        self.mask_path.setMinimumWidth(500)
-        self.mask_path.setFont(file_font)
-        self.mask_path.setSizePolicy(size_policy)
-        mask_btn = QPushButton("Browse File...")
-        mask_btn.setFixedWidth(120)
-        mask_btn.clicked.connect(self.select_mask_file)
-        mask_layout.addWidget(self.mask_path, 0)
-        mask_layout.addWidget(mask_btn, 0)
-        mask_group.setLayout(mask_layout)
-        scroll_layout.addWidget(mask_group)
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(QLabel("Path:"))
+        path_layout.addWidget(create_info_icon(
+            "Path to a mask TIFF file or folder of mask TIFFs to track.\n\n"
+            "Single file: leave Batch unchecked and select a mask TIFF (Browse File).\n"
+            "Folder: check Batch in Tracking Parameters and select a folder (e.g. _segmentation_omni or _segmentation_unet); "
+            "tracking runs for each mask in the folder (one or more).\n\n"
+            "Outputs are always written to a _tracking folder at the same level as the segmentation folder.",
+            self,
+        ))
+        self.file_path = QLineEdit()
+        self.file_path.setPlaceholderText("Select mask TIFF file or folder... (or drag and drop)")
+        self.file_path.setMinimumWidth(500)
+        self.file_path.setFont(file_font)
+        self.file_path.setSizePolicy(size_policy)
+        file_btn = QPushButton("Browse File...")
+        file_btn.setFixedWidth(120)
+        file_btn.clicked.connect(self.select_mask_file)
+        folder_btn = QPushButton("Browse Folder...")
+        folder_btn.setFixedWidth(130)
+        folder_btn.clicked.connect(self.select_folder)
+        path_layout.addWidget(self.file_path, 1)
+        path_layout.addWidget(file_btn, 0)
+        path_layout.addWidget(folder_btn, 0)
+        path_group.setLayout(path_layout)
+        scroll_layout.addWidget(path_group)
 
-        original_group = DragDropGroupBox(
-            "Original Data File (Optional)",
+    def _build_preview_section(self, scroll_layout: QVBoxLayout) -> None:
+        """Build Preview trajectories subsection: path, Browse File/Folder, then button."""
+        preview_group = DragDropGroupBox(
+            "Preview trajectories",
             parent=self,
-            on_drop_callback=self.handle_dropped_original_file
+            on_drop_callback=self._handle_dropped_preview_path,
         )
-        original_layout = QHBoxLayout()
-        self.original_path = QLineEdit()
-        self.original_path.setPlaceholderText("Select original TIFF file for visualization (optional)... (or drag and drop)")
-        self.original_path.setMinimumWidth(500)
-        self.original_path.setFont(file_font)
-        self.original_path.setSizePolicy(size_policy)
-        original_btn = QPushButton("Browse File...")
-        original_btn.setFixedWidth(120)
-        original_btn.clicked.connect(self.select_original_file)
-        original_layout.addWidget(self.original_path, 0)
-        original_layout.addWidget(original_btn, 0)
-        original_group.setLayout(original_layout)
-        scroll_layout.addWidget(original_group)
+        preview_layout = QHBoxLayout()
+        preview_layout.addWidget(QLabel("Path:"))
+        preview_layout.addWidget(create_info_icon(
+            "Path to a folder or to a single *_trajectories.tif file.\n\n"
+            "Click 'Preview trajectories' to open the file; if multiple files are found, you can choose which one to view.",
+            self,
+        ))
+        self.preview_path = QLineEdit()
+        self.preview_path.setPlaceholderText("Select folder or trajectory file... (or drag and drop)")
+        self.preview_path.setMinimumWidth(500)
+        preview_font = QFont()
+        preview_font.setPointSize(11)
+        self.preview_path.setFont(preview_font)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.preview_path.setSizePolicy(size_policy)
+        preview_file_btn = QPushButton("Browse File...")
+        preview_file_btn.setFixedWidth(120)
+        preview_file_btn.clicked.connect(self.select_preview_file)
+        preview_folder_btn = QPushButton("Browse Folder...")
+        preview_folder_btn.setFixedWidth(130)
+        preview_folder_btn.clicked.connect(self.select_preview_folder)
+        preview_layout.addWidget(self.preview_path, 1)
+        preview_layout.addWidget(preview_file_btn, 0)
+        preview_layout.addWidget(preview_folder_btn, 0)
+        preview_group.setLayout(preview_layout)
+        scroll_layout.addWidget(preview_group)
 
-        excel_group = DragDropGroupBox(
-            "Excel Analysis File (Optional)",
-            parent=self,
-            on_drop_callback=self.handle_dropped_excel_file
+        preview_btn_row = QHBoxLayout()
+        self.preview_btn = QPushButton("Preview trajectories")
+        self.preview_btn.setEnabled(False)
+        self.preview_btn.clicked.connect(self.preview_trajectories)
+        preview_btn_row.addWidget(self.preview_btn, 1)
+        preview_btn_row.addStretch()
+        preview_btn_row.addWidget(create_info_icon(
+            "Find *_trajectories.tif at the path above; if multiple, you can choose which to view. "
+            "Calibration (pixel size and time per frame) is auto-filled from TIFF metadata when available.",
+            self,
+        ))
+        scroll_layout.addLayout(preview_btn_row)
+
+        self._build_filter_tracks_section(scroll_layout)
+
+    def _build_filter_tracks_section(self, scroll_layout: QVBoxLayout) -> None:
+        """Build Filter tracks subsection: calibration + one row per filter with info after each spin set."""
+        filter_group = QGroupBox("Filter tracks")
+        filter_layout = QVBoxLayout()
+        label_width = 155
+
+        # Calibration row: pixel size, time per frame + unit, info at end
+        self.filter_pixel_size = QDoubleSpinBox()
+        self.filter_pixel_size.setRange(0.0, 10.0)
+        self.filter_pixel_size.setDecimals(4)
+        self.filter_pixel_size.setValue(0.108)
+        self.filter_pixel_size.setSingleStep(0.001)
+        self.filter_pixel_size.setSpecialValueText("px only")
+        self.filter_pixel_size.setMinimum(0.0)
+        self.filter_time_per_frame = QDoubleSpinBox()
+        self.filter_time_per_frame.setRange(0.0, 1e6)
+        self.filter_time_per_frame.setDecimals(4)
+        self.filter_time_per_frame.setValue(1.0)
+        self.filter_time_per_frame.setSpecialValueText("frames only")
+        self.filter_time_per_frame.setMinimum(0.0)
+        self.filter_time_per_frame_unit = QComboBox()
+        self.filter_time_per_frame_unit.addItems(["min", "h", "s", "ms"])
+        self.filter_time_per_frame_unit.setCurrentText("min")
+        cal_row = QHBoxLayout()
+        cal_row.addWidget(QLabel("Pixel size:"))
+        cal_row.addWidget(self.filter_pixel_size)
+        cal_row.addWidget(QLabel("Time/frame:"))
+        cal_row.addWidget(self.filter_time_per_frame)
+        cal_row.addWidget(self.filter_time_per_frame_unit)
+        cal_row.addStretch()
+        cal_row.addWidget(create_info_icon(
+            "Calibration for physical units. Pixel size: µm/px (0 = pixels only). Time/frame: interval between frames; unit min/h/s/ms. Speed in µm/min when both set. Filled from trajectory metadata when you set a path.",
+            self,
+        ))
+        filter_layout.addLayout(cal_row)
+
+        def add_filter_row(
+            label: str,
+            min_spin: QDoubleSpinBox | QSpinBox,
+            max_spin: QDoubleSpinBox | QSpinBox | None,
+            min_default: float | int,
+            max_default: float | int,
+            info_text: str,
+        ) -> None:
+            min_spin.setMinimum(0)
+            min_spin.setMaximum(999999)
+            min_spin.setValue(min_default)
+            if max_spin is not None:
+                max_spin.setMinimum(0)
+                max_spin.setMaximum(999999)
+                max_spin.setValue(max_default)
+            row = QHBoxLayout()
+            lab = QLabel(label)
+            lab.setMinimumWidth(label_width)
+            row.addWidget(lab)
+            row.addWidget(min_spin)
+            if max_spin is not None:
+                row.addWidget(QLabel("–"))
+                row.addWidget(max_spin)
+            row.addStretch()
+            row.addWidget(create_info_icon(info_text, self))
+            filter_layout.addLayout(row)
+
+        self.filter_min_length = QSpinBox()
+        self.filter_max_length = QSpinBox()
+        add_filter_row(
+            "Length (points):",
+            self.filter_min_length,
+            self.filter_max_length,
+            2,
+            100000,
+            "Number of detections per track (min–max). Max is capped from trajectory frame count when path is set.",
         )
-        excel_layout = QHBoxLayout()
-        self.excel_path = QLineEdit()
-        self.excel_path.setPlaceholderText("Select Excel file with cell analysis data (e.g., *_masks_analysis.xlsx)... (or drag and drop)")
-        self.excel_path.setMinimumWidth(500)
-        self.excel_path.setFont(file_font)
-        self.excel_path.setSizePolicy(size_policy)
-        excel_info_icon = create_info_icon(
-            "Link to existing Excel analysis file containing cell measurements.\n\n"
-            "This file should contain per-cell data from the Analyze Masks tab.\n"
-            "The tracking will link cell IDs across frames and preserve\n"
-            "cell properties from the analysis file.",
-            parent_widget=self
+        self.filter_min_duration = QSpinBox()
+        self.filter_max_duration = QSpinBox()
+        add_filter_row(
+            "Duration (frames):",
+            self.filter_min_duration,
+            self.filter_max_duration,
+            1,
+            100000,
+            "Frame span (last − first + 1). Max is capped from trajectory frame count when path is set.",
         )
-        excel_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        excel_btn = QPushButton("Browse File...")
-        excel_btn.setFixedWidth(120)
-        excel_btn.clicked.connect(self.select_excel_file)
-        excel_layout.addWidget(self.excel_path, 0)
-        excel_layout.addWidget(excel_info_icon, 0)
-        excel_layout.addWidget(excel_btn, 0)
-        excel_group.setLayout(excel_layout)
-        scroll_layout.addWidget(excel_group)
+        self.filter_min_displacement = QDoubleSpinBox()
+        self.filter_max_displacement = QDoubleSpinBox()
+        self.filter_min_displacement.setDecimals(2)
+        self.filter_max_displacement.setDecimals(2)
+        self.filter_min_displacement.setRange(0, 1e9)
+        self.filter_max_displacement.setRange(0, 1e9)
+        add_filter_row(
+            "Displacement:",
+            self.filter_min_displacement,
+            self.filter_max_displacement,
+            0,
+            10000,
+            "Net distance from first to last detection (µm if pixel size set, else px).",
+        )
+        self.filter_min_path_length = QDoubleSpinBox()
+        self.filter_max_path_length = QDoubleSpinBox()
+        self.filter_min_path_length.setDecimals(2)
+        self.filter_max_path_length.setDecimals(2)
+        self.filter_min_path_length.setRange(0, 1e9)
+        self.filter_max_path_length.setRange(0, 1e9)
+        add_filter_row(
+            "Path length:",
+            self.filter_min_path_length,
+            self.filter_max_path_length,
+            0,
+            100000,
+            "Total distance along the trajectory (sum of step lengths).",
+        )
+        self.filter_min_speed = QDoubleSpinBox()
+        self.filter_max_speed = QDoubleSpinBox()
+        self.filter_min_speed.setDecimals(4)
+        self.filter_max_speed.setDecimals(4)
+        self.filter_min_speed.setRange(0, 1e9)
+        self.filter_max_speed.setRange(0, 1e9)
+        add_filter_row(
+            "Mean speed:",
+            self.filter_min_speed,
+            self.filter_max_speed,
+            0,
+            1000,
+            "Path length / duration. µm/min when calibration set; otherwise px/frame.",
+        )
+        self.filter_min_straightness = QDoubleSpinBox()
+        self.filter_min_straightness.setRange(0.0, 1.0)
+        self.filter_min_straightness.setDecimals(2)
+        self.filter_min_straightness.setSingleStep(0.05)
+        self.filter_min_straightness.setValue(0.0)
+        straight_row = QHBoxLayout()
+        straight_lab = QLabel("Min straightness (0–1):")
+        straight_lab.setMinimumWidth(label_width)
+        straight_row.addWidget(straight_lab)
+        straight_row.addWidget(self.filter_min_straightness)
+        straight_row.addStretch()
+        straight_row.addWidget(create_info_icon(
+            "Straightness = displacement / path length. 0 = any; 1 = perfectly straight (ballistic).",
+            self,
+        ))
+        filter_layout.addLayout(straight_row)
+
+        filter_group.setLayout(filter_layout)
+        scroll_layout.addWidget(filter_group)
+
+        export_row = QHBoxLayout()
+        self.export_filtered_btn = QPushButton("Run Tracking with filters")
+        self.export_filtered_btn.clicked.connect(self._run_export_filtered_tracks)
+        export_row.addWidget(self.export_filtered_btn, 1)
+        export_row.addStretch()
+        export_row.addWidget(create_info_icon(
+            "Find all *_trajectories.tif files (from Preview path or Tracking path), let you select which to process, "
+            "then apply the current filter settings and write one Excel per file with one row per track that passes the filters. "
+            "Columns: Cell_ID (if from analysis), TrackID, length, duration (frames and min), displacement, path length, "
+            "mean speed, straight-line speed, straightness, first/last frame.",
+            self,
+        ))
+        scroll_layout.addLayout(export_row)
+
+    def _get_filter_params(self) -> dict[str, Any]:
+        """Current calibration and filter parameters from widgets for track filtering.
+        Time per frame is converted to minutes using the unit combo."""
+        pixel = getattr(self, "filter_pixel_size", None)
+        time_ = getattr(self, "filter_time_per_frame", None)
+        time_unit = getattr(self, "filter_time_per_frame_unit", None)
+        pixel_size = float(pixel.value()) if pixel is not None else 0.0
+        time_val = float(time_.value()) if time_ is not None else 0.0
+        unit_key = time_unit.currentText() if time_unit is not None else "min"
+        time_per_frame = time_val * TIME_UNIT_TO_MINUTES.get(unit_key, 1.0)
+        params = {
+            "pixel_size": pixel_size,
+            "time_per_frame": time_per_frame,
+            "use_physical_units": pixel_size > 0,
+            "use_speed_physical": pixel_size > 0 and time_per_frame > 0,
+            "min_length": getattr(self, "filter_min_length", None) and self.filter_min_length.value(),
+            "max_length": getattr(self, "filter_max_length", None) and self.filter_max_length.value(),
+            "min_duration": getattr(self, "filter_min_duration", None) and self.filter_min_duration.value(),
+            "max_duration": getattr(self, "filter_max_duration", None) and self.filter_max_duration.value(),
+            "min_displacement": getattr(self, "filter_min_displacement", None) and self.filter_min_displacement.value(),
+            "max_displacement": getattr(self, "filter_max_displacement", None) and self.filter_max_displacement.value(),
+            "min_path_length": getattr(self, "filter_min_path_length", None) and self.filter_min_path_length.value(),
+            "max_path_length": getattr(self, "filter_max_path_length", None) and self.filter_max_path_length.value(),
+            "min_speed": getattr(self, "filter_min_speed", None) and self.filter_min_speed.value(),
+            "max_speed": getattr(self, "filter_max_speed", None) and self.filter_max_speed.value(),
+            "min_straightness": getattr(self, "filter_min_straightness", None) and self.filter_min_straightness.value(),
+        }
+        return params
 
     def _build_tracking_params(self) -> QGroupBox:
-        """Build the Tracking Parameters group (model, mode, device)."""
+        """Build the Tracking Parameters group: one row with Model, Mode, and all checkboxes + info icons."""
         tracking_group = QGroupBox("Tracking Parameters")
-        tracking_container_layout = QHBoxLayout()
+        row = QHBoxLayout()
 
         model_layout = QHBoxLayout()
         model_label = QLabel("Model:")
@@ -175,8 +400,7 @@ class TrackingTab(QWidget):
         model_layout.addWidget(model_label)
         model_layout.addWidget(self.model_combo)
         model_layout.addWidget(model_info_icon)
-        model_layout.addStretch()
-        tracking_container_layout.addLayout(model_layout)
+        row.addLayout(model_layout)
 
         mode_layout = QHBoxLayout()
         mode_label = QLabel("Mode:")
@@ -212,129 +436,745 @@ class TrackingTab(QWidget):
         mode_layout.addWidget(mode_label)
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addWidget(mode_info_icon)
-        mode_layout.addStretch()
-        tracking_container_layout.addLayout(mode_layout)
+        row.addLayout(mode_layout)
 
-        device_layout = QHBoxLayout()
-        device_label = QLabel("Device:")
-        available_devices_display = ['CPU']
-        self.device_mapping = {'CPU': 'cpu'}
-        device_info_text = "Compute device for tracking.\n\nDefault: CPU\nSource: PyTorch device selection\n\nOptions:\n- CPU: CPU processing (works everywhere, slower)\n"
+        gpu_layout = QHBoxLayout()
+        self.use_gpu_cb = QCheckBox("Use GPU")
+        self.use_gpu_cb.setChecked(True)
+        gpu_info_icon = create_info_icon(
+            "Use GPU acceleration for tracking (CUDA or Apple Silicon MPS).\n\n"
+            "Default: Checked. Uncheck to force CPU (slower).\n"
+            "Falls back to CPU if GPU is not available or fails.",
+            parent_widget=self,
+        )
+        gpu_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        gpu_layout.addWidget(self.use_gpu_cb)
+        gpu_layout.addWidget(gpu_info_icon)
+        row.addLayout(gpu_layout)
+
+        create_vis_layout = QHBoxLayout()
+        self.create_vis_cb = QCheckBox("Create visualization")
+        self.create_vis_cb.setChecked(True)
+        create_vis_info = create_info_icon(
+            "When checked, trajectory overlay and visualization are created if an original TIF aligned to the mask is found (e.g. same name in the folder).\n\n"
+            "Output is saved in the _tracking folder (e.g. *_trajectories.tif). Uncheck to skip visualization (faster).",
+            parent_widget=self,
+        )
+        create_vis_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        create_vis_layout.addWidget(self.create_vis_cb)
+        create_vis_layout.addWidget(create_vis_info)
+        row.addLayout(create_vis_layout)
+
+        batch_layout = QHBoxLayout()
+        self.batch_cb = QCheckBox("Batch")
+        self.batch_cb.setChecked(False)
+        batch_info = create_info_icon(
+            "When checked, Path must be a folder; tracking runs for each mask in that folder (one or more).\n\n"
+            "When unchecked, Path must be a single mask file (single-file tracking). Auto-ticked when Path is a folder.",
+            parent_widget=self,
+        )
+        batch_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        batch_layout.addWidget(self.batch_cb)
+        batch_layout.addWidget(batch_info)
+        row.addLayout(batch_layout)
+        row.addStretch()
+
+        tracking_group.setLayout(row)
+        return tracking_group
+
+    def _resolve_device(self) -> str:
+        """Resolve device from Use GPU checkbox: 'cuda' or 'mps' if checked and available, else 'cpu'."""
+        if not self.use_gpu_cb.isChecked():
+            return "cpu"
         try:
             import torch
             if torch.cuda.is_available():
-                available_devices_display.append('CUDA')
-                self.device_mapping['CUDA'] = 'cuda'
-                device_info_text += "- CUDA: NVIDIA GPU processing (faster, requires CUDA-capable GPU)\n"
-            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                available_devices_display.append('GPU')
-                self.device_mapping['GPU'] = 'mps'
-                device_info_text += "- GPU: Apple Silicon GPU (M1/M2/M3) or NVIDIA GPU (faster)\n"
+                return "cuda"
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "mps"
         except ImportError:
             pass
-        device_info_text += "\nTip: Use GPU if available for faster processing."
-        device_info_icon = create_info_icon(device_info_text, parent_widget=self)
-        device_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.device_combo = QComboBox()
-        self.device_combo.addItems(available_devices_display)
-        self.device_combo.setCurrentText('CPU')
-        device_layout.addWidget(device_label)
-        device_layout.addWidget(self.device_combo)
-        device_layout.addWidget(device_info_icon)
-        device_layout.addStretch()
-        tracking_container_layout.addLayout(device_layout)
+        return "cpu"
 
-        tracking_group.setLayout(tracking_container_layout)
-        return tracking_group
+    def _get_trajectory_files(self) -> list[Path]:
+        """Return list of existing *_trajectories.tif paths under the current Path's _tracking output."""
+        raw = self.file_path.text() and self.file_path.text().strip()
+        if not raw:
+            return []
+        p = Path(raw).resolve()
+        if not p.exists():
+            return []
+        if p.is_file():
+            out_dir = self._tracking_output_dir(p)
+            traj = out_dir / f"{p.stem}_trajectories.tif"
+            return [traj] if traj.exists() else []
+        # Folder: find all _tracking/*/*_trajectories.tif
+        base = p.parent if p.name.startswith("_segmentation") else p
+        tracking_base = base / "_tracking"
+        if not tracking_base.is_dir():
+            return []
+        return sorted(tracking_base.glob("*/*_trajectories.tif"))
+
+    def _get_one_trajectory_path(self) -> Optional[Path]:
+        """Return one trajectory file path from preview path or tracking path, or None."""
+        preview = self._get_preview_tracked_files()
+        if preview:
+            return preview[0]
+        tracking = self._get_trajectory_files()
+        if tracking:
+            return tracking[0]
+        return None
+
+    def _get_trajectory_frame_count(self, path: Path) -> Optional[int]:
+        """Return number of frames in a trajectory TIFF, or None if unreadable."""
+        meta = read_metadata_from_path(path)
+        n = meta.get("frame_count")
+        if n is not None and n > 0:
+            return int(n)
+        try:
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                if tif.pages:
+                    return len(tif.pages)
+        except Exception:
+            pass
+        return None
+
+    def _update_filter_ranges_from_trajectory(self) -> None:
+        """Update filter max length/duration from trajectory frame count and calibration from metadata."""
+        if not hasattr(self, "filter_max_length") or not hasattr(self, "filter_max_duration"):
+            return
+        path = self._get_one_trajectory_path()
+        if path is None:
+            return
+        # Cap length and duration max from frame count
+        num_frames = self._get_trajectory_frame_count(path)
+        if num_frames is not None and num_frames > 0:
+            for spin in (self.filter_max_length, self.filter_max_duration):
+                spin.setMaximum(max(spin.minimum(), num_frames))
+                if spin.value() > num_frames:
+                    spin.setValue(num_frames)
+            if self.filter_min_length.value() > num_frames:
+                self.filter_min_length.setValue(max(0, num_frames - 1))
+            if self.filter_min_duration.value() > num_frames:
+                self.filter_min_duration.setValue(max(1, num_frames))
+        # Fill calibration from trajectory pipeline metadata
+        ps, tp_min = resolve_calibration_from_trajectories_path(path)
+        if ps > 0:
+            self.filter_pixel_size.setValue(ps)
+        if tp_min > 0:
+            self.filter_time_per_frame.setValue(tp_min)
+            self.filter_time_per_frame_unit.setCurrentText("min")
 
     def _update_tracking_button_state(self):
-        """Update tracking button enabled state based on whether mask file is selected"""
-        has_mask = bool(self.mask_path.text() and self.mask_path.text().strip())
-        if hasattr(self, 'process_btn'):
-            self.process_btn.setEnabled(has_mask)
-    
+        """Enable Run when path matches Batch mode (file vs folder). Auto-tick Batch when path is folder."""
+        raw = self.file_path.text() and self.file_path.text().strip()
+        if not raw:
+            if hasattr(self, "process_btn"):
+                self.process_btn.setEnabled(False)
+            return
+        p = Path(raw)
+        # Auto-tick Batch when path is a folder, untick when path is a file
+        if p.exists() and hasattr(self, "batch_cb"):
+            if p.is_dir():
+                self.batch_cb.setChecked(True)
+            elif p.is_file():
+                self.batch_cb.setChecked(False)
+        batch = getattr(self, "batch_cb", None) and self.batch_cb.isChecked()
+        if hasattr(self, "process_btn"):
+            if batch:
+                self.process_btn.setEnabled(p.exists() and p.is_dir())
+            else:
+                self.process_btn.setEnabled(p.exists() and p.is_file())
+
+    def _update_preview_button_state(self) -> None:
+        """Enable Preview trajectories when the preview path is non-empty."""
+        if not hasattr(self, "preview_btn"):
+            return
+        raw = self.preview_path.text() and self.preview_path.text().strip()
+        self.preview_btn.setEnabled(bool(raw))
+
+    def _update_export_filtered_button_state(self) -> None:
+        """Enable Run Tracking with filters when any trajectory files are found (preview or main path)."""
+        if not hasattr(self, "export_filtered_btn"):
+            return
+        has_files = bool(self._get_preview_tracked_files() or self._get_trajectory_files())
+        self.export_filtered_btn.setEnabled(has_files)
+
     def select_mask_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
+        path, _ = QFileDialog.getOpenFileName(
             self, "Select Mask File", get_default_browse_dir(),
             "TIFF Files (*.tif *.tiff);;All Files (*)"
         )
-        if file_path:
-            self.mask_path.setText(file_path)
+        if path:
+            self.file_path.setText(path)
             self._update_tracking_button_state()
-    
-    def select_original_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Original Data File", get_default_browse_dir(),
-            "TIFF Files (*.tif *.tiff);;All Files (*)"
+
+    def select_folder(self):
+        """Open folder dialog to select a folder (e.g. _segmentation_omni or _segmentation_unet)."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select Folder Containing Mask Files", get_default_browse_dir()
         )
-        if file_path:
-            self.original_path.setText(file_path)
-    
-    def select_excel_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Excel Analysis File", get_default_browse_dir(),
-            "Excel Files (*.xlsx *.xls);;All Files (*)"
-        )
-        if file_path:
-            self.excel_path.setText(file_path)
-    
-    def handle_dropped_mask_file(self, dropped_path):
-        """Handle dropped mask file for tracking tab"""
-        path_obj = Path(dropped_path)
-        if path_obj.is_file() and path_obj.suffix.lower() in ['.tif', '.tiff']:
-            self.mask_path.setText(dropped_path)
+        if folder_path:
+            self.file_path.setText(folder_path)
             self._update_tracking_button_state()
-        else:
-            QMessageBox.warning(self, "Invalid File", 
-                              "Please drop a valid TIFF mask file.")
-    
-    def handle_dropped_original_file(self, dropped_path):
-        """Handle dropped original data file for tracking tab"""
+
+    def _get_preview_tracked_files(self) -> list[Path]:
+        """Find *_trajectories.tif under the preview path (file or folder)."""
+        raw = self.preview_path.text() and self.preview_path.text().strip()
+        if not raw:
+            return []
+        p = Path(raw).resolve()
+        if not p.exists():
+            return []
+        if p.is_file():
+            if p.name.endswith("_trajectories.tif"):
+                return [p]
+            # Search same directory and one level down
+            parent = p.parent
+            found = list(parent.glob("*_trajectories.tif"))
+            for sub in parent.iterdir():
+                if sub.is_dir():
+                    found.extend(sub.glob("*_trajectories.tif"))
+            return sorted(set(found))
+        # Folder: search in folder and two levels down (e.g. _tracking and _tracking/*_tracking/)
+        found = list(p.glob("*_trajectories.tif"))
+        for sub in p.iterdir():
+            if sub.is_dir():
+                found.extend(sub.glob("*_trajectories.tif"))
+                for sub2 in sub.iterdir():
+                    if sub2.is_dir():
+                        found.extend(sub2.glob("*_trajectories.tif"))
+        return sorted(set(found))
+
+    def select_preview_file(self) -> None:
+        """Browse for a single *_trajectories.tif file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select trajectories file to preview", get_default_browse_dir(),
+            "Trajectories TIFF (*_trajectories.tif);;TIFF (*.tif *.tiff);;All (*)"
+        )
+        if path:
+            self.preview_path.setText(path)
+            self._update_preview_button_state()
+
+    def select_preview_folder(self) -> None:
+        """Browse for a folder containing *_trajectories.tif files."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select folder containing trajectory files", get_default_browse_dir()
+        )
+        if folder_path:
+            self.preview_path.setText(folder_path)
+            self._update_preview_button_state()
+
+    def _handle_dropped_preview_path(self, dropped_path: str) -> None:
+        """Handle dropped file or folder on the Preview path group."""
         path_obj = Path(dropped_path)
-        if path_obj.is_file() and path_obj.suffix.lower() in ['.tif', '.tiff']:
-            self.original_path.setText(dropped_path)
+        if path_obj.is_file() and path_obj.suffix.lower() in (".tif", ".tiff"):
+            self.preview_path.setText(dropped_path)
+        elif path_obj.is_dir():
+            self.preview_path.setText(dropped_path)
         else:
-            QMessageBox.warning(self, "Invalid File", 
-                              "Please drop a valid TIFF file.")
-    
-    def handle_dropped_excel_file(self, dropped_path):
-        """Handle dropped Excel file for tracking tab"""
+            QMessageBox.warning(
+                self, "Invalid Drop",
+                "Please drop a TIFF file or a folder for the preview path."
+            )
+        self._update_preview_button_state()
+
+    def handle_dropped_path(self, dropped_path: str) -> None:
+        """Handle dropped file or folder path for tracking tab."""
         path_obj = Path(dropped_path)
-        if path_obj.is_file() and path_obj.suffix.lower() in ['.xlsx', '.xls']:
-            self.excel_path.setText(dropped_path)
+        if path_obj.is_file() and path_obj.suffix.lower() in (".tif", ".tiff"):
+            self.file_path.setText(dropped_path)
+        elif path_obj.is_dir():
+            self.file_path.setText(dropped_path)
         else:
-            QMessageBox.warning(self, "Invalid File", 
-                              "Please drop a valid Excel file (.xlsx or .xls).")
-    
+            QMessageBox.warning(
+                self, "Invalid Drop",
+                "Please drop a TIFF mask file or a folder containing mask files."
+            )
+        self._update_tracking_button_state()
+
+    def _is_folder_mode(self) -> bool:
+        """Return True if the current path is a folder."""
+        if not self.file_path.text() or not self.file_path.text().strip():
+            return False
+        p = Path(self.file_path.text())
+        return p.exists() and p.is_dir()
+
+    @staticmethod
+    def _tracking_output_dir(mask_path: Path) -> Path:
+        """Compute output directory for tracking: base_dir / _tracking / {stem}_tracking.
+        base_dir is one level above if mask is inside Tif_*, _segmentation*, or _analysis."""
+        base = mask_path.parent
+        if base.name.startswith("Tif_") or "_segmentation" in base.name or base.name == "_analysis":
+            base = base.parent
+        return base / "_tracking" / f"{mask_path.stem}_tracking"
+
+    @staticmethod
+    def _collect_mask_files(folder: Path) -> list[Path]:
+        """Collect mask TIFF paths from a folder (same logic as Analyze Masks)."""
+        mask_set = set()
+        mask_set.update(folder.glob("*_masks.tif"))
+        mask_set.update(folder.glob("*_masks.tiff"))
+        mask_set.update(folder.glob("*_masks.TIF"))
+        mask_set.update(folder.glob("*_masks.TIFF"))
+        all_tif = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
+        for f in all_tif:
+            name_lower = f.name.lower()
+            if "_masks" not in name_lower and "_filter_visualization" not in name_lower and "_overlay" not in name_lower:
+                mask_set.add(f)
+        return sorted(mask_set, key=lambda x: x.name.lower())
+
+    @staticmethod
+    def _resolve_original_for_mask(mask_path: Path) -> Path | None:
+        """Find the original (phase) TIFF for this mask: stem.tif or base.tif in mask dir, parent, or subfolders."""
+        parent = mask_path.parent
+        stem = mask_path.stem.replace("_masks", "")
+        # Search in mask's directory and optionally one level up (e.g. mask in _segmentation -> look in parent too).
+        search_dirs: list[Path] = [parent]
+        if parent.name.startswith("_segmentation"):
+            search_dirs.append(parent.parent)
+        else:
+            search_dirs.append(parent.parent)
+        for search_dir in search_dirs:
+            if not search_dir.is_dir():
+                continue
+            for f in search_dir.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if "_fi" in f.stem.lower():
+                    continue
+                if f.stem == stem:
+                    return f
+            if "_" in stem:
+                base = stem.rsplit("_", 1)[0]
+                for f in search_dir.iterdir():
+                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                        continue
+                    if "_fi" in f.stem.lower():
+                        continue
+                    if f.stem == base:
+                        return f
+            # One level down (e.g. Tif_001) in case original lives in a subfolder
+            for sub in search_dir.iterdir():
+                if not sub.is_dir():
+                    continue
+                for f in sub.iterdir():
+                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                        continue
+                    if "_fi" in f.stem.lower():
+                        continue
+                    base = stem.rsplit("_", 1)[0] if "_" in stem else stem
+                    if f.stem == stem or f.stem == base:
+                        return f
+        return None
+
+    @staticmethod
+    def _resolve_from_trajectories_path(traj_path: Path) -> tuple[Path | None, Path | None, Path | None]:
+        """From a *_trajectories.tif path return (tracks_csv_path, overlay_path, original_path).
+        Tracks CSV and overlay are in the same output dir; original (phase) is found from the mask."""
+        if not traj_path.is_file():
+            return (None, None, None)
+        out_dir = traj_path.parent
+        stem = traj_path.stem.replace("_trajectories", "")
+        tracks_csv = out_dir / f"{stem}_tracks.csv"
+        overlay_path = out_dir / f"{stem}_overlay_tracked.tif"
+        mask_stem = stem
+        # Search for mask: same stem in base, _segmentation, or Tif_* / other subfolders (tracking input can be anywhere).
+        search_bases = [out_dir.parent.parent, out_dir.parent]
+        mask_path: Path | None = None
+        for base in search_bases:
+            if not base.is_dir():
+                continue
+            # Direct children
+            for f in base.iterdir():
+                if f.is_file() and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
+                    mask_path = f
+                    break
+            if mask_path is not None:
+                break
+            # _segmentation subfolder
+            seg = base / "_segmentation"
+            if seg.is_dir():
+                for f in seg.iterdir():
+                    if f.is_file() and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
+                        mask_path = f
+                        break
+            if mask_path is not None:
+                break
+            # Common subfolders (e.g. Tif_001, Tif_002) — one level down
+            for sub in base.iterdir():
+                if not sub.is_dir():
+                    continue
+                for f in sub.iterdir():
+                    if f.is_file() and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
+                        mask_path = f
+                        break
+                if mask_path is not None:
+                    break
+            if mask_path is not None:
+                break
+            # Glob anywhere under base (two levels max to avoid slow scan)
+            for pattern in (f"*{mask_stem}.tif", f"*{mask_stem}.tiff"):
+                for f in base.glob(pattern):
+                    if f.is_file():
+                        mask_path = f
+                        break
+                if mask_path is None:
+                    for f in (base / "_segmentation").glob(pattern) if (base / "_segmentation").is_dir() else []:
+                        if f.is_file():
+                            mask_path = f
+                            break
+                if mask_path is not None:
+                    break
+            if mask_path is not None:
+                break
+        original_path = TrackingTab._resolve_original_for_mask(mask_path) if mask_path else None
+        return (tracks_csv, overlay_path if overlay_path.is_file() else None, original_path)
+
+    @staticmethod
+    def _compute_track_metrics(
+        tracks_df: pd.DataFrame,
+        pixel_size_um: float,
+        time_per_frame_min: float,
+    ) -> pd.DataFrame:
+        """Compute per-track metrics. Requires columns: track_id, frame, y, x.
+        Returns a DataFrame with one row per track_id and columns:
+        track_id, trajectory_length, duration_frames, duration_min, first_frame, last_frame,
+        displacement_px, displacement_um, path_length_px, path_length_um,
+        mean_speed_px_frame, mean_speed_um_min, straight_line_speed_px_frame, straight_line_speed_um_min, straightness."""
+        if tracks_df.empty or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+            return pd.DataFrame()
+        need_xy = "y" in tracks_df.columns and "x" in tracks_df.columns
+        rows = []
+        for tid, g in tracks_df.groupby("track_id"):
+            g = g.sort_values("frame")
+            n = len(g)
+            first_frame = int(g["frame"].iloc[0])
+            last_frame = int(g["frame"].iloc[-1])
+            duration = max(1, int(last_frame - first_frame + 1))
+            displacement_px = 0.0
+            path_length_px = 0.0
+            if need_xy and n >= 2:
+                ys = g["y"].values
+                xs = g["x"].values
+                displacement_px = float(np.hypot(ys[-1] - ys[0], xs[-1] - xs[0]))
+                path_length_px = float(np.sum(np.hypot(np.diff(ys), np.diff(xs))))
+            displacement_um = displacement_px * pixel_size_um if pixel_size_um > 0 else displacement_px
+            path_length_um = path_length_px * pixel_size_um if pixel_size_um > 0 else path_length_px
+            path_safe = path_length_px if path_length_px > 0 else 1.0
+            straightness = float(displacement_px / path_safe) if path_safe > 0 else 0.0
+            mean_speed_px_frame = path_length_px / duration if duration > 0 else 0.0
+            if pixel_size_um > 0 and time_per_frame_min > 0:
+                mean_speed_um_min = path_length_um / (duration * time_per_frame_min)
+            else:
+                mean_speed_um_min = mean_speed_px_frame
+            duration_min = duration * time_per_frame_min if time_per_frame_min > 0 else 0.0
+            straight_line_speed_px_frame = displacement_px / duration if duration > 0 else 0.0
+            straight_line_speed_um_min = displacement_um / (duration * time_per_frame_min) if (duration > 0 and time_per_frame_min > 0 and pixel_size_um > 0) else straight_line_speed_px_frame
+            rows.append({
+                "track_id": tid,
+                "trajectory_length": n,
+                "duration_frames": duration,
+                "duration_min": duration_min,
+                "first_frame": first_frame,
+                "last_frame": last_frame,
+                "displacement_px": displacement_px,
+                "displacement_um": displacement_um,
+                "path_length_px": path_length_px,
+                "path_length_um": path_length_um,
+                "mean_speed_px_frame": mean_speed_px_frame,
+                "mean_speed_um_min": mean_speed_um_min,
+                "straight_line_speed_px_frame": straight_line_speed_px_frame,
+                "straight_line_speed_um_min": straight_line_speed_um_min,
+                "straightness": straightness,
+            })
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def _apply_track_filters(metrics_df: pd.DataFrame, params: dict[str, Any]) -> set[int]:
+        """Return set of track_id that pass all filters. params keys: min_length, max_length, min_duration, max_duration,
+        min_displacement, max_displacement, min_path_length, max_path_length, min_speed, max_speed, min_straightness.
+        Uses µm/µm/min when pixel_size and time_per_frame are set (params can use use_physical and we use _um / _um_min columns)."""
+        if metrics_df.empty:
+            return set()
+        use_um = params.get("use_physical_units", True)
+        use_speed_physical = params.get("use_speed_physical", use_um)
+        disp_col = "displacement_um" if use_um else "displacement_px"
+        path_col = "path_length_um" if use_um else "path_length_px"
+        speed_col = "mean_speed_um_min" if use_speed_physical else "mean_speed_px_frame"
+        mask = np.ones(len(metrics_df), dtype=bool)
+        m = metrics_df
+        if "min_length" in params and params["min_length"] is not None:
+            mask &= (m["trajectory_length"] >= params["min_length"])
+        if "max_length" in params and params["max_length"] is not None:
+            mask &= (m["trajectory_length"] <= params["max_length"])
+        if "min_duration" in params and params["min_duration"] is not None:
+            mask &= (m["duration_frames"] >= params["min_duration"])
+        if "max_duration" in params and params["max_duration"] is not None:
+            mask &= (m["duration_frames"] <= params["max_duration"])
+        if "min_displacement" in params and params["min_displacement"] is not None:
+            mask &= (m[disp_col] >= params["min_displacement"])
+        if "max_displacement" in params and params["max_displacement"] is not None:
+            mask &= (m[disp_col] <= params["max_displacement"])
+        if "min_path_length" in params and params["min_path_length"] is not None:
+            mask &= (m[path_col] >= params["min_path_length"])
+        if "max_path_length" in params and params["max_path_length"] is not None:
+            mask &= (m[path_col] <= params["max_path_length"])
+        if "min_speed" in params and params["min_speed"] is not None:
+            mask &= (m[speed_col] >= params["min_speed"])
+        if "max_speed" in params and params["max_speed"] is not None:
+            mask &= (m[speed_col] <= params["max_speed"])
+        if "min_straightness" in params and params["min_straightness"] is not None:
+            mask &= (m["straightness"] >= params["min_straightness"])
+        return set(metrics_df.loc[mask, "track_id"].astype(int).tolist())
+
+    @staticmethod
+    def _draw_filtered_trajectory_overlay(images: np.ndarray, tracks_df: pd.DataFrame) -> np.ndarray:
+        """Build (T, H, W, 3) uint8 overlay: normalized images + trajectory lines and dots for given tracks only."""
+        import matplotlib.pyplot as plt
+        if images.ndim != 3:
+            return np.zeros((0, 0, 0, 3), dtype=np.uint8)
+        num_frames, height, width = images.shape[0], images.shape[1], images.shape[2]
+        img_min = images.min(axis=(1, 2), keepdims=True)
+        img_max = images.max(axis=(1, 2), keepdims=True)
+        img_range = img_max - img_min
+        img_range[img_range == 0] = 1
+        images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
+        if tracks_df.empty or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+            out = np.stack([np.stack([images_norm[i], images_norm[i], images_norm[i]], axis=-1) for i in range(num_frames)], axis=0)
+            return out
+        need_xy = "y" in tracks_df.columns and "x" in tracks_df.columns
+        unique_tracks = tracks_df["track_id"].unique()
+        num_tracks = len(unique_tracks)
+        cmap = plt.get_cmap("gist_ncar")
+        track_colors = {}
+        for i, track_id in enumerate(unique_tracks):
+            color = cmap(i / max(num_tracks, 1))
+            track_colors[int(track_id)] = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+        visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
+        for frame_idx in range(num_frames):
+            vis_frame = np.stack([images_norm[frame_idx], images_norm[frame_idx], images_norm[frame_idx]], axis=-1).copy()
+            if need_xy:
+                tracks_in_frame = tracks_df[
+                    (tracks_df["frame"] <= frame_idx) & (tracks_df["track_id"].isin(unique_tracks))
+                ]["track_id"].unique()
+                for track_id_int in tracks_in_frame:
+                    track_id_int = int(track_id_int)
+                    if track_id_int not in track_colors:
+                        continue
+                    track_points = tracks_df[
+                        (tracks_df["track_id"] == track_id_int) & (tracks_df["frame"] <= frame_idx)
+                    ]
+                    color = track_colors[track_id_int]
+                    if len(track_points) > 1:
+                        points = track_points[["y", "x"]].values.astype(int)
+                        points[:, 0] = np.clip(points[:, 0], 0, height - 1)
+                        points[:, 1] = np.clip(points[:, 1], 0, width - 1)
+                        for i in range(len(points) - 1):
+                            y1, x1 = points[i]
+                            y2, x2 = points[i + 1]
+                            dy, dx = abs(y2 - y1), abs(x2 - x1)
+                            if dx == 0 and dy == 0:
+                                continue
+                            max_steps = max(dx, dy)
+                            step_size = max(1, max_steps // 50) if max_steps > 50 else 1
+                            num_steps = max_steps // step_size + 1
+                            if dx > dy:
+                                x_coords = np.linspace(x1, x2, num_steps, dtype=int)
+                                y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
+                            else:
+                                y_coords = np.linspace(y1, y2, num_steps, dtype=int)
+                                x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
+                            y_coords = np.clip(y_coords, 1, height - 2)
+                            x_coords = np.clip(x_coords, 1, width - 2)
+                            for y, x in zip(y_coords, x_coords):
+                                ys, ye = y - 1, y + 2
+                                xs_, xe = x - 1, x + 2
+                                vis_frame[ys:ye, xs_:xe, 0] = (vis_frame[ys:ye, xs_:xe, 0] * 0.3 + color[0] * 0.7).astype(np.uint8)
+                                vis_frame[ys:ye, xs_:xe, 1] = (vis_frame[ys:ye, xs_:xe, 1] * 0.3 + color[1] * 0.7).astype(np.uint8)
+                                vis_frame[ys:ye, xs_:xe, 2] = (vis_frame[ys:ye, xs_:xe, 2] * 0.3 + color[2] * 0.7).astype(np.uint8)
+                    current_track = track_points[track_points["frame"] == frame_idx]
+                    if len(current_track) > 0:
+                        y = int(current_track.iloc[0]["y"])
+                        x = int(current_track.iloc[0]["x"])
+                        if 0 <= y < height and 0 <= x < width:
+                            dot_size = 4
+                            color = track_colors[track_id_int]
+                            y0 = max(0, y - dot_size)
+                            y1 = min(height, y + dot_size + 1)
+                            x0 = max(0, x - dot_size)
+                            x1 = min(width, x + dot_size + 1)
+                            vis_frame[y0:y1, x0:x1, :] = color
+            visualization[frame_idx] = vis_frame
+        return visualization
+
+    @staticmethod
+    def _resolve_analysis_excel_for_mask(mask_path: Path, base_dir: Path) -> Path | None:
+        """Find analysis Excel for this mask in base_dir / _analysis (e.g. {stem}_analysis.xlsx)."""
+        stem = mask_path.stem.replace("_masks", "")
+        analysis_dir = base_dir / "_analysis"
+        if not analysis_dir.is_dir():
+            return None
+        for name in (f"{stem}_analysis.xlsx", f"{stem}_masks_analysis.xlsx"):
+            p = analysis_dir / name
+            if p.is_file():
+                return p
+        return None
+
     def run_tracking(self):
-        if not self.mask_path.text():
-            QMessageBox.warning(self, "Missing Input", "Please select a mask file.")
+        # Expand Status & Session logs so the user can see progress during long-running tracking
+        if hasattr(self.parent_window, "expand_status_log"):
+            self.parent_window.expand_status_log()
+        if not self.file_path.text() or not self.file_path.text().strip():
+            QMessageBox.warning(self, "Missing Input", "Please select a mask file or folder.")
             return
-        
-        mask_file = Path(self.mask_path.text())
-        if not mask_file.exists():
-            QMessageBox.warning(self, "File Not Found", f"Mask file not found:\n{mask_file}")
+
+        path = Path(self.file_path.text()).resolve()
+        if not path.exists():
+            QMessageBox.warning(self, "Not Found", f"Path not found:\n{path}")
             return
-        
-        # Get optional files
-        original_file = self.original_path.text() if self.original_path.text() else None
-        excel_file = self.excel_path.text() if self.excel_path.text() else None
-        
-        if original_file and not Path(original_file).exists():
-            QMessageBox.warning(self, "File Not Found", f"Original file not found:\n{original_file}")
+
+        batch = self.batch_cb.isChecked()
+        if path.is_dir() and not batch:
+            QMessageBox.warning(
+                self, "Batch Required",
+                "Path is a folder. Check 'Batch' in Tracking Parameters to run tracking on the mask(s) in the folder."
+            )
             return
-        
-        if excel_file and not Path(excel_file).exists():
-            QMessageBox.warning(self, "File Not Found", f"Excel file not found:\n{excel_file}")
+        if path.is_file() and batch:
+            QMessageBox.warning(
+                self, "Single File",
+                "Path is a file. Uncheck 'Batch' in Tracking Parameters for single-file tracking."
+            )
             return
-        
-        # Get parameters
+
+        # Build list of mask files (one for single-file, many for folder) and show selection dialog
+        if path.is_file():
+            mask_files = [path]
+        else:
+            mask_files = self._collect_mask_files(path)
+            if not mask_files:
+                QMessageBox.warning(
+                    self, "No Mask Files Found",
+                    "No mask TIFF files found in the selected folder.\n\n"
+                    "Please select a folder containing *_masks.tif (or similar) files."
+                )
+                return
+        selected = show_file_selection_dialog(
+            self,
+            mask_files,
+            title="Select Mask Files for Tracking",
+            message=f"Select mask files to track (all {len(mask_files)} selected by default):",
+        )
+        if selected is None:
+            self.parent_window.log_output("Tracking cancelled (no mask files selected).\n")
+            return
+        if len(selected) == 0:
+            QMessageBox.warning(self, "No Files Selected", "Please select at least one mask file to track.")
+            return
+
+        if len(selected) == 1:
+            # Single-file tracking
+            mask_file = selected[0].resolve()
+            output_dir = self._tracking_output_dir(mask_file)
+            base_dir = mask_file.parent
+            if base_dir.name.startswith("Tif_") or "_segmentation" in base_dir.name:
+                base_dir = base_dir.parent
+            original_path = self._resolve_original_for_mask(mask_file) if self.create_vis_cb.isChecked() else None
+            original_file = str(original_path) if original_path else None
+            excel_path = self._resolve_analysis_excel_for_mask(mask_file, base_dir)
+            excel_file = str(excel_path) if excel_path else None
+            model_name = self.model_combo.currentText()
+            mode = self.mode_combo.currentText()
+            device = self._resolve_device()
+            # Device check and single worker block follows below (after the batch block)
+            self._run_single_tracking(mask_file, output_dir, original_file, excel_file, model_name, mode, device)
+            return
+
+        # Batch: multiple files selected
+        tasks = []
+        for mask_path in selected:
+            mask_path = mask_path.resolve()
+            base_dir = mask_path.parent
+            if base_dir.name.startswith("Tif_") or "_segmentation" in base_dir.name:
+                base_dir = base_dir.parent
+            output_dir = self._tracking_output_dir(mask_path)
+            original_path = self._resolve_original_for_mask(mask_path) if self.create_vis_cb.isChecked() else None
+            excel_path = self._resolve_analysis_excel_for_mask(mask_path, base_dir)
+            tasks.append((mask_path, original_path, excel_path, output_dir))
         model_name = self.model_combo.currentText()
         mode = self.mode_combo.currentText()
-        # Map display name to actual device value
-        device_display = self.device_combo.currentText()
-        device = self.device_mapping.get(device_display, 'cpu')
-        
+        device = self._resolve_device()
+        # Device check (same as single-file path)
+        if device == "cuda":
+            debug_info = ["=== CUDA Debugging Information ==="]
+            try:
+                import torch
+                debug_info.append(f"✓ PyTorch version: {torch.__version__}")
+                cuda_available = torch.cuda.is_available()
+                debug_info.append(f"✓ torch.cuda.is_available(): {cuda_available}")
+                if not cuda_available:
+                    debug_info.append("✗ CUDA is not available")
+                    error_msg = "\n".join(debug_info) + "\n\nCUDA GPU is not available. Continue with CPU?"
+                    reply = QMessageBox.question(
+                        self, "CUDA Not Available", error_msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes,
+                    )
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                    device = "cpu"
+                    self.use_gpu_cb.setChecked(False)
+                # else: CUDA ok, continue
+            except ImportError:
+                QMessageBox.warning(self, "PyTorch Not Found", "PyTorch required for CUDA. Switching to CPU.")
+                device = "cpu"
+                self.use_gpu_cb.setChecked(False)
+        elif device == "mps":
+            try:
+                import torch
+                if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+                    error_msg = "MPS (Apple Silicon GPU) is not available. Continue with CPU?"
+                    reply = QMessageBox.question(
+                        self, "MPS Not Available", error_msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes,
+                    )
+                    if reply == QMessageBox.StandardButton.No:
+                        return
+                    device = "cpu"
+                    self.use_gpu_cb.setChecked(False)
+            except ImportError:
+                QMessageBox.warning(self, "PyTorch Not Found", "PyTorch required for MPS. Switching to CPU.")
+                device = "cpu"
+                self.use_gpu_cb.setChecked(False)
+        self.folder_tracking_tasks = tasks
+        self.folder_tracking_results = []
+        self.current_task_index = 0
+        self._batch_model_name = model_name
+        self._batch_mode = mode
+        self._batch_device = device
+        self.process_btn.setEnabled(False)
+        self.process_btn.setText(f"Tracking... (0/{len(tasks)})")
+        self.parent_window.progress_bar.setVisible(True)
+        self.parent_window.progress_bar.setRange(0, 100)
+        self.parent_window.progress_bar.setValue(0)
+        self.parent_window.log_output(f"Starting batch tracking for {len(tasks)} file(s).\n")
+        self._process_next_tracking_task()
+        return
+
+    def _run_single_tracking(
+        self,
+        mask_file: Path,
+        output_dir: Path,
+        original_file: Optional[str],
+        excel_file: Optional[str],
+        model_name: str,
+        mode: str,
+        device: str,
+    ) -> None:
+        """Run device check and start tracking worker for a single mask file."""
         # Check device availability with detailed debugging
         if device == 'cuda':
             debug_info = []
@@ -381,7 +1221,7 @@ class TrackingTab(QWidget):
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = 'cpu'
-                    self.device_combo.setCurrentText('CPU')
+                    self.use_gpu_cb.setChecked(False)
                     self.parent_window.log_output("\n".join(debug_info) + "\n")
                 else:
                     # CUDA is available, get detailed info
@@ -440,7 +1280,7 @@ class TrackingTab(QWidget):
                         if reply == QMessageBox.StandardButton.No:
                             return
                         device = 'cpu'
-                        self.device_combo.setCurrentText('cpu')
+                        self.use_gpu_cb.setChecked(False)
                         self.parent_window.log_output("\n".join(debug_info) + "\n")
                         
             except ImportError:
@@ -455,7 +1295,7 @@ class TrackingTab(QWidget):
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.device_combo.setCurrentText('CPU')
+                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
             except Exception as e:
                 import traceback
@@ -468,7 +1308,7 @@ class TrackingTab(QWidget):
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.device_combo.setCurrentText('CPU')
+                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
         elif device == 'mps':
             # Check MPS (Apple Silicon) availability
@@ -505,7 +1345,7 @@ class TrackingTab(QWidget):
                         if reply == QMessageBox.StandardButton.No:
                             return
                         device = 'cpu'
-                        self.device_combo.setCurrentText('cpu')
+                        self.use_gpu_cb.setChecked(False)
                         self.parent_window.log_output("\n".join(debug_info) + "\n")
                     else:
                         # MPS is available, test it
@@ -541,7 +1381,7 @@ class TrackingTab(QWidget):
                             debug_info.append(f"\nError details:\n{error_details}")
                             
                             error_msg = "\n".join(debug_info)
-                            error_msg += "\n\GPU is available but encountered an error during testing."
+                            error_msg += "\n\nGPU is available but encountered an error during testing."
                             error_msg += "\nThis might indicate:"
                             error_msg += "\n- macOS version compatibility issues"
                             error_msg += "\n- PyTorch MPS backend problems"
@@ -556,7 +1396,7 @@ class TrackingTab(QWidget):
                             if reply == QMessageBox.StandardButton.No:
                                 return
                             device = 'cpu'
-                            self.device_combo.setCurrentText('cpu')
+                            self.use_gpu_cb.setChecked(False)
                             self.parent_window.log_output("\n".join(debug_info) + "\n")
                 else:
                     debug_info.append("✗ MPS backend not available in this PyTorch version")
@@ -573,7 +1413,7 @@ class TrackingTab(QWidget):
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = 'cpu'
-                    self.device_combo.setCurrentText('CPU')
+                    self.use_gpu_cb.setChecked(False)
                     self.parent_window.log_output("\n".join(debug_info) + "\n")
                     
             except ImportError:
@@ -586,7 +1426,7 @@ class TrackingTab(QWidget):
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.device_combo.setCurrentText('CPU')
+                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
             except Exception as e:
                 import traceback
@@ -599,13 +1439,14 @@ class TrackingTab(QWidget):
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.device_combo.setCurrentText('CPU')
+                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
         
-        # Create worker thread
+        # Create worker thread (output_dir = base / _tracking / {stem}_tracking)
         self.worker = TrackingWorker(
             mask_file, original_file, excel_file,
-            model_name, mode, device, self
+            model_name, mode, device, self,
+            output_dir=output_dir,
         )
         self.worker.finished.connect(self.on_tracking_finished)
         self.worker.start()
@@ -615,7 +1456,11 @@ class TrackingTab(QWidget):
         self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range
         self.parent_window.progress_bar.setValue(0)
         self.parent_window.log_output(f"Starting tracking for: {mask_file.name}\n")
-        
+        self.parent_window.log_output(
+            "Tracking runs several steps (masks → overlay → trajectory visualization, etc.). "
+            "Do not close the app until you see '✓ Tracking completed successfully!' below.\n"
+            "At 55%, feature extraction and linking can take several minutes; 'Still running…' messages in the log mean the app is working.\n"
+        )
         # Connect progress signal
         self.worker.progress.connect(self.on_tracking_progress)
     
@@ -631,16 +1476,270 @@ class TrackingTab(QWidget):
             self.parent_window.log_output("✓ Tracking completed successfully!\n")
         else:
             QMessageBox.critical(self, "Error", f"Tracking failed:\n{message}")
-        # Hide progress bar after a short delay
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
-    
+        self._update_tracking_button_state()
+
+    def _process_next_tracking_task(self) -> None:
+        """Run the next task in batch tracking, or finish batch if none left."""
+        tasks = getattr(self, "folder_tracking_tasks", [])
+        if self.current_task_index >= len(tasks):
+            # Batch complete
+            n_ok = sum(1 for r in getattr(self, "folder_tracking_results", []) if r)
+            n_fail = len(tasks) - n_ok
+            self.process_btn.setEnabled(True)
+            self.process_btn.setText("Run Tracking")
+            self.parent_window.progress_bar.setVisible(False)
+            self.parent_window.log_output(
+                f"\n✓ Batch tracking complete: {n_ok}/{len(tasks)} succeeded."
+                + (f" {n_fail} failed — check log above.\n" if n_fail else "\n")
+            )
+            msg = f"Completed: {n_ok}/{len(tasks)} file(s) tracked successfully."
+            if n_fail:
+                msg += f"\n{n_fail} file(s) failed — see Log for errors."
+            QMessageBox.information(self, "Batch Tracking Complete", msg)
+            self._update_tracking_button_state()
+            return
+        mask_path, original_path, excel_path, output_dir = tasks[self.current_task_index]
+        model_name = getattr(self, "_batch_model_name", self.model_combo.currentText())
+        mode = getattr(self, "_batch_mode", self.mode_combo.currentText())
+        device = getattr(self, "_batch_device", self._resolve_device())
+        original_file = str(original_path) if original_path else None
+        excel_file = str(excel_path) if excel_path else None
+        self.parent_window.log_output(
+            f"\nProcessing {self.current_task_index + 1}/{len(tasks)}: {mask_path.name}\n"
+        )
+        if self.current_task_index == 0:
+            self.parent_window.log_output(
+                "Do not close the app until you see 'Batch tracking complete' (or all files finished).\n"
+            )
+        self.parent_window.progress_bar.setRange(0, 100)
+        self.parent_window.progress_bar.setValue(0)
+        self.worker = TrackingWorker(
+            mask_path, original_file, excel_file,
+            model_name, mode, device, self,
+            output_dir=output_dir,
+        )
+        self.worker.finished.connect(self.on_tracking_task_finished)
+        self.worker.progress.connect(self._on_batch_tracking_progress)
+        self.worker.start()
+
+    def _on_batch_tracking_progress(self, value: int, message: str) -> None:
+        """Update progress bar for batch: overall 0–100 across all tasks."""
+        tasks = getattr(self, "folder_tracking_tasks", [])
+        if not tasks:
+            return
+        total = len(tasks)
+        # Current task contributes value/100 of one slot
+        overall = (self.current_task_index + value / 100.0) / total * 100
+        self.parent_window.progress_bar.setValue(int(min(99, overall)))
+        if message:
+            self.parent_window.log_output(f"[{self.current_task_index + 1}/{total}] {message}\n")
+
+    def on_tracking_task_finished(self, success: bool, message: str) -> None:
+        """Called when one batch task finishes; record result and start next or finish batch."""
+        self.folder_tracking_results.append(success)
+        if not success:
+            self.parent_window.log_output(f"✗ Failed: {message}\n")
+        self.current_task_index += 1
+        n = len(self.folder_tracking_tasks)
+        self.process_btn.setText(f"Tracking... ({self.current_task_index}/{n})")
+        self.parent_window.progress_bar.setValue(int(self.current_task_index / n * 100))
+        self._process_next_tracking_task()
+
+    def preview_trajectories(self) -> None:
+        """Find *_trajectories.tif at preview path; if multiple, show selection; open chosen file."""
+        files = self._get_preview_tracked_files()
+        if not files:
+            QMessageBox.warning(
+                self, "No files found",
+                "No *_trajectories.tif files found at the given path.\n\n"
+                "Set the Preview path to a folder or file and try again."
+            )
+            return
+        parent = self.window() if hasattr(self, "window") and callable(self.window) else self
+        selected = show_file_selection_dialog(
+            parent,
+            files,
+            title="Select file to view",
+            message="Select which trajectory file to view:",
+        )
+        if selected is None or not selected:
+            return
+        # Open one preview window per selected file (all non-modal, slightly offset so multiple are visible)
+        for i, traj_path in enumerate(selected):
+            self._open_trajectory_preview_window(traj_path, index=i)
+
+    def _run_export_filtered_tracks(self) -> None:
+        """Find trajectory files, let user select which to process, apply current filters and export Excel per file."""
+        files = self._get_preview_tracked_files()
+        if not files:
+            files = self._get_trajectory_files()
+        if not files:
+            QMessageBox.warning(
+                self,
+                "No trajectory files",
+                "No *_trajectories.tif files found.\n\n"
+                "Set the Preview path (folder or file) or the main Tracking path (folder with _tracking output), then try again."
+            )
+            return
+        parent = self.window() if hasattr(self, "window") and callable(self.window) else self
+        selected = show_file_selection_dialog(
+            parent,
+            files,
+            title="Export filtered tracks",
+            message="Select which trajectory files to export (filtered track data will be written as Excel):",
+        )
+        if selected is None or not selected:
+            return
+        n_files = len(selected)
+        if hasattr(self.parent_window, "expand_status_log"):
+            self.parent_window.expand_status_log()
+        self.parent_window.progress_bar.setVisible(True)
+        self.parent_window.progress_bar.setRange(0, max(1, n_files))
+        self.parent_window.progress_bar.setValue(0)
+        self.parent_window.log_output(f"Exporting filtered tracks ({n_files} file(s))...\n")
+        params = self._get_filter_params()
+        pixel_size = params["pixel_size"]
+        time_per_frame = params["time_per_frame"]
+        done = 0
+        errors = []
+        for idx, traj_path in enumerate(selected):
+            self.parent_window.progress_bar.setValue(idx)
+            self.parent_window.log_output(f"  [{idx + 1}/{n_files}] {traj_path.name}\n")
+            QApplication.processEvents()
+            out_dir = traj_path.parent
+            stem = traj_path.stem.replace("_trajectories", "")
+            tracks_csv = out_dir / f"{stem}_tracks.csv"
+            if not tracks_csv.is_file():
+                errors.append(f"{traj_path.name}: no {tracks_csv.name} found")
+                continue
+            try:
+                tracks_df = pd.read_csv(tracks_csv)
+            except Exception as e:
+                errors.append(f"{traj_path.name}: could not read CSV ({e})")
+                continue
+            for col in ("track_id", "frame", "y", "x"):
+                if col not in tracks_df.columns:
+                    errors.append(f"{traj_path.name}: CSV missing column '{col}'")
+                    break
+            else:
+                metrics_df = self._compute_track_metrics(tracks_df, pixel_size, time_per_frame)
+                if metrics_df.empty:
+                    errors.append(f"{traj_path.name}: no tracks in CSV")
+                    continue
+                filtered_ids = self._apply_track_filters(metrics_df, params)
+                filtered_metrics = metrics_df[metrics_df["track_id"].isin(filtered_ids)].copy()
+                cell_id_per_track = None
+                if "Cell_ID" in tracks_df.columns and not filtered_metrics.empty:
+                    first_cell = tracks_df.groupby("track_id")["Cell_ID"].first()
+                    cell_id_per_track = filtered_metrics["track_id"].map(first_cell)
+                export_df = pd.DataFrame()
+                if not filtered_metrics.empty:
+                    export_df["Cell_ID"] = cell_id_per_track if cell_id_per_track is not None else filtered_metrics["track_id"]
+                    export_df["TrackID"] = filtered_metrics["track_id"].values
+                    export_df["trajectory_length"] = filtered_metrics["trajectory_length"].values
+                    export_df["duration_frames"] = filtered_metrics["duration_frames"].values
+                    export_df["duration_min"] = filtered_metrics["duration_min"].values
+                    export_df["first_frame"] = filtered_metrics["first_frame"].values
+                    export_df["last_frame"] = filtered_metrics["last_frame"].values
+                    export_df["displacement_px"] = filtered_metrics["displacement_px"].values
+                    export_df["displacement_um"] = filtered_metrics["displacement_um"].values
+                    export_df["path_length_px"] = filtered_metrics["path_length_px"].values
+                    export_df["path_length_um"] = filtered_metrics["path_length_um"].values
+                    export_df["mean_speed_px_frame"] = filtered_metrics["mean_speed_px_frame"].values
+                    export_df["mean_speed_um_min"] = filtered_metrics["mean_speed_um_min"].values
+                    export_df["straight_line_speed_px_frame"] = filtered_metrics["straight_line_speed_px_frame"].values
+                    export_df["straight_line_speed_um_min"] = filtered_metrics["straight_line_speed_um_min"].values
+                    export_df["straightness"] = filtered_metrics["straightness"].values
+                else:
+                    export_df = pd.DataFrame(columns=[
+                        "Cell_ID", "TrackID", "trajectory_length", "duration_frames", "duration_min",
+                        "first_frame", "last_frame", "displacement_px", "displacement_um",
+                        "path_length_px", "path_length_um", "mean_speed_px_frame", "mean_speed_um_min",
+                        "straight_line_speed_px_frame", "straight_line_speed_um_min", "straightness",
+                    ])
+                out_excel = out_dir / f"{stem}_filtered_tracks.xlsx"
+                try:
+                    with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
+                        export_df.to_excel(writer, sheet_name="Filtered tracks", index=False)
+                    done += 1
+                    if hasattr(self, "parent_window") and hasattr(self.parent_window, "log_output"):
+                        self.parent_window.log_output(f"✓ Exported {len(export_df)} tracks to {out_excel.name}\n")
+                except Exception as e:
+                    errors.append(f"{traj_path.name}: could not write Excel ({e})")
+        self.parent_window.progress_bar.setValue(n_files)
+        self.parent_window.log_output(f"✓ Export complete: {done}/{n_files} file(s) written.\n")
+        QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
+        msg = f"Exported {done} file(s)."
+        if errors:
+            msg += "\n\nErrors:\n" + "\n".join(errors[:15])
+            if len(errors) > 15:
+                msg += f"\n... and {len(errors) - 15} more."
+        QMessageBox.information(self, "Export filtered tracks", msg)
+
+    def _open_trajectory_preview_window(self, traj_path: Path, index: int = 0) -> None:
+        """Open a single non-modal preview window for one *_trajectories.tif; supports Re-apply with current settings."""
+        try:
+            stack = safe_imread(str(traj_path))
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Load Error",
+                f"Could not load trajectories file:\n{traj_path}\n\n{str(e)}"
+            )
+            return
+        # Normalize to (T, H, W, 3) for consistent display
+        if stack.ndim == 3:
+            n_frames, h, w = stack.shape
+            frames_rgb = np.stack([np.stack([stack[i], stack[i], stack[i]], axis=-1) for i in range(n_frames)], axis=0)
+        elif stack.ndim == 4:
+            n_frames = stack.shape[0]
+            frames_rgb = []
+            for i in range(n_frames):
+                frame = stack[i]
+                if frame.ndim == 3:
+                    if frame.shape[-1] in (1, 3, 4):
+                        f = frame[:, :, :3] if frame.shape[-1] >= 3 else np.stack([frame.squeeze(-1)] * 3, axis=-1)
+                    elif frame.shape[0] in (1, 3, 4):
+                        frame = np.transpose(frame, (1, 2, 0))
+                        f = frame[:, :, :3] if frame.shape[-1] >= 3 else np.stack([frame.squeeze(-1)] * 3, axis=-1)
+                    else:
+                        f = np.stack([frame] * 3, axis=-1)
+                else:
+                    f = np.stack([frame] * 3, axis=-1)
+                frames_rgb.append(f)
+            frames_rgb = np.array(frames_rgb, dtype=np.uint8)
+        else:
+            QMessageBox.warning(
+                self, "Preview",
+                f"Expected 3D (T, Y, X) or 4D overlay, got {stack.ndim} dimensions."
+            )
+            return
+        tracks_csv, _overlay_path, original_path = self._resolve_from_trajectories_path(traj_path)
+        ps, tp = resolve_calibration_from_trajectories_path(traj_path)
+        if ps > 0 and hasattr(self, "filter_pixel_size"):
+            self.filter_pixel_size.setValue(ps)
+        if tp > 0 and hasattr(self, "filter_time_per_frame"):
+            self.filter_time_per_frame.setValue(tp)
+            if hasattr(self, "filter_time_per_frame_unit"):
+                self.filter_time_per_frame_unit.setCurrentText("min")
+        main_win = self.window() if hasattr(self, "window") and callable(self.window) else self
+        dialog = TrajectoryPreviewDialog(
+            self, traj_path, frames_rgb, tracks_csv, original_path, index=index, parent=main_win
+        )
+        dialog.show()
+
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
         return get_from_widgets([
             ("model", self.model_combo),
             ("mode", self.mode_combo),
-            ("device", self.device_combo),
+            ("use_gpu", self.use_gpu_cb),
+            ("create_vis", self.create_vis_cb),
+            ("batch", self.batch_cb),
+            ("filter_pixel_size", self.filter_pixel_size),
+            ("filter_time_per_frame", self.filter_time_per_frame),
+            ("filter_time_per_frame_unit", self.filter_time_per_frame_unit),
         ])
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -648,7 +1747,158 @@ class TrackingTab(QWidget):
         apply_to_widgets(data, [
             ("model", self.model_combo),
             ("mode", self.mode_combo),
-            ("device", self.device_combo),
+            ("use_gpu", self.use_gpu_cb),
+            ("create_vis", self.create_vis_cb),
+            ("batch", self.batch_cb),
+            ("filter_pixel_size", self.filter_pixel_size),
+            ("filter_time_per_frame", self.filter_time_per_frame),
+            ("filter_time_per_frame_unit", self.filter_time_per_frame_unit),
         ])
+
+
+class TrajectoryPreviewDialog(QDialog):
+    """Non-modal trajectory preview: shows trajectory TIF; Re-apply with current settings applies filter and redraws."""
+
+    def __init__(
+        self,
+        tab: "TrackingTab",
+        traj_path: Path,
+        frames_rgb: np.ndarray,
+        tracks_csv: Path | None,
+        original_path: Path | None,
+        index: int = 0,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._tab = tab
+        self._traj_path = traj_path
+        self._frames = frames_rgb  # (T, H, W, 3)
+        self._tracks_csv = tracks_csv
+        self._original_path = original_path
+        self.setWindowTitle(f"Trajectories — {traj_path.name}")
+        self.setMinimumSize(900, 700)
+        self.setModal(False)
+        self.setWindowFlags(
+            self.windowFlags()
+            | Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+        )
+        layout = QVBoxLayout()
+        self._title_label = QLabel(f"Trajectories — {traj_path.name}")
+        self._title_label.setObjectName("traj_preview_title")
+        self._title_label.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 6px;")
+        layout.addWidget(self._title_label)
+        self._canvas = ImageCanvas()
+        self._canvas.setMinimumSize(400, 300)
+        self._canvas.setStyleSheet("background-color: #1e1e1e;")
+        self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self._canvas, 1)
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(QLabel("Frame:"))
+        self._frame_slider = QSlider(Qt.Orientation.Horizontal)
+        n_frames = self._frames.shape[0]
+        self._frame_slider.setMinimum(0)
+        self._frame_slider.setMaximum(max(0, n_frames - 1))
+        self._frame_slider.setValue(0)
+        self._frame_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._frame_slider.setTickInterval(max(1, n_frames // 10))
+        self._frame_label = QLabel("0")
+        self._frame_label.setFixedWidth(40)
+        slider_row.addWidget(self._frame_slider, 1)
+        slider_row.addWidget(self._frame_label)
+        layout.addLayout(slider_row)
+        reapply_btn = QPushButton("Re-apply with current settings")
+        reapply_btn.clicked.connect(self._on_reapply)
+        layout.addWidget(reapply_btn)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+        close_shortcut = QShortcut(QKeySequence.StandardKey.Close, self)
+        close_shortcut.activated.connect(self.close)
+        self.setLayout(layout)
+
+        def show_frame(idx: int) -> None:
+            if idx < 0 or idx >= self._frames.shape[0]:
+                return
+            frame = self._frames[idx]
+            scaled, _ = scale_for_preview(frame, frame)
+            pixmap = to_qpixmap(scaled)
+            self._canvas.set_pixmap(pixmap, (scaled.shape[1], scaled.shape[0]), reset_view=(idx == 0))
+            self._frame_label.setText(str(idx))
+
+        self._frame_slider.valueChanged.connect(show_frame)
+        show_frame(0)
+        offset_px = 45
+        main_win = self._tab.window() if hasattr(self._tab, "window") and callable(self._tab.window) else None
+        if main_win:
+            top_left = main_win.mapToGlobal(main_win.rect().topLeft())
+            self.move(
+                top_left.x() + 50 + index * offset_px,
+                top_left.y() + 50 + index * offset_px,
+            )
+
+    def _on_reapply(self) -> None:
+        """Re-read filter params from tab, reload CSV, filter, redraw overlay, update preview."""
+        if not self._tracks_csv or not self._tracks_csv.is_file():
+            where = f"Looked for: {self._tracks_csv}" if self._tracks_csv else "Path could not be determined."
+            QMessageBox.warning(
+                self,
+                "Re-apply filters",
+                "Tracks CSV not found.\n\n"
+                "BactiMate looks for the tracks file automatically: same folder as the trajectory file, "
+                "same name with _tracks.csv (e.g. stem_trajectories.tif → stem_tracks.csv).\n\n"
+                f"{where}\n\nRun tracking first to generate it."
+            )
+            return
+        if not self._original_path or not self._original_path.is_file():
+            where = f"Looked for original next to mask: {self._original_path}" if self._original_path else "Original path could not be determined (mask not found)."
+            QMessageBox.warning(
+                self,
+                "Re-apply filters",
+                "Original image not found.\n\n"
+                "Re-apply needs the original phase/stack image to draw filtered trajectories. "
+                "It is looked up from the mask file name (same stem as the trajectory).\n\n"
+                f"{where}"
+            )
+            return
+        try:
+            tracks_df = pd.read_csv(self._tracks_csv)
+        except Exception as e:
+            QMessageBox.critical(self, "Load error", f"Could not read tracks CSV:\n{e}")
+            return
+        for col in ("track_id", "frame", "y", "x"):
+            if col not in tracks_df.columns:
+                QMessageBox.warning(self, "Invalid CSV", f"Missing column: {col}")
+                return
+        params = self._tab._get_filter_params()
+        pixel_size = params["pixel_size"]
+        time_per_frame = params["time_per_frame"]
+        metrics_df = self._tab._compute_track_metrics(tracks_df, pixel_size, time_per_frame)
+        if metrics_df.empty:
+            return
+        filtered_ids = self._tab._apply_track_filters(metrics_df, params)
+        filtered_df = tracks_df[tracks_df["track_id"].isin(filtered_ids)].copy()
+        try:
+            images = safe_imread(str(self._original_path))
+        except Exception as e:
+            QMessageBox.critical(self, "Load error", f"Could not load original stack:\n{e}")
+            return
+        if images.ndim != 3:
+            return
+        self._frames = self._tab._draw_filtered_trajectory_overlay(images, filtered_df)
+        n_frames = self._frames.shape[0]
+        self._frame_slider.setMaximum(max(0, n_frames - 1))
+        self._frame_slider.setTickInterval(max(1, n_frames // 10))
+        n_tracks = filtered_df["track_id"].nunique() if not filtered_df.empty else 0
+        self._title_label.setText(f"Trajectories — {self._traj_path.name} ({n_tracks} tracks)")
+        idx = self._frame_slider.value()
+        if idx >= n_frames:
+            idx = max(0, n_frames - 1)
+            self._frame_slider.setValue(idx)
+        frame = self._frames[idx]
+        scaled, _ = scale_for_preview(frame, frame)
+        pixmap = to_qpixmap(scaled)
+        self._canvas.set_pixmap(pixmap, (scaled.shape[1], scaled.shape[0]), reset_view=False)
+        self._frame_label.setText(str(idx))
 
 

@@ -132,7 +132,7 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
         
         # Save masks
         masks_path = file_output_dir / f"{file_stem}_masks.tif"
-        concatenate_masks(masks, str(masks_path))
+        concatenate_masks(masks, str(masks_path), source_image_path=input_file)
         
         # Step 1.5: Create overlay (if requested) - before analysis to avoid reloading images
         overlay_path = None

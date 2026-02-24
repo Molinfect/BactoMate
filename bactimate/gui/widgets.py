@@ -182,6 +182,7 @@ def show_file_selection_dialog(
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
     dialog.setMinimumSize(600, 500)
+    dialog.setWindowModality(Qt.WindowModality.WindowModal)
 
     layout = QVBoxLayout()
 
@@ -227,6 +228,8 @@ def show_file_selection_dialog(
     layout.addWidget(button_box)
 
     dialog.setLayout(layout)
+    dialog.raise_()
+    dialog.activateWindow()
 
     if dialog.exec() == QDialog.DialogCode.Accepted:
         selected_files = []
@@ -239,13 +242,14 @@ def show_file_selection_dialog(
 
 
 class DragDropGroupBox(QGroupBox):
-    """QGroupBox with drag-and-drop support for files and folders"""
-
-    def __init__(self, title, parent=None, on_drop_callback=None):
+    """QGroupBox with drag-and-drop support for files and folders.
+    Optional base_stylesheet: restored after drag leave/drop so custom padding etc. is kept."""
+    def __init__(self, title, parent=None, on_drop_callback=None, base_stylesheet=None):
         super().__init__(title, parent)
         self.setAcceptDrops(True)
         self.on_drop_callback = on_drop_callback
         self._drag_over = False
+        self._base_stylesheet = base_stylesheet or ""
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -263,7 +267,7 @@ class DragDropGroupBox(QGroupBox):
 
     def dragLeaveEvent(self, event):
         self._drag_over = False
-        self.setStyleSheet("")
+        self.setStyleSheet(self._base_stylesheet)
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
@@ -274,6 +278,6 @@ class DragDropGroupBox(QGroupBox):
                     self.on_drop_callback(dropped_path)
             event.acceptProposedAction()
             self._drag_over = False
-            self.setStyleSheet("")
+            self.setStyleSheet(self._base_stylesheet)
         else:
             event.ignore()

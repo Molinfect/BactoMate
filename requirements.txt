@@ -1,3 +1,9 @@
+# BactiMate dependencies
+# - If pip says "Requirement already satisfied" for everything, your env is fine.
+#   For Zeiss CZI support only run:  pip install aicspylibczi
+# - If you get "resolution-too-deep" on a fresh install, try:
+#   pip install --use-deprecated=legacy-resolver -r requirements.txt
+#
 # Core Omnipose dependencies (pinned for reproducible builds; ~= allows patch updates)
 omnipose>=1.0.6,<3.0.0
 cellpose-omni>=0.6.0,<1.0.0
@@ -11,9 +17,11 @@ Pillow>=9.0.0  # For NumPy 2.0 compatibility when reading TIFF files (fallback f
 
 # Microscopy file support (for converting ND2, LIF, CZI to TIFF)
 nd2>=0.7.0
-aicsimageio>=4.0.0  # Unified interface for ND2, LIF, CZI
+aicsimageio>=4.13.0  # 4.13+ avoids old xarray pins that cause resolver backtracking
 readlif>=0.6.4  # Alternative LIF reader
 czifile>=2019.7.2  # Alternative CZI reader (optional, aicsimageio preferred)
+# Zeiss CZI: install after main deps to avoid resolver depth issues:
+#   pip install aicspylibczi>=3.1.1
 
 # GUI framework (PyQt6 pinned for compatibility)
 PyQt6>=6.6.0,<7.0.0
@@ -54,6 +62,7 @@ torchvision>=0.15.0
 
 # Cell tracking
 trackastra>=0.1.0  # Cell tracking library for time-lapse data
+zarr>=3.0.0  # zarr 3 avoids numcodecs.blosc.cbuffer_sizes (removed in numcodecs 0.16); prevents ImportError with trackastra stack
 
 # SAM2 (Segment Anything Model 2) - Optional advanced segmentation
 # Optional extras: pip install -e .[sam2] for SAM2 + compatible torch (see pyproject.toml)

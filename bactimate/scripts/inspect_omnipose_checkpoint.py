@@ -160,6 +160,16 @@ def main() -> None:
     print(f"nclasses (from checkpoint or inferred from output layer): {info.get('nclasses')}")
     print(f"diam_mean (from checkpoint): {info.get('diam_mean')}")
     print(f"First conv weight shape (out, in, k, k): {info.get('first_layer_shape')}")
+    ckpt_nout = info.get("output_layer_out_channels")
+    file_nclasses = info.get("nclasses")
+    print(f"Checkpoint output head out_channels: {ckpt_nout}")
+    if ckpt_nout is not None and file_nclasses is not None:
+        # BactiMate passes file nclasses (3) to CellposeModel; it does nclasses += (dim-1) → 4 for 2D.
+        built_nout = file_nclasses + 1  # 2D: dim-1=1
+        if ckpt_nout == built_nout:
+            print(f"  -> Loader uses nclasses={file_nclasses} from file; CellposeModel builds 4 for 2D. Matches checkpoint (4). OK.")
+        else:
+            print(f"  -> MISMATCH: checkpoint head has {ckpt_nout} channels but loader builds with nclasses={file_nclasses}+1={built_nout}. Can cause crash or 0 cells.")
     default_nchan, default_nclasses = get_default_user_model_architecture()
     print(f"\nBactiMate default at inference: nchan={default_nchan}, nclasses={default_nclasses}")
     print("If your model was trained with different nchan/nclasses, inference must use the same.")

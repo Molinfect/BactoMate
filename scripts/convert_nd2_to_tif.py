@@ -234,6 +234,11 @@ def bleach_correct_stack(
     raise ValueError(f"Unexpected frame shape: {frames.shape}")
 
 
+def _sanitize_channel_name_for_filename(name: str) -> str:
+    """Replace characters unsuitable for filenames with underscore."""
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name).strip("_") or "channel"
+
+
 def convert_nd2_to_tif(
     input_path: Path,
     output_dir: Optional[Path] = None,
@@ -246,6 +251,7 @@ def convert_nd2_to_tif(
     bleach_channel_indices: Optional[List[int]] = None,  # If set, only these channel indices get correction; else all
     pixel_size: Optional[float] = None,  # Pixel size in µm to save in metadata
     max_z_projection: bool = False,  # Max intensity projection across Z-slices
+    fi_channel_indices: Optional[List[int]] = None,  # Channel indices to save with "_fi" in filename for Analyze Masks batch FI
 ) -> None:
     """
     Convert ND2 files to multi-page TIFF files.
@@ -274,10 +280,9 @@ def convert_nd2_to_tif(
         print(f"No ND2 files found in {input_path}")
         return
     
-    # Create output directory
+    # Create output directory: always use single folder "Tif_files" if not specified
     if output_dir is None:
-        # Dynamic folder name based on number of frames
-        output_dir = base_dir / f"Tif_1-{max_frames}"
+        output_dir = base_dir / "Tif_files"
     else:
         output_dir = Path(output_dir)
     
@@ -548,16 +553,17 @@ def convert_nd2_to_tif(
                         if len(all_frames.shape) == 4:  # TCYX
                             # Verify the channel dimension matches
                             if all_frames.shape[1] == num_channels:
+                                fi_set = set(fi_channel_indices or [])
                                 print(f"  Saving {num_channels} channels as separate files (each with {frames_to_extract} timepoints)")
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]  # Extract channel: TYX
                                     channel_name = channel_names[ch_idx]
-                                    
-                                    # Generate output filename with channel
-                                    output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                    if ch_idx in fi_set:
+                                        output_filename = f"{nd2_file.stem}_fi.tif" if len(fi_set) == 1 else f"{nd2_file.stem}_fi_{_sanitize_channel_name_for_filename(channel_name)}.tif"
+                                    else:
+                                        output_filename = f"{nd2_file.stem}_{channel_name}.tif"
                                     output_path = output_dir / output_filename
-                                    
-                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape})")
+                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape}) -> {output_filename}")
                                     _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
                             else:
                                 print(f"  Warning: Shape mismatch - all_frames.shape[1]={all_frames.shape[1]} but num_channels={num_channels}")
@@ -580,12 +586,16 @@ def convert_nd2_to_tif(
                                 all_frames = all_frames.transpose(1, 0, 2, 3)
                                 print(f"  Transposed to TCYX, new shape: {all_frames.shape}")
                             if len(all_frames.shape) == 4 and all_frames.shape[1] == num_channels:
+                                fi_set = set(fi_channel_indices or [])
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]
                                     channel_name = channel_names[ch_idx]
-                                    output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                    if ch_idx in fi_set:
+                                        output_filename = f"{nd2_file.stem}_fi.tif" if len(fi_set) == 1 else f"{nd2_file.stem}_fi_{_sanitize_channel_name_for_filename(channel_name)}.tif"
+                                    else:
+                                        output_filename = f"{nd2_file.stem}_{channel_name}.tif"
                                     output_path = output_dir / output_filename
-                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name}")
+                                    print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} -> {output_filename}")
                                     _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size)
                             else:
                                 # Fallback: save as single file
@@ -802,7 +812,7 @@ def main() -> None:
         '-o', '--output',
         type=str,
         default=None,
-        help='Output directory (default: creates "Tif_1-150" folder in input directory)'
+        help='Output directory (default: "Tif_files" in input directory, reused if it exists)'
     )
     parser.add_argument(
         '-f', '--frames',
@@ -853,6 +863,14 @@ def main() -> None:
         help='Channel indices (0-based) to apply bleach correction to. If omitted and --bleach-correct is set, all channels are corrected. Example: --bleach-channels 0 2'
     )
     parser.add_argument(
+        '--fi-channels',
+        type=int,
+        nargs='*',
+        default=None,
+        metavar='N',
+        help='Channel indices (0-based) to save with "_fi" in filename (e.g. stem_fi.tif) for Analyze Masks batch FI. Example: --fi-channels 0 1'
+    )
+    parser.add_argument(
         '--pixel-size',
         type=float,
         default=None,
@@ -882,6 +900,7 @@ def main() -> None:
             bleach_channel_indices=args.bleach_channels,
             pixel_size=args.pixel_size,
             max_z_projection=args.max_z_projection,
+            fi_channel_indices=getattr(args, 'fi_channels', None),
         )
     except Exception as e:
         print(f"Error: {e}")
