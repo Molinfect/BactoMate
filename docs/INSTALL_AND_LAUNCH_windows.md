@@ -49,6 +49,20 @@ You should see `main.py`, `requirements.txt`, and a `bactimate` directory.
 
 ---
 
+## 2b. One-click install (optional)
+
+If you prefer to run all install steps in one go:
+
+1. Open **Command Prompt** and go to the BactiMate folder: `cd C:\path\to\BactiMate`
+2. Run: `setup\install_windows.bat`
+3. The script will: create the venv, install dependencies, install BactiMate, detect your NVIDIA driver and install the matching PyTorch CUDA wheel (e.g. cu128 for CUDA 12.8), and create **launch_windows.bat** in the project folder.
+4. If a step fails, the script prints a **[BREAK]** message with the step number and suggestions.
+5. To start BactiMate later, double-click **launch_windows.bat** (in the BactiMate folder) or run it from the command line.
+
+You can instead follow the manual steps below (3–5).
+
+---
+
 ## 3. Create a virtual environment
 
 Use a virtual environment so BactiMate’s dependencies stay separate from other Python projects.
