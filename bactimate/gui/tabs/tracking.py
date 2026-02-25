@@ -181,148 +181,179 @@ class TrackingTab(QWidget):
         self._build_filter_tracks_section(scroll_layout)
 
     def _build_filter_tracks_section(self, scroll_layout: QVBoxLayout) -> None:
-        """Build Filter tracks subsection: calibration + one row per filter with info after each spin set."""
+        """Build Filter tracks subsection: calibration row + 2-column grid so filters fill horizontal space; (?) next to each spin set."""
         filter_group = QGroupBox("Filter tracks")
-        filter_layout = QVBoxLayout()
-        label_width = 155
+        grid = QGridLayout()
+        label_width = 118  # Min width so "Min straightness:" fits; keeps spinboxes aligned in both columns
 
-        # Calibration row: pixel size, time per frame + unit, info at end
+        # Calibration row (full width): pixel size, time per frame + unit, info at end
         self.filter_pixel_size = QDoubleSpinBox()
         self.filter_pixel_size.setRange(0.0, 10.0)
-        self.filter_pixel_size.setDecimals(4)
+        self.filter_pixel_size.setDecimals(3)
         self.filter_pixel_size.setValue(0.108)
         self.filter_pixel_size.setSingleStep(0.001)
         self.filter_pixel_size.setSpecialValueText("px only")
         self.filter_pixel_size.setMinimum(0.0)
         self.filter_time_per_frame = QDoubleSpinBox()
         self.filter_time_per_frame.setRange(0.0, 1e6)
-        self.filter_time_per_frame.setDecimals(4)
+        self.filter_time_per_frame.setDecimals(2)
         self.filter_time_per_frame.setValue(1.0)
         self.filter_time_per_frame.setSpecialValueText("frames only")
         self.filter_time_per_frame.setMinimum(0.0)
         self.filter_time_per_frame_unit = QComboBox()
         self.filter_time_per_frame_unit.addItems(["min", "h", "s", "ms"])
         self.filter_time_per_frame_unit.setCurrentText("min")
+        GAP_PX = 10  # same gap: spin–dash, dash–spin, spin–info (and calibration row → info)
         cal_row = QHBoxLayout()
         cal_row.addWidget(QLabel("Pixel size:"))
         cal_row.addWidget(self.filter_pixel_size)
+        cal_row.addSpacing(GAP_PX)
         cal_row.addWidget(QLabel("Time/frame:"))
         cal_row.addWidget(self.filter_time_per_frame)
         cal_row.addWidget(self.filter_time_per_frame_unit)
-        cal_row.addStretch()
+        cal_row.addSpacing(GAP_PX)
         cal_row.addWidget(create_info_icon(
             "Calibration for physical units. Pixel size: µm/px (0 = pixels only). Time/frame: interval between frames; unit min/h/s/ms. Speed in µm/min when both set. Filled from trajectory metadata when you set a path.",
             self,
         ))
-        filter_layout.addLayout(cal_row)
+        cal_row.addStretch()
+        grid.addLayout(cal_row, 0, 0, 1, 2)
 
-        def add_filter_row(
+        SPINBOX_WIDTH = 98
+        STRETCH_SMALL = 1
+        STRETCH_HUGE = 10
+
+        def make_filter_cell(
             label: str,
             min_spin: QDoubleSpinBox | QSpinBox,
             max_spin: QDoubleSpinBox | QSpinBox | None,
             min_default: float | int,
             max_default: float | int,
             info_text: str,
-        ) -> None:
+        ) -> QHBoxLayout:
             min_spin.setMinimum(0)
             min_spin.setMaximum(999999)
             min_spin.setValue(min_default)
+            min_spin.setFixedWidth(SPINBOX_WIDTH)
             if max_spin is not None:
                 max_spin.setMinimum(0)
                 max_spin.setMaximum(999999)
                 max_spin.setValue(max_default)
-            row = QHBoxLayout()
+                max_spin.setFixedWidth(SPINBOX_WIDTH)
+            cell = QHBoxLayout()
+            cell.setContentsMargins(0, 2, 0, 2)
+            cell.setSpacing(0)
             lab = QLabel(label)
             lab.setMinimumWidth(label_width)
-            row.addWidget(lab)
-            row.addWidget(min_spin)
+            cell.addWidget(lab)
+            cell.addStretch(STRETCH_SMALL)
+            cell.addWidget(min_spin)
             if max_spin is not None:
-                row.addWidget(QLabel("–"))
-                row.addWidget(max_spin)
-            row.addStretch()
-            row.addWidget(create_info_icon(info_text, self))
-            filter_layout.addLayout(row)
+                cell.addSpacing(GAP_PX)
+                dash = QLabel("–")
+                dash.setFixedWidth(6)
+                dash.setContentsMargins(0, 0, 0, 0)
+                dash.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell.addWidget(dash)
+                cell.addSpacing(GAP_PX)
+                cell.addWidget(max_spin)
+            cell.addSpacing(GAP_PX)
+            cell.addWidget(create_info_icon(info_text, self))
+            cell.addStretch(STRETCH_HUGE)
+            return cell
 
+        # Row 1: Length | Duration
         self.filter_min_length = QSpinBox()
         self.filter_max_length = QSpinBox()
-        add_filter_row(
-            "Length (points):",
-            self.filter_min_length,
-            self.filter_max_length,
-            2,
-            100000,
-            "Number of detections per track (min–max). Max is capped from trajectory frame count when path is set.",
-        )
         self.filter_min_duration = QSpinBox()
         self.filter_max_duration = QSpinBox()
-        add_filter_row(
-            "Duration (frames):",
-            self.filter_min_duration,
-            self.filter_max_duration,
-            1,
-            100000,
-            "Frame span (last − first + 1). Max is capped from trajectory frame count when path is set.",
-        )
+        grid.addLayout(
+            make_filter_cell(
+                "Length (frames):",
+                self.filter_min_length,
+                self.filter_max_length,
+                2, 100,
+                "Number of detections of frames per track (min–max). Max capped from trajectory frame count when path is set.",
+            ), 1, 0)
+        grid.addLayout(
+            make_filter_cell(
+                "Duration (fr):",
+                self.filter_min_duration,
+                self.filter_max_duration,
+                1, 100,
+                "Frame span (last − first + 1). Max capped from trajectory frame count when path is set.",
+            ), 1, 1)
+
+        # Row 2: Displacement | Path length (integer values: µm or px)
         self.filter_min_displacement = QDoubleSpinBox()
         self.filter_max_displacement = QDoubleSpinBox()
-        self.filter_min_displacement.setDecimals(2)
-        self.filter_max_displacement.setDecimals(2)
+        self.filter_min_displacement.setDecimals(0)
+        self.filter_max_displacement.setDecimals(0)
         self.filter_min_displacement.setRange(0, 1e9)
         self.filter_max_displacement.setRange(0, 1e9)
-        add_filter_row(
-            "Displacement:",
-            self.filter_min_displacement,
-            self.filter_max_displacement,
-            0,
-            10000,
-            "Net distance from first to last detection (µm if pixel size set, else px).",
-        )
         self.filter_min_path_length = QDoubleSpinBox()
         self.filter_max_path_length = QDoubleSpinBox()
-        self.filter_min_path_length.setDecimals(2)
-        self.filter_max_path_length.setDecimals(2)
+        self.filter_min_path_length.setDecimals(0)
+        self.filter_max_path_length.setDecimals(0)
         self.filter_min_path_length.setRange(0, 1e9)
         self.filter_max_path_length.setRange(0, 1e9)
-        add_filter_row(
-            "Path length:",
-            self.filter_min_path_length,
-            self.filter_max_path_length,
-            0,
-            100000,
-            "Total distance along the trajectory (sum of step lengths).",
-        )
+        grid.addLayout(
+            make_filter_cell(
+                "Displacement:",
+                self.filter_min_displacement,
+                self.filter_max_displacement,
+                0, 100,
+                "Net distance from first to last detection (µm if pixel size set, else px).",
+            ), 2, 0)
+        grid.addLayout(
+            make_filter_cell(
+                "Path length:",
+                self.filter_min_path_length,
+                self.filter_max_path_length,
+                0, 100,
+                "Total distance along the trajectory (sum of step lengths).",
+            ), 2, 1)
+
+        # Row 3: Mean speed | Min straightness (speed: 2 decimals, e.g. µm/min)
         self.filter_min_speed = QDoubleSpinBox()
         self.filter_max_speed = QDoubleSpinBox()
-        self.filter_min_speed.setDecimals(4)
-        self.filter_max_speed.setDecimals(4)
+        self.filter_min_speed.setDecimals(2)
+        self.filter_max_speed.setDecimals(2)
         self.filter_min_speed.setRange(0, 1e9)
         self.filter_max_speed.setRange(0, 1e9)
-        add_filter_row(
-            "Mean speed:",
-            self.filter_min_speed,
-            self.filter_max_speed,
-            0,
-            1000,
-            "Path length / duration. µm/min when calibration set; otherwise px/frame.",
-        )
         self.filter_min_straightness = QDoubleSpinBox()
         self.filter_min_straightness.setRange(0.0, 1.0)
         self.filter_min_straightness.setDecimals(2)
         self.filter_min_straightness.setSingleStep(0.05)
         self.filter_min_straightness.setValue(0.0)
-        straight_row = QHBoxLayout()
-        straight_lab = QLabel("Min straightness (0–1):")
+        grid.addLayout(
+            make_filter_cell(
+                "Mean speed:",
+                self.filter_min_speed,
+                self.filter_max_speed,
+                0, 100,
+                "Path length / duration. µm/min when calibration set; otherwise px/frame.",
+            ), 3, 0)
+        straight_cell = QHBoxLayout()
+        straight_cell.setContentsMargins(0, 2, 0, 2)
+        straight_cell.setSpacing(0)
+        straight_lab = QLabel("Min Straightness:")
         straight_lab.setMinimumWidth(label_width)
-        straight_row.addWidget(straight_lab)
-        straight_row.addWidget(self.filter_min_straightness)
-        straight_row.addStretch()
-        straight_row.addWidget(create_info_icon(
+        straight_cell.addWidget(straight_lab)
+        straight_cell.addStretch(STRETCH_SMALL)
+        self.filter_min_straightness.setFixedWidth(SPINBOX_WIDTH)
+        straight_cell.addWidget(self.filter_min_straightness)
+        straight_cell.addSpacing(GAP_PX)
+        straight_cell.addWidget(create_info_icon(
             "Straightness = displacement / path length. 0 = any; 1 = perfectly straight (ballistic).",
             self,
         ))
-        filter_layout.addLayout(straight_row)
+        # Extra fixed width so STRETCH_SMALL gets same size as in Path length row → spinbox aligns; gap is right of info
+        straight_cell.addSpacing(GAP_PX + 6 + GAP_PX + SPINBOX_WIDTH)
+        straight_cell.addStretch(STRETCH_HUGE)
+        grid.addLayout(straight_cell, 3, 1)
 
-        filter_group.setLayout(filter_layout)
+        filter_group.setLayout(grid)
         scroll_layout.addWidget(filter_group)
 
         export_row = QHBoxLayout()
@@ -1638,26 +1669,32 @@ class TrackingTab(QWidget):
                 if not filtered_metrics.empty:
                     export_df["Cell_ID"] = cell_id_per_track if cell_id_per_track is not None else filtered_metrics["track_id"]
                     export_df["TrackID"] = filtered_metrics["track_id"].values
-                    export_df["trajectory_length"] = filtered_metrics["trajectory_length"].values
-                    export_df["duration_frames"] = filtered_metrics["duration_frames"].values
-                    export_df["duration_min"] = filtered_metrics["duration_min"].values
-                    export_df["first_frame"] = filtered_metrics["first_frame"].values
-                    export_df["last_frame"] = filtered_metrics["last_frame"].values
-                    export_df["displacement_px"] = filtered_metrics["displacement_px"].values
-                    export_df["displacement_um"] = filtered_metrics["displacement_um"].values
-                    export_df["path_length_px"] = filtered_metrics["path_length_px"].values
-                    export_df["path_length_um"] = filtered_metrics["path_length_um"].values
-                    export_df["mean_speed_px_frame"] = filtered_metrics["mean_speed_px_frame"].values
-                    export_df["mean_speed_um_min"] = filtered_metrics["mean_speed_um_min"].values
-                    export_df["straight_line_speed_px_frame"] = filtered_metrics["straight_line_speed_px_frame"].values
-                    export_df["straight_line_speed_um_min"] = filtered_metrics["straight_line_speed_um_min"].values
-                    export_df["straightness"] = filtered_metrics["straightness"].values
+                    export_df["trajectory_length"] = filtered_metrics["trajectory_length"].values.astype(int)
+                    export_df["duration_frames"] = filtered_metrics["duration_frames"].values.astype(int)
+                    export_df["duration_min"] = np.round(filtered_metrics["duration_min"].values, 2)
+                    export_df["first_frame"] = filtered_metrics["first_frame"].values.astype(int)
+                    export_df["last_frame"] = filtered_metrics["last_frame"].values.astype(int)
+                    # Displacement and path length: full values, integer (µm or px)
+                    export_df["displacement_px"] = np.round(filtered_metrics["displacement_px"].values, 0).astype(int)
+                    export_df["displacement_um"] = np.round(filtered_metrics["displacement_um"].values, 0).astype(int)
+                    export_df["path_length_px"] = np.round(filtered_metrics["path_length_px"].values, 0).astype(int)
+                    export_df["path_length_um"] = np.round(filtered_metrics["path_length_um"].values, 0).astype(int)
+                    # Speeds: 2 decimals; add µm/s (from µm/min) for alignment with e.g. bacteria µm/s
+                    mean_um_min = np.round(filtered_metrics["mean_speed_um_min"].values, 2)
+                    straight_um_min = np.round(filtered_metrics["straight_line_speed_um_min"].values, 2)
+                    export_df["mean_speed_px_frame"] = np.round(filtered_metrics["mean_speed_px_frame"].values, 2)
+                    export_df["mean_speed_um_min"] = mean_um_min
+                    export_df["mean_speed_um_s"] = np.round(mean_um_min / 60.0, 2)
+                    export_df["straight_line_speed_px_frame"] = np.round(filtered_metrics["straight_line_speed_px_frame"].values, 2)
+                    export_df["straight_line_speed_um_min"] = straight_um_min
+                    export_df["straight_line_speed_um_s"] = np.round(straight_um_min / 60.0, 2)
+                    export_df["straightness"] = np.round(filtered_metrics["straightness"].values, 2)
                 else:
                     export_df = pd.DataFrame(columns=[
                         "Cell_ID", "TrackID", "trajectory_length", "duration_frames", "duration_min",
                         "first_frame", "last_frame", "displacement_px", "displacement_um",
-                        "path_length_px", "path_length_um", "mean_speed_px_frame", "mean_speed_um_min",
-                        "straight_line_speed_px_frame", "straight_line_speed_um_min", "straightness",
+                        "path_length_px", "path_length_um", "mean_speed_px_frame", "mean_speed_um_min", "mean_speed_um_s",
+                        "straight_line_speed_px_frame", "straight_line_speed_um_min", "straight_line_speed_um_s", "straightness",
                     ])
                 out_excel = out_dir / f"{stem}_filtered_tracks.xlsx"
                 try:
