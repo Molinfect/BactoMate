@@ -691,23 +691,24 @@ class UNetSegmentTab(QWidget):
             hist_group = QGroupBox("LUT (click/drag lines to adjust min/max)")
             hist_group.setStyleSheet("QGroupBox { font-weight: 600; }")
             hist_layout = QVBoxLayout()
-            hist_fig = Figure(figsize=(10, 2.2))
+            # Match TIFF conversion preview: same figure size and canvas height so histogram fills the section
+            hist_fig = Figure(figsize=(10, 3.0))
             hist_canvas = FigureCanvas(hist_fig)
-            hist_canvas.setMinimumHeight(120)
-            hist_canvas.setMaximumHeight(140)
+            hist_canvas.setMinimumHeight(180)
+            hist_canvas.setMaximumHeight(180)
             hist_ax = hist_fig.add_subplot(111)
             hist_fig.patch.set_facecolor("#2b2b2b")
             hist_ax.set_facecolor("#2b2b2b")
-            hist_ax.tick_params(colors="white", labelsize=8)
+            hist_ax.tick_params(colors="white", labelsize=9)
             for spine in hist_ax.spines.values():
                 spine.set_color("white")
             hist_ax.xaxis.label.set_color("white")
             hist_ax.yaxis.label.set_color("white")
-            hist_fig.subplots_adjust(left=0.1, right=0.96, top=0.88, bottom=0.18)
+            hist_fig.subplots_adjust(left=0.12, right=0.95, top=0.90, bottom=0.15)
             hist_canvas.setStyleSheet("background-color: #2b2b2b;")
             hist_layout.addWidget(hist_canvas)
             hist_group.setLayout(hist_layout)
-            hist_group.setMaximumHeight(180)
+            hist_group.setMaximumHeight(280)
             layout.addWidget(hist_group)
 
             def refresh_image_display():
@@ -774,12 +775,6 @@ class UNetSegmentTab(QWidget):
                 hist_ax.legend(loc="upper right", facecolor="#2b2b2b", edgecolor="white", labelcolor="white", fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
                 hist_ax.grid(True, alpha=0.25, color="white", linestyle="-", linewidth=0.5)
                 hist_ax.margins(x=0.02, y=0.08)
-                # Emphasize peak: set y upper limit so the main distribution fills the plot (like TIFF preview)
-                log_counts = np.log1p(hist)
-                if log_counts.size > 0 and np.isfinite(log_counts).any():
-                    y_max = np.nanmax(log_counts)
-                    if y_max > 0:
-                        hist_ax.set_ylim(0, y_max * 1.15)
                 hist_fig.tight_layout(pad=2.0)
                 hist_canvas.draw()
 
