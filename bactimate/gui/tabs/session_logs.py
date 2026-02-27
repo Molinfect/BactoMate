@@ -74,7 +74,7 @@ SESSION_PARAM_DEFAULTS: dict[str, dict[str, Any]] = {
     "analyze_masks": {
         "analyze_fi": False,
         "analyze_fi_contour": False,
-        "batch_fi": False,
+        "fi_match_by_name": True,
         "create_combined_summary": False,
         "create_vis": True,
         "detailed": True,

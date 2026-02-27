@@ -420,6 +420,8 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 **Purpose:** Analyze mask TIFF files (single file or folder) with morphological and size filters; export to Excel; optionally analyze fluorescence intensity (FI) from a separate channel TIFF; create filter visualizations and combined summary.
 
+**CellIDs through the pipeline:** So that the same cell keeps the same ID from segmentation to tracking, BactiMate supports **persistent CellIDs**. (1) **After segmentation** (Omnipose or U-Net), mask stacks have per-frame labels (1, 2, 3, … per frame; not consistent across frames). You can run **Assign persistent IDs** once on that stack so each cell gets a stable ID. (2) **Analyze Masks** keeps those IDs when the input already has them (filtering only removes cells; accepted cells keep their ID). If the input has per-frame labels, Analyze Masks assigns new persistent CellIDs to accepted cells. (3) **Tracking** preserves CellIDs from the input masks when present (or from the analysis Excel if you provide it). To assign persistent IDs right after segmentation, run from the project root: `python -m bactimate.scripts.assign_persistent_ids path/to/masks.tif -o path/to/masks_with_cellids.tif` (optional `--pixel-size 0.108` and `--max-distance 5.0`). Then use the output as the mask input for Analyze Masks and Tracking.
+
 ### 5.1 Mask File/Folder input
 
 - **Group:** “Mask File/Folder” (drag-and-drop). Placeholder: “Select a mask TIFF file or folder... (or drag and drop)”. Browse File / Browse Folder set the path. Accepted: single TIFF or folder of mask TIFFs. You can select the _segmentation_omni or _segmentation_unet folder; overlays/ and *_filter_visualization.tif there are ignored.
@@ -461,10 +463,11 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 ### 5.6 Analyze FI (fluorescence intensity)
 
-- **Check box “Analyze FI”:** Default **unchecked**. When enabled, the FI file path (or Batch FI) and Contour FI options become active.
-- **Check box “Batch FI”:** Default **unchecked**; visible when “Analyze FI” is checked. When **Batch FI** is checked: the app finds phase and FI TIFFs by **name** (same stem or base stem as each mask file) in the mask folder's parent; you do **not** set an FI file path. One merged Excel per mask is written to `_analysis/` with morphology + FI columns and **Logs** in the Summary sheet (column G). The single FI file path field is disabled when Batch FI is on. See **Section 9.4** for the full example scenario.
-- **Info (?) (Analyze FI) —** “Analyze fluorescence intensity (FI) from a separate FI channel image. When enabled: In single-FI mode, select one FI channel TIFF file; the analysis adds Mean FI intensity per cell (and optionally Contour FI / FI ratio if “Contour FI” is enabled). In **Batch FI** mode: phase and FI files are matched by filename to each mask; one merged Excel per mask is produced with Logs in Summary column G.”
-- **FI file path:** Line edit; placeholder “Select FI channel TIFF file... (or drag and drop)”. Browse FI File. Disabled until “Analyze FI” is checked; **disabled when “Batch FI” is checked** (Batch FI finds FI files by name).
+- **Check box “Analyze FI”:** Default **unchecked**. When enabled, the FI mode, optional “Select FI file” button, feedback list, and Contour FI options become active.
+- **FI mode (two options):**
+  - **One FI file for all masks** — Use the same FI channel stack for every mask in the run. When this is selected, a **“Select FI file…”** button appears; click it to choose one TIFF file. You can also drag-and-drop an FI TIFF onto the Analyze FI group to set it and switch to this mode. The feedback area below shows e.g. “FI file: &lt;name&gt; will be used for all masks.”
+  - **Match FI by name (one per mask)** — Default. The app finds one or more FI TIFFs per mask by **name** (same stem or base stem as each mask file) in the mask folder or its parent; no path to type. A read-only **feedback area** lists which mask files will be analyzed and which FI file(s) are matched (or “no FI found”). A short **naming hint** under the list explains the rule (e.g. `name_fi.tif` or `name_fi_GFP.tif`). See **Section 9.4** for a full example.
+- **Info (?) (Analyze FI) —** “Analyze fluorescence intensity (FI) from a separate FI channel image. One FI file for all masks: use the same FI stack for every mask. Match FI by name: one FI file per mask, found by name next to each mask (e.g. stem_fi.tif). The analysis adds Mean FI intensity (and optionally Contour FI + FI ratio if ‘Contour FI’ is on).”
 - **Contour FI:** Check box; default unchecked; disabled until “Analyze FI” is checked. When checked, analysis adds contour-based FI (boundary intensity and FI ratio).
 - **Info (?) (Contour FI) —** “Compute contour-based FI metrics (boundary intensity + FI ratio). When disabled: Only Mean FI Intensity will be calculated. Contour thickness is ignored.”
 - **Contour thickness (pixels):** Spin box [1, 10]; default 1. Info (?) — “Thickness of the contour region used for FI intensity calculation. Default: 1 pixel (single-pixel boundary). The contour is the region at the cell boundary. Increasing thickness includes more pixels near the boundary. Note: This affects both the preview visualization and the final analysis.” Disabled until Contour FI is relevant (e.g. when Analyze FI is on).
@@ -477,7 +480,7 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 ### 5.8 Session parameters (Analyze Masks)
 
-Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, batch_fi, fi_file_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
+Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_match_by_name, single_fi_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
 
 ---
 
@@ -621,9 +624,9 @@ This section walks through **one concrete workflow**: an ND2 file with one phase
 - **You:** Set path to the folder (e.g. `Tif_files/`); choose model (e.g. bact_phase_omni), diameter, options; enable overlay if desired; click **Process File or Folder**.
 - **BactiMate:** Writes masks as `{stem}_masks.tif` (and optional overlays in `overlays/`) into e.g. `Tif_files/_segmentation_omni/`. Only the phase channel is segmented; FI TIFFs stay in the parent folder. Result: one mask file per condition (e.g. `EM13748_AnTC_003_Phase60X_masks.tif`) and two FI TIFFs in `Tif_files/`.
 
-**3. Analyze Masks tab (Batch FI)**
+**3. Analyze Masks tab (FI by name)**
 
-- **You:** Set path to the **mask folder** (e.g. `Tif_files/_segmentation_omni`). Enable **Analyze FI** and **Batch FI**. Set pixel size and filters; optionally “Include detailed per-cell data” and “Create combined summary”. Click **Analyze Masks** and select the mask file(s) in the dialog.
+- **You:** Set path to the **mask folder** (e.g. `Tif_files/_segmentation_omni`). Enable **Analyze FI** and leave **Match FI by name (one per mask)** selected (default). The feedback list shows which mask files will get which FI file(s) (or “no FI found”). Set pixel size and filters; optionally “Include detailed per-cell data” and “Create combined summary”. Click **Analyze Masks** and select the mask file(s) in the dialog.
 - **BactiMate:** For each mask `{stem}_masks.tif`, finds in the **parent** of the mask folder: (1) phase: `{stem}.tif` or `{base}.tif`; (2) FI: `{stem}_fi.tif` or `{stem}_fi_*.tif` / `{base}_fi.tif` or `{base}_fi_*.tif`. Runs one morphology-only task (phase) plus one per FI channel (e.g. 3 tasks: phase + GFP + mScarlet). Merges all runs for the same mask into **one Excel** per mask in **`_analysis/`** (e.g. `Tif_files/_analysis/EM13748_AnTC_003_Phase60X_analysis.xlsx`) with Summary (total area, cell count per frame; **column G = Logs**: mask → TIFF pairs and match count) and optional Per-Cell Data (morphology + Mean FI Intensity per channel). Per-channel Excel files are removed; only the merged file remains. If “Create combined summary” is checked, also writes e.g. `Tif_files/_analysis/Tif_files_combined_summary.xlsx`.
 
 **Resulting layout (example)**
@@ -633,7 +636,7 @@ This section walks through **one concrete workflow**: an ND2 file with one phase
 **Naming rules to remember**
 
 - **Masks:** `*_masks.tif`.
-- **FI (Batch):** In the mask folder’s parent: `{stem}_fi.tif` or `{stem}_fi_Channel.tif`, or base stem if no exact match (e.g. `EM13748_AnTC_003_fi_GFP.tif` for mask stem `EM13748_AnTC_003_Phase60X`).
+- **FI (match by name):** In the mask folder’s parent: `{stem}_fi.tif` or `{stem}_fi_Channel.tif`, or base stem if no exact match (e.g. `EM13748_AnTC_003_fi_GFP.tif` for mask stem `EM13748_AnTC_003_Phase60X`).
 - **Phase (non-FI):** `{stem}.tif` or `{base}.tif` in the same parent folder.
 
 ---

@@ -23,7 +23,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 ./launch_gui.sh
 ```
 
-This opens the BactiMate GUI. Tabs: **TIFF Conversion** (ND2/LIF/CZI → TIFF), **Omnipose Segment** (segment single file or folder, train models), **Analyze Masks** (morphology, filters, optional fluorescence intensity, Batch FI), **Tracking** (Trackastra), **Video Graph** (growth curve video), **Session Logs**. For a complete reference to every tab, setting, and workflow, see the **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**.
+This opens the BactiMate GUI. Tabs: **TIFF Conversion** (ND2/LIF/CZI → TIFF), **Omnipose Segment** (segment single file or folder, train models), **Analyze Masks** (morphology, filters, optional fluorescence intensity — one FI file or match by name), **Tracking** (Trackastra), **Video Graph** (growth curve video), **Session Logs**. For a complete reference to every tab, setting, and workflow, see the **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**.
 
 ### Process a Single File (Command Line)
 
@@ -91,9 +91,11 @@ Launch with `./launch_gui.sh` (or `source venv/bin/activate && python main.py`).
 
 - **TIFF Conversion** — Convert ND2, LIF, CZI (and optionally TIFF) to TIFF; channel handling, metadata, optional corrections.
 - **Omnipose Segment** — Segment cells (single file or folder), preview, batch process; train custom Omnipose models; diameter, flow/mask threshold, GPU, overlay.
-- **Analyze Masks** — Analyze mask TIFFs with morphological and size filters; Excel output; optional fluorescence intensity (single FI file or **Batch FI** with name-based matching); combined summary, session parameters.
-- **Tracking** — Run Trackastra on mask time series; optional link to original TIFF and Excel.
+- **Analyze Masks** — Analyze mask TIFFs with morphological and size filters; Excel output; optional fluorescence intensity (choose **one FI file for all masks** or **match FI by name**; a feedback list shows what will be analyzed); combined summary, session parameters.
+- **Tracking** — Run Trackastra on mask time series; optional link to original TIFF and Excel. Preserves persistent CellIDs when the input masks already have them (e.g. from Analyze Masks or from the assign_persistent_ids script).
 - **Video Graph** — Growth curve video from TIFF sequence + Excel analysis.
+
+**Persistent CellIDs:** So that the same cell keeps the same ID from segmentation through analysis and tracking, you can run `python -m bactimate.scripts.assign_persistent_ids path/to/masks.tif -o path/to/masks_with_cellids.tif` after segmentation; then use the output in Analyze Masks and Tracking. See the [User Manual](BACTIMATE_USER_MANUAL.md) for the full pipeline.
 - **Session Logs** — List recent logs, view parameters, apply to current session.
 
 For every control, tooltip text, workflow, and example scenario (e.g. ND2 with phase and two FI channels), see the **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**.
@@ -180,6 +182,7 @@ See repo for full test checklist (launch, model loading, segmentation, batch, er
 - `main.py` — GUI entrypoint
 - `launch_gui.sh` — Launch GUI (venv, patches, main.py)
 - `python -m scripts.analyze_cell_areas` — Analyze masks, Excel/CSV
+- `python -m bactimate.scripts.assign_persistent_ids` — Assign persistent CellIDs to a mask stack (run after segmentation; then use output in Analyze Masks and Tracking)
 - `python -m scripts.batch_process_tiff_sequence` — Single multipage TIFF, Omnipose
 - `python -m scripts.batch_process_folder` — Folder: segment + analyze
 - `python -m scripts.convert_nd2_to_tif` — ND2/LIF/CZI → TIFF

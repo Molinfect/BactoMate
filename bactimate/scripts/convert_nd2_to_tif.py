@@ -258,6 +258,7 @@ def convert_nd2_to_tif(
     time_per_frame_min: Optional[float] = None,  # Time per frame in minutes (for speed calibration); saved as finterval
     max_z_projection: bool = False,  # Max intensity projection across Z-slices
     fi_channel_indices: Optional[List[int]] = None,  # Channel indices (0-based) to save with _fi in filename for Analyze FI batch
+    foci_channel_indices: Optional[List[int]] = None,  # Channel indices to save with _foci in filename for Analyze Masks foci analysis
 ) -> None:
     """
     Convert ND2 files to multi-page TIFF files.
@@ -267,6 +268,7 @@ def convert_nd2_to_tif(
         output_dir: Optional output directory. If None, uses 'Tif_files' in input directory (reused if it exists)
         max_frames: Maximum number of frames to extract (default: 150)
         fi_channel_indices: If set, channels at these indices get '_fi' in filename (e.g. stem_fi.tif) for batch FI pairing
+        foci_channel_indices: If set, channels at these indices get '_foci' in filename for Analyze Masks foci analysis
     """
     input_path = Path(input_path)
     
@@ -420,16 +422,35 @@ def convert_nd2_to_tif(
                 print(f"  Reading frames...")
                 all_frames = nd2_reader.asarray()
                 
-                # Handle different dimension orders
-                # ND2 files can have: T, C, Z, Y, X in various orders
-                # We need to extract: T (first frames_to_extract), C (all or selected), Z (first slice), Y, X
-                
                 # Get the shape and determine dimension order
                 shape = all_frames.shape
                 ndim = len(shape)
                 
                 print(f"  Debug: Loaded array shape: {shape}, ndim: {ndim}, size: {all_frames.size}")
                 print(f"  Debug: Reported sizes - T={num_time}, C={num_channels}, Z={num_z}")
+                
+                # Handle Z dimension using the file's actual axis order (nd2 shape matches sizes key order)
+                # ND2 can return e.g. (T, Z, C, Y, X) — Z is not always axis 2, so we must not assume TCZYX.
+                if num_z > 1:
+                    axis_order = list(nd2_reader.sizes.keys())
+                    if "Z" in axis_order and len(axis_order) == ndim:
+                        z_axis = axis_order.index("Z")
+                        if max_z_projection:
+                            print(f"  Applying max intensity projection across Z={num_z} slices (axis 'Z' at index {z_axis})...")
+                            all_frames = np.max(all_frames, axis=z_axis)
+                            print(f"  ✓ Max Z-projection complete: {all_frames.shape}")
+                        else:
+                            print(f"  Using first Z-slice (Z=1)")
+                            all_frames = np.take(all_frames, 0, axis=z_axis)
+                        shape = all_frames.shape
+                        ndim = len(shape)
+                        num_z = 1
+                    else:
+                        print(f"  Warning: Z not in axis order {axis_order} or shape length mismatch; using legacy Z handling later")
+                
+                # Handle different dimension orders
+                # ND2 files can have: T, C, Y, X in various orders (Z already reduced above if present)
+                # We need to extract: T (first frames_to_extract), C (all or selected), Y, X
                 
                 # Determine which dimensions we have
                 # Common orders: TCYX, CTYX, TZYX, TCZYX, TYX, CYX (when T=1), etc.
@@ -613,19 +634,25 @@ def convert_nd2_to_tif(
                             # Verify the channel dimension matches
                             if all_frames.shape[1] == num_channels:
                                 fi_set = set(fi_channel_indices or [])
+                                foci_set = set(foci_channel_indices or [])
                                 print(f"  Saving {num_channels} channels as separate files (each with {frames_to_extract} timepoints)")
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]  # Extract channel: TYX
                                     channel_name = channel_names[ch_idx]
-                                    # FI channels get _fi in filename for Analyze Masks batch pairing
-                                    if ch_idx in fi_set:
-                                        if len(fi_set) == 1:
-                                            output_filename = f"{nd2_file.stem}_fi.tif"
-                                        else:
-                                            safe_name = _sanitize_channel_name_for_filename(channel_name)
-                                            output_filename = f"{nd2_file.stem}_fi_{safe_name}.tif"
+                                    safe_name = _sanitize_channel_name_for_filename(channel_name)
+                                    in_fi = ch_idx in fi_set
+                                    in_foci = ch_idx in foci_set
+                                    if in_fi and in_foci:
+                                        tag = "_fi_foci"
+                                    elif in_fi:
+                                        tag = "_fi"
+                                    elif in_foci:
+                                        tag = "_foci"
                                     else:
-                                        output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                        tag = ""
+                                    base = nd2_file.stem + tag
+                                    single_no_name = (in_fi and len(fi_set) == 1 and not in_foci) or (in_foci and len(foci_set) == 1 and not in_fi) or (in_fi and in_foci and len(fi_set) == 1 and len(foci_set) == 1)
+                                    output_filename = f"{base}.tif" if single_no_name else f"{base}_{safe_name}.tif"
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape}) -> {output_filename}")
                                     _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
@@ -651,13 +678,24 @@ def convert_nd2_to_tif(
                                 print(f"  Transposed to TCYX, new shape: {all_frames.shape}")
                             if len(all_frames.shape) == 4 and all_frames.shape[1] == num_channels:
                                 fi_set = set(fi_channel_indices or [])
+                                foci_set = set(foci_channel_indices or [])
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]
                                     channel_name = channel_names[ch_idx]
-                                    if ch_idx in fi_set:
-                                        output_filename = f"{nd2_file.stem}_fi.tif" if len(fi_set) == 1 else f"{nd2_file.stem}_fi_{_sanitize_channel_name_for_filename(channel_name)}.tif"
+                                    safe_name = _sanitize_channel_name_for_filename(channel_name)
+                                    in_fi = ch_idx in fi_set
+                                    in_foci = ch_idx in foci_set
+                                    if in_fi and in_foci:
+                                        tag = "_fi_foci"
+                                    elif in_fi:
+                                        tag = "_fi"
+                                    elif in_foci:
+                                        tag = "_foci"
                                     else:
-                                        output_filename = f"{nd2_file.stem}_{channel_name}.tif"
+                                        tag = ""
+                                    base = nd2_file.stem + tag
+                                    single_no_name = (in_fi and len(fi_set) == 1 and not in_foci) or (in_foci and len(foci_set) == 1 and not in_fi) or (in_fi and in_foci and len(fi_set) == 1 and len(foci_set) == 1)
+                                    output_filename = f"{base}.tif" if single_no_name else f"{base}_{safe_name}.tif"
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} -> {output_filename}")
                                     _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
@@ -964,6 +1002,14 @@ def main() -> None:
         help='Channel indices (0-based) to save with _fi in filename (e.g. stem_fi.tif) for Analyze Masks batch FI pairing. Example: --fi-channels 1'
     )
     parser.add_argument(
+        '--foci-channels',
+        type=int,
+        nargs='*',
+        default=None,
+        metavar='N',
+        help='Channel indices (0-based) to save with _foci in filename for Analyze Masks foci analysis. Example: --foci-channels 1'
+    )
+    parser.add_argument(
         '--pixel-size',
         type=float,
         default=None,
@@ -1002,6 +1048,7 @@ def main() -> None:
             time_per_frame_min=args.time_per_frame,
             max_z_projection=args.max_z_projection,
             fi_channel_indices=args.fi_channels,
+            foci_channel_indices=args.foci_channels,
         )
     except Exception as e:
         print(f"Error: {e}")

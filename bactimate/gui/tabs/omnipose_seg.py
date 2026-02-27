@@ -1701,6 +1701,173 @@ class OmniposeSegTab(QWidget):
             )
             layout.addWidget(image_canvas, 1)
 
+            # Interactive LUT histogram (same as Convert TIFF: drag min/max lines to adjust display)
+            lut_data = {'frame_idx': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None}
+            hist_vmin_line = None
+            hist_vmax_line = None
+            dragging_line = None
+            try:
+                from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+                from matplotlib.figure import Figure
+                _has_histogram = True
+            except ImportError:
+                _has_histogram = False
+            if _has_histogram:
+                hist_group = QGroupBox("LUT (click/drag lines to adjust min/max)")
+                hist_group.setStyleSheet("QGroupBox { font-weight: 600; }")
+                hist_layout = QVBoxLayout()
+                hist_fig = Figure(figsize=(10, 2.2))
+                hist_canvas = FigureCanvas(hist_fig)
+                hist_canvas.setMinimumHeight(120)
+                hist_canvas.setMaximumHeight(140)
+                hist_ax = hist_fig.add_subplot(111)
+                hist_fig.patch.set_facecolor('#2b2b2b')
+                hist_ax.set_facecolor('#2b2b2b')
+                hist_ax.tick_params(colors='white', labelsize=8)
+                for spine in hist_ax.spines.values():
+                    spine.set_color('white')
+                hist_ax.xaxis.label.set_color('white')
+                hist_ax.yaxis.label.set_color('white')
+                hist_fig.subplots_adjust(left=0.1, right=0.96, top=0.88, bottom=0.18)
+                hist_canvas.setStyleSheet("background-color: #2b2b2b;")
+                hist_layout.addWidget(hist_canvas)
+                hist_group.setLayout(hist_layout)
+                hist_group.setMaximumHeight(180)
+                layout.addWidget(hist_group)
+
+                def refresh_image_display():
+                    """Redraw overlay using current display_frame, mask, and LUT (vmin/vmax)."""
+                    display_frame = getattr(preview_dialog, 'current_display_frame', None)
+                    mask = getattr(preview_dialog, 'masks', None)
+                    if display_frame is None or mask is None:
+                        return
+                    vmin = lut_data.get('vmin')
+                    vmax = lut_data.get('vmax')
+                    if vmin is None or vmax is None or vmax <= vmin:
+                        vmin = lut_data.get('frame_min', 0)
+                        vmax = lut_data.get('frame_max', 255)
+                        if vmax <= vmin:
+                            vmax = vmin + 1.0
+                        lut_data['vmin'] = vmin
+                        lut_data['vmax'] = vmax
+                    vmin, vmax = float(vmin), float(vmax)
+                    vrange = max(vmax - vmin, 1e-6)
+                    display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
+                    disp_scaled, mask_scaled = scale_for_preview(display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE)
+                    overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
+                    pixmap = to_qpixmap(overlay)
+                    h, w = overlay.shape[:2]
+                    image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
+
+                def update_histogram(frame_2d, vmin, vmax):
+                    """Draw histogram with min/max lines (and optional drag)."""
+                    nonlocal hist_vmin_line, hist_vmax_line
+                    hist_ax.clear()
+                    if frame_2d is None or not isinstance(frame_2d, np.ndarray) or frame_2d.size == 0:
+                        hist_ax.set_xlabel("Intensity", color="white", fontsize=9)
+                        hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
+                        hist_canvas.draw()
+                        return
+                    flat = np.asarray(frame_2d).flatten().astype(np.float64)
+                    flat = flat[np.isfinite(flat)]
+                    if flat.size == 0:
+                        hist_canvas.draw()
+                        return
+                    fmin, fmax = float(flat.min()), float(flat.max())
+                    lut_data['frame_min'] = fmin
+                    lut_data['frame_max'] = fmax
+                    # Exclude zeros for histogram so the signal peak is prominent (like TIFF conversion preview)
+                    flat_hist = flat[flat > 0]
+                    if flat_hist.size == 0:
+                        flat_hist = flat
+                    if vmin is None:
+                        vmin = fmin
+                    if vmax is None or vmax <= vmin:
+                        vmax = fmax if fmax > fmin else fmin + 1.0
+                    lut_data['vmin'] = vmin
+                    lut_data['vmax'] = vmax
+                    bins = min(256, max(2, int(fmax - fmin + 1)))
+                    hist, bin_edges = np.histogram(flat_hist, bins=bins, range=(fmin, fmax))
+                    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                    hist_ax.bar(bin_centers, np.log1p(hist), width=bin_edges[1] - bin_edges[0],
+                                color='#4A90E2', alpha=0.8, edgecolor='none')
+                    hist_vmin_line = hist_ax.axvline(vmin, color='#FF6B6B', linewidth=2, linestyle='--', label=f'Min: {vmin:.1f}')
+                    hist_vmax_line = hist_ax.axvline(vmax, color='#4ECDC4', linewidth=2, linestyle='--', label=f'Max: {vmax:.1f}')
+                    hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
+                    hist_ax.set_xlabel("Intensity", color="white", fontsize=9)
+                    hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
+                    hist_ax.set_title("Click/drag lines to adjust min/max", color="white", fontsize=9, pad=10)
+                    hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
+                    hist_ax.grid(True, alpha=0.25, color="white", linestyle="-", linewidth=0.5)
+                    hist_ax.margins(x=0.02, y=0.08)
+                    # Emphasize peak: set y upper limit so the main distribution fills the plot (like TIFF preview)
+                    log_counts = np.log1p(hist)
+                    if log_counts.size > 0 and np.isfinite(log_counts).any():
+                        y_max = np.nanmax(log_counts)
+                        if y_max > 0:
+                            hist_ax.set_ylim(0, y_max * 1.15)
+                    hist_fig.tight_layout(pad=2.0)
+                    hist_canvas.draw()
+
+                def on_histogram_press(event):
+                    if event.inaxes != hist_ax or event.xdata is None:
+                        return
+                    nonlocal dragging_line
+                    x = event.xdata
+                    vmin, vmax = lut_data.get('vmin'), lut_data.get('vmax')
+                    fmin, fmax = lut_data.get('frame_min', 0), lut_data.get('frame_max', 65535)
+                    if vmin is None or vmax is None:
+                        return
+                    threshold = max((fmax - fmin) * 0.05, 1.0)
+                    if abs(x - vmin) < threshold and abs(x - vmin) <= abs(x - vmax):
+                        dragging_line = 'min'
+                    elif abs(x - vmax) < threshold:
+                        dragging_line = 'max'
+                    else:
+                        dragging_line = 'min' if x < (vmin + vmax) / 2 else 'max'
+
+                def on_histogram_motion(event):
+                    if event.inaxes != hist_ax or event.xdata is None or dragging_line is None:
+                        return
+                    x = event.xdata
+                    fmin = lut_data.get('frame_min', 0)
+                    fmax = lut_data.get('frame_max', 65535)
+                    vmin, vmax = lut_data.get('vmin'), lut_data.get('vmax')
+                    if dragging_line == 'min':
+                        new_min = max(fmin, min(x, (vmax or fmax) - 1e-6))
+                        lut_data['vmin'] = new_min
+                    else:
+                        new_max = min(fmax, max(x, (vmin or fmin) + 1e-6))
+                        lut_data['vmax'] = new_max
+                    refresh_image_display()
+                    vmin, vmax = lut_data['vmin'], lut_data['vmax']
+                    if hist_vmin_line is not None:
+                        hist_vmin_line.set_xdata([vmin, vmin])
+                    if hist_vmax_line is not None:
+                        hist_vmax_line.set_xdata([vmax, vmax])
+                    for patch in list(hist_ax.patches):
+                        if getattr(patch, 'get_alpha', lambda: None)() == 0.15:
+                            patch.remove()
+                    hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
+                    if hist_vmin_line is not None and hist_vmax_line is not None:
+                        hist_vmin_line.set_label(f'Min: {vmin:.1f}')
+                        hist_vmax_line.set_label(f'Max: {vmax:.1f}')
+                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
+                    hist_canvas.draw()
+
+                def on_histogram_release(event):
+                    nonlocal dragging_line
+                    dragging_line = None
+
+                hist_canvas.mpl_connect('button_press_event', on_histogram_press)
+                hist_canvas.mpl_connect('motion_notify_event', on_histogram_motion)
+                hist_canvas.mpl_connect('button_release_event', on_histogram_release)
+            else:
+                def update_histogram(frame_2d, vmin=None, vmax=None):
+                    pass
+                def refresh_image_display():
+                    pass
+
             # Store data for navigation
             preview_dialog.images = images
             preview_dialog.current_frame = 0
@@ -2592,15 +2759,26 @@ class OmniposeSegTab(QWidget):
                         return
                     
                     preview_dialog.masks = mask
-                    
-                    # Update progress message and let UI breathe
-                    if progress_dialog:
-                        progress_dialog.setLabelText("Rendering display...")
-                    QApplication.processEvents()
-
+                    preview_dialog.current_display_frame = display_frame
+                    # Reset LUT range when frame changes so each frame gets its own range initially
+                    if lut_data.get('frame_idx') != frame_idx:
+                        lut_data['frame_idx'] = frame_idx
+                        fmin, fmax = float(display_frame.min()), float(display_frame.max())
+                        lut_data['vmin'] = fmin
+                        lut_data['vmax'] = fmax if fmax > fmin else fmin + 1.0
+                        lut_data['frame_min'] = fmin
+                        lut_data['frame_max'] = fmax
+                    vmin = lut_data.get('vmin')
+                    vmax = lut_data.get('vmax')
+                    if vmin is None or vmax is None or vmax <= vmin:
+                        vmin = float(display_frame.min())
+                        vmax = float(display_frame.max()) if display_frame.max() > vmin else vmin + 1.0
+                        lut_data['vmin'], lut_data['vmax'] = vmin, vmax
+                    vrange = max(vmax - vmin, 1e-6)
+                    display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
                     # Scale down for preview so overlay + pixmap + zoom/pan paint stay fast (cap 1024)
                     disp_scaled, mask_scaled = scale_for_preview(
-                        display_frame, mask, max_size=PREVIEW_SEG_MAX_SIZE
+                        display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE
                     )
                     overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
                     pixmap = to_qpixmap(overlay)
@@ -2618,6 +2796,7 @@ class OmniposeSegTab(QWidget):
                         f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {model_name} | {file_name}\n"
                         f"Parameters: {params_str}"
                     )
+                    update_histogram(display_frame, lut_data.get('vmin'), lut_data.get('vmax'))
                     
                     # Close progress dialog
                     if progress_dialog:

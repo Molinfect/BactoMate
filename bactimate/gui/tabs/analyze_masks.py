@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -70,7 +72,8 @@ class AnalyzeMasksTab(QWidget):
         file_group = self._build_file_group()
         scroll_layout.addWidget(file_group)
 
-        # Analyze FI — directly below Run analysis on masks (full width)
+        # Analyze FI — mode, optional single file button, and feedback (no path line edit)
+        self._single_fi_path: Optional[Path] = None
         fi_group = DragDropGroupBox(
             "Analyze FI",
             parent=self,
@@ -82,9 +85,9 @@ class AnalyzeMasksTab(QWidget):
         self.analyze_fi.setChecked(False)
         fi_info_icon = create_info_icon(
             "Analyze fluorescence intensity (FI) from a separate FI channel image.\n\n"
-            "The analysis adds Mean FI intensity (and optionally Contour FI + FI ratio if 'Contour FI' is on).\n\n"
-            "• With Batch (folder mode): No path needed. FI files are found by name next to the mask (see Batch (?) for naming). Works for one mask or many.\n"
-            "• Without Batch: Select one FI file (Browse FI File). Use when that same FI image applies to the current mask only, or to all masks in the folder.",
+            "• One FI file for all masks: use the same FI stack for every mask in the run.\n"
+            "• Match FI by name: one FI file per mask, found by name next to each mask (e.g. stem_fi.tif).\n\n"
+            "The analysis adds Mean FI intensity (and optionally Contour FI + FI ratio if 'Contour FI' is on).",
             parent_widget=self
         )
         fi_checkbox_layout.addWidget(self.analyze_fi)
@@ -113,42 +116,85 @@ class AnalyzeMasksTab(QWidget):
         self.fi_contour_thickness.setEnabled(False)
         self.fi_contour_thickness.setFixedWidth(80)
         fi_checkbox_layout.addWidget(self.fi_contour_thickness)
-        self.batch_fi = QCheckBox("Batch")
-        self.batch_fi.setChecked(False)
-        self.batch_fi.setEnabled(False)
-        fi_checkbox_layout.addWidget(self.batch_fi)
-        batch_fi_info_icon = create_info_icon(
-            "Folder mode: pair each mask with FI files by name — no need to select an FI path.\n\n"
-            "Naming (FI files in same folder as mask, or parent if mask is in _segmentation_omni/unet):\n"
-            "• Mask: name_masks.tif → FI: name_fi.tif or name_fi_Channel.tif (e.g. name_fi_GFP.tif)\n"
-            "• If no match: try base stem (e.g. Sample_Phase60X_masks → Sample_fi_GFP.tif)\n"
-            "• Non-FI (phase): name.tif or base.tif is used for a morphology-only run and logged.\n\n"
-            "All matches are merged into one Excel per mask with Logs in the Summary sheet. Disable Batch to use one FI file for all masks (Browse FI File).",
-            parent_widget=self,
-        )
-        fi_checkbox_layout.addWidget(batch_fi_info_icon)
         fi_checkbox_layout.addStretch()
         fi_layout.addLayout(fi_checkbox_layout)
-        fi_file_layout = QHBoxLayout()
-        self.fi_file_path = QLineEdit()
-        self.fi_file_path.setPlaceholderText("Select FI channel TIFF file... (or drag and drop)")
-        self.fi_file_path.setMinimumWidth(200)
-        self.fi_file_path.setFont(file_font)
-        self.fi_file_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.fi_file_path.setEnabled(False)
-        self.fi_file_btn = QPushButton("Browse FI File...")
-        self.fi_file_btn.setFixedWidth(120)
-        self.fi_file_btn.setEnabled(False)
-        self.fi_file_btn.clicked.connect(self.select_fi_file)
-        fi_file_layout.addWidget(self.fi_file_path, 1)
-        fi_file_layout.addWidget(self.fi_file_btn, 0)
-        fi_layout.addLayout(fi_file_layout)
-        self.analyze_fi.toggled.connect(self._update_fi_file_state)
+
+        # FI mode and content (visible when Analyze FI is on)
+        self.fi_content = QWidget()
+        fi_content_layout = QVBoxLayout(self.fi_content)
+        fi_content_layout.setContentsMargins(0, 6, 0, 0)
+        self.fi_mode_one_file = QRadioButton("One FI file for all masks")
+        self.fi_mode_match_by_name = QRadioButton("Match FI channel(s) by name")
+        self.fi_mode_match_by_name.setChecked(True)
+        self.fi_mode_group = QButtonGroup(self)
+        self.fi_mode_group.addButton(self.fi_mode_one_file)
+        self.fi_mode_group.addButton(self.fi_mode_match_by_name)
+        fi_mode_row = QHBoxLayout()
+        fi_mode_row.addWidget(self.fi_mode_one_file)
+        fi_mode_row.addWidget(self.fi_mode_match_by_name)
+        self.fi_naming_hint = QLabel("(Match ""_fi"" files with the same stem name to found mask, in the mask folder or its parent)")
+        self.fi_naming_hint.setStyleSheet("color: #888; font-size: 9pt;")
+        self.fi_naming_hint.setWordWrap(False)
+        fi_mode_row.addWidget(self.fi_naming_hint)
+        fi_mode_row.addStretch()
+        fi_content_layout.addLayout(fi_mode_row)
+        self.fi_select_btn = QPushButton("Select FI file…")
+        self.fi_select_btn.setFixedWidth(140)
+        self.fi_select_btn.clicked.connect(self._select_fi_file)
+        fi_content_layout.addWidget(self.fi_select_btn)
+        self.fi_feedback = QTextEdit()
+        self.fi_feedback.setReadOnly(True)
+        self.fi_feedback.setMaximumHeight(100)
+        self.fi_feedback.setPlaceholderText("Set mask path and choose FI mode to see what will be analyzed.")
+        self.fi_feedback.setStyleSheet("font-size: 10pt; color: #b0b0b0; background-color: #2b2b2b; border: 1px solid #555; border-radius: 4px; padding: 6px;")
+        fi_content_layout.addWidget(self.fi_feedback)
+        # Foci analysis (run detection on FI channel, add foci count and Foci sheet)
+        self.run_foci = QCheckBox("Run foci analysis")
+        self.run_foci.setChecked(False)
+        self.run_foci.setToolTip("Detect foci (bright spots) in the FI channel per frame; add foci count and Foci sheet to Excel.")
+        fi_content_layout.addWidget(self.run_foci)
+        foci_params_row = QHBoxLayout()
+        foci_params_row.addWidget(QLabel("Min relative intensity:"))
+        self.foci_min_rel = QDoubleSpinBox()
+        self.foci_min_rel.setRange(0.5, 20.0)
+        self.foci_min_rel.setValue(2.0)
+        self.foci_min_rel.setDecimals(1)
+        self.foci_min_rel.setToolTip("Peaks below this multiple of image median are excluded.")
+        foci_params_row.addWidget(self.foci_min_rel)
+        foci_params_row.addWidget(QLabel("Min separation (px):"))
+        self.foci_min_separation = QSpinBox()
+        self.foci_min_separation.setRange(1, 20)
+        self.foci_min_separation.setValue(2)
+        self.foci_min_separation.setToolTip("Minimum distance between two foci in pixels.")
+        foci_params_row.addWidget(self.foci_min_separation)
+        foci_params_row.addWidget(QLabel("Min size (px):"))
+        self.foci_min_size = QSpinBox()
+        self.foci_min_size.setRange(1, 50)
+        self.foci_min_size.setValue(1)
+        foci_params_row.addWidget(self.foci_min_size)
+        foci_params_row.addWidget(QLabel("Max size (px):"))
+        self.foci_max_size = QSpinBox()
+        self.foci_max_size.setRange(0, 500)
+        self.foci_max_size.setValue(0)
+        self.foci_max_size.setSpecialValueText("off")
+        self.foci_max_size.setToolTip("0 = no maximum.")
+        foci_params_row.addWidget(self.foci_max_size)
+        foci_params_row.addStretch()
+        fi_content_layout.addLayout(foci_params_row)
+        self.foci_params_widgets = [self.foci_min_rel, self.foci_min_separation, self.foci_min_size, self.foci_max_size]
+        self.fi_content.setVisible(False)
+        fi_layout.addWidget(self.fi_content)
+
+        self.analyze_fi.toggled.connect(self._update_fi_ui_state)
+        self.run_foci.toggled.connect(self._update_fi_ui_state)
         self.analyze_fi_contour.toggled.connect(self._update_fi_contour_state)
-        self.batch_fi.toggled.connect(self._update_fi_file_state)
+        self.fi_mode_one_file.toggled.connect(self._update_fi_ui_state)
+        self.fi_mode_match_by_name.toggled.connect(self._update_fi_ui_state)
+        self.file_path.textChanged.connect(self._update_fi_feedback)
         fi_group.setLayout(fi_layout)
         fi_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         scroll_layout.addWidget(fi_group)
+        self._update_fi_ui_state()
 
         # Analysis Parameters — below Analyze FI (Morphological, Size, Options, Reset) with spacing between blocks
         analysis_group = QGroupBox("Analysis Parameters")
@@ -551,7 +597,7 @@ class AnalyzeMasksTab(QWidget):
         
         # Connect file path changes to update button states and try to load metadata from TIFF
         self.file_path.textChanged.connect(self._update_analyze_button_state)
-        self.file_path.textChanged.connect(lambda: self._update_fi_file_state(None))
+        self.file_path.textChanged.connect(lambda: self._update_fi_ui_state(None))
         self.file_path.textChanged.connect(self._try_fill_metadata_from_path)
         # Initialize state
         self._update_analyze_button_state()
@@ -688,47 +734,118 @@ class AnalyzeMasksTab(QWidget):
         # Update button states
         self._update_analyze_button_state()
     
-    def select_fi_file(self):
-        """Open file dialog to select an FI channel TIFF file"""
+    def _select_fi_file(self):
+        """Open file dialog and set single FI file for all masks."""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select FI Channel TIFF File", get_default_browse_dir(), "TIFF Files (*.tif *.tiff);;All Files (*)"
         )
         if file_path:
-            self.fi_file_path.setText(file_path)
-    
+            self._single_fi_path = Path(file_path)
+            self._update_fi_feedback()
+
     def handle_dropped_fi_file(self, dropped_path):
-        """Handle dropped FI file for analyze masks tab"""
+        """Handle dropped FI file: enable Analyze FI, switch to one-file mode, set path."""
         path_obj = Path(dropped_path)
-        # Check if it's a valid TIFF file
-        if path_obj.is_file() and path_obj.suffix.lower() in ['.tif', '.tiff']:
-            # Enable the analyze_fi checkbox if not already enabled
+        if path_obj.is_file() and path_obj.suffix.lower() in (".tif", ".tiff"):
             if not self.analyze_fi.isChecked():
                 self.analyze_fi.setChecked(True)
-            # Set the file path
-            self.fi_file_path.setText(dropped_path)
+            self.fi_mode_one_file.setChecked(True)
+            self._single_fi_path = path_obj
+            self._update_fi_feedback()
         else:
-            QMessageBox.warning(self, "Invalid File", 
-                              "Please drop a valid TIFF file (.tif or .tiff).")
-    
-    def _update_fi_file_state(self, checked=None):
-        """Enable/disable FI file selection, Batch checkbox, and contour thickness based on state."""
+            QMessageBox.warning(self, "Invalid File",
+                                "Please drop a valid TIFF file (.tif or .tiff).")
+
+    def _is_match_by_name_mode(self) -> bool:
+        """True when 'Match FI by name' is selected."""
+        return bool(getattr(self, "fi_mode_match_by_name", None) and self.fi_mode_match_by_name.isChecked())
+
+    def _get_mask_files_for_feedback(self) -> list:
+        """Return list of mask paths (one for single file, many for folder) for feedback."""
+        path_text = self.file_path.text().strip()
+        if not path_text:
+            return []
+        path = Path(path_text)
+        if not path.exists():
+            return []
+        if path.is_file():
+            return [path.resolve()]
+        folder = path
+        mask_set = set()
+        mask_set.update(folder.glob("*_masks.tif"))
+        mask_set.update(folder.glob("*_masks.tiff"))
+        mask_set.update(folder.glob("*_masks.TIF"))
+        mask_set.update(folder.glob("*_masks.TIFF"))
+        all_tif = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
+        for f in all_tif:
+            name_lower = f.name.lower()
+            if "_masks" not in name_lower and "_filter_visualization" not in name_lower and "_overlay" not in name_lower:
+                mask_set.add(f)
+        return sorted(mask_set, key=lambda p: p.name.lower())
+
+    def _update_fi_feedback(self) -> None:
+        """Update the read-only feedback text to show what will be analyzed."""
+        if not getattr(self, "fi_feedback", None):
+            return
+        if not self.analyze_fi.isChecked():
+            self.fi_feedback.setPlainText("Analyze FI is off. Enable it and choose a mode to see FI pairings.")
+            return
+        if self._is_match_by_name_mode():
+            masks = self._get_mask_files_for_feedback()
+            if not masks:
+                self.fi_feedback.setPlainText("Set mask path (file or folder) to see FI pairings.")
+                return
+            lines = []
+            total_fi_pairings = 0
+            for mask_path in masks:
+                fi_paths = self._resolve_fi_paths_for_mask(mask_path)
+                n_fi = len(fi_paths)
+                total_fi_pairings += n_fi
+                if fi_paths:
+                    fi_names = ", ".join(p.name for p in fi_paths)
+                    lines.append(f"• {mask_path.name} → {fi_names}")
+                else:
+                    lines.append(f"• {mask_path.name} → (no FI found)")
+            # Summary: one mask file = one segmentation, used once per FI channel (same mask, multiple analyses)
+            if total_fi_pairings == 0:
+                header = f"{len(masks)} mask file(s); no FI files matched.\n\n"
+            elif total_fi_pairings == len(masks):
+                header = f"{len(masks)} mask file(s). Same segmentation used for 1 FI channel each.\n\n"
+            else:
+                header = f"{len(masks)} mask file(s) → {total_fi_pairings} analyses (same segmentation per file, used once per FI channel below).\n\n"
+            self.fi_feedback.setPlainText(header + "\n".join(lines))
+        else:
+            if self._single_fi_path and self._single_fi_path.exists():
+                self.fi_feedback.setPlainText(f"FI file: {self._single_fi_path.name} will be used for all masks.")
+            else:
+                self.fi_feedback.setPlainText("Select one FI file (button above) to use for all masks.")
+
+    def _update_fi_ui_state(self, checked=None) -> None:
+        """Show/hide FI content, enable contour, show/hide Select button and naming hint."""
         if checked is None:
             checked = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
-        batch_on = bool(getattr(self, "batch_fi", None) and self.batch_fi.isChecked())
-        # Batch only available when Path is a folder and Analyze FI is on
-        if hasattr(self, "batch_fi"):
-            self.batch_fi.setEnabled(checked and self._is_folder_mode())
-        # Single FI path row: enabled only when Analyze FI on and Batch off
-        self.fi_file_path.setEnabled(checked and not batch_on)
-        if hasattr(self, 'fi_file_btn'):
-            self.fi_file_btn.setEnabled(checked and not batch_on)
-        if hasattr(self, 'analyze_fi_contour'):
+        if hasattr(self, "fi_content"):
+            self.fi_content.setVisible(checked)
+        one_file = bool(getattr(self, "fi_mode_one_file", None) and self.fi_mode_one_file.isChecked())
+        if hasattr(self, "fi_select_btn"):
+            self.fi_select_btn.setVisible(checked and one_file)
+        if hasattr(self, "fi_naming_hint"):
+            self.fi_naming_hint.setVisible(checked and self._is_match_by_name_mode())
+        if hasattr(self, "analyze_fi_contour"):
             self.analyze_fi_contour.setEnabled(checked)
             if not checked:
                 self.analyze_fi_contour.setChecked(False)
             elif checked and not self.analyze_fi_contour.isChecked() and not getattr(self, "_fi_contour_user_set", False):
                 self.analyze_fi_contour.setChecked(True)
+        run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+        if hasattr(self, "run_foci"):
+            self.run_foci.setEnabled(checked)
+            if not checked:
+                self.run_foci.setChecked(False)
+        for w in getattr(self, "foci_params_widgets", []):
+            w.setEnabled(checked and run_foci_on)
         self._update_fi_contour_state()
+        self._update_fi_feedback()
 
     def _update_fi_contour_state(self, *_args):
         """Enable/disable contour thickness based on Analyze FI + Contour FI toggles."""
@@ -1189,8 +1306,10 @@ class AnalyzeMasksTab(QWidget):
             d["create_combined_summary"] = self.create_combined_summary.isChecked()
         if hasattr(self, "analyze_fi"):
             d["analyze_fi"] = self.analyze_fi.isChecked()
-        if hasattr(self, "batch_fi"):
-            d["batch_fi"] = self.batch_fi.isChecked()
+        if hasattr(self, "fi_mode_match_by_name"):
+            d["fi_match_by_name"] = self.fi_mode_match_by_name.isChecked()
+        if getattr(self, "_single_fi_path", None) is not None:
+            d["single_fi_path"] = str(self._single_fi_path)
         if hasattr(self, "analyze_fi_contour"):
             d["analyze_fi_contour"] = self.analyze_fi_contour.isChecked()
         if hasattr(self, "fi_contour_thickness"):
@@ -1218,8 +1337,18 @@ class AnalyzeMasksTab(QWidget):
             self.create_combined_summary.setChecked(bool(data["create_combined_summary"]))
         if "analyze_fi" in data and hasattr(self, "analyze_fi"):
             self.analyze_fi.setChecked(bool(data["analyze_fi"]))
-        if "batch_fi" in data and hasattr(self, "batch_fi"):
-            self.batch_fi.setChecked(bool(data["batch_fi"]))
+        # Support both new (fi_match_by_name) and old (batch_fi) session keys
+        fi_match = data.get("fi_match_by_name", data.get("batch_fi", True))
+        if hasattr(self, "fi_mode_match_by_name"):
+            self.fi_mode_match_by_name.setChecked(bool(fi_match))
+            self.fi_mode_one_file.setChecked(not bool(fi_match))
+        if "single_fi_path" in data and data["single_fi_path"]:
+            try:
+                self._single_fi_path = Path(data["single_fi_path"])
+            except Exception:
+                self._single_fi_path = None
+        elif fi_match:
+            self._single_fi_path = None
         if "analyze_fi_contour" in data and hasattr(self, "analyze_fi_contour"):
             self.analyze_fi_contour.setChecked(bool(data["analyze_fi_contour"]))
         if "fi_contour_thickness" in data and hasattr(self, "fi_contour_thickness"):
@@ -1227,6 +1356,8 @@ class AnalyzeMasksTab(QWidget):
                 self.fi_contour_thickness.setValue(int(data["fi_contour_thickness"]))
             except (TypeError, ValueError):
                 pass
+        if hasattr(self, "_update_fi_feedback"):
+            self._update_fi_feedback()
     
     def preview_filter_effects(self):
         """Preview how current filter parameters would affect mask segmentation"""
@@ -1401,14 +1532,19 @@ class AnalyzeMasksTab(QWidget):
                 masks = masks[np.newaxis, :, :]
             num_frames = masks.shape[0]
             
-            # Load FI images if FI analysis is enabled
+            # Load FI images if FI analysis is enabled (resolve path: single file or match-by-name for selected mask)
             fi_images = None
             fi_contour_thickness = 1
             do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
-            if self.analyze_fi.isChecked() and self.fi_file_path.text():
-                try:
-                    fi_path = Path(self.fi_file_path.text())
-                    if fi_path.exists():
+            if self.analyze_fi.isChecked():
+                fi_path = None
+                if self._is_match_by_name_mode():
+                    fi_paths = self._resolve_fi_paths_for_mask(Path(mask_path))
+                    fi_path = fi_paths[0] if fi_paths else None
+                else:
+                    fi_path = getattr(self, "_single_fi_path", None)
+                if fi_path is not None and fi_path.exists():
+                    try:
                         loading_progress.setLabelText("Loading FI images... (60%)")
                         loading_progress.setValue(60)
                         QApplication.processEvents()
@@ -1424,15 +1560,15 @@ class AnalyzeMasksTab(QWidget):
                                 fi_images = fi_images[0, np.newaxis, :, :]  # Take first channel
                         # Ensure frame count matches
                         if fi_images.shape[0] != num_frames:
-                            QMessageBox.warning(preview_dialog, "Frame Mismatch", 
+                            QMessageBox.warning(preview_dialog, "Frame Mismatch",
                                               f"FI image has {fi_images.shape[0]} frames but mask has {num_frames} frames.")
                             fi_images = None
-                        if do_fi_contour:
+                        if do_fi_contour and hasattr(self, 'fi_contour_thickness'):
                             fi_contour_thickness = self.fi_contour_thickness.value()
-                except Exception as e:
-                    QMessageBox.warning(preview_dialog, "FI Load Error", 
-                                      f"Could not load FI image:\n{str(e)}")
-                    fi_images = None
+                    except Exception as e:
+                        QMessageBox.warning(preview_dialog, "FI Load Error",
+                                          f"Could not load FI image:\n{str(e)}")
+                        fi_images = None
             
             loading_progress.setLabelText("Initializing preview dialog... (80%)")
             loading_progress.setValue(80)
@@ -1525,9 +1661,9 @@ class AnalyzeMasksTab(QWidget):
                 
                 # Reload FI images if FI file path changed or wasn't loaded before
                 nonlocal fi_images
-                if self.analyze_fi.isChecked() and self.fi_file_path.text():
-                    fi_path = Path(self.fi_file_path.text())
-                    if fi_path.exists() and (fi_images is None or str(fi_path) != str(Path(mask_path).parent / "fi_temp")):
+                if self.analyze_fi.isChecked() and getattr(self, "_single_fi_path", None) and self._single_fi_path.exists():
+                    fi_path = self._single_fi_path
+                    if fi_images is None or str(fi_path) != str(Path(mask_path).parent / "fi_temp"):
                         try:
                             fi_images = safe_imread(str(fi_path))
                             # Handle different dimensions (same logic as above)
@@ -1800,6 +1936,48 @@ class AnalyzeMasksTab(QWidget):
                                 # If contour drawing fails, continue without contours
                                 print(f"Warning: Could not draw FI contours: {str(e)}")
                         
+                        # Foci overlay: when Run foci analysis is on, detect foci on current FI frame and draw on vis
+                        n_foci_total = 0
+                        run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+                        if run_foci and fi_images is not None and self.analyze_fi.isChecked():
+                            try:
+                                from bactimate.foci_utils import detect_peaks_skimage as _detect_foci
+                            except ImportError:
+                                _detect_foci = None
+                            if _detect_foci is not None:
+                                fi_image = fi_images[frame_idx]
+                                if fi_image.ndim > 2:
+                                    fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
+                                if fi_image.shape[:2] == vis.shape[:2]:
+                                    min_rel = self.foci_min_rel.value() if hasattr(self, "foci_min_rel") else 2.0
+                                    min_sep = self.foci_min_separation.value() if hasattr(self, "foci_min_separation") else 2
+                                    min_sz = self.foci_min_size.value() if hasattr(self, "foci_min_size") else 1
+                                    max_sz = self.foci_max_size.value() if hasattr(self, "foci_max_size") else 0
+                                    max_sz = max_sz if max_sz > 0 else None
+                                    peaks = _detect_foci(
+                                        fi_image,
+                                        min_rel=min_rel,
+                                        min_distance=min_sep,
+                                        min_size=min_sz,
+                                        max_size=max_sz,
+                                    )
+                                    n_foci_total = len(peaks)
+                                    # Draw up to 500 foci as cyan circles (radius 3 px)
+                                    FOCI_CAP = 500
+                                    cyan = np.array([0, 255, 255], dtype=np.uint8)
+                                    r = 3
+                                    h, w = vis.shape[:2]
+                                    for i, p in enumerate(peaks):
+                                        if i >= FOCI_CAP:
+                                            break
+                                        yi, xi = int(p["y"]), int(p["x"])
+                                        for dy in range(-r, r + 1):
+                                            for dx in range(-r, r + 1):
+                                                if dy * dy + dx * dx <= r * r:
+                                                    yk, xk = yi + dy, xi + dx
+                                                    if 0 <= yk < h and 0 <= xk < w:
+                                                        vis[yk, xk] = cyan
+                        
                         if progress_dialog:
                             progress_dialog.setLabelText("Rendering display... (100%)")
                             progress_dialog.setValue(100)
@@ -1813,6 +1991,8 @@ class AnalyzeMasksTab(QWidget):
                         legend = f"Green=Accepted ({len(accepted_labels)})  Red=Rejected ({len(rejected_labels)})"
                         if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
                             legend += f"  Magenta=Contour (t={fi_contour_thickness})"
+                        if run_foci:
+                            legend += f"  Cyan=foci ({n_foci_total})"
                         title_label.setText(f"{Path(mask_path).name}  |  {title}  |  {legend}")
                         # vis is (H, W, 3) uint8; scale for large images then display
                         dummy_mask = np.zeros(vis.shape[:2], dtype=np.int32)
@@ -2001,11 +2181,10 @@ class AnalyzeMasksTab(QWidget):
                 QMessageBox.warning(self, "No Files Selected", 
                                   "Please select at least one file to analyze.")
                 return
-            if self.analyze_fi.isChecked() and not (getattr(self, "batch_fi", None) and self.batch_fi.isChecked()) and not self.fi_file_path.text().strip():
+            if self.analyze_fi.isChecked() and not self._is_match_by_name_mode() and not (getattr(self, "_single_fi_path", None) and self._single_fi_path.exists()):
                 QMessageBox.warning(self, "FI File Required",
-                                  "Analyze FI is on but no FI file is selected.\n\n"
-                                  "• Enable Batch to have FI files found by name (works for one mask or many; see Batch (?) for naming).\n"
-                                  "• Or select one FI file (Browse FI File) to use the same FI for all masks in the folder.")
+                                    "Analyze FI is on with 'One FI file for all masks' but no file is selected.\n\n"
+                                    "Click 'Select FI file…' or switch to 'Match FI by name' to have FI files found automatically.")
                 return
             
             # Process each file sequentially
@@ -2022,8 +2201,8 @@ class AnalyzeMasksTab(QWidget):
             self.folder_files = selected_files
             self.folder_results = []
             self.folder_output_paths = []
-            batch_fi_on = getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked() and getattr(self, "batch_fi", None) and self.batch_fi.isChecked()
-            single_fi_path = Path(self.fi_file_path.text()) if (self.analyze_fi.isChecked() and self.fi_file_path.text()) else None
+            batch_fi_on = self.analyze_fi.isChecked() and self._is_match_by_name_mode()
+            single_fi_path = getattr(self, "_single_fi_path", None) if (self.analyze_fi.isChecked() and not batch_fi_on) else None
             if single_fi_path and not single_fi_path.exists():
                 single_fi_path = None
             self.folder_fi_tasks: list[tuple[Path, Path | None, Path]] = []
@@ -2104,20 +2283,22 @@ class AnalyzeMasksTab(QWidget):
                 cmd_args.append('--exclude-border')
             
             # Add FI image path if FI analysis is enabled
-            if self.analyze_fi.isChecked() and self.fi_file_path.text():
-                fi_path = Path(self.fi_file_path.text())
-                if fi_path.exists():
-                    cmd_args.extend(['--fi-image', str(fi_path)])
-                    do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
-                    if do_fi_contour:
-                        fi_contour_thickness = self.fi_contour_thickness.value()
-                        cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
-                    else:
-                        cmd_args.append('--no-fi-contour')
+            if self.analyze_fi.isChecked() and getattr(self, "_single_fi_path", None) and self._single_fi_path.exists():
+                fi_path = self._single_fi_path
+                cmd_args.extend(['--fi-image', str(fi_path)])
+                do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                if do_fi_contour:
+                    fi_contour_thickness = self.fi_contour_thickness.value()
+                    cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
                 else:
-                    QMessageBox.warning(self, "FI File Not Found", 
-                                      f"The selected FI file does not exist:\n{fi_path}")
-                    return
+                    cmd_args.append('--no-fi-contour')
+                if getattr(self, "run_foci", None) and self.run_foci.isChecked():
+                    cmd_args.append('--run-foci')
+                    cmd_args.extend(['--foci-min-rel', str(self.foci_min_rel.value())])
+                    cmd_args.extend(['--foci-min-separation', str(self.foci_min_separation.value())])
+                    cmd_args.extend(['--foci-min-size', str(self.foci_min_size.value())])
+                    if self.foci_max_size.value() > 0:
+                        cmd_args.extend(['--foci-max-size', str(self.foci_max_size.value())])
             
             # Run in thread
             self.analyze_btn.setEnabled(False)
@@ -2254,6 +2435,13 @@ class AnalyzeMasksTab(QWidget):
                     cmd_args.extend(['--fi-contour-thickness', str(fi_contour_thickness)])
                 else:
                     cmd_args.append('--no-fi-contour')
+                if getattr(self, "run_foci", None) and self.run_foci.isChecked():
+                    cmd_args.append('--run-foci')
+                    cmd_args.extend(['--foci-min-rel', str(self.foci_min_rel.value())])
+                    cmd_args.extend(['--foci-min-separation', str(self.foci_min_separation.value())])
+                    cmd_args.extend(['--foci-min-size', str(self.foci_min_size.value())])
+                    if self.foci_max_size.value() > 0:
+                        cmd_args.extend(['--foci-max-size', str(self.foci_max_size.value())])
         
         self.parent_window.log_output(f"Output file: {output_path}\n")
         file_progress = int((self.current_task_index / len(self.folder_fi_tasks)) * 100)

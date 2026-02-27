@@ -25,6 +25,12 @@ from skimage.segmentation import find_boundaries
 import warnings
 warnings.filterwarnings('ignore')
 
+try:
+    from bactimate.foci_utils import detect_peaks_skimage, assign_peaks_to_cells
+except ImportError:
+    detect_peaks_skimage = None
+    assign_peaks_to_cells = None
+
 
 def calculate_cell_properties(mask, pixel_size=0.108, exclude_border=False):
     """
@@ -301,7 +307,9 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   min_eccentricity=0.5, min_solidity=0.7,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
                   remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True,
-                  exclude_border=False):
+                  exclude_border=False,
+                  run_foci=False, foci_min_rel=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
+                  fi_channel_name=None):
     """
     Analyze masks and extract cell areas with morphological filtering.
     
@@ -393,6 +401,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
     
     results = []
     all_frame_data = []  # Store detailed data for each frame
+    foci_table = []  # Foci rows (cell_id updated to persistent ID after assignment)
     
     print("\nAnalyzing frames...")
     for frame_idx in tqdm(range(num_frames), desc="Processing frames"):
@@ -464,6 +473,36 @@ def analyze_masks(masks_path, pixel_size=0.108,
                     )
                     cell['mean_fi'] = mean_fi
         
+        # Foci analysis (per-frame detection and assignment to cells)
+        if run_foci and fi_images is not None:
+            for cell in filtered:
+                cell.setdefault('foci_count', 0)
+                cell.setdefault('foci_ids', [])
+        if (run_foci and fi_images is not None and detect_peaks_skimage is not None and assign_peaks_to_cells is not None):
+            if fi_image.shape[:2] != mask_cleaned.shape[:2]:
+                print(f"Warning: FI image shape {fi_image.shape[:2]} != mask shape {mask_cleaned.shape[:2]}, skipping foci for frame {frame_idx + 1}")
+            else:
+                peaks = detect_peaks_skimage(
+                    fi_image,
+                    min_rel=foci_min_rel,
+                    min_distance=foci_min_separation,
+                    min_size=foci_min_size,
+                    max_size=foci_max_size,
+                )
+                foci_rows, cell_foci_ids = assign_peaks_to_cells(
+                    peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx
+                )
+                # Attach foci count and foci_ids to each cell (key by label, frame_idx)
+                for cell in filtered:
+                    key = (cell['label'], frame_idx)
+                    ids = cell_foci_ids.get(key, [])
+                    cell['foci_count'] = len(ids)
+                    cell['foci_ids'] = ids
+                for row in foci_rows:
+                    r = row.copy()
+                    r['channel_name'] = fi_channel_name or 'FI'
+                    foci_table.append(r)
+        
         # Determine rejected labels
         rejected_labels = all_labels - accepted_labels
         
@@ -498,25 +537,143 @@ def analyze_masks(masks_path, pixel_size=0.108,
         for result in results:
             result['total_area_relative'] = 0.0
     
-    # Assign persistent CellIDs to accepted cells across frames
-    print("\nAssigning persistent CellIDs to accepted cells...")
-    print(f"  Processing {len(all_frame_data)} frames...")
-    masks_with_cellids, cellid_mapping = assign_persistent_cell_ids(masks, all_frame_data, pixel_size)
+    # Check if input masks already have persistent CellIDs (e.g. from "Assign persistent IDs" after segmentation)
+    total_unique = len(np.unique(masks))
+    per_frame_uniques = [len(np.unique(masks[i])) for i in range(num_frames)]
+    avg_per_frame = sum(per_frame_uniques) / len(per_frame_uniques) if per_frame_uniques else 0
+    input_has_persistent_ids = avg_per_frame > 0 and total_unique <= 2.0 * avg_per_frame
+
+    if input_has_persistent_ids:
+        # Keep existing CellIDs; only filter (accepted = keep ID, rejected = remove from output mask)
+        print("\nInput masks already have persistent CellIDs; keeping them (filtering only).")
+        for frame_data in all_frame_data:
+            for cell in frame_data['cells']:
+                cell['cell_id'] = cell['label']  # existing label is the CellID
+        masks_with_cellids = np.zeros_like(masks, dtype=masks.dtype)
+        for frame_idx, frame_data in enumerate(all_frame_data):
+            for label in frame_data['accepted_labels']:
+                masks_with_cellids[frame_idx][masks[frame_idx] == label] = label
+        if masks_with_cellids.max() < 65535 and masks_with_cellids.dtype != np.uint16:
+            masks_with_cellids = masks_with_cellids.astype(np.uint16)
+    else:
+        # Assign new persistent CellIDs to accepted cells (original behaviour)
+        print("\nAssigning persistent CellIDs to accepted cells...")
+        print(f"  Processing {len(all_frame_data)} frames...")
+        masks_with_cellids, cellid_mapping = assign_persistent_cell_ids(masks, all_frame_data, pixel_size)
+        for frame_idx, frame_data in enumerate(all_frame_data):
+            for cell in frame_data['cells']:
+                mapping_key = (frame_idx, cell['label'])
+                cell['cell_id'] = cellid_mapping.get(mapping_key)
     
-    # Update all_frame_data with CellIDs
-    for frame_idx, frame_data in enumerate(all_frame_data):
-        for cell in frame_data['cells']:
-            original_label = cell['label']
-            # Find the CellID for this label in this frame
-            mapping_key = (frame_idx, original_label)
-            if mapping_key in cellid_mapping:
-                cell['cell_id'] = cellid_mapping[mapping_key]
-            else:
-                # Should not happen, but fallback
-                cell['cell_id'] = None
+    # Update foci_table: replace mask label with persistent cell_id
+    if foci_table:
+        label_to_cellid = {}
+        for frame_idx, frame_data in enumerate(all_frame_data):
+            for cell in frame_data['cells']:
+                cid = cell.get('cell_id')
+                if cid is not None:
+                    label_to_cellid[(frame_idx, cell['label'])] = cid
+        for row in foci_table:
+            if row.get('in_cell') and row.get('cell_id') is not None:
+                key = (row['frame'] - 1, row['cell_id'])
+                row['cell_id'] = label_to_cellid.get(key, row['cell_id'])
     
     # Return both masks_with_cellids (for tracking/analysis) and original masks (for visualization)
-    return results, all_frame_data, masks_with_cellids, masks
+    return results, all_frame_data, masks_with_cellids, masks, foci_table
+
+
+def link_persistent_cell_ids_raw(masks, pixel_size=0.108, max_distance_um=5.0):
+    """
+    Assign persistent CellIDs to all cells in a mask stack (no filtering).
+    Use this right after segmentation so the same cell keeps the same ID through the pipeline.
+    Frame-to-frame linking by nearest-neighbor centroid distance.
+
+    Parameters:
+    -----------
+    masks : array
+        Mask array (T, Y, X) with per-frame instance labels (0, 1, 2, ... per frame).
+    pixel_size : float
+        Pixel size in µm for distance calculations.
+    max_distance_um : float
+        Maximum distance in µm to link the same cell between frames.
+
+    Returns:
+    --------
+    masks_with_cellids : array
+        Mask array with persistent CellIDs (1, 2, 3, ... across frames).
+    """
+    from scipy.spatial.distance import cdist
+    from skimage.measure import regionprops
+
+    num_frames = masks.shape[0]
+    masks_with_cellids = np.zeros_like(masks, dtype=np.uint32)
+    next_cell_id = 1
+    frame_centroids_cache = {}
+    frame_cellids_cache = {}
+    max_distance_pixels = max_distance_um / pixel_size
+
+    # Frame 0: assign initial IDs to all labels
+    mask_0 = masks[0]
+    frame_centroids_cache[0] = {}
+    frame_cellids_cache[0] = {}
+    for region in regionprops(mask_0):
+        if region.label == 0:
+            continue
+        label = region.label
+        centroid = np.array(region.centroid) * pixel_size
+        frame_centroids_cache[0][label] = centroid
+        frame_cellids_cache[0][label] = next_cell_id
+        masks_with_cellids[0][mask_0 == label] = next_cell_id
+        next_cell_id += 1
+
+    for frame_idx in range(1, num_frames):
+        mask = masks[frame_idx]
+        regions = regionprops(mask)
+        centroids_current = {r.label: np.array(r.centroid) * pixel_size for r in regions if r.label > 0}
+        frame_centroids_cache[frame_idx] = centroids_current
+        frame_cellids_cache[frame_idx] = {}
+
+        prev_frame_idx = frame_idx - 1
+        centroids_prev = {}
+        for prev_label, prev_cellid in frame_cellids_cache[prev_frame_idx].items():
+            if prev_label in frame_centroids_cache[prev_frame_idx]:
+                centroids_prev[prev_cellid] = frame_centroids_cache[prev_frame_idx][prev_label]
+
+        current_labels = list(centroids_current.keys())
+        if len(centroids_prev) > 0 and len(current_labels) > 0:
+            prev_points = np.array(list(centroids_prev.values()))
+            prev_cellids = np.array(list(centroids_prev.keys()))
+            current_points = np.array([centroids_current[l] for l in current_labels])
+            distances = cdist(prev_points, current_points)
+            used_prev = set()
+            used_current = set()
+            assignments = []
+            for i in range(len(prev_cellids)):
+                for j in range(len(current_labels)):
+                    if distances[i, j] <= max_distance_pixels:
+                        assignments.append((distances[i, j], prev_cellids[i], current_labels[j]))
+            assignments.sort()
+            for dist, prev_cellid, current_label in assignments:
+                if prev_cellid not in used_prev and current_label not in used_current:
+                    frame_cellids_cache[frame_idx][current_label] = prev_cellid
+                    masks_with_cellids[frame_idx][mask == current_label] = prev_cellid
+                    used_prev.add(prev_cellid)
+                    used_current.add(current_label)
+            for current_label in current_labels:
+                if current_label not in used_current:
+                    frame_cellids_cache[frame_idx][current_label] = next_cell_id
+                    masks_with_cellids[frame_idx][mask == current_label] = next_cell_id
+                    next_cell_id += 1
+        else:
+            for current_label in current_labels:
+                frame_cellids_cache[frame_idx][current_label] = next_cell_id
+                masks_with_cellids[frame_idx][mask == current_label] = next_cell_id
+                next_cell_id += 1
+
+    if masks_with_cellids.max() < 65535:
+        masks_with_cellids = masks_with_cellids.astype(np.uint16)
+    print(f"  Assigned {next_cell_id - 1} unique CellIDs across {num_frames} frames (all cells linked)")
+    return masks_with_cellids
 
 
 def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_distance_um=5.0):
@@ -883,7 +1040,7 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
     print("✓ FI contour visualization saved")
 
 
-def save_to_excel(results, output_path, detailed_data=None):
+def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None):
     """
     Save results to Excel file.
     
@@ -895,6 +1052,10 @@ def save_to_excel(results, output_path, detailed_data=None):
         Path to save Excel file
     detailed_data : list of dict, optional
         Detailed per-cell data for additional sheets
+    foci_table : list of dict, optional
+        Foci rows (foci_id, cell_id, frame, channel_name, y, x, intensity, size_px, in_cell)
+    fi_channel_name : str, optional
+        Channel name for foci count/foci_ids columns (e.g. GFP)
     """
     # Create main results DataFrame
     df_main = pd.DataFrame(results)
@@ -913,6 +1074,9 @@ def save_to_excel(results, output_path, detailed_data=None):
         # Detailed per-cell data (optional)
         if detailed_data:
             detailed_rows = []
+            ch_name = fi_channel_name or 'FI'
+            foci_count_col = f'{ch_name}_foci_count'
+            foci_ids_col = f'foci_ids_{ch_name}'
             for frame_data in detailed_data:
                 frame_num = frame_data['frame']
                 for cell in frame_data['cells']:
@@ -934,11 +1098,27 @@ def save_to_excel(results, output_path, detailed_data=None):
                         row['Contour FI Intensity'] = cell['contour_fi']
                     if 'fi_ratio' in cell:
                         row['FI Ratio (Contour/Mean)'] = cell['fi_ratio']
+                    # Foci columns
+                    if 'foci_count' in cell:
+                        row[foci_count_col] = cell['foci_count']
+                    if 'foci_ids' in cell:
+                        row[foci_ids_col] = ','.join(map(str, cell['foci_ids'])) if cell['foci_ids'] else ''
                     detailed_rows.append(row)
             
             if detailed_rows:
                 df_detailed = pd.DataFrame(detailed_rows)
                 df_detailed.to_excel(writer, sheet_name='Per-Cell Data', index=False)
+        
+        # Foci sheet (when run_foci was on)
+        if foci_table is not None:
+            df_foci = pd.DataFrame(foci_table)
+            if len(df_foci) > 0:
+                # Reorder columns for clarity
+                cols = ['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'size_px', 'in_cell']
+                df_foci = df_foci[[c for c in cols if c in df_foci.columns]]
+            else:
+                df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'size_px', 'in_cell'])
+            df_foci.to_excel(writer, sheet_name='Foci', index=False)
     
     print(f"\n✓ Results saved to: {output_path}")
 
@@ -1009,6 +1189,19 @@ Examples:
                        help='Disable contour-based FI metrics (only compute Mean FI Intensity)')
     parser.add_argument('--exclude-border', action='store_true',
                        help='Exclude cells that touch the image border from counts and area')
+    # Foci analysis
+    parser.add_argument('--run-foci', action='store_true',
+                       help='Run foci detection on the FI channel and add foci count and Foci sheet')
+    parser.add_argument('--foci-min-rel', type=float, default=2.0,
+                       help='Min relative intensity (peak/median) for foci (default: 2.0)')
+    parser.add_argument('--foci-min-separation', type=int, default=2,
+                       help='Min distance between foci in pixels (default: 2)')
+    parser.add_argument('--foci-min-size', type=int, default=1,
+                       help='Min focus size in pixels (default: 1)')
+    parser.add_argument('--foci-max-size', type=int, default=None,
+                       help='Max focus size in pixels (default: no limit)')
+    parser.add_argument('--foci-channel-name', type=str, default=None,
+                       help='Channel name for foci columns/sheet (default: from FI filename, e.g. GFP)')
     
     args = parser.parse_args()
     
@@ -1035,8 +1228,19 @@ Examples:
             return 1
         fi_image_path = args.fi_image
     
+    # Foci channel name from FI path if not set (e.g. stem_fi_GFP.tif -> GFP)
+    fi_channel_name = args.foci_channel_name
+    if fi_channel_name is None and fi_image_path:
+        stem = Path(fi_image_path).stem
+        if stem.endswith('_fi'):
+            fi_channel_name = 'FI'
+        elif '_fi_' in stem:
+            fi_channel_name = stem.split('_fi_')[-1].strip('_')
+        else:
+            fi_channel_name = 'FI'
+    
     # Analyze masks
-    results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
+    results, detailed_data, masks_with_cellids, masks_original, foci_table = analyze_masks(
         args.masks,
         pixel_size=args.pixel_size,
         min_aspect_ratio=args.min_aspect_ratio,
@@ -1054,6 +1258,12 @@ Examples:
         fi_contour_thickness=args.fi_contour_thickness,
         fi_do_contour=not args.no_fi_contour,
         exclude_border=args.exclude_border,
+        run_foci=args.run_foci,
+        foci_min_rel=args.foci_min_rel,
+        foci_min_separation=args.foci_min_separation,
+        foci_min_size=args.foci_min_size,
+        foci_max_size=args.foci_max_size,
+        fi_channel_name=fi_channel_name,
     )
     
     # Get input mask filename stem for output naming
@@ -1121,7 +1331,12 @@ Examples:
     print("="*60)
     
     # Save to Excel
-    save_to_excel(results, output_path, detailed_data if args.detailed else None)
+    save_to_excel(
+        results, output_path,
+        detailed_data if args.detailed else None,
+        foci_table=foci_table if args.run_foci else None,
+        fi_channel_name=fi_channel_name if args.run_foci else None,
+    )
     
     print("\n✓ Analysis complete!")
     print(f"  Excel file saved to: {output_path}")

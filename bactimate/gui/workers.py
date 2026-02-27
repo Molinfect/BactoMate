@@ -347,10 +347,10 @@ class TrackingWorker(QThread):
                 debug_output.append("✓ Tracking completed successfully")
                 self.progress.emit(70, "Tracking completed, processing results...")
                 
-                # Map track IDs back to analysis CellIDs if Excel file is provided
+                # Map track IDs back to analysis CellIDs so one CellID stays with the same cell
                 if self.excel_file and Path(self.excel_file).exists():
-                    self.progress.emit(72, "Mapping track IDs to analysis CellIDs...")
-                    debug_output.append("\nMapping track IDs to analysis CellIDs...")
+                    self.progress.emit(72, "Mapping track IDs to analysis CellIDs (from Excel)...")
+                    debug_output.append("\nMapping track IDs to analysis CellIDs (from Excel)...")
                     try:
                         masks_tracked, trackid_to_cellid = self._map_track_ids_to_analysis_cellids(
                             masks, masks_tracked, self.excel_file
@@ -360,7 +360,28 @@ class TrackingWorker(QThread):
                         import traceback
                         debug_output.append(f"⚠ Could not map track IDs to analysis CellIDs: {str(e)}")
                         debug_output.append(f"  {traceback.format_exc()}")
-                        # Continue without mapping
+                        trackid_to_cellid = None
+                else:
+                    # No Excel: preserve CellIDs from input masks when they already have them (e.g. from Analyze Masks)
+                    total_unique = len(np.unique(masks))
+                    per_frame_uniques = [len(np.unique(masks[i])) for i in range(masks.shape[0])]
+                    avg_per_frame = sum(per_frame_uniques) / len(per_frame_uniques) if per_frame_uniques else 0
+                    # Persistent IDs reuse the same labels across frames; per-frame labels do not
+                    input_looks_persistent = avg_per_frame > 0 and total_unique <= 2.0 * avg_per_frame
+                    if input_looks_persistent:
+                        self.progress.emit(72, "Preserving CellIDs from input masks...")
+                        try:
+                            masks_tracked, trackid_to_cellid = self._map_track_ids_to_cellids_from_input_masks(
+                                masks, masks_tracked
+                            )
+                            if trackid_to_cellid:
+                                debug_output.append(f"✓ Preserved {len(trackid_to_cellid)} CellIDs from input masks")
+                            else:
+                                trackid_to_cellid = None
+                        except Exception as e:
+                            debug_output.append(f"  (Could not preserve CellIDs from input: {e})")
+                            trackid_to_cellid = None
+                    else:
                         trackid_to_cellid = None
                 debug_output.append(f"  - Track graph type: {type(track_graph)}")
                 debug_output.append(f"  - Track graph nodes: {track_graph.number_of_nodes() if hasattr(track_graph, 'number_of_nodes') else 'N/A'}")
@@ -801,6 +822,62 @@ class TrackingWorker(QThread):
             
             for track_id, cell_id in trackid_to_cellid.items():
                 frame_remapped[frame_tracked == track_id] = cell_id
+        
+        return masks_tracked_remapped, trackid_to_cellid
+    
+    def _map_track_ids_to_cellids_from_input_masks(self, masks_original, masks_tracked):
+        """
+        Preserve CellIDs from input masks when they already contain persistent IDs
+        (e.g. from Analyze Masks). Build track_id -> cell_id by sampling the original
+        mask at each track's centroid per frame and using the most common value.
+        No Excel required.
+        """
+        import numpy as np
+        from skimage.measure import regionprops
+        from collections import Counter
+        
+        num_frames = min(masks_original.shape[0], masks_tracked.shape[0])
+        track_id_to_values = {}  # track_id -> list of (frame_idx, original_label at centroid)
+        
+        for frame_idx in range(num_frames):
+            frame_orig = masks_original[frame_idx]
+            frame_tracked = masks_tracked[frame_idx]
+            h, w = frame_orig.shape[:2]
+            for region in regionprops(frame_tracked):
+                if region.label == 0:
+                    continue
+                track_id = region.label
+                r, c = int(round(region.centroid[0])), int(round(region.centroid[1]))
+                if 0 <= r < h and 0 <= c < w:
+                    orig_val = int(frame_orig[r, c])
+                    if track_id not in track_id_to_values:
+                        track_id_to_values[track_id] = []
+                    track_id_to_values[track_id].append(orig_val)
+        
+        trackid_to_cellid = {}
+        for track_id, values in track_id_to_values.items():
+            # Exclude background (0); take most common label as CellID
+            non_zero = [v for v in values if v != 0]
+            if not non_zero:
+                continue
+            mode_val, count = Counter(non_zero).most_common(1)[0]
+            # Only assign if the same ID appears in at least half of the samples (persistent)
+            if count >= max(1, len(values) // 2):
+                trackid_to_cellid[track_id] = mode_val
+        
+        if not trackid_to_cellid:
+            return masks_tracked, {}
+        
+        # Remap tracked masks to use those CellIDs (same as Excel path)
+        masks_tracked_remapped = np.zeros_like(masks_tracked)
+        for frame_idx in range(num_frames):
+            frame_tracked = masks_tracked[frame_idx]
+            frame_remapped = masks_tracked_remapped[frame_idx]
+            for track_id, cell_id in trackid_to_cellid.items():
+                frame_remapped[frame_tracked == track_id] = cell_id
+            # Preserve track_ids that were not mapped (keep original track_id)
+            unmapped = (frame_tracked > 0) & (frame_remapped == 0)
+            frame_remapped[unmapped] = frame_tracked[unmapped]
         
         return masks_tracked_remapped, trackid_to_cellid
     

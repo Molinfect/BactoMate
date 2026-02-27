@@ -122,8 +122,8 @@ class MainWindow(QMainWindow):
         initial_width, initial_height = 1200, 900
         if sys.platform == "win32":
             # Extra width so 140px button min-width and tab content don't cause horizontal scrollbar
-            min_width += 150
-            initial_width += 150
+            min_width += 190
+            initial_width += 190
         self.setMinimumSize(min_width, min_height)
         self.resize(initial_width, initial_height)
         self._center_window()

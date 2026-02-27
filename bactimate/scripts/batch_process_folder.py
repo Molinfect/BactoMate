@@ -159,7 +159,7 @@ def process_single_file(input_file, output_base_dir, model_type='bact_phase_omni
                     print(f"WARNING: Could not create overlay: {e}")
         
         # Step 2: Analyze masks
-        results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
+        results, detailed_data, masks_with_cellids, masks_original, _foci_table = analyze_masks(
             str(masks_path),
             pixel_size=pixel_size,
             min_aspect_ratio=min_aspect_ratio,
@@ -463,7 +463,7 @@ Examples:
                     continue
                 
                 # Analyze existing masks
-                results, detailed_data, masks_with_cellids, masks_original = analyze_masks(
+                results, detailed_data, masks_with_cellids, masks_original, _foci_table = analyze_masks(
                     str(masks_path),
                     pixel_size=args.pixel_size,
                     min_aspect_ratio=args.min_aspect_ratio,

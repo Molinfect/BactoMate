@@ -174,6 +174,7 @@ class ND2ConversionTab(QWidget):
         self.channel_options_group.setLayout(self.channel_options_layout)
         self.channel_options_group.setVisible(False)
         self.fi_channel_checks: list[QCheckBox] = []
+        self.foci_channel_checks: list[QCheckBox] = []
         self.zproject_channel_checks: list[QCheckBox] = []
         self.bleach_channel_checks: list[QCheckBox] = []
         params_layout.addWidget(self.channel_options_group)
@@ -322,8 +323,9 @@ class ND2ConversionTab(QWidget):
                 self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
     
     def _rebuild_channel_options(self, channel_names, num_channels):
-        """Populate Channel options panel: one row per channel with FI-channel / Z-channel / Bleach correct checkboxes. Shown when num_channels > 1."""
+        """Populate Channel options panel: one row per channel with FI / Foci / Z-channel / Bleach correct checkboxes. Shown when num_channels > 1."""
         self.fi_channel_checks.clear()
+        self.foci_channel_checks.clear()
         self.zproject_channel_checks.clear()
         self.bleach_channel_checks.clear()
         while self.channel_options_layout.count():
@@ -335,8 +337,8 @@ class ND2ConversionTab(QWidget):
             self.channel_options_group.setVisible(False)
             return
         info_label = QLabel(
-            "Tick per channel: FI-channel adds \"_fi\" in filename (for Analyze Masks batch later on); "
-            "Z-channel = max Z-projection; Bleach correct = photobleaching correction. Only ticked channels are affected."
+            "Tick per channel: FI adds \"_fi\" in filename (Analyze Masks); Foci adds \"_foci\" for foci analysis; "
+            "Z-channel = max Z-projection; Bleach correct = photobleaching correction."
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: #a0a0a0; font-size: 10pt;")
@@ -351,18 +353,22 @@ class ND2ConversionTab(QWidget):
             ch_label.setFixedWidth(200)
             row.addWidget(ch_label)
             row.addSpacing(12)
-            fi_cb = QCheckBox("FI-channel")
-            fi_cb.setToolTip("Save this channel with \"_fi\" in filename (e.g. stem_fi.tif) for Analyze Masks batch later on")
+            fi_cb = QCheckBox("FI")
+            fi_cb.setToolTip("Save with \"_fi\" in filename (e.g. stem_fi.tif) for Analyze Masks batch")
+            foci_cb = QCheckBox("Foci")
+            foci_cb.setToolTip("Save with \"_foci\" in filename for Analyze Masks foci analysis")
             z_cb = QCheckBox("Z-channel")
             z_cb.setToolTip("Apply max Z-projection for this channel (when Z stack > 1)")
             bleach_cb = QCheckBox("Bleach correct")
             bleach_cb.setToolTip("Apply bleach correction to this channel")
             row.addWidget(fi_cb)
+            row.addWidget(foci_cb)
             row.addWidget(z_cb)
             row.addWidget(bleach_cb)
             row.addStretch()
             self.channel_options_layout.addWidget(row_widget)
             self.fi_channel_checks.append(fi_cb)
+            self.foci_channel_checks.append(foci_cb)
             self.zproject_channel_checks.append(z_cb)
             self.bleach_channel_checks.append(bleach_cb)
             z_cb.stateChanged.connect(self._sync_z_projection_from_channels)
@@ -2588,12 +2594,17 @@ class ND2ConversionTab(QWidget):
                 if indices and len(indices) < len(self.bleach_channel_checks):
                     cmd_args.append('--bleach-channels')
                     cmd_args.extend(str(i) for i in indices)
-        # FI channels: only when saving channels separately
+        # FI and Foci channels: only when saving channels separately
         if self.separate_channels.isChecked() and getattr(self, 'fi_channel_checks', None):
             fi_indices = [i for i, cb in enumerate(self.fi_channel_checks) if cb.isChecked()]
             if fi_indices:
                 cmd_args.append('--fi-channels')
                 cmd_args.extend(str(i) for i in fi_indices)
+        if self.separate_channels.isChecked() and getattr(self, 'foci_channel_checks', None):
+            foci_indices = [i for i, cb in enumerate(self.foci_channel_checks) if cb.isChecked()]
+            if foci_indices:
+                cmd_args.append('--foci-channels')
+                cmd_args.extend(str(i) for i in foci_indices)
         
         # Pass pixel size and time per frame if extracted (for TIFF metadata)
         if self.file_info and self.file_info.get('pixel_size'):
@@ -2778,6 +2789,11 @@ class ND2ConversionTab(QWidget):
                 if fi_indices:
                     cmd_args.append('--fi-channels')
                     cmd_args.extend(str(i) for i in fi_indices)
+            if self.separate_channels.isChecked() and getattr(self, 'foci_channel_checks', None):
+                foci_indices = [i for i, cb in enumerate(self.foci_channel_checks) if cb.isChecked()]
+                if foci_indices:
+                    cmd_args.append('--foci-channels')
+                    cmd_args.extend(str(i) for i in foci_indices)
             if self.file_info and self.file_info.get('pixel_size'):
                 cmd_args.extend(['--pixel-size', str(self.file_info['pixel_size'])])
             self.parent_window.log_output(f"Starting ND2 conversion: {next_path.name} (file {self._conversion_current_index + 1}/{len(queue)})\n")
@@ -3302,6 +3318,8 @@ class ND2ConversionTab(QWidget):
             out["bleach_fluorescence_channels"] = [cb.isChecked() for cb in self.bleach_channel_checks]
         if getattr(self, "fi_channel_checks", None):
             out["fi_channels"] = [cb.isChecked() for cb in self.fi_channel_checks]
+        if getattr(self, "foci_channel_checks", None):
+            out["foci_channels"] = [cb.isChecked() for cb in self.foci_channel_checks]
         if getattr(self, "zproject_channel_checks", None):
             out["zproject_channels"] = [cb.isChecked() for cb in self.zproject_channel_checks]
         return out
@@ -3338,6 +3356,15 @@ class ND2ConversionTab(QWidget):
                     for i, checked in enumerate(states):
                         if i < len(self.fi_channel_checks):
                             self.fi_channel_checks[i].setChecked(bool(checked))
+            except Exception:
+                pass
+        if "foci_channels" in data and getattr(self, "foci_channel_checks", None):
+            try:
+                states = data["foci_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.foci_channel_checks):
+                            self.foci_channel_checks[i].setChecked(bool(checked))
             except (TypeError, ValueError):
                 pass
         if "zproject_channels" in data and getattr(self, "zproject_channel_checks", None):
