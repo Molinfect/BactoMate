@@ -122,7 +122,7 @@ class AnalyzeMasksTab(QWidget):
         # FI mode and content (visible when Analyze FI is on)
         self.fi_content = QWidget()
         fi_content_layout = QVBoxLayout(self.fi_content)
-        fi_content_layout.setContentsMargins(0, 6, 0, 0)
+        fi_content_layout.setContentsMargins(0, 6, 0, 6)
         self.fi_mode_one_file = QRadioButton("One FI file for all masks")
         self.fi_mode_match_by_name = QRadioButton("Match FI channel(s) by name")
         self.fi_mode_match_by_name.setChecked(True)
@@ -132,7 +132,7 @@ class AnalyzeMasksTab(QWidget):
         fi_mode_row = QHBoxLayout()
         fi_mode_row.addWidget(self.fi_mode_one_file)
         fi_mode_row.addWidget(self.fi_mode_match_by_name)
-        self.fi_naming_hint = QLabel("(Match ""_fi"" files with the same stem name to found mask, in the mask folder or its parent)")
+        self.fi_naming_hint = QLabel('(Match "_fi" and "_foci" files with the same stem name to the mask, in the mask folder or its parent)')
         self.fi_naming_hint.setStyleSheet("color: #888; font-size: 9pt;")
         self.fi_naming_hint.setWordWrap(False)
         fi_mode_row.addWidget(self.fi_naming_hint)
@@ -144,44 +144,97 @@ class AnalyzeMasksTab(QWidget):
         fi_content_layout.addWidget(self.fi_select_btn)
         self.fi_feedback = QTextEdit()
         self.fi_feedback.setReadOnly(True)
-        self.fi_feedback.setMaximumHeight(100)
+        self.fi_feedback.setMaximumHeight(140)
         self.fi_feedback.setPlaceholderText("Set mask path and choose FI mode to see what will be analyzed.")
-        self.fi_feedback.setStyleSheet("font-size: 10pt; color: #b0b0b0; background-color: #2b2b2b; border: 1px solid #555; border-radius: 4px; padding: 6px;")
+        self.fi_feedback.setStyleSheet(
+            "font-size: 10pt; color: #b0b0b0; background-color: #2b2b2b; border: 1px solid #555; border-radius: 4px; padding: 6px;"
+            " QTextEdit QScrollBar:vertical { width: 10px; background: #5a5a5a; border-radius: 5px; margin: 0; }"
+            " QTextEdit QScrollBar::handle:vertical { min-height: 24px; background: #404040; border-radius: 5px; }"
+            " QTextEdit QScrollBar::handle:vertical:hover { background: #505050; }"
+            " QTextEdit QScrollBar::add-line:vertical, QTextEdit QScrollBar::sub-line:vertical { height: 0; }"
+        )
         fi_content_layout.addWidget(self.fi_feedback)
+        # Same vertical gap as between Analyze FI checkbox and One FI file (fi_content top margin)
+        fi_content_layout.addSpacing(12)
         # Foci analysis (run detection on FI channel, add foci count and Foci sheet)
+        run_foci_row = QHBoxLayout()
         self.run_foci = QCheckBox("Run foci analysis")
         self.run_foci.setChecked(False)
-        self.run_foci.setToolTip("Detect foci (bright spots) in the FI channel per frame; add foci count and Foci sheet to Excel.")
-        fi_content_layout.addWidget(self.run_foci)
+        run_foci_row.addWidget(self.run_foci)
+        run_foci_row.addWidget(create_info_icon(
+            "Detect foci (bright spots) in the FI channel per frame; add foci count and Foci sheet to Excel.",
+            parent_widget=self
+        ))
+        run_foci_row.addSpacing(12)
+        self.foci_exclude_outside_cells = QCheckBox("Exclude foci outside / rejected cells")
+        self.foci_exclude_outside_cells.setChecked(False)
+        run_foci_row.addWidget(self.foci_exclude_outside_cells)
+        run_foci_row.addWidget(create_info_icon(
+            "When checked: only foci inside accepted cells (cells that passed size/width filters) are "
+            "included in the Foci sheet and per-cell foci counts. Foci in the background and foci "
+            "inside rejected cells are excluded.\n\n"
+            "When unchecked: all detected foci are included (inside and outside cells).",
+            parent_widget=self
+        ))
+        run_foci_row.addStretch()
+        fi_content_layout.addLayout(run_foci_row)
         foci_params_row = QHBoxLayout()
         foci_params_row.addWidget(QLabel("Min relative intensity:"))
+        foci_params_row.addWidget(create_info_icon(
+            "Peaks whose intensity is below (median × this value) are excluded.\n\n"
+            "The median is computed from the raw FI image (no preprocessing), so the threshold "
+            "is in the same units as your image: threshold = raw median × min relative intensity. "
+            "Example: raw median 982 and min rel 10 → only peaks with intensity ≥ 9820 are kept. "
+            "The preview shows the raw median FI for the current frame so you can judge the setting.\n\n"
+            "Per frame: median over all pixels in the raw FI image; peaks with raw intensity "
+            "< median × this value are discarded. Peak detection still uses internal preprocessing "
+            "for localization; only the min-rel filter uses raw values.",
+            parent_widget=self
+        ))
         self.foci_min_rel = QDoubleSpinBox()
         self.foci_min_rel.setRange(0.5, 20.0)
         self.foci_min_rel.setValue(2.0)
         self.foci_min_rel.setDecimals(1)
-        self.foci_min_rel.setToolTip("Peaks below this multiple of image median are excluded.")
         foci_params_row.addWidget(self.foci_min_rel)
         foci_params_row.addWidget(QLabel("Min separation (px):"))
+        foci_params_row.addWidget(create_info_icon(
+            "Minimum distance in pixels between two detected foci.\n\n"
+            "Peaks closer than this are merged (the stronger one is kept). "
+            "Increases with this value to avoid multiple detections on the same spot. "
+            "Use ~2 for dense foci; increase if you get duplicate detections.",
+            parent_widget=self
+        ))
         self.foci_min_separation = QSpinBox()
         self.foci_min_separation.setRange(1, 20)
         self.foci_min_separation.setValue(2)
-        self.foci_min_separation.setToolTip("Minimum distance between two foci in pixels.")
         foci_params_row.addWidget(self.foci_min_separation)
         foci_params_row.addWidget(QLabel("Min size (px):"))
+        foci_params_row.addWidget(create_info_icon(
+            "Minimum focus size in pixels (connected region around the peak).\n\n"
+            "For each detected peak, the size is measured as the number of connected pixels above "
+            "a fraction of the peak intensity. Peaks with size below this are excluded. "
+            "Use 1 to allow single-pixel foci; increase to filter out tiny noise.",
+            parent_widget=self
+        ))
         self.foci_min_size = QSpinBox()
         self.foci_min_size.setRange(1, 50)
         self.foci_min_size.setValue(1)
         foci_params_row.addWidget(self.foci_min_size)
         foci_params_row.addWidget(QLabel("Max size (px):"))
+        foci_params_row.addWidget(create_info_icon(
+            "Maximum focus size in pixels. Peaks with a larger connected region are excluded.\n\n"
+            "Set to 0 for no maximum (all sizes allowed). Use a positive value to ignore very large "
+            "blobs that are not true foci.",
+            parent_widget=self
+        ))
         self.foci_max_size = QSpinBox()
         self.foci_max_size.setRange(0, 500)
         self.foci_max_size.setValue(0)
-        self.foci_max_size.setSpecialValueText("off")
-        self.foci_max_size.setToolTip("0 = no maximum.")
+        self.foci_max_size.setSpecialValueText("0")
         foci_params_row.addWidget(self.foci_max_size)
         foci_params_row.addStretch()
         fi_content_layout.addLayout(foci_params_row)
-        self.foci_params_widgets = [self.foci_min_rel, self.foci_min_separation, self.foci_min_size, self.foci_max_size]
+        self.foci_params_widgets = [self.foci_min_rel, self.foci_min_separation, self.foci_min_size, self.foci_max_size, self.foci_exclude_outside_cells]
         self.fi_content.setVisible(False)
         fi_layout.addWidget(self.fi_content)
 
@@ -795,7 +848,7 @@ class AnalyzeMasksTab(QWidget):
             if not masks:
                 self.fi_feedback.setPlainText("Set mask path (file or folder) to see FI pairings.")
                 return
-            lines = []
+            fi_lines = []
             total_fi_pairings = 0
             for mask_path in masks:
                 fi_paths = self._resolve_fi_paths_for_mask(mask_path)
@@ -803,9 +856,9 @@ class AnalyzeMasksTab(QWidget):
                 total_fi_pairings += n_fi
                 if fi_paths:
                     fi_names = ", ".join(p.name for p in fi_paths)
-                    lines.append(f"• {mask_path.name} → {fi_names}")
+                    fi_lines.append(f"• {mask_path.name} → {fi_names}")
                 else:
-                    lines.append(f"• {mask_path.name} → (no FI found)")
+                    fi_lines.append(f"• {mask_path.name} → (no FI found)")
             # Summary: one mask file = one segmentation, used once per FI channel (same mask, multiple analyses)
             if total_fi_pairings == 0:
                 header = f"{len(masks)} mask file(s); no FI files matched.\n\n"
@@ -813,37 +866,51 @@ class AnalyzeMasksTab(QWidget):
                 header = f"{len(masks)} mask file(s). Same segmentation used for 1 FI channel each.\n\n"
             else:
                 header = f"{len(masks)} mask file(s) → {total_fi_pairings} analyses (same segmentation per file, used once per FI channel below).\n\n"
-            self.fi_feedback.setPlainText(header + "\n".join(lines))
+            body = "Analyze FI (mask → FI channel(s)):\n" + "\n".join(fi_lines)
+            run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+            if run_foci_on:
+                foci_lines = []
+                for mask_path in masks:
+                    fi_paths = self._resolve_fi_paths_for_mask(mask_path)
+                    foci_paths = [p for p in fi_paths if "_foci" in p.stem]
+                    if foci_paths:
+                        foci_names = ", ".join(p.name for p in foci_paths)
+                        foci_lines.append(f"• {mask_path.name} → {foci_names}")
+                    else:
+                        foci_lines.append(f"• {mask_path.name} → (no _foci matched)")
+                body += "\n\nRun foci (mask → _foci channel(s) used for foci detection):\n" + "\n".join(foci_lines)
+            self.fi_feedback.setPlainText(header + body)
         else:
             if self._single_fi_path and self._single_fi_path.exists():
                 self.fi_feedback.setPlainText(f"FI file: {self._single_fi_path.name} will be used for all masks.")
             else:
                 self.fi_feedback.setPlainText("Select one FI file (button above) to use for all masks.")
 
-    def _update_fi_ui_state(self, checked=None) -> None:
-        """Show/hide FI content, enable contour, show/hide Select button and naming hint."""
-        if checked is None:
-            checked = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+    def _update_fi_ui_state(self, _checked=None) -> None:
+        """Show/hide FI content, enable contour, show/hide Select button and naming hint.
+        Always derive state from Analyze FI checkbox (not from the signal sender) so that
+        toggling Run foci does not hide the FI section."""
+        analyze_fi_on = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
         if hasattr(self, "fi_content"):
-            self.fi_content.setVisible(checked)
+            self.fi_content.setVisible(analyze_fi_on)
         one_file = bool(getattr(self, "fi_mode_one_file", None) and self.fi_mode_one_file.isChecked())
         if hasattr(self, "fi_select_btn"):
-            self.fi_select_btn.setVisible(checked and one_file)
+            self.fi_select_btn.setVisible(analyze_fi_on and one_file)
         if hasattr(self, "fi_naming_hint"):
-            self.fi_naming_hint.setVisible(checked and self._is_match_by_name_mode())
+            self.fi_naming_hint.setVisible(analyze_fi_on and self._is_match_by_name_mode())
         if hasattr(self, "analyze_fi_contour"):
-            self.analyze_fi_contour.setEnabled(checked)
-            if not checked:
+            self.analyze_fi_contour.setEnabled(analyze_fi_on)
+            if not analyze_fi_on:
                 self.analyze_fi_contour.setChecked(False)
-            elif checked and not self.analyze_fi_contour.isChecked() and not getattr(self, "_fi_contour_user_set", False):
+            elif analyze_fi_on and not self.analyze_fi_contour.isChecked() and not getattr(self, "_fi_contour_user_set", False):
                 self.analyze_fi_contour.setChecked(True)
         run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
         if hasattr(self, "run_foci"):
-            self.run_foci.setEnabled(checked)
-            if not checked:
+            self.run_foci.setEnabled(analyze_fi_on)
+            if not analyze_fi_on:
                 self.run_foci.setChecked(False)
         for w in getattr(self, "foci_params_widgets", []):
-            w.setEnabled(checked and run_foci_on)
+            w.setEnabled(analyze_fi_on and run_foci_on)
         self._update_fi_contour_state()
         self._update_fi_feedback()
 
@@ -1314,6 +1381,18 @@ class AnalyzeMasksTab(QWidget):
             d["analyze_fi_contour"] = self.analyze_fi_contour.isChecked()
         if hasattr(self, "fi_contour_thickness"):
             d["fi_contour_thickness"] = self.fi_contour_thickness.value()
+        if hasattr(self, "run_foci"):
+            d["run_foci"] = self.run_foci.isChecked()
+        if hasattr(self, "foci_min_rel"):
+            d["foci_min_rel"] = self.foci_min_rel.value()
+        if hasattr(self, "foci_min_separation"):
+            d["foci_min_separation"] = self.foci_min_separation.value()
+        if hasattr(self, "foci_min_size"):
+            d["foci_min_size"] = self.foci_min_size.value()
+        if hasattr(self, "foci_max_size"):
+            d["foci_max_size"] = self.foci_max_size.value()
+        if hasattr(self, "foci_exclude_outside_cells"):
+            d["foci_exclude_outside_cells"] = self.foci_exclude_outside_cells.isChecked()
         return d
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -1356,6 +1435,30 @@ class AnalyzeMasksTab(QWidget):
                 self.fi_contour_thickness.setValue(int(data["fi_contour_thickness"]))
             except (TypeError, ValueError):
                 pass
+        if "run_foci" in data and hasattr(self, "run_foci"):
+            self.run_foci.setChecked(bool(data["run_foci"]))
+        if "foci_min_rel" in data and hasattr(self, "foci_min_rel"):
+            try:
+                self.foci_min_rel.setValue(float(data["foci_min_rel"]))
+            except (TypeError, ValueError):
+                pass
+        if "foci_min_separation" in data and hasattr(self, "foci_min_separation"):
+            try:
+                self.foci_min_separation.setValue(int(data["foci_min_separation"]))
+            except (TypeError, ValueError):
+                pass
+        if "foci_min_size" in data and hasattr(self, "foci_min_size"):
+            try:
+                self.foci_min_size.setValue(int(data["foci_min_size"]))
+            except (TypeError, ValueError):
+                pass
+        if "foci_max_size" in data and hasattr(self, "foci_max_size"):
+            try:
+                self.foci_max_size.setValue(int(data["foci_max_size"]))
+            except (TypeError, ValueError):
+                pass
+        if "foci_exclude_outside_cells" in data and hasattr(self, "foci_exclude_outside_cells"):
+            self.foci_exclude_outside_cells.setChecked(bool(data["foci_exclude_outside_cells"]))
         if hasattr(self, "_update_fi_feedback"):
             self._update_fi_feedback()
     
@@ -1938,6 +2041,7 @@ class AnalyzeMasksTab(QWidget):
                         
                         # Foci overlay: when Run foci analysis is on, detect foci on current FI frame and draw on vis
                         n_foci_total = 0
+                        raw_median_fi = None  # raw FI median (used for min rel threshold); shown in legend
                         run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
                         if run_foci and fi_images is not None and self.analyze_fi.isChecked():
                             try:
@@ -1949,6 +2053,7 @@ class AnalyzeMasksTab(QWidget):
                                 if fi_image.ndim > 2:
                                     fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
                                 if fi_image.shape[:2] == vis.shape[:2]:
+                                    raw_median_fi = float(np.median(np.asarray(fi_image, dtype=np.float64)))
                                     min_rel = self.foci_min_rel.value() if hasattr(self, "foci_min_rel") else 2.0
                                     min_sep = self.foci_min_separation.value() if hasattr(self, "foci_min_separation") else 2
                                     min_sz = self.foci_min_size.value() if hasattr(self, "foci_min_size") else 1
@@ -1961,10 +2066,13 @@ class AnalyzeMasksTab(QWidget):
                                         min_size=min_sz,
                                         max_size=max_sz,
                                     )
+                                    exclude_outside = bool(getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked())
+                                    if exclude_outside:
+                                        peaks = [p for p in peaks if 0 <= int(p["y"]) < mask.shape[0] and 0 <= int(p["x"]) < mask.shape[1] and mask[int(p["y"]), int(p["x"])] in accepted_labels]
                                     n_foci_total = len(peaks)
-                                    # Draw up to 500 foci as cyan circles (radius 3 px)
+                                    # Draw up to 500 foci as orange circles (radius 3 px)
                                     FOCI_CAP = 500
-                                    cyan = np.array([0, 255, 255], dtype=np.uint8)
+                                    orange = np.array([255, 165, 0], dtype=np.uint8)
                                     r = 3
                                     h, w = vis.shape[:2]
                                     for i, p in enumerate(peaks):
@@ -1976,7 +2084,7 @@ class AnalyzeMasksTab(QWidget):
                                                 if dy * dy + dx * dx <= r * r:
                                                     yk, xk = yi + dy, xi + dx
                                                     if 0 <= yk < h and 0 <= xk < w:
-                                                        vis[yk, xk] = cyan
+                                                        vis[yk, xk] = orange
                         
                         if progress_dialog:
                             progress_dialog.setLabelText("Rendering display... (100%)")
@@ -1992,7 +2100,9 @@ class AnalyzeMasksTab(QWidget):
                         if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
                             legend += f"  Magenta=Contour (t={fi_contour_thickness})"
                         if run_foci:
-                            legend += f"  Cyan=foci ({n_foci_total})"
+                            legend += f"  Orange=foci ({n_foci_total})"
+                            if raw_median_fi is not None:
+                                legend += f"  [raw median FI: {raw_median_fi:.0f}  (× min rel = threshold)]"
                         title_label.setText(f"{Path(mask_path).name}  |  {title}  |  {legend}")
                         # vis is (H, W, 3) uint8; scale for large images then display
                         dummy_mask = np.zeros(vis.shape[:2], dtype=np.int32)
@@ -2299,6 +2409,8 @@ class AnalyzeMasksTab(QWidget):
                     cmd_args.extend(['--foci-min-size', str(self.foci_min_size.value())])
                     if self.foci_max_size.value() > 0:
                         cmd_args.extend(['--foci-max-size', str(self.foci_max_size.value())])
+                    if getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked():
+                        cmd_args.append('--foci-exclude-outside-cells')
             
             # Run in thread
             self.analyze_btn.setEnabled(False)
@@ -2442,6 +2554,8 @@ class AnalyzeMasksTab(QWidget):
                     cmd_args.extend(['--foci-min-size', str(self.foci_min_size.value())])
                     if self.foci_max_size.value() > 0:
                         cmd_args.extend(['--foci-max-size', str(self.foci_max_size.value())])
+                    if getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked():
+                        cmd_args.append('--foci-exclude-outside-cells')
         
         self.parent_window.log_output(f"Output file: {output_path}\n")
         file_progress = int((self.current_task_index / len(self.folder_fi_tasks)) * 100)

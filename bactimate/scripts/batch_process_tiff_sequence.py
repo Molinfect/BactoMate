@@ -95,6 +95,18 @@ if not sys.stdout.isatty():
     tqdm_kwargs = {'disable': True}  # Disable our own tqdm too
 else:
     tqdm_kwargs = {}
+    # Use a simple one-line progress format (no ### bar, no rate/s per it) for all tqdm in this process
+    # This affects our tqdm and Omnipose/cellpose tqdm; patch before importing cellpose_omni
+    _tqdm_orig_init = tqdm.__init__
+
+    def _tqdm_init_with_simple_format(self, *args, **kwargs):
+        kwargs.setdefault(
+            'bar_format',
+            '{percentage:3.0f}% ({n_fmt}/{total_fmt})  ETA {remaining}',
+        )
+        _tqdm_orig_init(self, *args, **kwargs)
+
+    tqdm.__init__ = _tqdm_init_with_simple_format
 
 # Suppress FutureWarning from omnipose about deprecated area_threshold parameter
 warnings.filterwarnings('ignore', category=FutureWarning, message='.*area_threshold.*')

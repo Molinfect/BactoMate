@@ -309,6 +309,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True,
                   exclude_border=False,
                   run_foci=False, foci_min_rel=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
+                  foci_exclude_outside_cells=False,
                   fi_channel_name=None):
     """
     Analyze masks and extract cell areas with morphological filtering.
@@ -499,6 +500,9 @@ def analyze_masks(masks_path, pixel_size=0.108,
                     cell['foci_count'] = len(ids)
                     cell['foci_ids'] = ids
                 for row in foci_rows:
+                    if foci_exclude_outside_cells:
+                        if not row.get('in_cell', False) or row.get('cell_id') not in accepted_labels:
+                            continue
                     r = row.copy()
                     r['channel_name'] = fi_channel_name or 'FI'
                     foci_table.append(r)
@@ -1199,7 +1203,9 @@ Examples:
     parser.add_argument('--foci-min-size', type=int, default=1,
                        help='Min focus size in pixels (default: 1)')
     parser.add_argument('--foci-max-size', type=int, default=None,
-                       help='Max focus size in pixels (default: no limit)')
+                       help='Max focus size in pixels (0 or omit = no limit)')
+    parser.add_argument('--foci-exclude-outside-cells', action='store_true',
+                       help='Exclude foci that fall outside any cell from counts and Foci sheet')
     parser.add_argument('--foci-channel-name', type=str, default=None,
                        help='Channel name for foci columns/sheet (default: from FI filename, e.g. GFP)')
     
@@ -1263,6 +1269,7 @@ Examples:
         foci_min_separation=args.foci_min_separation,
         foci_min_size=args.foci_min_size,
         foci_max_size=args.foci_max_size,
+        foci_exclude_outside_cells=getattr(args, 'foci_exclude_outside_cells', False),
         fi_channel_name=fi_channel_name,
     )
     

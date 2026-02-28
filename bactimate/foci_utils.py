@@ -96,10 +96,19 @@ def detect_peaks_skimage(
     """
     Detect foci in a 2D image. Returns list of dicts with keys:
     y, x, intensity, size_px (and optionally rel_intensity).
+
+    Min relative intensity filter uses the raw (pre-processing) image: peaks are kept only
+    where raw_intensity >= raw_median * min_rel, so the threshold is in the same units as
+    the user's image. Peak detection still uses the preprocessed image for better localization.
     """
-    img = np.asarray(image, dtype=np.float64)
-    if img.ndim != 2 or img.size == 0:
+    raw_img = np.asarray(image, dtype=np.float64)
+    if raw_img.ndim != 2 or raw_img.size == 0:
         return []
+    raw_median = float(np.median(raw_img))
+    if raw_median <= 0:
+        raw_median = 1e-10
+
+    img = raw_img.copy()
     if use_preprocessing:
         img = enhance_foci_image(
             img, sigma_smooth, bg_radius, sharpen_radius, sharpen_amount
@@ -107,6 +116,7 @@ def detect_peaks_skimage(
     img_median = float(np.median(img))
     if img_median <= 0:
         img_median = 1e-10
+    # Threshold for peak_local_max on preprocessed image (reduces candidate count)
     if min_rel is not None and min_rel > 0:
         min_abs = img_median * min_rel
     else:
@@ -114,12 +124,15 @@ def detect_peaks_skimage(
     coords = peak_local_max(img, min_distance=min_distance, threshold_abs=min_abs)
     if coords.size == 0:
         return []
-    intensities = img[coords[:, 0], coords[:, 1]]
+    # Raw intensity at each peak (for user-facing filter and output)
+    raw_intensities = raw_img[coords[:, 0], coords[:, 1]]
+    min_raw_abs = (raw_median * min_rel) if (min_rel is not None and min_rel > 0) else None
     peaks: List[Dict[str, Any]] = []
     for k in range(len(coords)):
         yi, xi = int(coords[k, 0]), int(coords[k, 1])
-        intensity = float(intensities[k])
-        rel = intensity / img_median
+        raw_int = float(raw_intensities[k])
+        if min_raw_abs is not None and raw_int < min_raw_abs:
+            continue
         size_px = focus_size_at_peak(
             img, yi, xi,
             threshold_frac=size_threshold_frac,
@@ -129,10 +142,11 @@ def detect_peaks_skimage(
             continue
         if max_size is not None and max_size > 0 and size_px > max_size:
             continue
+        rel = raw_int / raw_median
         peaks.append({
             "y": yi,
             "x": xi,
-            "intensity": intensity,
+            "intensity": raw_int,
             "rel_intensity": rel,
             "size_px": size_px,
         })

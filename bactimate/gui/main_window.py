@@ -490,7 +490,7 @@ class MainWindow(QMainWindow):
         # Strip tqdm position prefix "line  46	" or "line 46 "
         s = re.sub(r"^line\s+\d+\s*[\t ]*", "", s)
         s = s.strip()
-        # Condense tqdm-style progress to one short line: "28% (9/32) ETA 1:09"
+        # Condense old tqdm-style progress (bar + ###) to one short line: "28% (9/32) ETA 1:09"
         tqdm_match = re.match(
             r"^(\d+)%\s*\|[#\s]+\|\s*(\d+)/(\d+)\s*\[([^\]]*)\]",
             s,
@@ -499,7 +499,16 @@ class MainWindow(QMainWindow):
             pct, current, total, rest = tqdm_match.groups()
             eta_match = re.search(r"<(\d+):(\d+)", rest)
             if eta_match:
-                return f"  {pct}% ({current}/{total})  ETA {eta_match.group(1)}:{eta_match.group(2)}"
+                m, sec = eta_match.group(1), eta_match.group(2)
+                return f"  {pct}% ({current}/{total})  ETA {int(m)}:{sec}"
+            return f"  {pct}% ({current}/{total})"
+        # Already simple format "91% (29/32)  ETA 00:11" – normalize for display
+        simple_match = re.match(r"^(\d+)%\s*\(\s*(\d+)/(\d+)\s*\)\s*(?:ETA\s*(\d+):(\d+))?", s)
+        if simple_match:
+            pct, current, total = simple_match.group(1), simple_match.group(2), simple_match.group(3)
+            eta_m, eta_s = simple_match.group(4), simple_match.group(5)
+            if eta_m is not None and eta_s is not None:
+                return f"  {pct}% ({current}/{total})  ETA {int(eta_m)}:{eta_s}"
             return f"  {pct}% ({current}/{total})"
         # If we stripped everything (line was only timestamp/[INFO]), skip it
         return s if s else ""
