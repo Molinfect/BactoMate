@@ -178,7 +178,7 @@ or:
 python main.py
 ```
 
-The BactiMate window should open. You can use the tabs: **TIFF Conversion**, **Omnipose Segment**, **Analyze Masks**, **Tracking**, **Video Graph**, **Session Logs**. For full documentation, see the [BactiMate User Manual](BACTIMATE_USER_MANUAL.md).
+The BactiMate window should open. You can use the tabs: **TIFF Conversion**, **Omnipose Segment**, **Analyze Masks**, **Tracking**, **Post-processing** (scale bar, montage, growth curve video), **Session Logs**. For full documentation, see the [BactiMate User Manual](BACTIMATE_USER_MANUAL.md).
 
 ---
 
@@ -218,7 +218,7 @@ You do not need to run `pip install -r requirements.txt` or `pip install -e .` a
 | GUI does not open or crashes | Check the terminal for error messages. Try `python main.py` to see the full traceback. |
 | Dependency resolution errors | Try `pip install --use-deprecated=legacy-resolver -r requirements.txt`. |
 | **DLL error (c10.dll / WinError 1114)** when opening segmentation or preview | 1) Install **Microsoft Visual C++ Redistributable** (64-bit, 2015–2022) from Microsoft. 2) Reinstall PyTorch with the **correct CUDA index** for your driver (e.g. CUDA 12.8 → `pip uninstall torch torchvision torchaudio -y` then `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128`). Keep GPU; do not switch to CPU-only. |
-| Zeiss CZI support | After main install: `pip install aicspylibczi`. |
+| Zeiss CZI / LIF / TIFF | BioIO and plugins are in `requirements.txt` (bioio, bioio-czi, bioio-lif, bioio-ome-tiff, etc.). For extra CZI support: `pip install aicspylibczi`. |
 
 ---
 

@@ -26,7 +26,7 @@ SESSION_TAB_KEYS = [
     ("unet_segment", "U-NET Segment"),
     ("analyze_masks", "Analyze Masks"),
     ("tracking", "Tracking"),
-    ("growth_curve_video", "Video Graph"),
+    ("growth_curve_video", "Post-processing"),
 ]
 
 # MainWindow attribute name for each tab key (so we can get widget with getattr(main_window, TAB_WIDGET_ATTR[key])).
@@ -37,5 +37,5 @@ TAB_WIDGET_ATTR = {
     "sam2": "sam2_tab",
     "analyze_masks": "analyze_tab",
     "tracking": "tracking_tab",
-    "growth_curve_video": "growth_curve_tab",
+    "growth_curve_video": "post_processing_tab",
 }

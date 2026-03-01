@@ -10,7 +10,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -52,10 +52,12 @@ TIME_UNIT_TO_MINUTES = {"min": 1.0, "h": 60.0, "s": 1.0 / 60.0, "ms": 1.0 / 6000
 
 class TrackingTab(QWidget):
     """Tab for cell tracking using trackastra"""
+    workflow_step_finished = pyqtSignal(bool)  # for workflow replay chain
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.parent_window = parent
+        self._performed_this_session = False  # True if user ran tracking this session (for Re-run only same steps)
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -1510,6 +1512,9 @@ class TrackingTab(QWidget):
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
         self._update_tracking_button_state()
+        if success:
+            self._performed_this_session = True
+        self.workflow_step_finished.emit(success)
 
     def _process_next_tracking_task(self) -> None:
         """Run the next task in batch tracking, or finish batch if none left."""
@@ -1525,6 +1530,8 @@ class TrackingTab(QWidget):
                 f"\n✓ Batch tracking complete: {n_ok}/{len(tasks)} succeeded."
                 + (f" {n_fail} failed — check log above.\n" if n_fail else "\n")
             )
+            self._performed_this_session = True
+            self.workflow_step_finished.emit(True)
             msg = f"Completed: {n_ok}/{len(tasks)} file(s) tracked successfully."
             if n_fail:
                 msg += f"\n{n_fail} file(s) failed — see Log for errors."
@@ -1767,8 +1774,8 @@ class TrackingTab(QWidget):
         dialog.show()
 
     def get_session_params(self) -> dict[str, Any]:
-        """Return current parameter values for session log (parameters only, no paths)."""
-        return get_from_widgets([
+        """Return current parameter values for session log (includes path for workflow replay)."""
+        d = get_from_widgets([
             ("model", self.model_combo),
             ("mode", self.mode_combo),
             ("use_gpu", self.use_gpu_cb),
@@ -1778,9 +1785,14 @@ class TrackingTab(QWidget):
             ("filter_time_per_frame", self.filter_time_per_frame),
             ("filter_time_per_frame_unit", self.filter_time_per_frame_unit),
         ])
+        path_txt = (self.file_path.text() or "").strip()
+        if path_txt:
+            d["file_path"] = path_txt
+        d["performed"] = getattr(self, "_performed_this_session", False)
+        return d
 
     def set_session_params(self, data: dict[str, Any]) -> None:
-        """Apply saved parameter values (parameters only)."""
+        """Apply saved parameter values (includes path for workflow replay)."""
         apply_to_widgets(data, [
             ("model", self.model_combo),
             ("mode", self.mode_combo),
@@ -1791,6 +1803,10 @@ class TrackingTab(QWidget):
             ("filter_time_per_frame", self.filter_time_per_frame),
             ("filter_time_per_frame_unit", self.filter_time_per_frame_unit),
         ])
+        if "file_path" in data and data.get("file_path"):
+            self.file_path.setText(str(data["file_path"]).strip())
+        if "performed" in data:
+            self._performed_this_session = bool(data["performed"])
 
 
 class TrajectoryPreviewDialog(QDialog):

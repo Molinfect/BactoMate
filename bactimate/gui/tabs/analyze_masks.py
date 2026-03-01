@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import numpy as np
 import tifffile
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -49,13 +49,16 @@ from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 from bactimate.gui.workers import WorkerThread
 from bactimate.tiff_metadata import read_calibration_from_path_or_original
+from bactimate.validation import paths_exist, mask_fi_spatial_shape_match
 
 class AnalyzeMasksTab(QWidget):
     """Tab for analyzing existing masks"""
+    workflow_step_finished = pyqtSignal(bool)  # for workflow replay chain
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.parent_window = parent
+        self._performed_this_session = False  # True if user ran analysis this session (for Re-run only same steps)
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -598,6 +601,18 @@ class AnalyzeMasksTab(QWidget):
         vis_row.addWidget(vis_info_icon)
         vis_row.addStretch()
         options_layout.addLayout(vis_row)
+        export_csv_row = QHBoxLayout()
+        self.export_csv = QCheckBox("Also save CSV")
+        self.export_csv.setChecked(False)
+        export_csv_info_icon = create_info_icon(
+            "Also write Summary, Per-Cell Data, and Foci (if present) as CSV files next to the Excel file.\n\n"
+            "Useful for R, Python, or Prism; filenames: stem_summary.csv, stem_per_cell.csv, stem_foci.csv.",
+            parent_widget=self
+        )
+        export_csv_row.addWidget(self.export_csv)
+        export_csv_row.addWidget(export_csv_info_icon)
+        export_csv_row.addStretch()
+        options_layout.addLayout(export_csv_row)
         combined_summary_row = QHBoxLayout()
         self.create_combined_summary = QCheckBox("Combine summary")
         self.create_combined_summary.setChecked(False)
@@ -642,12 +657,19 @@ class AnalyzeMasksTab(QWidget):
         self.preview_btn.clicked.connect(self.preview_filter_effects)
         scroll_layout.addWidget(self.preview_btn)
         
+        analyze_btn_row = QHBoxLayout()
         self.analyze_btn = QPushButton("Analyze Masks")
         self.analyze_btn.setEnabled(False)  # Disabled until file/folder is selected
-        # Modern styling applied via global stylesheet
         self.analyze_btn.clicked.connect(self.analyze_masks)
-        scroll_layout.addWidget(self.analyze_btn)
-        
+        analyze_btn_row.addWidget(self.analyze_btn)
+        self.analyze_cancel_btn = QPushButton("Cancel")
+        self.analyze_cancel_btn.setToolTip("Stop the current analysis run.")
+        self.analyze_cancel_btn.setVisible(False)
+        self.analyze_cancel_btn.clicked.connect(self._on_analyze_cancel)
+        analyze_btn_row.addWidget(self.analyze_cancel_btn)
+        analyze_btn_row.addStretch()
+        scroll_layout.addLayout(analyze_btn_row)
+
         # Connect file path changes to update button states and try to load metadata from TIFF
         self.file_path.textChanged.connect(self._update_analyze_button_state)
         self.file_path.textChanged.connect(lambda: self._update_fi_ui_state(None))
@@ -1367,6 +1389,7 @@ class AnalyzeMasksTab(QWidget):
             ("min_length", self.min_length),
             ("detailed", self.detailed),
             ("create_vis", self.create_vis),
+            ("export_csv", self.export_csv),
             ("exclude_border", self.exclude_border_cb),
         ])
         if hasattr(self, "create_combined_summary"):
@@ -1393,6 +1416,10 @@ class AnalyzeMasksTab(QWidget):
             d["foci_max_size"] = self.foci_max_size.value()
         if hasattr(self, "foci_exclude_outside_cells"):
             d["foci_exclude_outside_cells"] = self.foci_exclude_outside_cells.isChecked()
+        path_txt = (self.file_path.text() or "").strip()
+        if path_txt:
+            d["file_path"] = path_txt
+        d["performed"] = getattr(self, "_performed_this_session", False)
         return d
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -1410,6 +1437,7 @@ class AnalyzeMasksTab(QWidget):
             ("min_length", self.min_length),
             ("detailed", self.detailed),
             ("create_vis", self.create_vis),
+            ("export_csv", self.export_csv),
             ("exclude_border", self.exclude_border_cb),
         ])
         if "create_combined_summary" in data and hasattr(self, "create_combined_summary"):
@@ -1459,6 +1487,10 @@ class AnalyzeMasksTab(QWidget):
                 pass
         if "foci_exclude_outside_cells" in data and hasattr(self, "foci_exclude_outside_cells"):
             self.foci_exclude_outside_cells.setChecked(bool(data["foci_exclude_outside_cells"]))
+        if "file_path" in data and data.get("file_path"):
+            self.file_path.setText(str(data["file_path"]).strip())
+        if "performed" in data:
+            self._performed_this_session = bool(data["performed"])
         if hasattr(self, "_update_fi_feedback"):
             self._update_fi_feedback()
     
@@ -2300,6 +2332,8 @@ class AnalyzeMasksTab(QWidget):
             # Process each file sequentially
             self.analyze_btn.setEnabled(False)
             self.analyze_btn.setText(f"Analyzing... (0/{len(selected_files)})")
+            if getattr(self, "analyze_cancel_btn", None) is not None:
+                self.analyze_cancel_btn.setVisible(True)
             self.parent_window.log_output(f"Starting mask analysis for {len(selected_files)} file(s) selected from folder: {folder}\n")
             
             # Show progress bar (range = number of tasks, which can be > selected_files when Batch FI has multiple FI per mask)
@@ -2348,6 +2382,33 @@ class AnalyzeMasksTab(QWidget):
                 self.analyze_btn.setEnabled(True)
                 self.analyze_btn.setText("Analyze Masks")
                 return
+
+            # Pre-run validation: paths exist and mask/FI shape match for each task
+            validation_errors = []
+            for mask_path, fi_path, _ in self.folder_fi_tasks:
+                ok, missing = paths_exist([mask_path])
+                if not ok:
+                    validation_errors.append(f"{mask_path.name}: mask file not found.")
+                    continue
+                if fi_path is not None:
+                    ok, missing = paths_exist([fi_path])
+                    if not ok:
+                        validation_errors.append(f"{mask_path.name}: FI file not found.")
+                        continue
+                    ok, err = mask_fi_spatial_shape_match(mask_path, fi_path)
+                    if not ok and err:
+                        validation_errors.append(f"{mask_path.name}: {err}")
+            if validation_errors:
+                QMessageBox.warning(
+                    self,
+                    "Validation failed",
+                    "Cannot start analysis:\n\n" + "\n\n".join(validation_errors[:10])
+                    + ("\n\n… and more." if len(validation_errors) > 10 else ""),
+                )
+                self.analyze_btn.setEnabled(True)
+                self.analyze_btn.setText("Analyze Masks")
+                return
+
             self.current_task_index = 0
             self.parent_window.log_output(f"Running {len(self.folder_fi_tasks)} task(s) (script: {script_module})\n")
             # Process first task
@@ -2355,6 +2416,18 @@ class AnalyzeMasksTab(QWidget):
         else:
             # Single file mode (use resolved path so subprocess finds the file)
             input_file = Path(self.file_path.text()).resolve()
+
+            # Pre-run validation: FI path and mask/FI shape match
+            if self.analyze_fi.isChecked() and getattr(self, "_single_fi_path", None) and self._single_fi_path.exists():
+                fi_path = self._single_fi_path
+                ok, err = mask_fi_spatial_shape_match(input_file, fi_path)
+                if not ok and err:
+                    QMessageBox.warning(
+                        self,
+                        "Validation failed",
+                        f"Cannot start analysis:\n\n{err}",
+                    )
+                    return
 
             # Determine base directory (go up one level if input is in Tif_* or _segmentation folder)
             base_dir = input_file.parent
@@ -2389,6 +2462,8 @@ class AnalyzeMasksTab(QWidget):
                 cmd_args.append('--detailed')
             if self.create_vis.isChecked():
                 cmd_args.append('--visualization')
+            if getattr(self, 'export_csv', None) and self.export_csv.isChecked():
+                cmd_args.append('--export-csv')
             if self.exclude_border_cb.isChecked():
                 cmd_args.append('--exclude-border')
             
@@ -2415,8 +2490,10 @@ class AnalyzeMasksTab(QWidget):
             # Run in thread
             self.analyze_btn.setEnabled(False)
             self.analyze_btn.setText("Analyzing...")
+            if getattr(self, "analyze_cancel_btn", None) is not None:
+                self.analyze_cancel_btn.setVisible(True)
             self.parent_window.log_output(f"Starting mask analysis: {self.file_path.text()}\n")
-            
+
             # Show progress bar
             self.parent_window.progress_bar.setVisible(True)
             self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range
@@ -2455,10 +2532,19 @@ class AnalyzeMasksTab(QWidget):
     def _process_next_folder_file(self, script_path):
         """Process next task in folder mode (one task = one mask + one FI file, or mask without FI)."""
         if self.current_task_index >= len(self.folder_fi_tasks):
-            # All tasks processed
+            # All tasks processed (or user cancelled)
             self.analyze_btn.setEnabled(True)
             self.analyze_btn.setText("Analyze Masks")
+            if getattr(self, "analyze_cancel_btn", None) is not None:
+                self.analyze_cancel_btn.setVisible(False)
             self.parent_window.progress_bar.setVisible(False)
+            if not getattr(self, "_folder_run_cancelled", False):
+                self._performed_this_session = True
+            self.workflow_step_finished.emit(True)
+            if getattr(self, "_folder_run_cancelled", False):
+                self._folder_run_cancelled = False
+                self.parent_window.log_output("Analysis cancelled.\n")
+                return
             n_tasks = len(self.folder_fi_tasks)
             n_masks = len(self.folder_files)
             n_ok = sum(1 for r in getattr(self, "folder_results", []) if r)
@@ -2534,6 +2620,8 @@ class AnalyzeMasksTab(QWidget):
             cmd_args.append('--detailed')
         if self.create_vis.isChecked():
             cmd_args.append('--visualization')
+        if getattr(self, 'export_csv', None) and self.export_csv.isChecked():
+            cmd_args.append('--export-csv')
         if self.exclude_border_cb.isChecked():
             cmd_args.append('--exclude-border')
         
@@ -2571,6 +2659,15 @@ class AnalyzeMasksTab(QWidget):
     def _on_folder_file_finished(self, success, message, script_path):
         """Handle completion of a single task in folder mode"""
         self.parent_window.log_output(message)
+        if getattr(self, "_analyze_cancelled", False):
+            self._analyze_cancelled = False
+            self._folder_run_cancelled = True
+            self.current_task_index = len(self.folder_fi_tasks)  # Skip to "all done"
+            if hasattr(self, "worker") and self.worker is not None:
+                self.worker.wait()
+                self.worker = None
+            self._process_next_folder_file(script_path)
+            return
         if success:
             self.folder_results.append(True)
             self.parent_window.log_output(f"✓ Task {self.current_task_index + 1}/{len(self.folder_fi_tasks)} completed successfully\n")
@@ -2591,9 +2688,18 @@ class AnalyzeMasksTab(QWidget):
         self.current_task_index += 1
         self._process_next_folder_file(script_path)
     
+    def _on_analyze_cancel(self) -> None:
+        """Stop the current analysis run (single file or current task in folder mode)."""
+        if getattr(self, "worker", None) is not None and self.worker.isRunning():
+            self.worker.terminate_process()
+            self._analyze_cancelled = True  # So folder mode stops after this task
+            self.parent_window.log_output("Cancelling analysis...\n")
+
     def on_finished(self, success, message):
         self.analyze_btn.setEnabled(True)
         self.analyze_btn.setText("Analyze Masks")
+        if getattr(self, "analyze_cancel_btn", None) is not None:
+            self.analyze_cancel_btn.setVisible(False)
         self.parent_window.log_output(message)
         # Clean up worker thread
         if hasattr(self, 'worker'):
@@ -2603,7 +2709,9 @@ class AnalyzeMasksTab(QWidget):
         self.parent_window.progress_bar.setVisible(False)
         if success:
             self.parent_window.log_output("✓ Analysis completed successfully!\n")
+            self._performed_this_session = True
         else:
             QMessageBox.critical(self, "Error", f"Analysis failed:\n{message}")
+        self.workflow_step_finished.emit(success)
 
 

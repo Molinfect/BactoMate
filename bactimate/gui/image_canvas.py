@@ -29,6 +29,8 @@ class ImageCanvas(QWidget):
         self._dragging = False
         self._last_pos = QPointF(0.0, 0.0)
         self._dragging_selection = False
+        self._left_potential_click = False
+        self._left_press_pos = QPointF(0.0, 0.0)
         self.enable_drag_selection = False
         self.selection_button = Qt.MouseButton.LeftButton
         self.click_button = Qt.MouseButton.LeftButton
@@ -131,12 +133,21 @@ class ImageCanvas(QWidget):
                 self._dragging_selection = True
                 self.drag_started.emit(image_pos[0], image_pos[1])
         elif event.button() == self.click_button and self.enable_drag_selection:
-            image_pos = self._widget_to_image(event.position())
-            if image_pos is not None:
-                self.clicked_image.emit(image_pos[0], image_pos[1])
+            if self.click_button != self.selection_button:
+                self._left_potential_click = True
+                self._left_press_pos = event.position()
+            else:
+                image_pos = self._widget_to_image(event.position())
+                if image_pos is not None:
+                    self.clicked_image.emit(image_pos[0], image_pos[1])
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._left_potential_click and (event.position() - self._left_press_pos).manhattanLength() > 5:
+            self._left_potential_click = False
+            self._dragging = True
+            self._last_pos = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
         if self._dragging:
             delta = event.position() - self._last_pos
             self._pan_offset += delta
@@ -149,7 +160,12 @@ class ImageCanvas(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if self._is_pan_button(event.button()):
+        if event.button() == self.click_button and self._left_potential_click:
+            image_pos = self._widget_to_image(event.position())
+            if image_pos is not None:
+                self.clicked_image.emit(image_pos[0], image_pos[1])
+            self._left_potential_click = False
+        elif self._is_pan_button(event.button()) or (event.button() == self.click_button and self._dragging):
             self._dragging = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
         elif event.button() == self.selection_button and self._dragging_selection:

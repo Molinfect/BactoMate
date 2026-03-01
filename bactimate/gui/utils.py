@@ -12,9 +12,18 @@ import tifffile
 
 def safe_imread(file_path: Union[str, Path]) -> np.ndarray:
     """
-    Safely read TIFF file with NumPy 2.0 compatibility.
-    Handles the newbyteorder() issue with tifffile.
+    Read image file (TIFF, PNG, JPEG, etc.). TIFF via tifffile; PNG/JPEG/etc. via PIL.
+    NumPy 2.0 compatible (handles tifffile newbyteorder issue).
     """
+    path = Path(file_path)
+    suf = path.suffix.lower()
+    if suf in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"):
+        from PIL import Image
+        img = Image.open(file_path)
+        arr = np.array(img)
+        if arr.ndim == 3 and arr.shape[-1] == 4:
+            arr = arr[..., :3]
+        return arr
     try:
         return tifffile.imread(file_path)
     except (AttributeError, TypeError) as e:

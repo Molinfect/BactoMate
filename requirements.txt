@@ -16,10 +16,18 @@ tifffile>=2021.7.2
 Pillow>=9.0.0  # For NumPy 2.0 compatibility when reading TIFF files (fallback for tifffile)
 
 # Microscopy file support (for converting ND2, LIF, CZI to TIFF)
+# Primary: BioIO + plugins (unified reader API; installs format-specific plugins)
+bioio>=3.0.0
+bioio-ome-tiff>=0.14.0
+bioio-tifffile>=0.2.0
+bioio-czi>=2.0.0
+bioio-lif>=0.2.0
+bioio-nd2>=0.2.0
+# Legacy/fallback readers (used when BioIO is unavailable or fails)
 nd2>=0.7.0
 aicsimageio>=4.13.0  # 4.13+ avoids old xarray pins that cause resolver backtracking
 readlif>=0.6.4  # Alternative LIF reader
-czifile>=2019.7.2  # Alternative CZI reader (optional, aicsimageio preferred)
+czifile>=2019.7.2  # Alternative CZI reader
 # Zeiss CZI: install after main deps to avoid resolver depth issues:
 #   pip install aicspylibczi>=3.1.1
 

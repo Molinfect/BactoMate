@@ -44,7 +44,7 @@ from bactimate.gui.preferences import (
 )
 from bactimate.gui.tabs import (
     AnalyzeMasksTab,
-    GrowthCurveVideoTab,
+    PostProcessingTab,
     ND2ConversionTab,
     OmniposeSegTab,
     SAM2SegmentTab,
@@ -100,7 +100,7 @@ def _get_tab_classes() -> Tuple[Type[Any], ...]:
         UNetSegmentTab,
         AnalyzeMasksTab,
         TrackingTab,
-        GrowthCurveVideoTab,
+        PostProcessingTab,
         SAM2SegmentTab,
     )
 
@@ -184,7 +184,7 @@ class MainWindow(QMainWindow):
             UNetSegmentTab,
             AnalyzeMasksTab,
             TrackingTab,
-            GrowthCurveVideoTab,
+            PostProcessingTab,
             SAM2SegmentTab,
         ) = _get_tab_classes()
 
@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
         self.unet_segment_tab = UNetSegmentTab(self)
         self.analyze_tab = AnalyzeMasksTab(self)
         self.tracking_tab = TrackingTab(self)
-        self.growth_curve_tab = GrowthCurveVideoTab(self)
+        self.post_processing_tab = PostProcessingTab(self)
         self.sam2_tab = SAM2SegmentTab(self)
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.omnipose_seg_tab, "Omnipose Segment")
@@ -202,7 +202,7 @@ class MainWindow(QMainWindow):
         # tabs.addTab(self.sam2_tab, "SAM2 Segment")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
-        tabs.addTab(self.growth_curve_tab, "Video Graph")
+        tabs.addTab(self.post_processing_tab, "Post-processing")
 
         main_layout.addWidget(tabs)
 
@@ -401,6 +401,173 @@ class MainWindow(QMainWindow):
             if hasattr(tab, "set_session_params"):
                 tab.set_session_params(data[key])
 
+    def run_workflow_from_session(self, log_data: dict[str, Any]) -> None:
+        """Apply session params from log (FI, z-stack, foci, model, filters, etc.); run full pipeline (conversion → segment → analyze → tracking) on the current TIFF Conversion path only. That path is the new file/folder; downstream steps use outputs from the previous step (Tif_files → _segmentation_omni → analyze → tracking). So you can run the same analysis type from a session on a different file or folder."""
+        tabs_data = log_data.get("tabs", log_data)
+        if not isinstance(tabs_data, dict):
+            QMessageBox.warning(self, "Re-run analysis", "Session log has no tab data.")
+            return
+        nd2_tab = getattr(self, TAB_WIDGET_ATTR.get("nd2"), None)
+        if nd2_tab is None or not hasattr(nd2_tab, "file_path"):
+            QMessageBox.warning(self, "Re-run analysis", "TIFF Conversion tab not available.")
+            return
+        seed_path = (nd2_tab.file_path.text() or "").strip()
+        if not seed_path or not Path(seed_path).exists():
+            QMessageBox.information(
+                self,
+                "Re-run analysis",
+                "Set the path to your new file or folder in the TIFF Conversion tab. Re-run will apply the session parameters and run conversion → segment → analyze → tracking on that path (outputs go next to the input).",
+            )
+            return
+        # Apply session (all parameters: FI, z-stack, foci, model, filters, etc.; paths from log may overwrite UI)
+        self.apply_session_params(tabs_data)
+        # Use only the user's chosen path: set it back on nd2 and load file info; we will set other tabs when chaining
+        nd2_tab.file_path.setText(seed_path)
+        if Path(seed_path).is_file():
+            nd2_tab.load_file_info(seed_path)
+        else:
+            folder = Path(seed_path)
+            supported = sorted(
+                list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
+                list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
+                list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
+                list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
+                list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
+            )
+            if supported and hasattr(nd2_tab, "load_folder_info"):
+                nd2_tab.load_folder_info(seed_path, supported)
+        # Only run steps that were actually performed in the session that produced this log
+        order = ("nd2", "segmentation", "analyze_masks", "tracking")
+        steps = []
+        for key in order:
+            if key not in TAB_WIDGET_ATTR:
+                continue
+            tab_data = tabs_data.get(key, {})
+            if not isinstance(tab_data, dict):
+                tab_data = {}
+            # Backward compatibility: if "performed" missing (old log), treat as True
+            if not tab_data.get("performed", True):
+                continue
+            tab = getattr(self, TAB_WIDGET_ATTR.get(key), None)
+            if tab is None or not hasattr(tab, "workflow_step_finished"):
+                continue
+            if key == "nd2":
+                run_fn = getattr(tab, "convert_nd2", None)
+            elif key == "segmentation":
+                run_fn = getattr(tab, "process_file_or_folder", None)
+            elif key == "analyze_masks":
+                run_fn = getattr(tab, "analyze_masks", None)
+            elif key == "tracking":
+                run_fn = getattr(tab, "run_tracking", None)
+            else:
+                run_fn = None
+            if callable(run_fn):
+                steps.append((key, tab, run_fn))
+        if not steps:
+            QMessageBox.information(
+                self,
+                "Re-run analysis",
+                "No steps were recorded as performed in this session log. Run at least one step (conversion, segment, analyze, or tracking) before saving a session to use Re-run.",
+            )
+            return
+        self._workflow_replay_steps = steps
+        self._workflow_replay_index = 0
+        self._workflow_replay_connection = None
+        self._workflow_replay_seed_path = seed_path
+
+        def _conversion_output_path(seed: str) -> Path:
+            p = Path(seed)
+            base = p.parent if p.is_file() else p
+            return base / "Tif_files"
+
+        def _segment_output_path(segment_input_path: str) -> Path:
+            # When segment input is Tif_files (or Tif_*), masks go to _segmentation_omni
+            folder = Path(segment_input_path)
+            if folder.name.startswith("Tif_"):
+                return folder / "_segmentation_omni"
+            return folder / "_segmentation_omni"
+
+        def on_step_done(success: bool) -> None:
+            idx = self._workflow_replay_index
+            tab = self._workflow_replay_steps[idx][1]
+            if self._workflow_replay_connection is not None:
+                try:
+                    tab.workflow_step_finished.disconnect(self._workflow_replay_connection)
+                except Exception:
+                    pass
+                self._workflow_replay_connection = None
+            if not success:
+                QMessageBox.warning(
+                    self, "Workflow stopped", "A step in the workflow failed. See the log for details."
+                )
+                return
+            self._workflow_replay_index += 1
+            if self._workflow_replay_index >= len(self._workflow_replay_steps):
+                QMessageBox.information(self, "Re-run analysis", "Workflow completed successfully.")
+                return
+            # Chain: set next step's input path from previous step's output, then run
+            seed = getattr(self, "_workflow_replay_seed_path", "")
+            next_key, next_tab, next_run_fn = self._workflow_replay_steps[self._workflow_replay_index]
+            if next_key == "segmentation":
+                next_path = _conversion_output_path(seed)
+                if next_path.exists():
+                    next_tab.file_path.setText(str(next_path))
+                else:
+                    QMessageBox.warning(self, "Workflow stopped", f"Conversion output not found: {next_path}")
+                    return
+            elif next_key == "analyze_masks":
+                seg_input = _conversion_output_path(seed)
+                next_path = _segment_output_path(str(seg_input))
+                if next_path.exists():
+                    next_tab.file_path.setText(str(next_path))
+                else:
+                    QMessageBox.warning(self, "Workflow stopped", f"Segment output not found: {next_path}")
+                    return
+            elif next_key == "tracking":
+                seg_input = _conversion_output_path(seed)
+                next_path = _segment_output_path(str(seg_input))
+                if next_path.exists():
+                    next_tab.file_path.setText(str(next_path))
+                else:
+                    QMessageBox.warning(self, "Workflow stopped", f"Segment output not found: {next_path}")
+                    return
+            _run_next()
+
+        def _run_next() -> None:
+            key, tab, run_fn = self._workflow_replay_steps[self._workflow_replay_index]
+            self._workflow_replay_connection = on_step_done
+            tab.workflow_step_finished.connect(on_step_done)
+            run_fn()
+
+        # If first step is not conversion, set its path from seed (e.g. segment needs Tif_files from seed)
+        first_key, first_tab, _ = self._workflow_replay_steps[0]
+        if first_key == "segmentation":
+            p = _conversion_output_path(seed_path)
+            if p.exists():
+                first_tab.file_path.setText(str(p))
+            else:
+                QMessageBox.warning(
+                    self, "Workflow stopped",
+                    f"Segment needs conversion output at {p}. Run conversion first or set path to an existing Tif_files folder.",
+                )
+                return
+        elif first_key == "analyze_masks":
+            seg_out = _segment_output_path(str(_conversion_output_path(seed_path)))
+            if seg_out.exists():
+                first_tab.file_path.setText(str(seg_out))
+            else:
+                QMessageBox.warning(self, "Workflow stopped", f"Analyze needs segment output at {seg_out}. Run conversion and segment first.")
+                return
+        elif first_key == "tracking":
+            seg_out = _segment_output_path(str(_conversion_output_path(seed_path)))
+            if seg_out.exists():
+                first_tab.file_path.setText(str(seg_out))
+            else:
+                QMessageBox.warning(self, "Workflow stopped", f"Tracking needs segment output at {seg_out}. Run conversion and segment first.")
+                return
+        # first_key == "nd2" already has path set (seed_path)
+        _run_next()
+
     def _add_menu_bar(self) -> None:
         """Minimal menu bar: app menu (About, Minimize, Quit), File, Help. On macOS the first menu is the app menu and shows the app name once."""
         menubar = self.menuBar()
@@ -433,6 +600,10 @@ class MainWindow(QMainWindow):
         user_manual_action = QAction("User manual", self)
         user_manual_action.triggered.connect(self._open_user_manual)
         help_menu.addAction(user_manual_action)
+        check_env_action = QAction("Check environment", self)
+        check_env_action.triggered.connect(self._check_environment)
+        check_env_action.setToolTip("Verify required dependencies (numpy, PyQt6, tifffile, etc.) are installed.")
+        help_menu.addAction(check_env_action)
 
     def _show_about(self) -> None:
         try:
@@ -446,6 +617,17 @@ class MainWindow(QMainWindow):
             f"<b>BactiMate</b> – bacteria time-lapse batch processing and analysis.<br><br>Version {version}<br><br>"
             "Documentation: <b>Help → User manual</b>.",
         )
+
+    def _check_environment(self) -> None:
+        """Run environment check and show result in a dialog and in the log."""
+        try:
+            from bactimate.scripts.check_environment import check_environment
+            report = check_environment()
+            self.log_output(report + "\n\n")
+            QMessageBox.information(self, "Check environment", report)
+        except Exception as e:
+            self.log_output(f"Check environment failed: {e}\n")
+            QMessageBox.warning(self, "Check environment", f"Could not run check:\n{e}")
 
     def _open_user_manual(self) -> None:
         """Open the user manual (docs/BACTIMATE_USER_MANUAL.md) with the system default app."""

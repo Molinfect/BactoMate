@@ -49,7 +49,31 @@ def read_metadata_from_path(image_path: Optional[Path]) -> dict[str, Any]:
         return out
     if suffix == ".nd2":
         _read_nd2_metadata_into(image_path, out)
+        return out
+    if suffix in (".lif", ".czi"):
+        _read_lif_czi_metadata_into(image_path, out)
     return out
+
+
+def _read_lif_czi_metadata_into(path: Path, out: dict[str, Any]) -> None:
+    """Fill frame_count, channel_count, z_count, channel_names, pixel_size from LIF/CZI via BioIO when available."""
+    try:
+        from bactimate.bioio_reader import get_info as bioio_get_info
+        info = bioio_get_info(path)
+        if not info:
+            return
+        out["frame_count"] = info.get("num_time") or 1
+        out["channel_count"] = info.get("num_channels") or 1
+        out["z_count"] = info.get("num_z") or 1
+        if info.get("channel_names"):
+            out["channel_names"] = list(info["channel_names"])
+        if info.get("pixel_size") is not None:
+            try:
+                out["pixel_size_um"] = float(info["pixel_size"])
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
 
 
 def _read_tiff_metadata_into(path: Path, out: dict[str, Any]) -> None:
@@ -449,7 +473,7 @@ def format_metadata_for_display(meta: dict[str, Any]) -> str:
 def read_calibration_from_path(image_path: Optional[Path]) -> tuple[float, float]:
     """Read pixel size (µm/px) and time per frame (min) from a single file.
     Returns (pixel_size_um, time_per_frame_min). Use 0.0 for unknown.
-    Supports .tif/.tiff (ImageJ metadata) and .nd2."""
+    Supports .tif/.tiff (ImageJ metadata), .nd2, and .lif/.czi (via BioIO when available)."""
     pixel_size = 0.0
     time_per_frame = 0.0
     if not image_path or not image_path.is_file():
@@ -548,6 +572,20 @@ def read_calibration_from_path(image_path: Optional[Path]) -> tuple[float, float
                             pixel_size = 1e4 / xres_val
                     except (TypeError, ValueError, ZeroDivisionError, AttributeError):
                         pass
+        elif suffix in (".lif", ".czi"):
+            try:
+                from bactimate.bioio_reader import get_info as bioio_get_info
+                info = bioio_get_info(image_path)
+                if info and info.get("pixel_size") is not None:
+                    try:
+                        pixel_size = float(info["pixel_size"])
+                        if pixel_size > 0:
+                            return (pixel_size, time_per_frame)
+                    except (TypeError, ValueError):
+                        pass
+            except Exception:
+                pass
+            return (pixel_size, time_per_frame)
         elif suffix == ".nd2":
             try:
                 import nd2

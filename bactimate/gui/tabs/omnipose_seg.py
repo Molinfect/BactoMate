@@ -200,11 +200,13 @@ def _get_pretrained_training_options():
 
 class OmniposeSegTab(QWidget):
     """Unified tab for Omnipose: train models and run single file or folder segmentation."""
+    workflow_step_finished = pyqtSignal(bool)  # for workflow replay chain
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.parent_window = parent
         self._trained_models_this_session: list[str] = []  # for session log when user trains a model
+        self._performed_this_session = False  # True if user ran segmentation this session (for Re-run only same steps)
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -1410,6 +1412,9 @@ class OmniposeSegTab(QWidget):
             ("create_overlay", self.create_overlay),
         ])
         out["trained_models_this_session"] = list(self._trained_models_this_session)
+        path_txt = (self.file_path.text() or "").strip()
+        if path_txt:
+            out["file_path"] = path_txt
         # Omnipose training section (inline on tab)
         if hasattr(self, "omnipose_train_dir_edit"):
             out_omni = get_from_widgets([
@@ -1428,6 +1433,7 @@ class OmniposeSegTab(QWidget):
             out_omni["omnipose_use_gpu"] = self.omnipose_use_gpu_cb.isChecked()
             out_omni["omnipose_use_tiled"] = self.omnipose_use_tiled_cb.isChecked()
             out.update(out_omni)
+        out["performed"] = getattr(self, "_performed_this_session", False)
         return out
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -1459,7 +1465,11 @@ class OmniposeSegTab(QWidget):
                 self.omnipose_use_gpu_cb.setChecked(bool(data["omnipose_use_gpu"]))
             if "omnipose_use_tiled" in data:
                 self.omnipose_use_tiled_cb.setChecked(bool(data["omnipose_use_tiled"]))
-    
+        if "file_path" in data and data.get("file_path"):
+            self.file_path.setText(str(data["file_path"]).strip())
+        if "performed" in data:
+            self._performed_this_session = bool(data["performed"])
+
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
         # Note: This method is called from safe_preview_segmentation() wrapper
@@ -3658,6 +3668,8 @@ class OmniposeSegTab(QWidget):
                 self.process_btn.setText("Process File")
             self.parent_window.progress_bar.setVisible(False)
             self.parent_window.log_output(f"\n✓ Segmentation complete for all {len(self.folder_files)} file(s)!\n")
+            self._performed_this_session = True
+            self.workflow_step_finished.emit(True)
             msg = QMessageBox(self)
             msg.setWindowTitle("Processing Complete")
             out_desc = "Output: _segmentation_omni folder (one mask file per image)." if (self.folder_files and Path(self.folder_files[0]).parent.name.startswith('Tif_')) else "Output: one _omnipose_segmentation subfolder per file (masks and overlay)."
@@ -3892,5 +3904,8 @@ class OmniposeSegTab(QWidget):
                 self.parent_window.log_output("Processing was cancelled.\n")
             else:
                 QMessageBox.critical(self, "Error", f"Processing failed:\n{message}")
+        if success:
+            self._performed_this_session = True
+        self.workflow_step_finished.emit(success)
 
 

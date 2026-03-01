@@ -16,7 +16,7 @@
 4. [Omnipose Segment tab](#4-omnipose-segment-tab)
 5. [Analyze Masks tab](#5-analyze-masks-tab)
 6. [Tracking tab](#6-tracking-tab)
-7. [Video Graph tab](#7-video-graph-tab)
+7. [Post-processing tab](#7-post-processing-tab)
 8. [Session Logs tab](#8-session-logs-tab)
 9. [File types, naming, and workflows](#9-file-types-naming-and-workflows)
 10. [Common scenarios and questions](#10-common-scenarios-and-questions)
@@ -79,7 +79,7 @@ Tabs appear in this order:
 2. **Omnipose Segment** — Segment cells with Omnipose (single file or folder), preview, batch process, and train custom models.
 3. **Analyze Masks** — Analyze mask TIFFs (single file or folder): morphological and size filters, Excel export, optional fluorescence intensity (FI) analysis.
 4. **Tracking** — Run Trackastra on mask time series; optional link to original images and Excel analysis.
-5. **Video Graph** — Create a growth-curve video: TIFF sequence + Excel analysis → side-by-side graph and video.
+5. **Post-processing** — Add scale bar to image; build montage from folder/files; growth curve video (TIFF sequence + Excel → side-by-side graph and video).
 6. **Session Logs** — List recent session logs, view saved parameters, and apply them to the current session.
 
 **Note:** A “SAM2 Segment” tab exists in the codebase but is not shown in the tab bar (commented out). This manual does not document it.
@@ -90,6 +90,7 @@ Tabs appear in this order:
 - **Log text area:** Read-only, monospace font (Monaco or Courier New, 11 pt). Minimum height 100 px, maximum 150 px. Used for:
   - Startup message: “Omnipose Batch Processing GUI started.” and “Select a tab and configure parameters to begin.”
   - Per-tab messages: selected paths, job start/end, errors, and script output.
+  - Display is formatted for the panel: log prefixes (timestamp, [INFO]) are stripped; tqdm-style progress is shown as one short line (e.g. 28% (9/32) ETA 1:09); long lines wrap to the widget width.
 
 Tabs and scripts call `parent_window.log_output(...)` to append lines to this area.
 
@@ -109,6 +110,8 @@ When the window is closed, the application:
 ## 3. TIFF Conversion tab
 
 **Purpose:** Convert microscopy files (ND2, LIF, CZI, and optionally TIFF) to TIFF with configurable frame count, channel handling, and optional image corrections (drift, photobleaching). Metadata can be displayed after loading a file or folder.
+
+**Image reading:** BactiMate uses **BioIO** (and its format-specific plugins) as the primary reader for ND2, LIF, CZI, and TIFF. This provides a single, robust API and consistent dimension handling. If BioIO is unavailable or fails for a file, the app falls back to legacy readers (e.g. aicsimageio for LIF, czifile for CZI). Install with: `pip install bioio bioio-ome-tiff bioio-tifffile bioio-czi bioio-lif bioio-nd2` (these are included in `requirements.txt`).
 
 ### 3.1 Input: Microscopy File Selection
 
@@ -145,7 +148,7 @@ Supported extensions: `.nd2`, `.ND2`, `.lif`, `.LIF`, `.czi`, `.CZI`, `.tif`, `.
 - **“Apply photobleaching correction”:** Check box; default **unchecked**.
 - **Method combo:** “Exponential (intensity preservation)”, “Linear decay”, “Histogram matching”, “Per-frame min-max (visualization)”. Default: first (Exponential).
 - **Info (?) (bleach) —** “Photobleaching correction. Which channels: Tick only fluorescence channels; phase/transmission leave unticked. Methods: • Exponential: I(t)=I₀×exp(-t/τ), normalizes to first frame. Use for intensity quantification. • Linear: Linear decay fit, scale to first frame. • Histogram matching: Match each frame's histogram to frame 0. Good for segmentation; not for quantification. • Per-frame min-max: Stretch each frame min→0, max→full range; visualization only.”
-- After loading a multi-channel file, checkboxes for each channel appear to select which channels get bleach correction.
+- After loading a multi-channel file, per-channel checkboxes appear: **FI** (saves with "_fi" in filename for Analyze Masks FI) and **Foci** (saves with "_foci" for Analyze Masks Run foci analysis). Use these to mark which channels are fluorescence/FI or foci; bleach correction checkboxes select which channels get correction.
 
 ### 3.3 Output Directory
 
@@ -472,6 +475,16 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 - **Info (?) (Contour FI) —** “Compute contour-based FI metrics (boundary intensity + FI ratio). When disabled: Only Mean FI Intensity will be calculated. Contour thickness is ignored.”
 - **Contour thickness (pixels):** Spin box [1, 10]; default 1. Info (?) — “Thickness of the contour region used for FI intensity calculation. Default: 1 pixel (single-pixel boundary). The contour is the region at the cell boundary. Increasing thickness includes more pixels near the boundary. Note: This affects both the preview visualization and the final analysis.” Disabled until Contour FI is relevant (e.g. when Analyze FI is on).
 
+### 5.6a Run foci analysis
+
+When **Analyze FI** is enabled, an optional **Run foci analysis** check box is available. When checked, the app detects **foci** (bright spots) in the FI channel per frame and adds a **foci count** and a **Foci** sheet to the Excel output.
+
+- **Run foci analysis:** Check box; default **unchecked**. Enabled only when Analyze FI is on. Detects foci in the FI channel per frame; adds foci count and Foci sheet to Excel.
+- **Exclude foci outside / rejected cells:** Check box; default **unchecked**. When checked, only foci inside **accepted** cells are included; when unchecked, all detected foci are included.
+- **Min relative intensity:** Double spin [0.5, 20]; default 2.0. **Min separation (px):** Spin [1, 20]; default 2. **Min size (px), Max size (px):** Filter foci by connected-component size (max 0 = no upper limit).
+
+**Naming for foci:** When using **Match FI by name**, the app also looks for files with **"_foci"** in the name (e.g. `stem_foci.tif`). In **TIFF Conversion**, tick **Foci** for a channel to save it with `_foci` in the filename. The feedback list shows which mask files will use which _foci file(s).
+
 ### 5.7 Buttons and actions
 
 - **Preview Filter Effects:** Tooltip: “Preview how current filter parameters would affect the selected mask file”. Opens a preview (e.g. first frame or first file) with accepted/rejected cells shown. Disabled until a mask file or folder is selected.
@@ -480,7 +493,7 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 ### 5.8 Session parameters (Analyze Masks)
 
-Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_match_by_name, single_fi_path, analyze_fi_contour, fi_contour_thickness, file_path, combine_folder_path, etc.
+Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_match_by_name, single_fi_path, analyze_fi_contour, fi_contour_thickness, run_foci, foci_min_rel, foci_min_separation, foci_min_size, foci_max_size, foci_exclude_outside_cells, file_path, combine_folder_path, etc.
 
 ---
 
@@ -525,39 +538,57 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 
 ---
 
-## 7. Video Graph tab
+## 7. Post-processing tab
 
-**Purpose:** Create a growth-curve video: combine a TIFF sequence (video input) with an Excel analysis file from the Analyze Masks tab, and render a side-by-side video with graph (relative cell area over time) and image sequence.
+**Purpose:** Three tools in one tab: (1) **Add scale bar to image** — draw a scale bar on a single image (length, position, style); (2) **Montage** — arrange images from a folder or file list into a grid, with optional labels and color merge for multi-channel; (3) **Growth curve video** — TIFF sequence + Excel from Analyze Masks → side-by-side video with graph (relative cell area over time).
 
-### 7.1 Video Input (TIFF Sequence)
+### 7.1 Add scale bar to image
+
+- **Image path:** Line edit; Browse; drag-and-drop. Pixel size can be read from file metadata when available. **Pixel size (µm/px):** default 0.108. **Scale bar length (µm):** default 10. **Position:** Bottom-right, Bottom-left, Top-right, Top-left. **Color:** White/Black. **Thickness (px), Font size, Show label.** **Preview** / **Save image with scale bar.**
+
+### 7.2 Montage
+
+Build a single image that shows **phase contrast first**, then **fluorescence channels** (each with a display color), then a **merged** (phase + FI) tile. Uses the **first frame only** (no stack/frame options).
+
+- **Input:** One **ND2 or TIFF file**, or a **folder** of images. Drag-and-drop supported. When you select a folder, **In folder, include:** lets you choose **All (ND2 + TIFF)**, **ND2 only**, or **TIFF only** — so only those file types are used (no free-text pattern).
+- **Detection:**
+  - **ND2:** One file = one dataset. Channels are read from metadata; order is always phase first, then fluorescence (colors from channel names: phase→gray, mScarlet→red, GFP→green, etc.).
+  - **TIFF folder:** Files are grouped by “base name” when filenames look like separated channels, e.g. `sample_phase.tif`, `sample_GFP.tif`, `sample_mScarlet.tif` → one dataset “sample” with phase, GFP, mScarlet, then merged. Recognized suffixes: `_phase`, `_Phase`, `_GFP`, `_gfp`, `_mscarlet`, `_mScarlet`, `_fi_GFP`, etc.
+- **Output order:** For each dataset: **Phase** tile → **FI channel** tiles (with colors) → **Merged** tile. Colors come from ND2 metadata or from the filename (e.g. GFP→green, mScarlet→red).
+- **Layout:** **Rows / Cols** (0 = Auto), **Spacing**, **Border** (px), **Order** (row- or column-major). **Labels from filenames**, **Label font size**. **Color merge** is on by default; **Edit channel colors…** overrides per-channel display color for ND2. **LUT:** Per-image or Global.
+- **Preview montage** / **Save montage.**
+
+### 7.3 Growth curve video
+
+#### 7.3.1 Video Input (TIFF Sequence)
 
 - **Group:** Drag-and-drop. Placeholder: “Select TIFF file or folder containing TIFF sequence... (or drag and drop)”. Browse File / Browse Folder.
 
-### 7.2 Excel Analysis File
+#### 7.3.2 Excel Analysis File
 
 - **Placeholder:** “Select Excel file from Analyze Masks tab (e.g., *_masks_analysis.xlsx)... (or drag and drop)”. Browse.
 - **Info (?) —** “Excel file from the Analyze Masks tab containing growth data. Required columns: Frame, Total Cell Area (Relative) (normalized, first frame = 1.0).”
 
-### 7.3 Time Settings
+#### 7.3.3 Time Settings
 
 - **Time per frame (min.):** Double spin; min 0, max 10000; default 10.0; suffix “ min”. Info (?) — Time between consecutive frames; used to convert frame index to time (hours) on the x-axis of the growth curve.
 
-### 7.4 Graph Settings
+#### 7.3.4 Graph Settings
 
 - **Y-axis min:** Double spin; minimum 0, maximum 100; default 0; special value “Auto”. When 0, axis is auto-scaled from data.
 - **Y-axis max:** Double spin; same range; default 0; special value “Auto”.
 - **Info (?) —** “Configure the Y-axis range for the growth curve graph. Y-axis represents: Relative cell area (normalized to first frame = 1.0). Y-axis min/max: Set to 'Auto' (0.0) to automatically scale based on data; set custom values to fix the Y-axis range; useful for comparing multiple videos with consistent scaling. Example: Set min=0.0, max=3.0 to show growth from 1x to 3x initial area.”
 
-### 7.5 Video Settings
+#### 7.3.5 Video Settings
 
 - **Frames per second (FPS):** Double spin; range [0.1, 60.0]; default 5.0; suffix “ fps”. Info (?) — “Playback speed for the output video. Higher values = faster playback; lower = slower. Default: 5.0 fps. Typical range: 1–10 fps for time-lapse videos.”
 
-### 7.6 Output Formats
+#### 7.3.6 Output Formats
 
 - **Group:** “Output Formats”. Checkboxes: **Select All**, **TIFF**, **AVI**, **GIF**, **MP4**. Default: TIFF and AVI checked. At least one format must be selected for the button to be enabled.
 - **Select All:** Toggles all four format checkboxes at once. When any format is unchecked, “Select All” is unchecked; when all four are checked, “Select All” is checked.
 
-### 7.7 Create Growth Curve Video button
+#### 7.3.7 Create Growth Curve Video button
 
 - **Button:** “Create Growth Curve Video”. Enabled when: (1) Video input path is set, (2) Excel path is set, (3) At least one output format (TIFF, AVI, GIF, MP4) is checked.
 - **Behavior:** Reads the Excel Summary (Frame, Total Cell Area (Relative)), loads the TIFF sequence from the video path, builds the growth curve (time in hours from “Time per frame (min.)”), and renders a side-by-side layout (graph + video). Writes output files in the chosen formats (e.g. same base name with .tif, .avi, .gif, .mp4) to an output directory (often next to the Excel or the video input, with logic to go up one level if the path is inside a Tif_*, _omnipose_segmentation, _unet_segmentation, or _analysis folder).
@@ -575,7 +606,7 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 
 ### 8.2 Overview of selected session
 
-- **Group:** “Overview of selected session”. Read-only text area; placeholder: “Select a log file above or click 'Load other...' to see parameters.” When a log is selected, it shows schema version, timestamp, and per-tab parameter summary (keys/values).
+- **Group:** “Overview of selected session”. Read-only text area; placeholder: “Select a log file above or click 'Load other...' to see parameters.” When a log is selected, it shows schema version, timestamp, and per-tab parameter summary (keys/values). All values shown are what was saved/used (reproducible). Values that match the application default are annotated with "(default)" so you can see which settings were left at default vs changed or used in that session.
 
 ### 8.3 Apply now to current session
 
@@ -592,7 +623,7 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 - **Omnipose Segment:** Input: TIFF (single or folder). Output: masks TIFF (`*_masks.tif`), overlay TIFF (`*_overlay.tif`), and batch analysis outputs (e.g. Excel) when processing a folder.
 - **Analyze Masks:** Input: mask TIFF(s) (single or folder). Optional: FI channel TIFF. Output: Excel (`*_analysis.xlsx`, `*_masks_analysis.xlsx`), optional filter visualization TIFF, optional combined summary Excel.
 - **Tracking:** Input: mask TIFF (time series); optional original TIFF, optional Excel from Analyze Masks. Output: as implemented by Trackastra worker (e.g. tracked masks, Excel with lineage).
-- **Video Graph:** Input: TIFF file or folder (sequence), Excel from Analyze Masks. Output: growth curve video (side-by-side graph + video).
+- **Post-processing:** Scale bar: single image → image with scale bar. Montage: folder/files → grid image. Growth curve video: TIFF sequence + Excel from Analyze Masks → side-by-side graph + video.
 
 ### 9.2 Naming conventions
 
@@ -602,8 +633,8 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 ### 9.3 Cross-tab workflows
 
 1. **ND2 → Segment → Analyze:** Convert ND2 in TIFF Conversion → open Omnipose Segment, set path to converted TIFF or folder → Process → open Analyze Masks, set path to mask file or folder → set pixel size and filters → Analyze Masks.
-2. **Segment → Analyze → Tracking:** After segmentation, analyze masks (Analyze Masks) → in Tracking, set mask TIFF, optional original TIFF, optional Excel from Analyze Masks → Run Tracking.
-3. **Analyze → Video Graph:** After Analyze Masks, use the Excel output and the same TIFF sequence in Video Graph; set time per frame → Create Growth Curve Video.
+2. **Segment → (optional) Assign persistent IDs → Analyze → Tracking:** After segmentation, mask stacks have per-frame labels (1, 2, 3, … per frame). For **persistent CellIDs** (same cell keeps the same ID through analysis and tracking), run from the project root: `python -m bactimate.scripts.assign_persistent_ids path/to/masks.tif -o path/to/masks_with_cellids.tif` (optional `--pixel-size 0.108`, `--max-distance 5.0`). Use the output as the mask input in Analyze Masks and Tracking. Then: Analyze Masks → in Tracking, set mask TIFF, optional original TIFF, optional Excel → Run Tracking.
+3. **Analyze → Post-processing:** After Analyze Masks, use the Excel output and the same TIFF sequence in Post-processing (Growth curve video); set time per frame → Create Growth Curve Video.
 4. **Training:** In Omnipose Segment, Train model → set training directory (folder with image/mask pairs), set Image/Mask filters, optionally “Convert masks for Omnipose” → set model name and hyperparameters → Start training. New model appears in Model dropdown.
 
 ---
@@ -658,6 +689,9 @@ A: When you select a **user model** in the dropdown, flow threshold is set to **
 **Q: Where is the number of image/mask pairs for training shown?**  
 A: In the Train dialog, after validation and before “Starting Omnipose training…”, the log shows: “Found N image/mask pair(s). All will be used every epoch for M epochs.” N and M are computed from the training folder (and the omnipose_masks subfolder if present).
 
+**Q: When should I run assign_persistent_ids?**  
+A: Run it **after segmentation** if you want the same cell to keep the same ID in Analyze Masks and Tracking. Segmentation outputs per-frame labels (1, 2, 3, … in each frame independently). The script links cells across frames by position/proximity and writes a new mask stack with stable IDs. Use that output as the mask input in Analyze Masks and Tracking. If you skip it, Analyze Masks can still assign persistent IDs to accepted cells; Tracking may then use the analysis Excel. For full control and consistent IDs from masks through tracking, running assign_persistent_ids after segmentation is recommended.
+
 **Q: Pixel size in Omnipose Segment vs Analyze Masks?**  
 A: In Omnipose Segment, “Pixel size (µm)” is for **scale bar and calibration** only; diameter is always in **pixels**. In Analyze Masks, “Pixel Size (µm)” is used to convert pixel areas to **µm²** for filtering and Excel output.
 
@@ -667,8 +701,8 @@ A: Parameter values (model, diameter, thresholds, filters, options, etc.) are ap
 **Q: I only have masks (no images) in omnipose_masks; I didn’t click “Convert masks for Omnipose”. Will training still work?**  
 A: Yes. If there is **no** `omnipose_masks` subfolder, the training directory is used as-is (your folder with both images and masks). Training runs on that single folder. The `omnipose_masks` logic only applies when that subfolder exists (e.g. after you ran “Convert masks for Omnipose” at least once).
 
-**Q: Analyze Masks — what Excel columns are required for Video Graph?**  
-A: Video Graph expects an Excel from Analyze Masks with at least **Frame** (frame number) and **Total Cell Area (Relative)** (normalized so first frame = 1.0). These are produced by the Analyze Masks tab’s Summary sheet.
+**Q: Analyze Masks — what Excel columns are required for the growth curve video?**  
+A: Post-processing (Growth curve video) expects an Excel from Analyze Masks with at least **Frame** (frame number) and **Total Cell Area (Relative)** (normalized so first frame = 1.0). These are produced by the Analyze Masks tab’s Summary sheet.
 
 **Q: Can I use a single multipage TIFF for Tracking?**  
 A: Yes. The Tracking tab expects a mask TIFF that is a time series (multiple frames). That can be a single multipage TIFF where each page is one time point. The “Original Data File” can be the corresponding multipage TIFF of raw images for visualization.
@@ -680,6 +714,8 @@ A: After you load a **multi-channel** microscopy file, the tab builds a set of c
 
 ## 11. References and further documentation
 
+### 11.1 External links
+
 - **Omnipose:** https://omnipose.readthedocs.io/ (models, training, settings).
 - **Omnipose models (GitHub):** https://github.com/kevinjohncutler/omnipose-models
 - **Trackastra:** https://github.com/weigertlab/trackastra (tracking models and modes).
@@ -687,6 +723,20 @@ A: After you load a **multi-channel** microscopy file, the tab builds a set of c
 - **Training mask format:** See `docs/TRAINING_MASKS.md` if present (instance vs binary masks).
 - **Training troubleshooting (head drift, 0 cells, background as cells):** **Appendix B** in this manual.
 - **BactiMate and Omnipose (technical):** **Appendix C** in this manual.
+
+### 11.2 Command-line scripts (run from project root)
+
+| Script | Purpose |
+|--------|--------|
+| `python -m bactimate.scripts.assign_persistent_ids masks.tif -o out.tif` | Assign persistent CellIDs to a mask stack (after segmentation; use output in Analyze Masks and Tracking). Optional: `--pixel-size`, `--max-distance`. |
+| `python -m bactimate.scripts.analyze_cell_areas masks.tif [fi_image.tif] [options]` | Analyze masks (morphology, FI); Excel output. Used by the Analyze Masks tab. |
+| `python -m scripts.batch_process_tiff_sequence input.tif` | Single multipage TIFF, Omnipose segmentation. |
+| `python -m scripts.batch_process_folder /path/to/folder` | Folder: segment + analyze. |
+| `python -m bactimate.scripts.convert_nd2_to_tif` / conversion script | ND2/LIF/CZI → TIFF (used by TIFF Conversion tab). |
+| `python -m scripts.check_tiff_format input.tif` | Verify/reshape TIFF format. |
+| `python -m bactimate.scripts.check_omnipose_pipeline model path/to/model.pth` | Check model, training dir, or inference; compare checkpoints. |
+| `python -m bactimate.scripts.diagnose_flat_model model.pth` | Diagnose flat distance/0 cells (output head, training data). |
+| `python -m bactimate.scripts.inspect_omnipose_checkpoint path/to/model.pth` | Inspect checkpoint keys, nchan/nclasses. |
 
 ---
 
@@ -760,16 +810,16 @@ Min/Max Area (µm²), Min/Max Width (µm), Min Length (µm): 0 means no limit; o
 **Tracking — Mode (Section 6.2)**  
 “Linking mode. greedy: Greedy with division support (recommended). greedy_nodiv: No divisions. ilp: Integer Linear Programming, optimal but slower, may need Gurobi/SCIP.”
 
-**Video Graph — Excel (Section 7.2)**  
+**Post-processing — Excel (Section 7.3.2)**  
 “Excel file from the Analyze Masks tab containing growth data. Required columns: Frame, Total Cell Area (Relative) (first frame = 1.0).”
 
-**Video Graph — Time per frame (Section 7.3)**  
+**Post-processing — Time per frame (Section 7.3.3)**  
 “Time difference between consecutive frames. Used to convert frame numbers to time (hours) for the x-axis. Example: If images were taken every 10 minutes, enter 10.0.”
 
-**Video Graph — Y-axis (Section 7.4)**  
+**Post-processing — Y-axis (Section 7.3.4)**  
 “Y-axis = relative cell area (first frame = 1.0). Set to Auto (0.0) to auto-scale; set custom values to fix range. Example: min=0, max=3 to show 1x to 3x initial area.”
 
-**Video Graph — FPS (Section 7.5)**  
+**Post-processing — FPS (Section 7.3.5)**  
 “Playback speed for the output video. Higher = faster; lower = slower. Default: 5.0 fps. Typical range: 1–10 fps for time-lapse.”
 
 **ND2 — Number of Frames (Section 3.2)**  

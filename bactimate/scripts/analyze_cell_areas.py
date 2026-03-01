@@ -14,6 +14,8 @@ Usage:
 """
 
 import argparse
+import logging
+import sys
 import numpy as np
 import tifffile
 from pathlib import Path
@@ -25,11 +27,41 @@ from skimage.segmentation import find_boundaries
 import warnings
 warnings.filterwarnings('ignore')
 
+SCRIPT_LOG = logging.getLogger(__name__)
+
 try:
     from bactimate.foci_utils import detect_peaks_skimage, assign_peaks_to_cells
 except ImportError:
     detect_peaks_skimage = None
     assign_peaks_to_cells = None
+
+try:
+    from bactimate.validation import paths_exist, mask_fi_spatial_shape_match
+except ImportError:
+    paths_exist = None
+    mask_fi_spatial_shape_match = None
+
+
+def _setup_script_logging(log_to_file: bool = True) -> None:
+    """Configure logging for this script so output goes to stdout (for GUI capture) and optionally to a log file."""
+    log = SCRIPT_LOG
+    if log.handlers:
+        return
+    log.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(message)s")
+    out = logging.StreamHandler(sys.stdout)
+    out.setFormatter(fmt)
+    log.addHandler(out)
+    if log_to_file:
+        try:
+            from bactimate.gui.constants import LOGS_DIR
+            log_path = LOGS_DIR / "analyze_masks.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            fh = logging.FileHandler(log_path, encoding="utf-8", mode="a")
+            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+            log.addHandler(fh)
+        except Exception:
+            pass
 
 
 def calculate_cell_properties(mask, pixel_size=0.108, exclude_border=False):
@@ -155,7 +187,7 @@ def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contou
         if fi_image.shape[0] == mask.shape[0] and fi_image.shape[1] == mask.shape[1]:
             pass  # Shapes match
         else:
-            print(f"Warning: FI image shape {fi_image.shape} doesn't match mask shape {mask.shape}")
+            SCRIPT_LOG.warning("FI image shape %s doesn't match mask shape %s", fi_image.shape, mask.shape)
             return np.nan, np.nan, np.nan
     
     # Calculate mean FI intensity of entire cell (always available)
@@ -357,19 +389,33 @@ def analyze_masks(masks_path, pixel_size=0.108,
     masks : array
         Original mask array
     """
-    print(f"Loading masks from: {masks_path}")
+    # Pre-run validation: paths exist and (if FI) spatial shape match
+    if paths_exist is not None:
+        ok, missing = paths_exist([masks_path])
+        if not ok:
+            raise FileNotFoundError(f"Mask file not found: {missing[0]}")
+    if fi_image_path and paths_exist is not None:
+        ok, missing = paths_exist([fi_image_path])
+        if not ok:
+            raise FileNotFoundError(f"FI image file not found: {missing[0]}")
+    if fi_image_path and mask_fi_spatial_shape_match is not None:
+        ok, err = mask_fi_spatial_shape_match(masks_path, fi_image_path)
+        if not ok and err:
+            raise ValueError(err)
+
+    SCRIPT_LOG.info("Loading masks from: %s", masks_path)
     masks = tifffile.imread(masks_path)
     
     if masks.ndim == 2:
         masks = masks[np.newaxis, ...]
     
     num_frames = masks.shape[0]
-    print(f"Found {num_frames} frames")
+    SCRIPT_LOG.info("Found %s frames", num_frames)
     
     # Load FI image if provided
     fi_images = None
     if fi_image_path:
-        print(f"Loading FI image from: {fi_image_path}")
+        SCRIPT_LOG.info("Loading FI image from: %s", fi_image_path)
         fi_images = tifffile.imread(fi_image_path)
         # Handle different dimensions
         if fi_images.ndim == 2:
@@ -386,7 +432,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
         
         # Ensure FI images match mask frames
         if fi_images.shape[0] != num_frames:
-            print(f"Warning: FI image has {fi_images.shape[0]} frames but masks have {num_frames} frames")
+            SCRIPT_LOG.warning("FI image has %s frames but masks have %s frames", fi_images.shape[0], num_frames)
             if fi_images.shape[0] == 1:
                 # Single FI frame - use for all mask frames
                 fi_images = np.repeat(fi_images, num_frames, axis=0)
@@ -396,15 +442,15 @@ def analyze_masks(masks_path, pixel_size=0.108,
                 fi_images = fi_images[:min_frames]
                 masks = masks[:min_frames]
                 num_frames = min_frames
-                print(f"Using first {min_frames} frames from both images")
+                SCRIPT_LOG.warning("Using first %s frames from both images", min_frames)
         
-        print(f"✓ FI image loaded: {fi_images.shape}")
+        SCRIPT_LOG.info("FI image loaded: %s", fi_images.shape)
     
     results = []
     all_frame_data = []  # Store detailed data for each frame
     foci_table = []  # Foci rows (cell_id updated to persistent ID after assignment)
     
-    print("\nAnalyzing frames...")
+    SCRIPT_LOG.info("Analyzing frames...")
     for frame_idx in tqdm(range(num_frames), desc="Processing frames"):
         mask = masks[frame_idx]
         
@@ -481,7 +527,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                 cell.setdefault('foci_ids', [])
         if (run_foci and fi_images is not None and detect_peaks_skimage is not None and assign_peaks_to_cells is not None):
             if fi_image.shape[:2] != mask_cleaned.shape[:2]:
-                print(f"Warning: FI image shape {fi_image.shape[:2]} != mask shape {mask_cleaned.shape[:2]}, skipping foci for frame {frame_idx + 1}")
+                SCRIPT_LOG.warning("FI image shape %s != mask shape %s, skipping foci for frame %s", fi_image.shape[:2], mask_cleaned.shape[:2], frame_idx + 1)
             else:
                 peaks = detect_peaks_skimage(
                     fi_image,
@@ -537,7 +583,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
         for result in results:
             result['total_area_relative'] = result['total_area_um2'] / first_frame_area
     else:
-        print("WARNING: First frame has zero area, cannot calculate relative values")
+        SCRIPT_LOG.warning("First frame has zero area, cannot calculate relative values")
         for result in results:
             result['total_area_relative'] = 0.0
     
@@ -549,7 +595,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
 
     if input_has_persistent_ids:
         # Keep existing CellIDs; only filter (accepted = keep ID, rejected = remove from output mask)
-        print("\nInput masks already have persistent CellIDs; keeping them (filtering only).")
+        SCRIPT_LOG.info("Input masks already have persistent CellIDs; keeping them (filtering only).")
         for frame_data in all_frame_data:
             for cell in frame_data['cells']:
                 cell['cell_id'] = cell['label']  # existing label is the CellID
@@ -561,8 +607,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
             masks_with_cellids = masks_with_cellids.astype(np.uint16)
     else:
         # Assign new persistent CellIDs to accepted cells (original behaviour)
-        print("\nAssigning persistent CellIDs to accepted cells...")
-        print(f"  Processing {len(all_frame_data)} frames...")
+        SCRIPT_LOG.info("Assigning persistent CellIDs to accepted cells...")
+        SCRIPT_LOG.info("  Processing %s frames...", len(all_frame_data))
         masks_with_cellids, cellid_mapping = assign_persistent_cell_ids(masks, all_frame_data, pixel_size)
         for frame_idx, frame_data in enumerate(all_frame_data):
             for cell in frame_data['cells']:
@@ -676,7 +722,7 @@ def link_persistent_cell_ids_raw(masks, pixel_size=0.108, max_distance_um=5.0):
 
     if masks_with_cellids.max() < 65535:
         masks_with_cellids = masks_with_cellids.astype(np.uint16)
-    print(f"  Assigned {next_cell_id - 1} unique CellIDs across {num_frames} frames (all cells linked)")
+    SCRIPT_LOG.info("  Assigned %s unique CellIDs across %s frames (all cells linked)", next_cell_id - 1, num_frames)
     return masks_with_cellids
 
 
@@ -748,7 +794,7 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
     
     for frame_idx in range(1, num_frames):
         if frame_idx % print_every == 0:
-            print(f"  Processing frame {frame_idx + 1}/{num_frames}...")
+            SCRIPT_LOG.info("  Processing frame %s/%s...", frame_idx + 1, num_frames)
         frame_data = all_frame_data[frame_idx]
         mask = masks[frame_idx]
         accepted_labels = set(frame_data['accepted_labels'])
@@ -837,7 +883,7 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
     if masks_with_cellids.max() < 65535:
         masks_with_cellids = masks_with_cellids.astype(np.uint16)
     
-    print(f"  Assigned {next_cell_id - 1} unique CellIDs across {num_frames} frames")
+    SCRIPT_LOG.info("  Assigned %s unique CellIDs across %s frames", next_cell_id - 1, num_frames)
     return masks_with_cellids, cellid_mapping
 
 
@@ -857,7 +903,7 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
         Original mask array (T, Y, X) with all labels (accepted + rejected) before CellID assignment
         If provided, used to show rejected cells. If None, only accepted cells will be shown.
     """
-    print(f"\nCreating filter visualization...")
+    SCRIPT_LOG.info("Creating filter visualization...")
     
     num_frames = masks.shape[0]
     height, width = masks.shape[1], masks.shape[2]
@@ -871,7 +917,7 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
         PIL_AVAILABLE = True
     except ImportError:
         PIL_AVAILABLE = False
-        print("WARNING: Pillow missing (required dependency); labels disabled. Run: pip install -r requirements.txt")
+        SCRIPT_LOG.warning("Pillow missing (required dependency); labels disabled. Run: pip install -r requirements.txt")
     
     for frame_idx in tqdm(range(num_frames), desc="Creating visualization"):
         mask = masks[frame_idx]  # Mask with persistent CellIDs (accepted cells only)
@@ -951,17 +997,13 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
                 pass
     
     # Save visualization
-    print(f"Saving visualization to: {output_path}")
+    SCRIPT_LOG.info("Saving visualization to: %s", output_path)
     tifffile.imwrite(output_path, visualization)
-    print("✓ Visualization saved")
-    
-    # Print statistics
+    SCRIPT_LOG.info("Visualization saved")
     total_accepted = sum(len(fd['accepted_labels']) for fd in all_frame_data)
     total_rejected = sum(len(fd['rejected_labels']) for fd in all_frame_data)
-    print(f"\nVisualization statistics:")
-    print(f"  Total accepted cells (green): {total_accepted}")
-    print(f"  Total rejected cells (red): {total_rejected}")
-    print(f"  Acceptance rate: {100*total_accepted/(total_accepted+total_rejected):.1f}%" if (total_accepted+total_rejected) > 0 else "  Acceptance rate: 0%")
+    rate = 100 * total_accepted / (total_accepted + total_rejected) if (total_accepted + total_rejected) > 0 else 0
+    SCRIPT_LOG.info("Visualization statistics: accepted %s, rejected %s, rate %.1f%%", total_accepted, total_rejected, rate)
 
 
 def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_path, masks_original=None):
@@ -981,7 +1023,7 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
     masks_original : array, optional
         Original mask array before CellID assignment (for showing all cells)
     """
-    print(f"\nCreating FI contour visualization...")
+    SCRIPT_LOG.info("Creating FI contour visualization...")
     
     num_frames = masks.shape[0]
     height, width = masks.shape[1], masks.shape[2]
@@ -1039,14 +1081,14 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
         visualization[frame_idx, :, :, 2][contour_mask] = 0     # Blue channel (yellow = red+green)
     
     # Save visualization
-    print(f"Saving FI contour visualization to: {output_path}")
+    SCRIPT_LOG.info("Saving FI contour visualization to: %s", output_path)
     tifffile.imwrite(output_path, visualization)
-    print("✓ FI contour visualization saved")
+    SCRIPT_LOG.info("FI contour visualization saved")
 
 
-def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None):
+def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None, export_csv=False):
     """
-    Save results to Excel file.
+    Save results to Excel file and optionally to CSV files.
     
     Parameters:
     -----------
@@ -1060,7 +1102,11 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
         Foci rows (foci_id, cell_id, frame, channel_name, y, x, intensity, size_px, in_cell)
     fi_channel_name : str, optional
         Channel name for foci count/foci_ids columns (e.g. GFP)
+    export_csv : bool, optional
+        If True, also write Summary, Per-Cell Data, and Foci (if present) as CSV files
+        next to the Excel file (same stem with _summary.csv, _per_cell.csv, _foci.csv).
     """
+    output_path = Path(output_path)
     # Create main results DataFrame
     df_main = pd.DataFrame(results)
     
@@ -1076,6 +1122,7 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
         df_main.to_excel(writer, sheet_name='Summary', index=False)
         
         # Detailed per-cell data (optional)
+        df_detailed = None
         if detailed_data:
             detailed_rows = []
             ch_name = fi_channel_name or 'FI'
@@ -1114,6 +1161,7 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                 df_detailed.to_excel(writer, sheet_name='Per-Cell Data', index=False)
         
         # Foci sheet (when run_foci was on)
+        df_foci = None
         if foci_table is not None:
             df_foci = pd.DataFrame(foci_table)
             if len(df_foci) > 0:
@@ -1124,7 +1172,18 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                 df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'size_px', 'in_cell'])
             df_foci.to_excel(writer, sheet_name='Foci', index=False)
     
-    print(f"\n✓ Results saved to: {output_path}")
+    # Optionally write CSV files (same stem as Excel)
+    if export_csv:
+        stem = output_path.stem  # e.g. "foo_analysis"
+        parent = output_path.parent
+        df_main.to_csv(parent / f"{stem}_summary.csv", index=False)
+        if df_detailed is not None:
+            df_detailed.to_csv(parent / f"{stem}_per_cell.csv", index=False)
+        if df_foci is not None and len(df_foci) > 0:
+            df_foci.to_csv(parent / f"{stem}_foci.csv", index=False)
+        SCRIPT_LOG.info("Results saved to: %s (and CSV)", output_path)
+    else:
+        SCRIPT_LOG.info("Results saved to: %s", output_path)
 
 
 def main():
@@ -1208,12 +1267,15 @@ Examples:
                        help='Exclude foci that fall outside any cell from counts and Foci sheet')
     parser.add_argument('--foci-channel-name', type=str, default=None,
                        help='Channel name for foci columns/sheet (default: from FI filename, e.g. GFP)')
+    parser.add_argument('--export-csv', action='store_true',
+                       help='Also save Summary, Per-Cell Data, and Foci as CSV files next to the Excel file')
     
     args = parser.parse_args()
-    
+    _setup_script_logging(log_to_file=True)
+
     # Check input file
     if not Path(args.masks).exists():
-        print(f"ERROR: Mask file not found: {args.masks}")
+        SCRIPT_LOG.error("Mask file not found: %s", args.masks)
         return 1
     
     # Set output path
@@ -1230,7 +1292,7 @@ Examples:
     fi_image_path = None
     if args.fi_image:
         if not Path(args.fi_image).exists():
-            print(f"ERROR: FI image file not found: {args.fi_image}")
+            SCRIPT_LOG.error("FI image file not found: %s", args.fi_image)
             return 1
         fi_image_path = args.fi_image
     
@@ -1320,39 +1382,40 @@ Examples:
         create_fi_contour_visualization(masks_with_cellids, detailed_data, fi_images, str(fi_contour_output), masks_original=masks_original)
     
     # Print summary statistics
-    print("\n" + "="*60)
-    print("Summary Statistics")
-    print("="*60)
+    SCRIPT_LOG.info("=" * 60)
+    SCRIPT_LOG.info("Summary Statistics")
+    SCRIPT_LOG.info("=" * 60)
     total_cells = sum(r['num_cells'] for r in results)
     avg_cells_per_frame = total_cells / len(results) if results else 0
     avg_area = np.mean([r['total_area_um2'] for r in results])
-    print(f"Total frames analyzed: {len(results)}")
-    print(f"Total cells detected: {total_cells}")
-    print(f"Average cells per frame: {avg_cells_per_frame:.1f}")
-    print(f"Average total area per frame: {avg_area:.2f} µm²")
-    print(f"First frame area: {results[0]['total_area_um2']:.2f} µm²")
-    print(f"Last frame area: {results[-1]['total_area_um2']:.2f} µm²")
+    SCRIPT_LOG.info("Total frames analyzed: %s", len(results))
+    SCRIPT_LOG.info("Total cells detected: %s", total_cells)
+    SCRIPT_LOG.info("Average cells per frame: %.1f", avg_cells_per_frame)
+    SCRIPT_LOG.info("Average total area per frame: %.2f µm²", avg_area)
+    SCRIPT_LOG.info("First frame area: %.2f µm²", results[0]['total_area_um2'])
+    SCRIPT_LOG.info("Last frame area: %.2f µm²", results[-1]['total_area_um2'])
     if results[0]['total_area_um2'] > 0:
         growth_factor = results[-1]['total_area_relative']
-        print(f"Relative growth (last/first): {growth_factor:.2f}x")
-    print("="*60)
-    
-    # Save to Excel
+        SCRIPT_LOG.info("Relative growth (last/first): %.2fx", growth_factor)
+    SCRIPT_LOG.info("=" * 60)
+
+    # Save to Excel (and optionally CSV)
     save_to_excel(
         results, output_path,
         detailed_data if args.detailed else None,
         foci_table=foci_table if args.run_foci else None,
         fi_channel_name=fi_channel_name if args.run_foci else None,
+        export_csv=getattr(args, 'export_csv', False),
     )
     
-    print("\n✓ Analysis complete!")
-    print(f"  Excel file saved to: {output_path}")
-    print(f"  All files saved in folder: {output_dir}")
+    SCRIPT_LOG.info("Analysis complete!")
+    SCRIPT_LOG.info("  Excel file saved to: %s", output_path)
+    SCRIPT_LOG.info("  All files saved in folder: %s", output_dir)
     if args.visualization:
-        print(f"  Visualization saved to: {vis_output}")
+        SCRIPT_LOG.info("  Visualization saved to: %s", vis_output)
     if args.fi_image and (not args.no_fi_contour):
         fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
-        print(f"  FI contour visualization saved to: {fi_contour_output}")
+        SCRIPT_LOG.info("  FI contour visualization saved to: %s", fi_contour_output)
     return 0
 
 

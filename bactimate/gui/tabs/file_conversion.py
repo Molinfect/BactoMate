@@ -3,13 +3,14 @@ ND2 / LIF / CZI conversion tab: file selection, conversion parameters, preview, 
 """
 from __future__ import annotations
 
+import json
 import sys
 import traceback
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -35,9 +36,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bactimate.gui.constants import CONVERT_ND2_SCRIPT, PROJECT_ROOT
+from bactimate.bioio_reader import get_info as bioio_get_info, is_available as bioio_is_available, load_data as bioio_load_data
+from bactimate.gui.constants import CONVERT_ND2_SCRIPT, LOGS_DIR, PROJECT_ROOT
 from bactimate.gui.image_canvas import ImageCanvas
-from bactimate.gui.preferences import LAST_DIR_ND2
+from bactimate.gui.preferences import LAST_DIR_ND2, get_default_browse_dir
 from bactimate.gui.image_utils import to_qpixmap, scale_for_preview
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.utils import safe_imread
@@ -47,11 +49,13 @@ from bactimate.gui.workers import WorkerThread
 
 class ND2ConversionTab(QWidget):
     """Tab for converting microscopy files (ND2, LIF, CZI) to TIFF with metadata extraction"""
+    workflow_step_finished = pyqtSignal(bool)  # True = success; used for workflow replay chain
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.parent_window = parent
         self.file_info = None  # Store file info
+        self._performed_this_session = False  # True if user ran conversion this session (for Re-run only same steps)
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -135,9 +139,20 @@ class ND2ConversionTab(QWidget):
         folder_btn = QPushButton("Browse Folder...")
         folder_btn.setFixedWidth(130)
         folder_btn.clicked.connect(self.select_folder)
+        self.re_run_analysis_btn = QPushButton("Re-run analysis")
+        self.re_run_analysis_btn.setFixedWidth(130)
+        self.re_run_analysis_btn.clicked.connect(self._apply_session_to_path)
+        self.re_run_analysis_btn.setEnabled(False)
+        re_run_info_icon = create_info_icon(
+            "Re-run analysis: Set the path above to your new file or folder (can be different from the session log). Choose a session log (JSON). The app applies all parameters from that session (FI, z-stack, foci, model, filters, etc.) and runs the full pipeline on this path: conversion → segment → analyze → tracking. Outputs go next to the input (Tif_files, _segmentation_omni, etc.). Same analysis type, different data.",
+            self,
+        )
+        self.file_path.textChanged.connect(self._update_re_run_analysis_enabled)
         file_layout.addWidget(self.file_path, 1)
         file_layout.addWidget(file_btn, 0)
         file_layout.addWidget(folder_btn, 0)
+        file_layout.addWidget(self.re_run_analysis_btn, 0)
+        file_layout.addWidget(re_run_info_icon, 0)
         file_group.setLayout(file_layout)
         return file_group
 
@@ -295,7 +310,42 @@ class ND2ConversionTab(QWidget):
             else:
                 self.metadata_text.setText("No supported microscopy files (ND2, LIF, CZI, TIFF) found in selected folder")
                 self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 12pt;")
-    
+
+    def _update_re_run_analysis_enabled(self) -> None:
+        """Enable Re-run analysis only when a path is entered."""
+        if hasattr(self, "re_run_analysis_btn"):
+            self.re_run_analysis_btn.setEnabled(bool((self.file_path.text() or "").strip()))
+
+    def _apply_session_to_path(self) -> None:
+        """Let user choose a session log; apply it and run the full workflow (conversion → segment → analyze → tracking) for all steps that have a path in the log."""
+        log_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose session log",
+            str(LOGS_DIR) if LOGS_DIR.exists() else get_default_browse_dir(),
+            "JSON (*.json);;All files (*)",
+        )
+        if not log_path:
+            return
+        try:
+            with open(log_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Session log",
+                f"Could not load session file:\n{e}",
+            )
+            return
+        run_fn = getattr(self.parent_window, "run_workflow_from_session", None)
+        if callable(run_fn):
+            run_fn(data)
+        else:
+            QMessageBox.warning(
+                self,
+                "Re-run analysis",
+                "Workflow replay is not available.",
+            )
+
     def handle_dropped_path(self, dropped_path):
         """Handle dropped file or folder path"""
         path_obj = Path(dropped_path)
@@ -509,7 +559,10 @@ class ND2ConversionTab(QWidget):
         self.metadata_text.setStyleSheet("background-color: #2b2b2b; color: #ffffff; font-size: 10pt;")
     
     def _get_nd2_info(self, file_path):
-        """Extract ND2 file info without updating UI (for folder scanning). Uses tiff_metadata.read_metadata_from_path."""
+        """Extract ND2 file info without updating UI (for folder scanning). Tries BioIO first, then tiff_metadata."""
+        info = bioio_get_info(Path(file_path))
+        if info and info.get("file_type") == "nd2":
+            return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
         try:
             from pathlib import Path
             from bactimate.tiff_metadata import read_metadata_from_path
@@ -533,7 +586,10 @@ class ND2ConversionTab(QWidget):
             return None
     
     def _get_lif_info(self, file_path):
-        """Extract LIF file info without updating UI (for folder scanning)"""
+        """Extract LIF file info without updating UI (for folder scanning). Tries BioIO first, then aicsimageio/readlif."""
+        info = bioio_get_info(Path(file_path))
+        if info and info.get("file_type") == "lif":
+            return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
         try:
             import numpy as np
             from aicsimageio import AICSImage
@@ -624,7 +680,10 @@ class ND2ConversionTab(QWidget):
             return None
     
     def _get_tiff_info(self, file_path):
-        """Extract TIFF file info without updating UI (for folder scanning)"""
+        """Extract TIFF file info without updating UI (for folder scanning). Tries BioIO first, then tifffile."""
+        info = bioio_get_info(Path(file_path))
+        if info and info.get("file_type") == "tiff":
+            return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
         try:
             import tifffile
             import numpy as np
@@ -910,7 +969,10 @@ class ND2ConversionTab(QWidget):
             return None
 
     def _get_czi_info(self, file_path):
-        """Extract CZI file info without updating UI (for folder scanning). Uses czifile only."""
+        """Extract CZI file info without updating UI (for folder scanning). Tries BioIO first, then czifile."""
+        info = bioio_get_info(Path(file_path))
+        if info and info.get("file_type") == "czi":
+            return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
         return self._get_czi_info_via_czifile(file_path)
 
     def load_file_info(self, file_path):
@@ -971,15 +1033,21 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
             return
     def _load_lif_info(self, file_path):
-        """Load and display LIF file information"""
+        """Load and display LIF file information. Uses BioIO when available, then aicsimageio/readlif."""
         try:
-            # Try using aicsimageio for LIF files
+            self.parent_window.log_output(f"Loading LIF file info: {file_path}\n")
+            info = bioio_get_info(Path(file_path))
+            if info and info.get("file_type") == "lif":
+                self._update_file_info_ui(
+                    file_path, "lif",
+                    info["num_time"], info["num_channels"], info["num_z"],
+                    info["channel_names"], info.get("pixel_size"),
+                )
+                return
+            # Fallback: aicsimageio then readlif
             try:
                 import numpy as np
                 from aicsimageio import AICSImage
-                self.parent_window.log_output(f"Loading LIF file info: {file_path}\n")
-                
-                # AICSImage doesn't support context manager protocol, use direct instantiation
                 lif_reader = AICSImage(file_path)
                 try:
                     # Get dimensions - handle both old and new aicsimageio API
@@ -1090,17 +1158,27 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _load_czi_info(self, file_path):
-        """Load and display CZI file information using czifile (https://pypi.org/project/czifile/)."""
+        """Load and display CZI file information. Uses BioIO when available, then czifile."""
         try:
+            self.parent_window.log_output(f"Loading CZI file info: {file_path}\n")
+            info = bioio_get_info(Path(file_path))
+            if info and info.get("file_type") == "czi":
+                self._update_file_info_ui(
+                    file_path, "czi",
+                    info["num_time"], info["num_channels"], info["num_z"],
+                    info["channel_names"], info.get("pixel_size"),
+                )
+                return
             import czifile
         except ImportError:
             QMessageBox.warning(
                 self, "CZI Library Missing",
-                "CZI support requires the 'czifile' package.\n\nInstall with: pip install czifile"
+                "CZI support requires the 'bioio' and 'bioio-czi' packages, or the 'czifile' package.\n\n"
+                "Install with: pip install bioio bioio-czi\n"
+                "Or fallback: pip install czifile"
             )
             return
         try:
-            self.parent_window.log_output(f"Loading CZI file info: {file_path}\n")
             info = self._get_czi_info_via_czifile(file_path)
             if info is None:
                 raise RuntimeError("Could not read CZI file")
@@ -1114,17 +1192,26 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _load_tiff_info(self, file_path):
-        """Load and display TIFF file information. Uses tiff_metadata for calibration."""
+        """Load and display TIFF file information. Uses BioIO when available, then tifffile; tiff_metadata for calibration."""
         try:
-            import tifffile
-            import numpy as np
             from bactimate.tiff_metadata import read_calibration_from_path
             self.parent_window.log_output(f"Loading TIFF file info: {file_path}\n")
-            
-            # Read calibration from central module (pixel size + time per frame)
-            pixel_size, time_per_frame_min = read_calibration_from_path(Path(file_path))
-            
-            # Read TIFF file to get dimensions
+            path = Path(file_path)
+            # Try BioIO first for consistent dimension reading
+            info = bioio_get_info(path)
+            if info and info.get("file_type") == "tiff":
+                pixel_size, time_per_frame_min = read_calibration_from_path(path)
+                self._update_file_info_ui(
+                    file_path, "tiff",
+                    info["num_time"], info["num_channels"], info["num_z"],
+                    info["channel_names"],
+                    info.get("pixel_size") or (pixel_size if pixel_size > 0 else None),
+                    time_per_frame_min=time_per_frame_min if time_per_frame_min > 0 else None,
+                )
+                return
+            import tifffile
+            import numpy as np
+            pixel_size, time_per_frame_min = read_calibration_from_path(path)
             with tifffile.TiffFile(file_path) as tif:
                 # Get shape from first page
                 first_page = tif.pages[0]
@@ -2203,25 +2290,39 @@ class ND2ConversionTab(QWidget):
             traceback.print_exc()
     
     def _preview_lif(self):
-        """Preview LIF file in a dialog with frame navigation"""
+        """Preview LIF file in a dialog with frame navigation. Uses BioIO when available, then aicsimageio."""
         try:
             import numpy as np
+            file_path = self.file_path.text()
+            max_f = self.max_frames.value() if hasattr(self, "max_frames") else 500
+            # Try BioIO first
+            data = bioio_load_data(Path(file_path), max_frames=max_f, use_first_z_only=True)
+            if data is not None and data.size > 0:
+                preview_dialog = QDialog(self)
+                preview_dialog.setWindowTitle("File Preview")
+                preview_dialog.setMinimumSize(900, 700)
+                preview_dialog.setModal(False)
+                layout = QVBoxLayout()
+                num_time, num_channels = data.shape[0], data.shape[1]
+                num_z = 1
+                # For unified UI: (T, C, Y, X) is supported; take first channel for 3D display if needed by UI
+                all_frames = np.ascontiguousarray(data).copy()
+                self._create_unified_preview_ui(
+                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                    **self._get_bleach_preview_kwargs()
+                )
+                preview_dialog.setLayout(layout)
+                preview_dialog.show()
+                return
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.figure import Figure
             from aicsimageio import AICSImage
-            
-            file_path = self.file_path.text()
-            
-            # Create preview dialog
             preview_dialog = QDialog(self)
             preview_dialog.setWindowTitle("File Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)
-            
             layout = QVBoxLayout()
-            
-            # Load LIF file
             lif_reader = AICSImage(file_path)
             try:
                 # Get dimensions
@@ -2293,25 +2394,18 @@ class ND2ConversionTab(QWidget):
                         pass
                         
         except ImportError:
-            QMessageBox.warning(self, "Library Missing", 
-                              "The 'aicsimageio' library is required for LIF preview.\n\n"
-                              "Install with: pip install aicsimageio")
+            QMessageBox.warning(self, "Library Missing",
+                              "LIF preview requires 'bioio' and 'bioio-lif', or 'aicsimageio'.\n\n"
+                              "Install with: pip install bioio bioio-lif\n"
+                              "Or: pip install aicsimageio")
         except Exception as e:
             QMessageBox.critical(self, "Error Previewing LIF", f"Could not preview LIF file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _preview_czi(self):
-        """Preview CZI file in a dialog with frame navigation. Uses czifile (https://pypi.org/project/czifile/)."""
+        """Preview CZI file in a dialog with frame navigation. Uses BioIO when available, then czifile."""
         try:
             import numpy as np
-            import czifile
-        except ImportError:
-            QMessageBox.warning(
-                self, "Library Missing",
-                "CZI preview requires the 'czifile' package.\n\nInstall with: pip install czifile"
-            )
-            return
-        try:
             file_path = self.file_path.text()
             if not file_path:
                 QMessageBox.warning(self, "No File", "Please select a CZI file or folder first.")
@@ -2322,13 +2416,41 @@ class ND2ConversionTab(QWidget):
                 if not czi_in_dir:
                     QMessageBox.warning(self, "CZI Preview", "No CZI files found in the selected folder.")
                     return
-                file_path = str(czi_in_dir[0])
+                path = czi_in_dir[0]
+                file_path = str(path)
+            max_f = self.max_frames.value() if hasattr(self, "max_frames") else 500
+            max_z_proj = self.max_z_projection.isChecked() if hasattr(self, "max_z_projection") else False
+            data = bioio_load_data(path, max_frames=max_f, use_first_z_only=not max_z_proj, max_z_projection=max_z_proj)
+            if data is not None and data.size > 0:
+                preview_dialog = QDialog(self)
+                preview_dialog.setWindowTitle("File Preview")
+                preview_dialog.setMinimumSize(900, 700)
+                preview_dialog.setModal(False)
+                layout = QVBoxLayout()
+                num_time, num_channels = data.shape[0], data.shape[1]
+                num_z = 1
+                all_frames = np.ascontiguousarray(data).copy()
+                self._create_unified_preview_ui(
+                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                    **self._get_bleach_preview_kwargs()
+                )
+                preview_dialog.setLayout(layout)
+                preview_dialog.show()
+                return
+            import czifile
+        except ImportError:
+            QMessageBox.warning(
+                self, "Library Missing",
+                "CZI preview requires 'bioio' and 'bioio-czi', or 'czifile'.\n\n"
+                "Install with: pip install bioio bioio-czi\nOr: pip install czifile"
+            )
+            return
+        try:
             preview_dialog = QDialog(self)
             preview_dialog.setWindowTitle("File Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)
             layout = QVBoxLayout()
-
             all_frames = None
             num_time = num_channels = num_z = 1
             with czifile.CziFile(file_path) as czi_file:
@@ -2379,25 +2501,37 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _preview_tiff(self):
-        """Preview TIFF file in a dialog with frame navigation"""
+        """Preview TIFF file in a dialog with frame navigation. Uses BioIO when available, then tifffile."""
         try:
-            import tifffile
             import numpy as np
+            file_path = self.file_path.text()
+            max_f = self.max_frames.value() if hasattr(self, "max_frames") else 500
+            data = bioio_load_data(Path(file_path), max_frames=max_f, use_first_z_only=True)
+            if data is not None and data.size > 0:
+                preview_dialog = QDialog(self)
+                preview_dialog.setWindowTitle("File Preview")
+                preview_dialog.setMinimumSize(900, 700)
+                preview_dialog.setModal(False)
+                layout = QVBoxLayout()
+                num_time, num_channels = data.shape[0], data.shape[1]
+                num_z = 1
+                all_frames = np.ascontiguousarray(data).copy()
+                self._create_unified_preview_ui(
+                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                    **self._get_bleach_preview_kwargs()
+                )
+                preview_dialog.setLayout(layout)
+                preview_dialog.show()
+                return
+            import tifffile
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.figure import Figure
-            
-            file_path = self.file_path.text()
-            
-            # Create preview dialog
             preview_dialog = QDialog(self)
             preview_dialog.setWindowTitle("File Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)
-            
             layout = QVBoxLayout()
-            
-            # Load TIFF file
             all_frames = safe_imread(file_path)
             
             # Determine dimensions
@@ -2754,6 +2888,7 @@ class ND2ConversionTab(QWidget):
             self.convert_btn.setText("Convert to TIFF")
             self.parent_window.progress_bar.setVisible(False)
             QMessageBox.critical(self, "Error", f"Conversion failed:\n{message}")
+            self.workflow_step_finished.emit(False)
             return
         # Success: if we have a queue and more files to convert, run next
         queue = getattr(self, '_conversion_queue', None)
@@ -2813,7 +2948,9 @@ class ND2ConversionTab(QWidget):
         if queue:
             self._conversion_queue = None
             self._conversion_current_index = 0
-    
+        self._performed_this_session = True
+        self.workflow_step_finished.emit(True)
+
     def _convert_lif(self):
         """Convert LIF file(s) to TIFF"""
         try:
@@ -2873,7 +3010,43 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.progress_bar.setValue(progress)
                     QApplication.processEvents()
                     
-                    # Load LIF file
+                    # Try BioIO first for robust reading
+                    data = bioio_load_data(Path(lif_file), max_frames=max_frames, use_first_z_only=True)
+                    if data is not None and data.size > 0:
+                        all_frames = np.ascontiguousarray(data)
+                        num_time, num_channels = data.shape[0], data.shape[1]
+                        num_z = 1
+                        current_shape = all_frames.shape
+                        channel_dim = 1 if num_channels > 1 else None
+                        time_dim = 0
+                        output_file = output_base / f"{lif_file.stem}.tif"
+                        if separate_channels and num_channels > 1 and channel_dim is not None:
+                            max_channels = min(num_channels, current_shape[channel_dim])
+                            for ch in range(max_channels):
+                                indices = [slice(None)] * len(current_shape)
+                                indices[channel_dim] = ch
+                                channel_data = all_frames[tuple(indices)]
+                                axes_to_squeeze = [i for i, s in enumerate(channel_data.shape) if s == 1 and (time_dim is None or i != time_dim)]
+                                if axes_to_squeeze:
+                                    channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                                if len(channel_data.shape) == 2:
+                                    channel_data = channel_data[np.newaxis, ...]
+                                ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
+                                tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
+                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name}\n")
+                            self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
+                        else:
+                            combined = all_frames
+                            axes_to_squeeze = [i for i, s in enumerate(combined.shape) if s == 1 and (time_dim is None or i != time_dim)]
+                            if axes_to_squeeze:
+                                combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
+                            if len(combined.shape) == 2:
+                                combined = combined[np.newaxis, ...]
+                            tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                            self.parent_window.log_output(f"  Saved: {output_file.name}\n")
+                            self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
+                        continue
+                    # Fallback: load with AICSImage
                     lif_reader = AICSImage(str(lif_file))
                     try:
                         # Get dimensions
@@ -3063,9 +3236,9 @@ class ND2ConversionTab(QWidget):
                                   f"Successfully converted {total_files} LIF file(s) to TIFF.")
             
         except ImportError:
-            QMessageBox.warning(self, "Library Missing", 
-                              "LIF conversion requires 'aicsimageio' and 'tifffile' libraries.\n\n"
-                              "Install with: pip install aicsimageio tifffile")
+            QMessageBox.warning(self, "Library Missing",
+                              "LIF conversion requires 'bioio' and 'bioio-lif', or 'aicsimageio', and 'tifffile'.\n\n"
+                              "Install with: pip install bioio bioio-lif tifffile\nOr: pip install aicsimageio tifffile")
         except Exception as e:
             QMessageBox.critical(self, "Conversion Error", f"LIF conversion failed:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
@@ -3133,7 +3306,49 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.progress_bar.setValue(progress)
                     QApplication.processEvents()
                     
-                    # Load CZI file with czifile; use axes so T, C, Z are interpreted correctly
+                    # Try BioIO first for robust reading
+                    data = bioio_load_data(
+                        Path(czi_file),
+                        max_frames=max_frames,
+                        use_first_z_only=not max_z_projection,
+                        max_z_projection=max_z_projection,
+                    )
+                    if data is not None and data.size > 0:
+                        all_frames = np.ascontiguousarray(data)
+                        num_time, num_channels = data.shape[0], data.shape[1]
+                        num_z = 1
+                        current_shape = all_frames.shape
+                        channel_dim = 1 if num_channels > 1 else None
+                        time_dim = 0
+                        dims_str = "TCYX"
+                        output_file = output_base / f"{czi_file.stem}.tif"
+                        if separate_channels and num_channels > 1 and channel_dim is not None:
+                            max_ch = min(num_channels, current_shape[channel_dim])
+                            for ch in range(max_ch):
+                                indices = [slice(None)] * len(current_shape)
+                                indices[channel_dim] = ch
+                                channel_data = all_frames[tuple(indices)]
+                                axes_to_squeeze = [i for i, s in enumerate(channel_data.shape) if s == 1 and (time_dim is None or i != time_dim)]
+                                if axes_to_squeeze:
+                                    channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                                if len(channel_data.shape) == 2:
+                                    channel_data = channel_data[np.newaxis, ...]
+                                ch_output = output_base / f"{czi_file.stem}_ch{ch+1}.tif"
+                                tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
+                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name}\n")
+                            self.parent_window.log_output(f"✓ Converted: {czi_file.name}\n")
+                        else:
+                            combined = all_frames
+                            axes_to_squeeze = [i for i, s in enumerate(combined.shape) if s == 1 and (time_dim is None or i != time_dim)]
+                            if axes_to_squeeze:
+                                combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
+                            if len(combined.shape) == 2:
+                                combined = combined[np.newaxis, ...]
+                            tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                            self.parent_window.log_output(f"  Saved: {output_file.name}\n")
+                            self.parent_window.log_output(f"✓ Converted: {czi_file.name}\n")
+                        continue
+                    # Fallback: load with czifile
                     with czifile.CziFile(str(czi_file)) as czi_f:
                         axes = getattr(czi_f, "axes", None)
                         shape = getattr(czi_f, "shape", None)
@@ -3293,8 +3508,8 @@ class ND2ConversionTab(QWidget):
             
         except ImportError:
             QMessageBox.warning(self, "Library Missing", 
-                              "CZI conversion requires 'tifffile' and 'czifile'.\n\n"
-                              "Install with: pip install tifffile czifile")
+                              "CZI conversion requires 'bioio' and 'bioio-czi', or 'tifffile' and 'czifile'.\n\n"
+                              "Install with: pip install bioio bioio-czi tifffile\nOr: pip install tifffile czifile")
         except Exception as e:
             QMessageBox.critical(self, "Conversion Error", f"CZI conversion failed:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
@@ -3304,7 +3519,7 @@ class ND2ConversionTab(QWidget):
             self.parent_window.progress_bar.setVisible(False)
     
     def get_session_params(self) -> dict[str, Any]:
-        """Return current parameter values for session log (parameters only, no paths)."""
+        """Return current parameter values for session log (includes path for workflow replay)."""
         out = get_from_widgets([
             ("max_frames", self.max_frames),
             ("separate_channels", self.separate_channels),
@@ -3322,10 +3537,14 @@ class ND2ConversionTab(QWidget):
             out["foci_channels"] = [cb.isChecked() for cb in self.foci_channel_checks]
         if getattr(self, "zproject_channel_checks", None):
             out["zproject_channels"] = [cb.isChecked() for cb in self.zproject_channel_checks]
+        path_txt = (self.file_path.text() or "").strip()
+        if path_txt:
+            out["file_path"] = path_txt
+        out["performed"] = getattr(self, "_performed_this_session", False)
         return out
 
     def set_session_params(self, data: dict[str, Any]) -> None:
-        """Apply saved parameter values (parameters only)."""
+        """Apply saved parameter values. Set file path and load file info first so channel options (FI, Z, Foci, bleach) exist, then apply their checkboxes."""
         apply_to_widgets(data, [
             ("max_frames", self.max_frames),
             ("separate_channels", self.separate_channels),
@@ -3340,6 +3559,25 @@ class ND2ConversionTab(QWidget):
                     self.bleach_method_combo.setCurrentIndex(idx)
             except (TypeError, ValueError):
                 pass
+        # Load path and file info first so channel checkboxes (FI, Z, Foci, bleach) are created
+        if "file_path" in data and data.get("file_path"):
+            path = str(data["file_path"]).strip()
+            self.file_path.setText(path)
+            if path and Path(path).exists():
+                if Path(path).is_file():
+                    self.load_file_info(path)
+                else:
+                    folder = Path(path)
+                    supported = sorted(
+                        list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
+                        list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
+                        list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
+                        list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
+                        list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
+                    )
+                    if supported:
+                        self.load_folder_info(path, supported)
+        # Now apply per-channel selections (FI, Z-stack, Foci, bleach) from session log
         if "bleach_fluorescence_channels" in data and getattr(self, "bleach_channel_checks", None):
             try:
                 states = data["bleach_fluorescence_channels"]
@@ -3376,4 +3614,6 @@ class ND2ConversionTab(QWidget):
                             self.zproject_channel_checks[i].setChecked(bool(checked))
             except (TypeError, ValueError):
                 pass
+        if "performed" in data:
+            self._performed_this_session = bool(data["performed"])
 
