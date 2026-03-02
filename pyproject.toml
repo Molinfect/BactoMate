@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bactimate"
-version = "1.0"
+version = "1.5"
 description = "Batch processing and analysis GUI for microscopy (Omnipose, tracking, SAM2)"
 readme = "docs/README.md"
 requires-python = ">=3.10"
