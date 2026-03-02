@@ -27,10 +27,6 @@ env/
 ENV/
 .venv
 
-# PyInstaller
-*.spec.bak
-*.spec~
-
 # Nuitka
 *.build/
 *.dist/
@@ -66,6 +62,7 @@ models/
 *.tmp
 *.bak
 *.backup
+nohup.out
 
 # Compiled files
 *.pyc

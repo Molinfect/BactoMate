@@ -602,7 +602,7 @@ def concatenate_masks(masks, output_path, source_image_path=None):
     print(f"Saving to: {output_path}")
     meta = None
     try:
-        from bactimate.tiff_metadata import build_metadata_dict_for_mask_from_source
+        from bactimate.modules.tiff_metadata import build_metadata_dict_for_mask_from_source
         from pathlib import Path
         src = Path(source_image_path) if source_image_path else None
         meta = build_metadata_dict_for_mask_from_source(src, num_frames=len(masks))

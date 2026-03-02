@@ -302,13 +302,26 @@ def patch_omnipose_gpu_empty_except() -> bool:
             break
         next_line = lines[j]
         next_indent = next_line[: len(next_line) - len(next_line.lstrip())]
-        # Only treat as empty when next line is strictly less indent (next stmt outside block). Same indent = block has content (upstream indent quirk).
+        body_indent = except_indent + "    "
+        # Case 1: next line has less indent -> truly empty except block
         if len(next_indent) < len(except_indent):
-            body_indent = except_indent + "    "
             body = f"{body_indent}pass  # empty except fixed by BactiMate patch\n"
             if "Exception as" not in stripped:
                 lines[i] = line.replace("except:", "except Exception as e:", 1).replace("except :", "except Exception as e:", 1)
             lines.insert(i + 1, body)
+            content = "".join(lines)
+            patched = True
+            break
+        # Case 2: next line has same indent as except -> body not indented (SyntaxError); re-indent those lines
+        if len(next_indent) == len(except_indent) and next_indent:
+            k = j
+            while k < len(lines):
+                line_indent = lines[k][: len(lines[k]) - len(lines[k].lstrip())]
+                if lines[k].strip() and len(line_indent) < len(except_indent):
+                    break
+                if lines[k].strip() and line_indent == except_indent:
+                    lines[k] = body_indent + lines[k].lstrip()
+                k += 1
             content = "".join(lines)
             patched = True
             break

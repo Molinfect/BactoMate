@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Tuple, Type
 
-from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QTimer, QUrl
+from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QUrl
 from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -52,26 +52,37 @@ from bactimate.gui.tabs import (
     TrackingTab,
     UNetSegmentTab,
 )
-from bactimate.gui.paths import get_app_root, get_omnipose_user_models_dir, get_unet_models_dir
+from bactimate.gui.paths import get_app_root, get_omnipose_user_models_dir, get_unet_models_dir, _running_from_app_bundle
 from bactimate.gui.styles import get_modern_stylesheet
 
 
 def _get_app_icon_path() -> Path | None:
-    """Path to app icon: BactiMate.icns in app root (bundle Resources) or img/logo2.png."""
+    """App icon: img/logo2.png or BactiMate.icns under get_app_root()."""
     root = get_app_root()
-    for candidate in (root / "BactiMate.icns", root / "img" / "logo2.png"):
-        if candidate.exists():
-            return candidate
+    for p in (root / "img" / "logo2.png", root / "BactiMate.icns"):
+        if p.exists():
+            return p.resolve()
     return None
 
 
 def _set_macos_dock_icon(icon_path: Path) -> None:
-    """Set the Dock icon on macOS via Cocoa (Qt setWindowIcon does not update Dock)."""
+    """Set Dock icon on macOS (Qt setWindowIcon does not update Dock)."""
     try:
         from AppKit import NSApp, NSImage  # type: ignore[import-untyped]
-        img = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+        img = NSImage.alloc().initWithContentsOfFile_(str(icon_path.resolve()))
         if img is not None:
             NSApp.setApplicationIconImage_(img)
+    except Exception:
+        pass
+
+
+def _set_macos_process_name(name: str) -> None:
+    """Set process name on macOS so Dock/menu bar show 'BactiMate' not 'Python'."""
+    if sys.platform != "darwin":
+        return
+    try:
+        from Foundation import NSProcessInfo  # type: ignore[import-untyped]
+        NSProcessInfo.processInfo().setProcessName_(name)
     except Exception:
         pass
 
@@ -600,10 +611,44 @@ class MainWindow(QMainWindow):
         user_manual_action = QAction("User manual", self)
         user_manual_action.triggered.connect(self._open_user_manual)
         help_menu.addAction(user_manual_action)
+        if sys.platform == "darwin" and _running_from_app_bundle():
+            pin_dock_action = QAction("Pin BactiMate to Dock (for Reopen)", self)
+            pin_dock_action.triggered.connect(self._show_pin_to_dock_help)
+            pin_dock_action.setToolTip("How to get Reopen from the Dock to work after quitting.")
+            help_menu.addAction(pin_dock_action)
         check_env_action = QAction("Check environment", self)
         check_env_action.triggered.connect(self._check_environment)
         check_env_action.setToolTip("Verify required dependencies (numpy, PyQt6, tifffile, etc.) are installed.")
         help_menu.addAction(check_env_action)
+
+    def _show_pin_to_dock_help(self) -> None:
+        """Explain how to pin BactiMate so Reopen from the Dock works (macOS .app only)."""
+        msg = (
+            "To reopen BactiMate from the Dock after quitting:\n\n"
+            "1. Remove any existing BactiMate icon from the Dock (drag it off).\n\n"
+            "2. In Finder, go to where BactiMate.app is (e.g. Desktop or Applications).\n\n"
+            "3. Drag BactiMate.app onto the Dock.\n\n"
+            "4. Use that Dock icon to launch and to reopen after quit.\n\n"
+            "Do not use \"Keep in Dock\" from the running app’s Dock menu — that pins the wrong target and Reopen will not work."
+        )
+        try:
+            app_root = get_app_root()
+            # App root is Contents/Resources; .app is Contents/../ so parent.parent
+            app_bundle = app_root.parent.parent if "Contents" in str(app_root) else app_root.parent
+            if app_bundle.suffix == ".app" and app_bundle.exists():
+                open_folder = QMessageBox.question(
+                    self,
+                    "Pin BactiMate to Dock",
+                    msg + "\n\nOpen the folder containing BactiMate.app in Finder?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if open_folder == QMessageBox.StandardButton.Yes:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(app_bundle.parent)))
+            else:
+                QMessageBox.information(self, "Pin BactiMate to Dock", msg)
+        except Exception:
+            QMessageBox.information(self, "Pin BactiMate to Dock", msg)
 
     def _show_about(self) -> None:
         try:
@@ -802,19 +847,18 @@ def main() -> None:
         app = QApplication(sys.argv)
         app.setApplicationName("BactiMate")
         app.setApplicationDisplayName("BactiMate")
-        # Icon: Dock and window (macOS Dock needs Cocoa; bundle may have BactiMate.icns or img/logo2.png)
+        if sys.platform == "darwin":
+            try:
+                import setproctitle
+                setproctitle.setproctitle("BactiMate")
+            except ImportError:
+                pass
+            _set_macos_process_name("BactiMate")
         icon_path = _get_app_icon_path()
         if icon_path is not None:
             app.setWindowIcon(QIcon(str(icon_path)))
             if sys.platform == "darwin":
                 _set_macos_dock_icon(icon_path)
-        # Re-apply process title after Qt init (Qt can overwrite it on macOS; menu bar shows process name)
-        if sys.platform == "darwin":
-            try:
-                import setproctitle
-                setproctitle.setproctitle("BactiMate")
-            except Exception:
-                pass
         app.setStyle("Fusion")
         app.setStyleSheet(get_modern_stylesheet())
         if sys.platform == "win32":
@@ -827,15 +871,15 @@ def main() -> None:
         if icon_path is not None:
             window.setWindowIcon(QIcon(str(icon_path)))
         window.show()
-        # Re-apply process title once after show (macOS menu bar can be updated late)
+        # Bring to front (macOS often opens behind other windows when launched from Dock/Finder)
         if sys.platform == "darwin":
-            def _reapply_title() -> None:
-                try:
-                    import setproctitle
-                    setproctitle.setproctitle("BactiMate")
-                except Exception:
-                    pass
-            QTimer.singleShot(500, _reapply_title)
+            try:
+                from AppKit import NSApp  # type: ignore[import-untyped]
+                NSApp.activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
+        window.raise_()
+        window.activateWindow()
         log.info("BactiMate window shown.")
         sys.exit(app.exec())
     except Exception as e:

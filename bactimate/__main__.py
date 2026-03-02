@@ -15,7 +15,7 @@ def run() -> None:
     except Exception:
         pass
 
-    # --version / --smoke-test: exit before loading full GUI (used by CI / frozen builds)
+    # --version / --smoke-test: exit before loading full GUI (used by CI / packaged app)
     if len(sys.argv) >= 2 and sys.argv[1] in ("--version", "-v"):
         from bactimate import __version__
         print(f"BactiMate {__version__}")

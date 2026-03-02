@@ -1,0 +1,177 @@
+=== stdout ===
+==================================================
+Applying BactiMate compatibility patches
+==================================================
+
+Patching peakdetect: scipy ifft compatibility...
+WARNING: Could not find peakdetect/peakdetect.py (package may not be installed yet)
+
+Patching cellpose_omni: model_type + model URL...
+  ✓ cellpose_omni is already patched
+
+Patching cellpose_omni transforms: nchan trim...
+  ✓ cellpose_omni transforms (nchan trim) already patched
+
+Patching cellpose_omni io: NumPy 2.0 TIFF read...
+  ✓ cellpose_omni io (NumPy 2.0 TIFF) already patched
+
+Patching cellpose_omni dynamics: steps2D tr...
+  ✓ cellpose_omni dynamics (steps2D tr) already patched
+
+Patching cellpose_omni resnet_torch: load checkpoint unwrap...
+  ✓ cellpose_omni resnet_torch (load checkpoint + module strip) already patched
+
+Patching omnipose gpu: MPS (Apple Silicon) detection + log GPU exception...
+  ✓ omnipose gpu.py (MPS) already patched
+
+Patching [DEBUG] omnipose gpu: fix empty except SyntaxError only...
+  ✓ omnipose gpu.py: no empty except block found (already OK)
+
+Patching omnipose core: BCE boundary range (training)...
+  ✓ omnipose core (BCE boundary range) already patched (1 copy/copies)
+
+Patching omnipose core: grid_sample dtype...
+  ✓ omnipose core (grid_sample dtype) already patched
+
+Patching omnipose core: follow_flows dtype...
+  ✓ omnipose core (follow_flows dtype) already patched
+
+Patching cellpose_omni Cellpose: pretrained_model path (user models)...
+  ✓ cellpose_omni Cellpose (pretrained_model path) already patched
+
+Patching cellpose_omni __main__: train channels for nchan==2...
+  ✓ cellpose_omni __main__ (train channels) already patched
+
+Patching cellpose_omni core: DataParallel save_model...
+  ✓ cellpose_omni core (DataParallel save_model) already patched
+
+Patching cellpose_omni core: log label ntrain -> ntrain_img...
+  ✓ cellpose_omni core (ntrain_img label) already patched
+
+==================================================
+peakdetect: skipped/failed; cellpose_omni: OK; transforms: OK; io: OK; dynamics: OK; resnet_load: OK; omnipose_gpu_mps: OK; omnipose_gpu_empty_except: OK; omnipose_bce_boundary: OK; omnipose_dtype: OK; omnipose_follow_flows: OK; cellpose_pretrained: OK; train_channels: OK; cellpose_core_save: OK; core_ntrain_label: OK
+==================================================
+Copying project into app...
+Target site-packages: /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/lib/python3.11/site-packages
+==================================================
+Applying BactiMate compatibility patches
+==================================================
+
+Patching peakdetect: scipy ifft compatibility...
+WARNING: Could not find peakdetect/peakdetect.py (package may not be installed yet)
+
+Patching cellpose_omni: model_type + model URL...
+  ✓ cellpose_omni is already patched
+
+Patching cellpose_omni transforms: nchan trim...
+  ✓ cellpose_omni transforms (nchan trim) already patched
+
+Patching cellpose_omni io: NumPy 2.0 TIFF read...
+  ✓ cellpose_omni io (NumPy 2.0 TIFF) already patched
+
+Patching cellpose_omni dynamics: steps2D tr...
+  ✓ cellpose_omni dynamics (steps2D tr) already patched
+
+Patching cellpose_omni resnet_torch: load checkpoint unwrap...
+  ✓ cellpose_omni resnet_torch (load checkpoint + module strip) already patched
+
+Patching omnipose gpu: MPS (Apple Silicon) detection + log GPU exception...
+  ✓ omnipose gpu.py (MPS) already patched
+
+Patching [DEBUG] omnipose gpu: fix empty except SyntaxError only...
+  ✓ omnipose gpu.py: no empty except block found (already OK)
+
+Patching omnipose core: BCE boundary range (training)...
+  ✓ omnipose core (BCE boundary range) already patched (1 copy/copies)
+
+Patching omnipose core: grid_sample dtype...
+  ✓ omnipose core (grid_sample dtype) already patched
+
+Patching omnipose core: follow_flows dtype...
+  ✓ omnipose core (follow_flows dtype) already patched
+
+Patching cellpose_omni Cellpose: pretrained_model path (user models)...
+  ✓ cellpose_omni Cellpose (pretrained_model path) already patched
+
+Patching cellpose_omni __main__: train channels for nchan==2...
+  ✓ cellpose_omni __main__ (train channels) already patched
+
+Patching cellpose_omni core: DataParallel save_model...
+  ✓ cellpose_omni core (DataParallel save_model) already patched
+
+Patching cellpose_omni core: log label ntrain -> ntrain_img...
+  ✓ cellpose_omni core (ntrain_img label) already patched
+
+==================================================
+peakdetect: skipped/failed; cellpose_omni: OK; transforms: OK; io: OK; dynamics: OK; resnet_load: OK; omnipose_gpu_mps: OK; omnipose_gpu_empty_except: OK; omnipose_bce_boundary: OK; omnipose_dtype: OK; omnipose_follow_flows: OK; cellpose_pretrained: OK; train_channels: OK; cellpose_core_save: OK; core_ntrain_label: OK
+==================================================
+Created: /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
+If app does not open: BactiMate.app/Contents/Resources/Logs/launch.log
+
+=== stderr ===
++ set -e
++++ dirname /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/build_app_bundle.sh
+++ cd /Users/philipppopp/Desktop/BactiMate-main-V1.0/build
+++ pwd
++ SCRIPT_DIR=/Users/philipppopp/Desktop/BactiMate-main-V1.0/build
+++ cd /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/..
+++ pwd
++ PROJECT_ROOT=/Users/philipppopp/Desktop/BactiMate-main-V1.0
++ APP_NAME=BactiMate
++ APP_DIR=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
++ CONTENTS=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents
++ MACOS=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS
++ RESOURCES=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources
++ '[' '!' -d /Users/philipppopp/Desktop/BactiMate-main-V1.0/venv ']'
++ /Users/philipppopp/Desktop/BactiMate-main-V1.0/venv/bin/python3 /Users/philipppopp/Desktop/BactiMate-main-V1.0/setup/apply_all_patches.py
++ rm -rf /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
++ mkdir -p /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources
++ cc -o /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS/BactiMate /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/launcher.c
++ chmod +x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS/BactiMate
++ echo 'Copying project into app...'
++ HPID=33492
++ rsync -a --exclude=.git --exclude=.venv '--exclude=*.pyc' --exclude=__pycache__ --exclude=.gitignore --exclude=BactiMate.app '--exclude=*.app' --exclude=build --exclude=dist '--exclude=*.dmg' --exclude=Logs /Users/philipppopp/Desktop/BactiMate-main-V1.0/ /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/
++ true
++ sleep 60
++ kill 33492
++ wait 33492
++ true
++ for c in '"$RESOURCES/venv/bin/python3.11"' '"$RESOURCES/venv/bin/python3"' '"$RESOURCES/venv/bin/pythonw"'
++ '[' -x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/python3.11 ']'
++ cp -fL /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/python3.11 /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/BactiMate
++ chmod +x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/BactiMate
++ break
++ '[' '!' -x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/BactiMate ']'
++ PY=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/python3
++ mkdir -p /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/Logs
+++ /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])'
++ SITE=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/lib/python3.11/site-packages
++ /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/python3 /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/setup/apply_all_patches.py --target-site-packages /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/lib/python3.11/site-packages
++ '[' -f /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/lib/python3.11/site-packages/omnipose/core.py ']'
++ /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/python3 /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/setup/fix_omnipose_core_syntax.py /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/lib/python3.11/site-packages/omnipose/core.py
++ '[' '!' -s /Users/philipppopp/Desktop/BactiMate-main-V1.0/img/logo2.png ']'
++ rm -f /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/BactiMate.icns
++ /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/create_icons.sh
++ '[' '!' -s /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/BactiMate.icns ']'
++ chmod +x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/launch_gui.sh /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/setup/launch_gui.sh /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/setup/launch_gui_bundle_strict.sh
++ cat
++ cp /Users/philipppopp/Desktop/BactiMate-main-V1.0/build/BactiMate.icns /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/BactiMate.icns
++ '[' '!' -s /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/BactiMate.icns ']'
++ xattr -cr /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
++ command -v codesign
++ codesign -f -s - /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS/BactiMate
++ find /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv -name '*.dylib' -type f -exec codesign -f -s - '{}' ';'
++ find /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin -type f '(' -name 'python*' -o -name BactiMate ')' -exec codesign -f -s - '{}' ';'
++ command -v /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
++ /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
++ touch /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
++ '[' '!' -x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS/BactiMate ']'
++ '[' '!' -f /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/setup/launch_gui_bundle_strict.sh ']'
++ '[' '!' -f /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/main.py ']'
++ '[' '!' -x /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/BactiMate ']'
++ '[' '!' -s /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/BactiMate.icns ']'
++ echo 'Created: /Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app'
++ echo 'If app does not open: BactiMate.app/Contents/Resources/Logs/launch.log'
+
+=== exit code ===
+0

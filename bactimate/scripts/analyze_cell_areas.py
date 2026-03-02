@@ -30,13 +30,13 @@ warnings.filterwarnings('ignore')
 SCRIPT_LOG = logging.getLogger(__name__)
 
 try:
-    from bactimate.foci_utils import detect_peaks_skimage, assign_peaks_to_cells
+    from bactimate.modules.foci_utils import detect_peaks_skimage, assign_peaks_to_cells
 except ImportError:
     detect_peaks_skimage = None
     assign_peaks_to_cells = None
 
 try:
-    from bactimate.validation import paths_exist, mask_fi_spatial_shape_match
+    from bactimate.modules.validation import paths_exist, mask_fi_spatial_shape_match
 except ImportError:
     paths_exist = None
     mask_fi_spatial_shape_match = None

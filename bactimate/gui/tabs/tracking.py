@@ -42,7 +42,7 @@ from bactimate.gui.preferences import get_default_browse_dir
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
-from bactimate.tiff_metadata import read_metadata_from_path, resolve_calibration_from_trajectories_path
+from bactimate.modules.tiff_metadata import read_metadata_from_path, resolve_calibration_from_trajectories_path
 
 from bactimate.gui.workers import TrackingWorker
 

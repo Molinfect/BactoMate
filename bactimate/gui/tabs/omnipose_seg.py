@@ -80,7 +80,7 @@ from bactimate.gui.widgets import (
     show_file_selection_dialog,
 )
 from bactimate.gui.workers import WorkerThread
-from bactimate.tiff_metadata import read_calibration_from_path_or_original
+from bactimate.modules.tiff_metadata import read_calibration_from_path_or_original
 
 # Built-in Omnipose model types (no Cellpose-only). User-trained models are listed separately.
 BUILTIN_OMNIPOSE_MODELS = [
@@ -2688,7 +2688,7 @@ class OmniposeSegTab(QWidget):
                     # Handle recursion errors (e.g., from broken runtime hooks)
                     import traceback
                     error_details = f"Recursion error detected:\n{str(e)}\n\n"
-                    error_details += f"This may be caused by a bug in the frozen build.\n"
+                    error_details += f"This may be caused by a bug in this environment.\n"
                     error_details += f"Try rebuilding the application.\n\n"
                     error_details += f"Parameters:\n  diameter: {diameter} (type: {type(diameter)})\n  flow_threshold: {flow_threshold} (type: {type(flow_threshold)})\n\n"
                     error_details += f"Traceback:\n{traceback.format_exc()}"
@@ -3095,9 +3095,17 @@ class OmniposeSegTab(QWidget):
             if 'torch.testing' in error_msg:
                 QMessageBox.warning(self, "Preview Unavailable", 
                                   "Preview requires torch.testing module.\n\n"
-                                  "This is a known issue with frozen builds.\n"
+                                  "This is a known issue in some environments.\n"
                                   "The preview feature may not work in the packaged application.\n\n"
                                   "Try running from source: python main.py")
+            elif "No package metadata was found for imageio" in error_msg:
+                QMessageBox.warning(
+                    self,
+                    "Preview Unavailable",
+                    "This app build is missing imageio package metadata.\n\n"
+                    f"Details: {error_msg}\n\n"
+                    "Reinstall BactiMate or ensure imageio is installed with metadata: pip install imageio."
+                )
             else:
                 QMessageBox.warning(self, "Preview Unavailable", 
                                   f"Preview requires additional libraries:\n\n{error_msg}\n\n"
@@ -3109,8 +3117,8 @@ class OmniposeSegTab(QWidget):
             if 'RpcBackendOptions' in error_msg or 'generic_type' in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "PyTorch initialization error detected.\n\n"
-                                  "This is a known issue with frozen builds and PyTorch.\n"
-                                  "The preview feature may not work in the packaged application.\n\n"
+                                  "This is a known issue with PyTorch in some environments.\n"
+                                  "The preview feature may not work.\n\n"
                                   "Try:\n"
                                   "1. Restart the application\n"
                                   "2. Run from source: python main.py\n"
@@ -3119,7 +3127,7 @@ class OmniposeSegTab(QWidget):
             elif 'Versioning for this project requires' in error_msg or 'pbr.version.VersionInfo' in error_msg or 'mgen' in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "Package versioning error detected.\n\n"
-                                  "This is a known issue with frozen builds and the mgen package.\n"
+                                  "This is a known issue with the mgen package in some environments.\n"
                                   "The preview feature may not work in the packaged application.\n\n"
                                   "Try:\n"
                                   "1. Restart the application\n"
@@ -3130,7 +3138,7 @@ class OmniposeSegTab(QWidget):
             elif 'TorchScript requires source access' in error_msg or "Can't get source for" in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "TorchScript compilation error detected.\n\n"
-                                  "This is a known issue with frozen builds and PyTorch's TorchScript.\n"
+                                  "This is a known issue with PyTorch's TorchScript in some environments.\n"
                                   "TorchScript requires access to original source files which aren't\n"
                                   "available in packaged applications.\n\n"
                                   "Try:\n"
@@ -3907,5 +3915,4 @@ class OmniposeSegTab(QWidget):
         if success:
             self._performed_this_session = True
         self.workflow_step_finished.emit(success)
-
 

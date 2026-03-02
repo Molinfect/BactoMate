@@ -16,7 +16,7 @@ from skimage.registration import phase_cross_correlation
 from skimage.exposure import match_histograms
 
 try:
-    from bactimate.tiff_metadata import read_calibration_from_path
+    from bactimate.modules.tiff_metadata import read_calibration_from_path
 except ImportError:
     read_calibration_from_path = None  # e.g. when run as standalone script
 

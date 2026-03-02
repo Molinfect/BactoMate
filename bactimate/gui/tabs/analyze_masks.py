@@ -48,8 +48,8 @@ from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 from bactimate.gui.workers import WorkerThread
-from bactimate.tiff_metadata import read_calibration_from_path_or_original
-from bactimate.validation import paths_exist, mask_fi_spatial_shape_match
+from bactimate.modules.tiff_metadata import read_calibration_from_path_or_original
+from bactimate.modules.validation import paths_exist, mask_fi_spatial_shape_match
 
 class AnalyzeMasksTab(QWidget):
     """Tab for analyzing existing masks"""
@@ -1750,7 +1750,7 @@ class AnalyzeMasksTab(QWidget):
             # Import filter functions from analyze_cell_areas
             import sys
             sys.path.insert(0, str(PROJECT_ROOT))
-            from scripts.analyze_cell_areas import calculate_cell_properties, filter_rod_shaped_cells, filter_by_size
+            from bactimate.scripts.analyze_cell_areas import calculate_cell_properties, filter_rod_shaped_cells, filter_by_size
             
             # Store current frame
             preview_dialog.current_frame = 0
@@ -2077,7 +2077,7 @@ class AnalyzeMasksTab(QWidget):
                         run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
                         if run_foci and fi_images is not None and self.analyze_fi.isChecked():
                             try:
-                                from bactimate.foci_utils import detect_peaks_skimage as _detect_foci
+                                from bactimate.modules.foci_utils import detect_peaks_skimage as _detect_foci
                             except ImportError:
                                 _detect_foci = None
                             if _detect_foci is not None:

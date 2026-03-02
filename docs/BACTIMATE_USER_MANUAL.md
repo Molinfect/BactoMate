@@ -730,10 +730,10 @@ A: After you load a **multi-channel** microscopy file, the tab builds a set of c
 |--------|--------|
 | `python -m bactimate.scripts.assign_persistent_ids masks.tif -o out.tif` | Assign persistent CellIDs to a mask stack (after segmentation; use output in Analyze Masks and Tracking). Optional: `--pixel-size`, `--max-distance`. |
 | `python -m bactimate.scripts.analyze_cell_areas masks.tif [fi_image.tif] [options]` | Analyze masks (morphology, FI); Excel output. Used by the Analyze Masks tab. |
-| `python -m scripts.batch_process_tiff_sequence input.tif` | Single multipage TIFF, Omnipose segmentation. |
-| `python -m scripts.batch_process_folder /path/to/folder` | Folder: segment + analyze. |
+| `python -m bactimate.scripts.batch_process_tiff_sequence input.tif` | Single multipage TIFF, Omnipose segmentation. |
+| `python -m bactimate.scripts.batch_process_folder /path/to/folder` | Folder: segment + analyze. |
 | `python -m bactimate.scripts.convert_nd2_to_tif` / conversion script | ND2/LIF/CZI → TIFF (used by TIFF Conversion tab). |
-| `python -m scripts.check_tiff_format input.tif` | Verify/reshape TIFF format. |
+| `python -m bactimate.scripts.check_tiff_format input.tif` | Verify/reshape TIFF format. |
 | `python -m bactimate.scripts.check_omnipose_pipeline model path/to/model.pth` | Check model, training dir, or inference; compare checkpoints. |
 | `python -m bactimate.scripts.diagnose_flat_model model.pth` | Diagnose flat distance/0 cells (output head, training data). |
 | `python -m bactimate.scripts.inspect_omnipose_checkpoint path/to/model.pth` | Inspect checkpoint keys, nchan/nclasses. |
@@ -881,7 +881,7 @@ BactiMate does **not** call most of `omnipose.core` / `omnipose.utils` directly;
 
 **Training:** We run `python -m omnipose --train --dir <path> --nchan <n> --nclasses <n> --channel_axis 0 --all_channels ...`. Omnipose loads image/mask pairs, uses channel_axis and nchan for augmentation, builds training targets with labels_to_flows, and uses the loss from omnipose.core. We ensure: CYX channel format, `--channel_axis 0` when nchan ≥ 2, nchan/nclasses passed and locked for user models, instance-label masks; we patch `__main__.py` so nchan==2 gets grayscale duplicated (channels=[chan,chan]) for training.
 
-**Inference:** We use cellpose_omni's `CellposeModel.eval()`. That path calls `compute_masks` / `get_masks` in omnipose/core. We patch `get_masks` (handle bd=None in frozen builds) and OMNI_MODELS where needed. We do not call compute_masks/get_masks ourselves.
+**Inference:** We use cellpose_omni's `CellposeModel.eval()`. That path calls `compute_masks` / `get_masks` in omnipose/core. We patch `get_masks` (handle bd=None in some packaged builds) and OMNI_MODELS where needed. We do not call compute_masks/get_masks ourselves.
 
 **omnipose.utils:** We do not import or call it from BactiMate; normalization, tiling, etc. are used inside Omnipose/cellpose_omni. We pass the right model path, diameter, and thresholds.
 

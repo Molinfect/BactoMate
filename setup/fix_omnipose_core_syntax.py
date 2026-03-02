@@ -28,7 +28,6 @@ def main() -> bool:
         return True
 
     if "omnipose no cell pixels" not in content:
-        print(f"  omnipose/core.py has no diagnostic block: {core_path}")
         return True
 
     # Match any variant: optional leading whitespace (e.g. app bundle has many spaces), then _f.write... until mask_threshold))

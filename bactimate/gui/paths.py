@@ -46,11 +46,24 @@ def _get_app_root_frozen() -> Path:
         if base is None:
             return _get_app_root_development()
         base_path = Path(base)
-        # macOS .app: executable is in Contents/MacOS, project files in Contents/Resources
-        if sys.platform == "darwin" and "Contents/MacOS" in str(base_path):
-            resources = base_path.parent / "Resources"
-            if resources.is_dir():
-                return resources
+        # macOS .app: executable may be Contents/MacOS/BactiMate or Contents/Resources/venv/bin/python3
+        if sys.platform == "darwin":
+            if "Contents/MacOS" in str(base_path):
+                resources = base_path.parent / "Resources"
+                if resources.is_dir():
+                    return resources
+            # Launched via venv (launch_gui.sh -> venv/bin/python3): base_path is .../Resources/venv/bin
+            # Walk up to Contents/Resources so icon and paths resolve correctly
+            current = base_path
+            for _ in range(8):
+                if current.name == "Resources" and (current.parent / "MacOS").is_dir():
+                    return current
+                if (current / "main.py").is_file() and (current / "img").is_dir():
+                    return current
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
         # Fallback: treat base_path as app root (e.g. Windows or custom bundle)
         return base_path
     except Exception:
@@ -66,9 +79,27 @@ def get_app_root() -> Path:
     return _get_app_root_development()
 
 
+def _running_from_app_bundle() -> bool:
+    """True when app root is inside a .app bundle (Contents/Resources), so logs should go to user dir."""
+    try:
+        root = get_app_root()
+        return "Contents/Resources" in str(root) or (root.parent / "MacOS").is_dir()
+    except Exception:
+        return False
+
+
 def get_logs_dir() -> Path:
-    """Directory for session logs and crash log. When installed, use platform user data dir."""
+    """Directory for session logs, crash log, dock_debug. When running from .app, use Logs inside the app if writable."""
     if _is_installed():
+        return _get_user_data_logs_dir()
+    if sys.platform == "darwin" and _running_from_app_bundle():
+        app_logs = get_app_root() / "Logs"
+        try:
+            app_logs.mkdir(parents=True, exist_ok=True)
+            if os.access(app_logs, os.W_OK):
+                return app_logs
+        except (OSError, PermissionError):
+            pass
         return _get_user_data_logs_dir()
     return get_app_root() / "Logs"
 

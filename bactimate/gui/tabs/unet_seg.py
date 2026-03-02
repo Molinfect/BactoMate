@@ -51,7 +51,7 @@ from bactimate.gui.mask_utils import (
 )
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon
-from bactimate.tiff_metadata import read_calibration_from_path_or_original
+from bactimate.modules.tiff_metadata import read_calibration_from_path_or_original
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.image_utils import build_segmentation_overlay, scale_for_preview, to_qpixmap
 

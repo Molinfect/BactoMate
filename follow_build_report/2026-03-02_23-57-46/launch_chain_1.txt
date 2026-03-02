@@ -1,0 +1,5 @@
+=== FOLLOW_BUILD LAUNCH 1 at 2026-03-02T23:58:50.969999 ===
+LAUNCHER pid=33856 exe=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/MacOS/BactiMate bundle=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app
+STRICT_LAUNCHER pid=33857 ppid=33856 script=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/setup/launch_gui_bundle_strict.sh root=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources
+STRICT_ABOUT_TO_RUN python_cmd=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/BactiMate main_py=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/main.py
+MAIN_PY pid=33874 ppid=33857 executable=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/venv/bin/BactiMate argv0=/Users/philipppopp/Desktop/BactiMate-main-V1.0/BactiMate.app/Contents/Resources/main.py

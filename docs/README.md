@@ -29,13 +29,13 @@ This opens the BactiMate GUI. Tabs: **TIFF Conversion** (ND2/LIF/CZI → TIFF), 
 
 ```bash
 source venv/bin/activate
-python -m scripts.batch_process_tiff_sequence your_sequence.tif --diameter 30
+python -m bactimate.scripts.batch_process_tiff_sequence your_sequence.tif --diameter 30
 ```
 
 ### Process All Files in a Folder
 
 ```bash
-python -m scripts.batch_process_folder /path/to/folder \
+python -m bactimate.scripts.batch_process_folder /path/to/folder \
     --model bact_phase_omni \
     --diameter 30 \
     --pixel-size 0.108 \
@@ -86,6 +86,14 @@ python -m scripts.batch_process_folder /path/to/folder \
 - **GUI Framework**: PyQt6
 - **Virtual Environment**: `venv/`
 
+### Project structure
+
+- **`bactimate/`** — Main package: **`gui/`** (tabs, workers, styles), **`modules/`** (bioio_reader, foci_utils, tiff_metadata, validation), **`scripts/`** (CLI entry points: analyze_cell_areas, batch_process_*, convert_nd2_to_tif, check_tiff_format, etc.).
+- **`main.py`** — GUI entry point (also `python -m bactimate` via pyproject.toml).
+- **`setup/`** — Environment and launch: `setup_fresh_env.sh`, `launch_gui.sh`, `launch_gui_bundle_strict.sh`, patches.
+- **`build/`** — App icon and bundle: `create_icons.sh`, `build_app_bundle.sh`.
+- **`docs/`** — README and User Manual.
+
 ## Graphical User Interface
 
 Launch with `./launch_gui.sh` (or `source venv/bin/activate && python main.py`). The GUI provides:
@@ -106,26 +114,26 @@ For every control, tooltip text, workflow, and example scenario (e.g. ND2 with p
 ### Single File
 
 ```bash
-python -m scripts.batch_process_tiff_sequence input.tif --diameter 30
-python -m scripts.batch_process_tiff_sequence input.tif --model bact_phase_omni --flow-threshold 0.3 --no-gpu
+python -m bactimate.scripts.batch_process_tiff_sequence input.tif --diameter 30
+python -m bactimate.scripts.batch_process_tiff_sequence input.tif --model bact_phase_omni --flow-threshold 0.3 --no-gpu
 ```
 
 ### Folder
 
 ```bash
-python -m scripts.batch_process_folder /path/to/folder \
+python -m bactimate.scripts.batch_process_folder /path/to/folder \
     --model bact_phase_omni --diameter 30 --pixel-size 0.108 \
     --min-aspect-ratio 2.0 --max-area 50 --max-width 2.0
 ```
 
-**Common options:** `--model`, `--diameter`, `--flow-threshold`, `--mask-threshold`, `--cluster`, `--no-gpu`, `--batch-size`, `--output`, `--no-overlay`. See script help: `python -m scripts.batch_process_tiff_sequence --help`.
+**Common options:** `--model`, `--diameter`, `--flow-threshold`, `--mask-threshold`, `--cluster`, `--no-gpu`, `--batch-size`, `--output`, `--no-overlay`. See script help: `python -m bactimate.scripts.batch_process_tiff_sequence --help`.
 
 ## Batch Processing
 
 Process all TIFFs in a folder (segment + optional analysis):
 
 ```bash
-python -m scripts.batch_process_folder /path/to/folder \
+python -m bactimate.scripts.batch_process_folder /path/to/folder \
     --model bact_phase_omni --diameter 30 --pixel-size 0.108 \
     --recursive --detailed --output /path/to/output
 ```
@@ -137,7 +145,7 @@ Options: `--recursive`, `--skip-processing` (analyze only if masks exist), `--de
 Analyze mask TIFFs (morphology filters, area in µm²):
 
 ```bash
-python -m scripts.analyze_cell_areas masks.tif --pixel-size 0.108 \
+python -m bactimate.scripts.analyze_cell_areas masks.tif --pixel-size 0.108 \
     --min-aspect-ratio 2.0 --max-area 30 --max-width 1.5 \
     --detailed --visualization
 ```
@@ -146,20 +154,31 @@ See **[User Manual](BACTIMATE_USER_MANUAL.md)** Section 5 for all filters and op
 
 ## Building App Bundles
 
-BactiMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka).
+BactiMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka) and a distributable DMG.
 
-1. **Setup:** `./setup/setup_fresh_env.sh`
-2. **Icons (first time):** `./build/create_icons.sh`
-3. **Build:** `./build/build_app_bundle.sh` → `BactiMate.app`
-4. **DMG (optional):** `./build/create_dmg.sh` → `dist/BactiMate.dmg`
+1. **Setup:** `./setup/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
+2. **Icon (required for distributable app):** Ensure `img/logo2.png` is your desired app icon, then run `./build/create_icons.sh`. The build will fail with a clear error if no valid icon ends up in the bundle.
+3. **Build:** `./build/build_app_bundle.sh` → `BactiMate.app` (build verifies launcher, script, Python, and icon)
+4. **DMG:** `./build/create_dmg.sh` → `dist/BactiMate.dmg` (app + Applications symlink for drag‑to‑install)
 
-The launcher uses `PYTHONHOME` for a relocatable venv. For structure, distribution, and cross-machine notes, see the full **[User Manual](BACTIMATE_USER_MANUAL.md)** or the original build section in the repo history.
+**Distribution checklist** (before shipping the DMG):
+
+- **Icon:** In Finder, BactiMate.app shows your custom icon (not a grey placeholder). If you see a generic icon, run `./build/create_icons.sh` and rebuild.
+- **Launch:** Double‑click the app (or `open BactiMate.app`) — it opens once.
+- **Reopen:** Quit the app, then double‑click again (or click the Dock icon if you pinned it). It must open again (see Troubleshooting if it doesn’t).
+- **Dock:** One BactiMate icon; after quit, clicking the pinned Dock icon reopens the app (pin by dragging BactiMate.app from Finder to the Dock).
+
+For structure and cross-machine notes, see the **[User Manual](BACTIMATE_USER_MANUAL.md)**.
 
 ## Troubleshooting
 
 - **User-trained models (0 cells, different behaviour):** Use negative mask threshold (e.g. -2) for user models if needed; prefer fewer epochs (e.g. 50) and lower learning rate when fine-tuning. Run **Check pipeline** in the GUI (Omnipose Segment) or `python -m bactimate.scripts.check_omnipose_pipeline compare a.pth b.pth`. **Full details:** User Manual **Appendix B** (training troubleshooting: head drift, background as cells) and **Section 4.8** (user-trained vs built-in models).
 - **Checkpoint format:** BactiMate saves checkpoints with `state_dict` + `nchan`/`nclasses`. The loader is patched via `setup/apply_all_patches.py` (run by `launch_gui.sh`). If segmentation fails, run **Check pipeline** and ensure "Loader unwraps checkpoint dict" is Yes.
-- **App bundle won't launch:** Check `launch_gui.sh` is executable; check `Logs/launch.log` or `~/Library/Application Support/BactiMate/Logs/launch.log`; run `./launch_gui.sh` from inside the app bundle Resources to see errors.
+- **App bundle won't launch / no logs / won't reopen:** There are two log locations. **Use this one to see every launch:** **`~/Library/Application Support/BactiMate/Logs/launch.log`** — the launcher appends a line here every time it runs (from project or from the .app). Open it in Finder: **Go → Go to Folder** → paste `~/Library/Application Support/BactiMate/Logs`. If the app **doesn't open again** after you quit: (1) Check that file — each launch adds a line like `2026-03-01T23:45:00 [from /path] === BactiMate launch attempt ===`. If there is **no new line** when you try to reopen, the launcher did not run (Dock/Finder is not starting it; remove the Dock icon and always start by double‑clicking BactiMate.app). (2) Full logs (launch.log, dock_debug.txt, crash.log, omnipose_debug.log) when running from the .app are in that same folder; when running from the project they are in `BactiMate-main-V1.0/Logs/`. (3) To see errors in the terminal when reopening, run: `"/path/to/BactiMate.app/Contents/MacOS/BactiMate"` then quit and run the same command again.
+- **App icon shows grey frame or wrong icon:** The app icon is built from **only** `img/logo2.png` (no extra background is added). Any grey or black in the icon is in that file. For an icon that is 100% your graphic (e.g. only the blue bacterium): use a `logo2.png` that contains only that graphic (e.g. on transparency, no grey or black frame). Then run `./build/create_icons.sh` and `./build/build_app_bundle.sh` again. Rebuild the DMG if needed.
+- **"No bundled framework" / "Bundle requires Python" in launch.log:** The .app does not ship its own Python; it uses the venv, which points at your Mac’s Python (e.g. Homebrew). On the build machine that’s normal and the app should run. Only relevant when moving the .app to another Mac without Python. Not the cause of "won’t reopen" on the same machine.
+- **Dock opens Python.app or wrong app after pinning:** The app uses a **native launcher** so the main process is BactiMate, not Python. After rebuilding with `./build/build_app_bundle.sh`: remove any old BactiMate/Python icon from the Dock, then **pin BactiMate.app** by dragging it from Finder onto the Dock. "Keep in Dock" from the running app should now pin BactiMate correctly. If you still see Python.app opening: rebuild the app and re-pin from Finder.
+- **Two Dock icons:** With the native launcher you should see only one BactiMate icon. If you still see two, remove the extra from the Dock and re-pin BactiMate.app from Finder.
 - **PyQt6 (cocoa plugin):** `./setup/repair_pyqt6.sh`
 - **GUI won't start:** `source venv/bin/activate`, `pip show PyQt6`, `./setup/repair_pyqt6.sh`, or `./setup/setup_fresh_env.sh`
 - **Segmentation fault:** If the GUI crashes immediately after opening, try recreating the environment: `./setup/setup_fresh_env.sh`. If the crash happens when using a specific file type (e.g. CZI), the issue may be in that code path—report with file type and steps.
@@ -182,12 +201,12 @@ See repo for full test checklist (launch, model loading, segmentation, batch, er
 
 - `main.py` — GUI entrypoint
 - `launch_gui.sh` — Launch GUI (venv, patches, main.py)
-- `python -m scripts.analyze_cell_areas` — Analyze masks, Excel/CSV
+- `python -m bactimate.scripts.analyze_cell_areas` — Analyze masks, Excel/CSV
 - `python -m bactimate.scripts.assign_persistent_ids` — Assign persistent CellIDs to a mask stack (run after segmentation; then use output in Analyze Masks and Tracking)
-- `python -m scripts.batch_process_tiff_sequence` — Single multipage TIFF, Omnipose
-- `python -m scripts.batch_process_folder` — Folder: segment + analyze
-- `python -m scripts.convert_nd2_to_tif` — ND2/LIF/CZI → TIFF
-- `python -m scripts.check_tiff_format` — Verify/reshape TIFF
+- `python -m bactimate.scripts.batch_process_tiff_sequence` — Single multipage TIFF, Omnipose
+- `python -m bactimate.scripts.batch_process_folder` — Folder: segment + analyze
+- `python -m bactimate.scripts.convert_nd2_to_tif` — ND2/LIF/CZI → TIFF
+- `python -m bactimate.scripts.check_tiff_format` — Verify/reshape TIFF
 - `setup/apply_all_patches.py` — Omnipose/cellpose patches
 - `setup/repair_pyqt6.sh`, `setup/setup_fresh_env.sh`, `setup/install_cuda_pytorch.sh`, `setup/clear_models.sh`
 - `build/build_app_bundle.sh`, `build/create_dmg.sh`, `build/create_icons.sh`

@@ -17,21 +17,41 @@ else
 fi
 cd "$PROJECT_ROOT"
 
-# Use BactiMate Logs folder (same as omnipose_debug.log, crash.log) for portability (new Mac/Windows)
-# When running from .app bundle, app dir may be read-only -> use platform user data dir
+# Use BactiMate Logs folder. When running from .app: try Logs inside the app first so logs appear in Contents/Resources/Logs
 if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]] || [[ "$PROJECT_ROOT" == *"/Contents/Resources"* ]]; then
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        LOG_DIR="$HOME/Library/Application Support/BactiMate/Logs"
-    elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
-        LOG_DIR="${APPDATA:-$HOME/AppData/Roaming}/BactiMate/Logs"
+    APP_LOGS="$PROJECT_ROOT/Logs"
+    mkdir -p "$APP_LOGS" 2>/dev/null || true
+    if [[ -w "$APP_LOGS" ]] 2>/dev/null; then
+        LOG_DIR="$APP_LOGS"
     else
-        LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/BactiMate/Logs"
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            LOG_DIR="$HOME/Library/Application Support/BactiMate/Logs"
+        elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
+            LOG_DIR="${APPDATA:-$HOME/AppData/Roaming}/BactiMate/Logs"
+        else
+            LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/BactiMate/Logs"
+        fi
     fi
 else
     LOG_DIR="$PROJECT_ROOT/Logs"
 fi
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/launch.log"
+# On macOS also ensure Application Support exists and write one line there so "reopen didn't run" can be diagnosed
+CANONICAL_LOG=""
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    CANONICAL_LOG="$HOME/Library/Application Support/BactiMate/Logs/launch.log"
+    mkdir -p "$(dirname "$CANONICAL_LOG")"
+    echo "$(date '+%Y-%m-%dT%H:%M:%S') [from ${PROJECT_ROOT:-?}] === BactiMate launch attempt ===" >> "$CANONICAL_LOG" 2>/dev/null || true
+    # Dock/reopen diagnostics: use same LOG_DIR (inside app or Application Support)
+    if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
+        DOCK_DEBUG="$LOG_DIR/dock_debug.txt"
+        echo "" >> "$DOCK_DEBUG" 2>/dev/null || true
+        echo "=== $(date '+%Y-%m-%dT%H:%M:%S') ===" >> "$DOCK_DEBUG" 2>/dev/null || true
+        echo "LAUNCH_SCRIPT pid=$$ ppid=$PPID  LAUNCHER_PID=${BACTIMATE_LAUNCHER_PID:-unknown}  (ppid should equal LAUNCHER_PID; if not, Reopen may fail)" >> "$DOCK_DEBUG" 2>/dev/null || true
+    fi
+fi
+echo "$(date '+%Y-%m-%dT%H:%M:%S'): === BactiMate launch attempt ===" >> "$LOG_FILE"
 
 # If running interactively (from terminal), also show errors in terminal
 # Check if stderr is a terminal (not redirected)
@@ -54,9 +74,11 @@ echo "$(date): Launch script directory (setup): $SCRIPT_DIR" >> "$LOG_FILE"
 echo "$(date): Project root: $PROJECT_ROOT" >> "$LOG_FILE"
 echo "$(date): Looking for Python in: $PROJECT_ROOT/venv/bin/" >> "$LOG_FILE"
 
-# Use venv Python directly instead of activation (more reliable across machines)
+# Use venv Python directly instead of activation (more reliable across machines).
 VENV_PYTHON="$PROJECT_ROOT/venv/bin/python3"
 VENV_PYTHONW="$PROJECT_ROOT/venv/bin/pythonw"
+# In .app mode prefer a BactiMate-named launcher binary so Dock identity stays on BactiMate.
+VENV_BACTIMATE="$PROJECT_ROOT/venv/bin/BactiMate"
 
 # Debug: List what's in venv/bin
 if [ -d "$PROJECT_ROOT/venv/bin" ]; then
@@ -67,10 +89,11 @@ else
 fi
 
 # Verify venv Python exists and is executable
-if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ]; then
+if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ] && [ ! -f "$VENV_BACTIMATE" ]; then
     echo "$(date): ERROR: Python interpreter not found in venv: $PROJECT_ROOT/venv/bin/" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHON=$VENV_PYTHON" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHONW=$VENV_PYTHONW" >> "$LOG_FILE"
+    echo "$(date): VENV_BACTIMATE=$VENV_BACTIMATE" >> "$LOG_FILE"
     if [[ "$PROJECT_ROOT" != *".app/Contents/Resources"* ]]; then
         MSG="BactiMate Error: Python environment not found. From the project folder run: ./setup/setup_fresh_env.sh then try again. Logs: $LOG_DIR"
     else
@@ -80,14 +103,25 @@ if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ]; then
     exit 1
 fi
 
-# Use pythonw if available, otherwise python3
-if [ -f "$VENV_PYTHONW" ] && [ -x "$VENV_PYTHONW" ]; then
+# Deterministic startup path:
+# - In .app mode we only allow the bundled BactiMate launcher binary.
+# - In project mode we use pythonw/python3 from the local venv.
+if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
+    if [ -f "$VENV_BACTIMATE" ] && [ -x "$VENV_BACTIMATE" ]; then
+        PYTHON_CMD="$VENV_BACTIMATE"
+        echo "$(date): Using bundled BactiMate binary: $PYTHON_CMD" >> "$LOG_FILE"
+    else
+        echo "$(date): ERROR: Required bundled launcher missing or not executable: $VENV_BACTIMATE" >> "$LOG_FILE"
+        osascript -e 'display dialog "BactiMate Error: App bundle is incomplete (missing venv/bin/BactiMate). Rebuild the app bundle." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+        exit 1
+    fi
+elif [ -f "$VENV_PYTHONW" ] && [ -x "$VENV_PYTHONW" ]; then
     PYTHON_CMD="$VENV_PYTHONW"
 elif [ -f "$VENV_PYTHON" ] && [ -x "$VENV_PYTHON" ]; then
     PYTHON_CMD="$VENV_PYTHON"
 else
     echo "$(date): ERROR: Python interpreter is not executable: $VENV_PYTHON" >> "$LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: Python interpreter is not executable. The application may be corrupted." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    osascript -e 'display dialog "BactiMate Error: Python interpreter is not executable. The environment may be corrupted." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 
@@ -105,29 +139,28 @@ if [ $PYTHON_TEST_EXIT -ne 0 ]; then
     echo "$(date): ERROR: Python interpreter failed to run: $PYTHON_CMD" >> "$LOG_FILE"
     echo "$(date): Exit code: $PYTHON_TEST_EXIT" >> "$LOG_FILE"
     echo "$(date): Error output: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"
-    
-    # Try to get more diagnostic info
+
+    # No fallback to system Python in .app mode: fail fast with one clear path.
     echo "$(date): Attempting to diagnose Python issue..." >> "$LOG_FILE"
     echo "$(date): Checking Python architecture..." >> "$LOG_FILE"
     arch >> "$LOG_FILE" 2>&1 || true
     echo "$(date): System architecture:" >> "$LOG_FILE"
     uname -m >> "$LOG_FILE" 2>&1 || true
-    
-    # Check if it's a code signing issue
+
     if command -v codesign >/dev/null 2>&1; then
         echo "$(date): Checking code signature..." >> "$LOG_FILE"
         codesign -dv --verbose=4 "$PYTHON_CMD" >> "$LOG_FILE" 2>&1 || true
     fi
-    
-    # Check for missing libraries
     if command -v otool >/dev/null 2>&1; then
         echo "$(date): Checking linked libraries..." >> "$LOG_FILE"
         otool -L "$PYTHON_CMD" | head -10 >> "$LOG_FILE" 2>&1 || true
     fi
-    
-    osascript -e "display dialog \"BactiMate Error: Python interpreter failed to start. The application may be corrupted or incompatible with this system. Check BactiMate Logs: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+
+    osascript -e "display dialog \"BactiMate Error: Python launcher failed to start. Check logs: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
-else
+fi
+
+if [ $PYTHON_TEST_EXIT -eq 0 ]; then
     echo "$(date): Python test successful: $PYTHON_TEST_OUTPUT" >> "$LOG_FILE"
     
     # Log Python version prominently (venv can be 3.11 or 3.9 depending on how it was created)
@@ -305,12 +338,11 @@ if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
             echo "$(date): Bundle may not work on machines without Python installed" >> "$LOG_FILE"
         fi
     else
-        # No framework bundled - don't set PYTHONHOME to venv (it lacks full stdlib)
-        # Let Python auto-detect the base installation instead
+        # No framework bundled: use venv's Python (it will find base via symlink, e.g. Homebrew).
+        # On the build machine this works. For distribution to other machines, bundle a Python.framework.
         unset PYTHONHOME 2>/dev/null || true
-        echo "$(date): No bundled framework found" >> "$LOG_FILE"
-        echo "$(date): PYTHONHOME left unset - Python will auto-detect base installation" >> "$LOG_FILE"
-        echo "$(date): WARNING: Bundle requires Python to be installed on target machine" >> "$LOG_FILE"
+        echo "$(date): No bundled Python framework - using venv (finds base Python on this machine)" >> "$LOG_FILE"
+        echo "$(date): PYTHONHOME unset (Python auto-detects). For portable .app, add Contents/Frameworks/Python.framework" >> "$LOG_FILE"
     fi
 else
     # Don't set PYTHONHOME for regular venv - Python will find base installation automatically
@@ -388,6 +420,24 @@ if "$PYTHON_CMD" -c "import PyQt6" 2>> "$LOG_FILE"; then
     fi
 fi
 
+# When running from .app and check failed: clear quarantine and re-sign (same as build), then re-check
+if [ "$PYQT6_OK" = false ] && [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
+    echo "$(date): PyQt6 check failed in app bundle. Clearing quarantine and re-signing venv..." >> "$LOG_FILE"
+    APP_BUNDLE="$(cd "$PROJECT_ROOT/../.." && pwd)"
+    xattr -cr "$APP_BUNDLE" 2>> "$LOG_FILE" || true
+    if command -v codesign &>/dev/null 2>&1; then
+        find "$PROJECT_ROOT/venv" -name "*.dylib" -type f -exec codesign -f -s - {} \; 2>> "$LOG_FILE" || true
+        find "$PROJECT_ROOT/venv/bin" -type f \( -name "python*" -o -name "pythonw*" \) -exec codesign -f -s - {} \; 2>> "$LOG_FILE" || true
+    fi
+    PYQT6_OK=false
+    if "$PYTHON_CMD" -c "import PyQt6" 2>> "$LOG_FILE"; then
+        if [ -f "$VENV_QT_PLUGINS/platforms/libqcocoa.dylib" ]; then
+            PYQT6_OK=true
+            echo "$(date): PyQt6 OK after clearing quarantine." >> "$LOG_FILE"
+        fi
+    fi
+fi
+
 if [ "$PYQT6_OK" = false ]; then
     echo "$(date): PyQt6 issue detected. Running automatic repair..." >> "$LOG_FILE"
     if "$SCRIPT_DIR/repair_pyqt6.sh" >> "$LOG_FILE" 2>&1; then
@@ -396,8 +446,13 @@ if [ "$PYQT6_OK" = false ]; then
         echo "$(date): Repair completed successfully." >> "$LOG_FILE"
     else
         echo "$(date): Automatic repair failed." >> "$LOG_FILE"
-        osascript -e 'display dialog "BactiMate Error: PyQt6 installation is corrupted and cannot be repaired automatically. Please reinstall the application." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
-        exit 1
+        # When from app: try launching anyway so user gets real Qt error or app may still work
+        if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
+            echo "$(date): Continuing to launch (from app); Python may show the real error." >> "$LOG_FILE"
+        else
+            osascript -e "display dialog \"BactiMate Error: PyQt6 could not be loaded. Often fixed by rebuilding the app (clears quarantine).\n\nDetails in: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+            exit 1
+        fi
     fi
 fi
 
@@ -462,26 +517,20 @@ if [ -t 0 ]; then
     echo "Log file: $LOG_FILE" >&2
 fi
 
+# Keep process name stable on macOS so Dock/menu bar stay on BactiMate.
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS menu bar shows the process name. Keep "BactiMate": if we're already zsh (launcher
-    # started us as BactiMate), just exec -a BactiMate python; else exec zsh so we can use -a.
     if [ -n "${PYTHONHOME:-}" ]; then
         echo "$(date): [DEBUG] Passing PYTHONHOME to Python (app bundle mode)" >> "$LOG_FILE"
     else
         echo "$(date): [DEBUG] NOT passing PYTHONHOME (regular venv mode)" >> "$LOG_FILE"
     fi
-    export PYTHONHOME PATH QT_PLUGIN_PATH DYLD_FRAMEWORK_PATH QT_FRAMEWORK_PATH PYTHON_CMD PROJECT_ROOT
+    export PYTHONHOME PATH QT_PLUGIN_PATH DYLD_FRAMEWORK_PATH QT_FRAMEWORK_PATH
     export QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1
-    if [ -n "${ZSH_VERSION:-}" ]; then
-        # Already in zsh (e.g. launcher ran "zsh -c source ..." with argv[0]=BactiMate); keep name
-        exec -a BactiMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
-    else
-        exec /bin/zsh -c 'export PYTHONHOME PATH QT_PLUGIN_PATH DYLD_FRAMEWORK_PATH QT_FRAMEWORK_PATH QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1; exec -a BactiMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"'
-    fi
+    exec -a BactiMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
 else
     if [ -n "${PYTHONHOME:-}" ]; then
-        exec env PYTHONHOME="$PYTHONHOME" PATH="$PATH" "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
+        exec "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
     else
-        exec env PATH="$PATH" "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
+        exec "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
     fi
 fi

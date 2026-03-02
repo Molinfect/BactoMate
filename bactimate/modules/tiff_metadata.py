@@ -58,7 +58,7 @@ def read_metadata_from_path(image_path: Optional[Path]) -> dict[str, Any]:
 def _read_lif_czi_metadata_into(path: Path, out: dict[str, Any]) -> None:
     """Fill frame_count, channel_count, z_count, channel_names, pixel_size from LIF/CZI via BioIO when available."""
     try:
-        from bactimate.bioio_reader import get_info as bioio_get_info
+        from bactimate.modules.bioio_reader import get_info as bioio_get_info
         info = bioio_get_info(path)
         if not info:
             return
@@ -574,7 +574,7 @@ def read_calibration_from_path(image_path: Optional[Path]) -> tuple[float, float
                         pass
         elif suffix in (".lif", ".czi"):
             try:
-                from bactimate.bioio_reader import get_info as bioio_get_info
+                from bactimate.modules.bioio_reader import get_info as bioio_get_info
                 info = bioio_get_info(image_path)
                 if info and info.get("pixel_size") is not None:
                     try:

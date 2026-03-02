@@ -46,10 +46,10 @@ def check_environment() -> str:
 
     # BioIO plugins (optional; report which formats are available)
     try:
-        from bactimate.bioio_reader import is_available as bioio_available
+        from bactimate.modules.bioio_reader import is_available as bioio_available
         if bioio_available():
             try:
-                from bactimate.bioio_reader import get_available_plugins
+                from bactimate.modules.bioio_reader import get_available_plugins
                 plugins = get_available_plugins()
                 if plugins:
                     lines.append(f"  OK   BioIO plugins: {', '.join(plugins)}")

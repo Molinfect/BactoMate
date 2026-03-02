@@ -1,14 +1,31 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-01 22:11:51",
+  "timestamp": "2026-03-02 18:53:52",
   "tabs": {
     "nd2": {
-      "max_frames": 100,
+      "max_frames": 109,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
+      "bleach_fluorescence_channels": [
+        false,
+        false
+      ],
+      "fi_channels": [
+        false,
+        false
+      ],
+      "foci_channels": [
+        false,
+        false
+      ],
+      "zproject_channels": [
+        false,
+        false
+      ],
+      "file_path": "/Users/philipppopp/Desktop/Bas08-MCP_parS_MOI0.1_/6_EM19765_Phage_1.nd2",
       "performed": false
     },
     "segmentation": {
@@ -75,7 +92,7 @@
       "create_vis": true,
       "batch": false,
       "filter_pixel_size": 0.108,
-      "filter_time_per_frame": 1.0,
+      "filter_time_per_frame": 4.98,
       "filter_time_per_frame_unit": "min",
       "performed": false
     },

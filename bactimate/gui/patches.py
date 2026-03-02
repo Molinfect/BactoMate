@@ -7,7 +7,7 @@ import os
 
 
 def _apply_pbr_patch() -> None:
-    """Patch pbr.version.VersionInfo for frozen builds to avoid versioning errors."""
+    """Patch pbr.version.VersionInfo for packaged builds to avoid versioning errors."""
     if not (getattr(sys, "frozen", False) or hasattr(sys, "__compiled__")):
         return
     try:
@@ -54,7 +54,7 @@ def _apply_pbr_patch() -> None:
 def _patch_omnipose_get_masks() -> None:
     """
     Compatibility fix: ensure omnipose.core.get_masks never receives bd=None.
-    In some environments (frozen builds, certain user models) bd can be None,
+    In some environments (packaged builds, certain user models) bd can be None,
     causing TypeError (e.g. '>' not supported between 'NoneType' and 'int').
     This only substitutes a fallback array when bd is None; it does not change
     flow_threshold, mask_threshold, diameter, or any other Omnipose behavior.

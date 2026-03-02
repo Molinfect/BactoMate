@@ -112,7 +112,7 @@ def run(
         else:
             mask_resized = mask
         out_file = output_path / f"{f.stem}_unet_masks.tif"
-        from bactimate.tiff_metadata import build_metadata_dict_for_mask_from_source
+        from bactimate.modules.tiff_metadata import build_metadata_dict_for_mask_from_source
         meta = build_metadata_dict_for_mask_from_source(Path(f), num_frames=1)
         tifffile.imwrite(
             out_file,

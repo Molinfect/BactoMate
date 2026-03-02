@@ -462,7 +462,7 @@ class TrackingWorker(QThread):
             output_dir.mkdir(parents=True, exist_ok=True)
 
             # Read calibration from original or mask TIFF so we can preserve it in written TIFFs
-            from bactimate.tiff_metadata import read_calibration_from_path, build_metadata_dict
+            from bactimate.modules.tiff_metadata import read_calibration_from_path, build_metadata_dict
             _cal_path = Path(self.original_file) if self.original_file else (Path(self.mask_file) if self.mask_file else None)
             self._cal_ps, self._cal_tp = read_calibration_from_path(_cal_path)
             
@@ -1342,7 +1342,7 @@ class TrackingWorker(QThread):
         T = visualization.shape[0]
         meta = None
         try:
-            from bactimate.tiff_metadata import build_metadata_dict
+            from bactimate.modules.tiff_metadata import build_metadata_dict
             ps = getattr(self, '_cal_ps', 0) or 0
             tp = getattr(self, '_cal_tp', 0) or 0
             # axes TYXC so metadata matches 4D shape (T, H, W, 3); avoids tifffile "axes do not match shape" warning
@@ -1473,7 +1473,7 @@ class TrackingWorker(QThread):
         overlay_array = np.stack(overlays, axis=0)
         T = overlay_array.shape[0]
         try:
-            from bactimate.tiff_metadata import build_metadata_dict
+            from bactimate.modules.tiff_metadata import build_metadata_dict
             ps = getattr(self, '_cal_ps', 0) or 0
             tp = getattr(self, '_cal_tp', 0) or 0
             # axes TYXC so metadata matches 4D RGB stack (T, H, W, 3); avoids tifffile "axes do not match shape" warning
@@ -2192,7 +2192,7 @@ class SAM2SegmentWorker(QThread):
             masks_output = output_dir / f"{output_stem}_sam2_masks.tif"
             masks_array = np.stack(all_masks, axis=0)
             try:
-                from bactimate.tiff_metadata import build_metadata_dict_for_mask_from_source
+                from bactimate.modules.tiff_metadata import build_metadata_dict_for_mask_from_source
                 source_for_meta = tiff_files[0] if tiff_files else (input_path if input_path.is_file() else None)
                 meta = build_metadata_dict_for_mask_from_source(
                     Path(source_for_meta) if source_for_meta else None,

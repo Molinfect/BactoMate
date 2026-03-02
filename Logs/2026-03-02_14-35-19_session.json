@@ -1,35 +1,15 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-01 19:17:46",
+  "timestamp": "2026-03-02 14:35:19",
   "tabs": {
     "nd2": {
-      "max_frames": 1,
+      "max_frames": 100,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
-      "bleach_fluorescence_channels": [
-        false,
-        false,
-        false
-      ],
-      "fi_channels": [
-        false,
-        false,
-        false
-      ],
-      "foci_channels": [
-        false,
-        false,
-        false
-      ],
-      "zproject_channels": [
-        false,
-        false,
-        false
-      ],
-      "file_path": "/Users/philipppopp/Desktop/Test_data/2_FI/EM13748_AnTC_003.nd2"
+      "performed": false
     },
     "segmentation": {
       "model": "bact_phase_omni",
@@ -48,7 +28,8 @@
       "omnipose_tyx_x": 256,
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
-      "omnipose_use_tiled": true
+      "omnipose_use_tiled": true,
+      "performed": false
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -60,7 +41,7 @@
       "unet_model_name": ""
     },
     "analyze_masks": {
-      "pixel_size": 0.107,
+      "pixel_size": 0.108,
       "min_aspect_ratio": 1.5,
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
@@ -84,7 +65,8 @@
       "foci_min_separation": 2,
       "foci_min_size": 1,
       "foci_max_size": 0,
-      "foci_exclude_outside_cells": false
+      "foci_exclude_outside_cells": false,
+      "performed": false
     },
     "tracking": {
       "model": "general_2d",
@@ -92,9 +74,10 @@
       "use_gpu": true,
       "create_vis": true,
       "batch": false,
-      "filter_pixel_size": 0.107,
+      "filter_pixel_size": 0.108,
       "filter_time_per_frame": 1.0,
-      "filter_time_per_frame_unit": "min"
+      "filter_time_per_frame_unit": "min",
+      "performed": false
     },
     "growth_curve_video": {
       "time_interval": 10.0,

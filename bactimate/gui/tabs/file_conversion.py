@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bactimate.bioio_reader import get_info as bioio_get_info, is_available as bioio_is_available, load_data as bioio_load_data
+from bactimate.modules.bioio_reader import get_info as bioio_get_info, is_available as bioio_is_available, load_data as bioio_load_data
 from bactimate.gui.constants import CONVERT_ND2_SCRIPT, LOGS_DIR, PROJECT_ROOT
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.preferences import LAST_DIR_ND2, get_default_browse_dir
@@ -565,7 +565,7 @@ class ND2ConversionTab(QWidget):
             return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
         try:
             from pathlib import Path
-            from bactimate.tiff_metadata import read_metadata_from_path
+            from bactimate.modules.tiff_metadata import read_metadata_from_path
             meta = read_metadata_from_path(Path(file_path))
             num_time = meta.get("frame_count") or 1
             num_channels = meta.get("channel_count") or 1
@@ -1004,7 +1004,7 @@ class ND2ConversionTab(QWidget):
         """Load and display ND2 file information. All metadata from tiff_metadata (single source of truth)."""
         try:
             from pathlib import Path
-            from bactimate.tiff_metadata import read_metadata_from_path, format_metadata_for_display
+            from bactimate.modules.tiff_metadata import read_metadata_from_path, format_metadata_for_display
 
             self.parent_window.log_output(f"Loading ND2 file info: {file_path}\n")
             meta = read_metadata_from_path(Path(file_path))
@@ -1194,7 +1194,7 @@ class ND2ConversionTab(QWidget):
     def _load_tiff_info(self, file_path):
         """Load and display TIFF file information. Uses BioIO when available, then tifffile; tiff_metadata for calibration."""
         try:
-            from bactimate.tiff_metadata import read_calibration_from_path
+            from bactimate.modules.tiff_metadata import read_calibration_from_path
             self.parent_window.log_output(f"Loading TIFF file info: {file_path}\n")
             path = Path(file_path)
             # Try BioIO first for consistent dimension reading
@@ -2110,7 +2110,7 @@ class ND2ConversionTab(QWidget):
                 cur_method = kwargs['bleach_method']
                 cur_channels = kwargs.get('bleach_channel_indices')
                 try:
-                    from scripts.convert_nd2_to_tif import bleach_correct_stack
+                    from bactimate.scripts.convert_nd2_to_tif import bleach_correct_stack
                 except ImportError:
                     return None, None, None
                 data = np.asarray(raw_frames)
@@ -2218,6 +2218,12 @@ class ND2ConversionTab(QWidget):
                 frame_spin.blockSignals(False)
         frame_spin.valueChanged.connect(on_value_changed)
         
+        # Close button (same as other preview windows)
+        close_btn = QPushButton("Close")
+        close_btn.setMinimumWidth(100)
+        close_btn.clicked.connect(preview_dialog.close)
+        layout.addWidget(close_btn)
+        
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
         close_shortcut.activated.connect(preview_dialog.close)
         minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), preview_dialog)  # Cmd+M on macOS
@@ -2272,7 +2278,7 @@ class ND2ConversionTab(QWidget):
             if 'torch.testing' in error_msg:
                 QMessageBox.warning(self, "Preview Unavailable", 
                                   "Preview requires torch.testing module.\n\n"
-                                  "This is a known issue with frozen builds.\n"
+                                  "This is a known issue in some environments.\n"
                                   "Try running from source: python main.py")
             else:
                 QMessageBox.warning(self, "Preview Unavailable", 
@@ -2282,7 +2288,7 @@ class ND2ConversionTab(QWidget):
             if 'RpcBackendOptions' in error_msg or 'generic_type' in error_msg:
                 QMessageBox.warning(self, "Preview Error", 
                                   "PyTorch initialization error.\n\n"
-                                  "This is a known issue with frozen builds and PyTorch.\n"
+                                  "This is a known issue with PyTorch in some environments.\n"
                                   "Try restarting the application or running from source.")
             else:
                 QMessageBox.critical(self, "Preview Error", f"Could not preview file:\n{error_msg}")

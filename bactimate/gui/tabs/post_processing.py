@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.image_utils import to_qpixmap, scale_for_preview
 from bactimate.gui.preferences import get_default_browse_dir
-from bactimate.tiff_metadata import read_calibration_from_path, read_metadata_from_path
+from bactimate.modules.tiff_metadata import read_calibration_from_path, read_metadata_from_path
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
