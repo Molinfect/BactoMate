@@ -14,9 +14,11 @@ LOGS_DIR = get_logs_dir()
 MAX_SESSION_LOGS = 100
 
 # Script paths for subprocess calls
-# Prefer package script (has full metadata: pixel size + time per frame); fallback to repo/scripts in dev
+# Prefer package script (bactimate/scripts/); fallback to get_script_path for installed/frozen layouts
 _pkg_convert = get_app_root() / "bactimate" / "scripts" / "convert_nd2_to_tif.py"
 CONVERT_ND2_SCRIPT = _pkg_convert if _pkg_convert.exists() else get_script_path("convert_nd2_to_tif.py")
+_pkg_batch_tiff = get_app_root() / "bactimate" / "scripts" / "batch_process_tiff_sequence.py"
+BATCH_PROCESS_TIFF_SCRIPT = _pkg_batch_tiff if _pkg_batch_tiff.exists() else get_script_path("batch_process_tiff_sequence.py")
 
 # Tab (key, display label) in display order. Used for session gather/apply and session log overview.
 # SAM2 omitted while tab is not in use (commented out in main_window).

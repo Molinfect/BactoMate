@@ -16,9 +16,15 @@ from skimage.registration import phase_cross_correlation
 from skimage.exposure import match_histograms
 
 try:
-    from bactimate.modules.tiff_metadata import read_calibration_from_path
+    from bactimate.modules.tiff_metadata import (
+        read_calibration_from_path,
+        read_metadata_from_path,
+        build_acquisition_info_string,
+    )
 except ImportError:
-    read_calibration_from_path = None  # e.g. when run as standalone script
+    read_calibration_from_path = None
+    read_metadata_from_path = None
+    build_acquisition_info_string = None
 
 
 def drift_correct_stack(frames: np.ndarray, reference_frame: int = 0, method: str = 'frame_by_frame') -> np.ndarray:
@@ -303,7 +309,8 @@ def convert_nd2_to_tif(
     # Process each ND2 file
     for nd2_file in nd2_files:
         print(f"\nProcessing: {nd2_file.name}")
-        
+        acquisition_meta = read_metadata_from_path(nd2_file) if read_metadata_from_path else {}
+
         # Use same calibration extraction as GUI (tiff_metadata) so pixel size and time per frame match the log
         extracted_pixel_size = pixel_size
         extracted_time_per_frame = time_per_frame_min
@@ -651,22 +658,26 @@ def convert_nd2_to_tif(
                                     else:
                                         tag = ""
                                     base = nd2_file.stem + tag
-                                    single_no_name = (in_fi and len(fi_set) == 1 and not in_foci) or (in_foci and len(foci_set) == 1 and not in_fi) or (in_fi and in_foci and len(fi_set) == 1 and len(foci_set) == 1)
-                                    output_filename = f"{base}.tif" if single_no_name else f"{base}_{safe_name}.tif"
+                                    # Always include channel name in filename (e.g. stem_fi_mScarlet.tif).
+                                    # Analyze Masks finds FI via stem_fi or stem_fi_*.
+                                    output_filename = f"{base}_{safe_name}.tif"
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape}) -> {output_filename}")
-                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
+                                    acq_info = build_acquisition_info_string(acquisition_meta, channel_name=channel_name, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
+                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                             else:
                                 print(f"  Warning: Shape mismatch - all_frames.shape[1]={all_frames.shape[1]} but num_channels={num_channels}")
                                 print(f"  Falling back to single file output")
                                 output_filename = nd2_file.stem + '.tif'
                                 output_path = output_dir / output_filename
-                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
+                                acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
+                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                         elif len(all_frames.shape) == 3 and num_channels == 1:
                             # Single channel already extracted
                             output_filename = nd2_file.stem + '.tif'
                             output_path = output_dir / output_filename
-                            _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
+                            acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
+                            _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                         else:
                             # Unexpected shape - try to handle it
                             print(f"  Warning: Unexpected shape {all_frames.shape} for {num_channels} channels")
@@ -694,21 +705,23 @@ def convert_nd2_to_tif(
                                     else:
                                         tag = ""
                                     base = nd2_file.stem + tag
-                                    single_no_name = (in_fi and len(fi_set) == 1 and not in_foci) or (in_foci and len(foci_set) == 1 and not in_fi) or (in_fi and in_foci and len(fi_set) == 1 and len(foci_set) == 1)
-                                    output_filename = f"{base}.tif" if single_no_name else f"{base}_{safe_name}.tif"
+                                    output_filename = f"{base}_{safe_name}.tif"
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} -> {output_filename}")
-                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
+                                    acq_info = build_acquisition_info_string(acquisition_meta, channel_name=channel_name, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
+                                    _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                             else:
                                 # Fallback: save as single file
                                 output_filename = nd2_file.stem + '.tif'
                                 output_path = output_dir / output_filename
-                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
+                                acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
+                                _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                     else:
                         # Save as single OME-TIFF file with all channels
                         output_filename = nd2_file.stem + '.tif'
                         output_path = output_dir / output_filename
                         print(f"  Saving as single OME-TIFF file ({num_channels} channels, {frames_to_extract} timepoints)")
+                        acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
                         _save_multichannel_tiff_with_metadata(
                             output_path,
                             all_frames,
@@ -716,7 +729,8 @@ def convert_nd2_to_tif(
                             num_channels,
                             channel_names,
                             pixel_size=extracted_pixel_size,
-                            time_per_frame_min=extracted_time_per_frame
+                            time_per_frame_min=extracted_time_per_frame,
+                            acquisition_info=acq_info,
                         )
                 else:
                     # Single channel (either only one channel, or specific channel selected)
@@ -727,7 +741,9 @@ def convert_nd2_to_tif(
                     
                     output_filename = nd2_file.stem + channel_suffix + '.tif'
                     output_path = output_dir / output_filename
-                    
+                    ch_name = channel_names[channel_index] if channel_index is not None and channel_index < len(channel_names) else None
+                    acq_info = build_acquisition_info_string(acquisition_meta, channel_name=ch_name, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
+
                     # Normalize to TYX: squeeze singleton C and Z so _save_tiff gets (T, Y, X)
                     if len(all_frames.shape) == 5:  # TCZYX
                         all_frames = all_frames[:, 0, 0, :, :]  # TYX (single C, single Z)
@@ -735,7 +751,7 @@ def convert_nd2_to_tif(
                         ch_idx = 0 if channel_index is None else channel_index
                         all_frames = all_frames[:, ch_idx, :, :]  # TYX
                     
-                    _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame)
+                    _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
             
         except Exception as e:
             print(f"  ✗ Error processing {nd2_file.name}: {e}")
@@ -754,6 +770,7 @@ def _save_multichannel_tiff_with_metadata(
     channel_names: list,
     pixel_size: Optional[float] = None,
     time_per_frame_min: Optional[float] = None,
+    acquisition_info: Optional[str] = None,
 ) -> None:
     """
     Save multi-channel time series as TIFF with proper metadata.
@@ -807,7 +824,9 @@ def _save_multichannel_tiff_with_metadata(
         tp_min = float(time_per_frame_min)
         metadata['finterval'] = tp_min * 60.0  # seconds for ImageJ
         print(f"    Saving time per frame: {tp_min:.4f} min ({tp_min * 60:.1f} s)")
-    
+    if acquisition_info:
+        metadata["Info"] = acquisition_info
+
     tifffile.imwrite(
         str(output_path),
         frames,
@@ -827,6 +846,7 @@ def _save_tiff_with_metadata(
     num_frames: int,
     pixel_size: Optional[float] = None,
     time_per_frame_min: Optional[float] = None,
+    acquisition_info: Optional[str] = None,
 ) -> None:
     """
     Save frames as TIFF with proper time dimension metadata, pixel size, and time per frame.
@@ -837,6 +857,7 @@ def _save_tiff_with_metadata(
         num_frames: Number of time frames
         pixel_size: Pixel size in µm (optional, will be saved in metadata)
         time_per_frame_min: Time per frame in minutes (optional, saved as finterval for tracking/speed)
+        acquisition_info: Optional string (objective, channel, etc.) written to TIFF Info for future reference
     """
     # Check if frames array is empty
     if frames.size == 0:
@@ -899,7 +920,9 @@ def _save_tiff_with_metadata(
         tp_min = float(time_per_frame_min)
         metadata['finterval'] = tp_min * 60.0  # seconds for ImageJ
         print(f"    Saving time per frame: {tp_min:.4f} min ({tp_min * 60:.1f} s)")
-    
+    if acquisition_info:
+        metadata["Info"] = acquisition_info
+
     try:
         imwrite_kw = dict(
             photometric='minisblack',

@@ -2592,7 +2592,11 @@ class AnalyzeMasksTab(QWidget):
         if fi_path is not None:
             self.parent_window.log_output(f"  FI image: {fi_path}\n")
         else:
-            self.parent_window.log_output(f"  No FI image for this task (morphology only). Enable Batch and use stem_fi.tif or stem_fi_Channel.tif in the mask folder's parent.\n")
+            # Phase-only task (morphology from phase image) when output is _analysis_phase.xlsx; otherwise no FI was found
+            if output_path.name.endswith("_analysis_phase.xlsx"):
+                self.parent_window.log_output(f"  Phase-only analysis (morphology from phase image). FI channel(s) will be analyzed in the next task(s).\n")
+            else:
+                self.parent_window.log_output(f"  No FI image for this task (morphology only). Enable Batch and use stem_fi.tif or stem_fi_Channel.tif in the mask folder's parent.\n")
         self.folder_output_paths.append(str(output_path))
         
         # Build command arguments

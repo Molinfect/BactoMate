@@ -562,9 +562,21 @@ class ND2ConversionTab(QWidget):
         """Extract ND2 file info without updating UI (for folder scanning). Tries BioIO first, then tiff_metadata."""
         info = bioio_get_info(Path(file_path))
         if info and info.get("file_type") == "nd2":
-            return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
+            out = {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
+            # BioIO does not provide time_per_frame, objective, wavelengths, exposure; get full ND2 metadata and merge
+            try:
+                from bactimate.modules.tiff_metadata import read_metadata_from_path
+                meta = read_metadata_from_path(Path(file_path))
+                if meta.get("time_per_frame_min") is not None and float(meta["time_per_frame_min"]) > 0:
+                    out["time_per_frame_min"] = float(meta["time_per_frame_min"])
+                for key in ("channel_wavelengths", "objective_name", "objective_magnification", "zoom_magnification",
+                            "exposure_ms", "channel_exposure_ms", "bits_per_component"):
+                    if meta.get(key) is not None:
+                        out[key] = meta[key]
+            except Exception:
+                pass
+            return out
         try:
-            from pathlib import Path
             from bactimate.modules.tiff_metadata import read_metadata_from_path
             meta = read_metadata_from_path(Path(file_path))
             num_time = meta.get("frame_count") or 1
@@ -585,11 +597,117 @@ class ND2ConversionTab(QWidget):
         except Exception:
             return None
     
+    @staticmethod
+    def _safe_lif_pixel_size(reader):
+        """Get pixel size from LIF reader without assuming physical_pixel_sizes shape (avoids dimension errors)."""
+        try:
+            pps = getattr(reader, "physical_pixel_sizes", None)
+            if pps is None:
+                return None
+            for attr in ("X", "Y", "Z"):
+                v = getattr(pps, attr, None)
+                if v is not None:
+                    return float(v)
+            for idx in (2, 1, 0):
+                try:
+                    v = pps[idx]
+                    if v is not None:
+                        return float(v)
+                except (TypeError, IndexError, ValueError, KeyError):
+                    continue
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _readlif_best_image_index(lif_file, log_cb=None):
+        """Return the image index that looks like microscopy (XY > 1). Leica LIF can have Image 0 = 'Job' (sensor/log, e.g. 1x8983) and Image 1 = 'Series001' (1024x1024, 50T, 3C)."""
+        n = getattr(lif_file, "num_images", 0)
+        if n <= 0:
+            return 0
+        for i in range(n):
+            try:
+                img = lif_file.get_image(i)
+                info = getattr(img, "info", None) or {}
+                dims = info.get("dims") or getattr(img, "dims", None)
+                dims_n = getattr(img, "dims_n", None) or {}
+                x = 1
+                y = 1
+                if dims is not None:
+                    x = int(getattr(dims, "x", 1) or 1)
+                    y = int(getattr(dims, "y", 1) or 1)
+                if x <= 1 or y <= 1:
+                    x = int(dims_n.get(1, x) or x)
+                    y = int(dims_n.get(2, y) or y)
+                if x <= 1 or y <= 1:
+                    try:
+                        frame = img.get_frame(z=0, t=0, c=0)
+                        if hasattr(frame, "shape") and len(frame.shape) >= 2:
+                            y, x = frame.shape[0], frame.shape[1]
+                    except Exception:
+                        pass
+                if x > 1 and y > 1:
+                    if log_cb and i > 0:
+                        log_cb(f"readlif: using image index {i} (XY={x}x{y}); index 0 looked like metadata/sensor.\n")
+                    return i
+            except Exception:
+                continue
+        return 0
+
+    @staticmethod
+    def _readlif_dims(image, log_cb=None):
+        """Get (num_time, num_z, num_channels) from readlif LifImage.
+        Uses image.info when present (channels, dims.t, dims.z), else dims/dims_n.
+        When only dims_n[4] is set (no 5) and info says channels=1, probe get_frame(t=0,c=1) to detect real channel count;
+        and when total planes looks like T*C*Z (e.g. 8983 ~ 50*2*90), infer T,C,Z."""
+        num_time, num_z, num_channels = 1, 1, 1
+        info = getattr(image, "info", None)
+        dims_n = getattr(image, "dims_n", None) or {}
+        dims = getattr(image, "dims", None)
+        if log_cb:
+            log_cb(f"readlif raw: info={info!r}\ndims_n={dims_n} dims={dims} nt={getattr(image,'nt',None)} nz={getattr(image,'nz',None)}\n")
+        try:
+            if isinstance(info, dict):
+                ch = info.get("channels")
+                if ch is not None and int(ch) >= 1:
+                    num_channels = int(ch)
+                d = info.get("dims")
+                if d is not None:
+                    num_time = int(getattr(d, "t", 1) or 1)
+                    num_z = int(getattr(d, "z", 1) or 1)
+        except (AttributeError, TypeError, KeyError):
+            pass
+        if num_time <= 0 or num_z <= 0 or (isinstance(info, dict) and info.get("dims") is None):
+            try:
+                num_time = int(getattr(dims, "t", 1) or dims_n.get(4, 1))
+                num_z = int(getattr(dims, "z", 1) or dims_n.get(3, 1))
+                num_channels = int(getattr(dims, "c", None) or dims_n.get(5, 1))
+            except (AttributeError, TypeError):
+                pass
+        # readlif: 4=time, 5=channels. Some LIF files have both in dims_n with (2,50) or (50,2) order.
+        v4 = int(dims_n.get(4, 0) or 0)
+        v5 = int(dims_n.get(5, 0) or 0)
+        if v4 >= 1 and v5 >= 1:
+            low, high = min(v4, v5), max(v4, v5)
+            if 2 <= low <= 20 and 10 <= high <= 10000:
+                num_channels = low
+                num_time = high
+        if num_channels <= 0:
+            num_channels = 1
+        if num_z <= 0:
+            num_z = 1
+        if num_time <= 0:
+            num_time = 1
+        return (num_time, num_z, num_channels)
+
     def _get_lif_info(self, file_path):
         """Extract LIF file info without updating UI (for folder scanning). Tries BioIO first, then aicsimageio/readlif."""
-        info = bioio_get_info(Path(file_path))
-        if info and info.get("file_type") == "lif":
-            return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
+        try:
+            info = bioio_get_info(Path(file_path))
+            if info and info.get("file_type") == "lif":
+                return {k: v for k, v in info.items() if k in ("file_type", "num_time", "num_channels", "num_z", "channel_names", "pixel_size", "scenes")}
+        except Exception:
+            pass  # BioIO/bioio-lif can raise e.g. "too many values to unpack" on some LIF files
         try:
             import numpy as np
             from aicsimageio import AICSImage
@@ -653,13 +771,7 @@ class ND2ConversionTab(QWidget):
                 if not channel_names or len(channel_names) != num_channels:
                     channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
                 
-                pixel_size = None
-                try:
-                    if hasattr(lif_reader, 'physical_pixel_sizes'):
-                        if lif_reader.physical_pixel_sizes and len(lif_reader.physical_pixel_sizes) >= 3:
-                            pixel_size = float(lif_reader.physical_pixel_sizes[2])
-                except:
-                    pass
+                pixel_size = self._safe_lif_pixel_size(lif_reader)
                 
                 return {
                     'file_type': 'lif',
@@ -676,6 +788,33 @@ class ND2ConversionTab(QWidget):
                         lif_reader.close()
                     except:
                         pass
+        except Exception:
+            pass
+        # Fallback: readlif (use microscopy series: Leica often has Image 0 = Job/sensor, Image 1 = Series001)
+        try:
+            from readlif.reader import LifFile
+            lif_file = LifFile(file_path)
+            if getattr(lif_file, "num_images", 0) <= 0:
+                return None
+            best_idx = self._readlif_best_image_index(lif_file)
+            image = lif_file.get_image(best_idx)
+            num_time, num_z, num_channels = self._readlif_dims(image)
+            pixel_size = None
+            if hasattr(image, "scale") and image.scale and len(image.scale) >= 2:
+                try:
+                    sx = float(image.scale[0])
+                    if sx > 0:
+                        pixel_size = 1.0 / sx
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+            return {
+                "file_type": "lif",
+                "num_time": num_time,
+                "num_channels": num_channels,
+                "num_z": num_z,
+                "channel_names": [f"Channel_{i+1}" for i in range(num_channels)],
+                "pixel_size": pixel_size,
+            }
         except Exception:
             return None
     
@@ -746,31 +885,50 @@ class ND2ConversionTab(QWidget):
                     num_z = shape[1] if len(shape) > 1 else 1
                     num_channels = shape[2] if len(shape) > 2 else 1
                 
-                # Check if multi-page TIFF (time series)
+                # Check if multi-page TIFF (time series or multi-channel)
                 num_pages = len(tif.pages)
                 if num_pages > 1 and ndim == 2:
-                    # Multi-page 2D images - treat as time series
-                    num_time = num_pages
-                    num_channels = 1
-                    num_z = 1
+                    # Prefer ImageJ metadata for channels (e.g. "ImageJ=1.51 images=16 channels=2 slices=8")
+                    ij_meta = getattr(tif, "imagej_metadata", None) or {}
+                    ij_channels = ij_meta.get("channels") if isinstance(ij_meta, dict) else None
+                    ij_frames = ij_meta.get("frames") or ij_meta.get("images")
+                    if ij_channels is not None and int(ij_channels) >= 2:
+                        num_channels = int(ij_channels)
+                        num_time = (num_pages // num_channels) if num_channels else num_pages
+                        num_z = 1
+                        if ij_frames is not None:
+                            num_time = int(ij_frames)
+                    else:
+                        # Multi-page 2D without channel info - treat as time series
+                        num_time = num_pages
+                        num_channels = 1
+                        num_z = 1
                 
-                # Get pixel size from metadata if available
+                # Get pixel size and channel names from metadata (ImageJ, OME, spacing=)
                 pixel_size = None
                 if 'pixelSize' in metadata:
                     pixel_size = float(metadata['pixelSize'])
                 elif 'unit' in metadata and 'pixelSize' in metadata:
                     pixel_size = float(metadata['pixelSize'])
-                
                 channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                
-                return {
-                    'file_type': 'tiff',
-                    'num_time': num_time,
-                    'num_channels': num_channels,
-                    'num_z': num_z,
-                    'channel_names': channel_names,
-                    'pixel_size': pixel_size
-                }
+            # Prefer tiff_metadata (read_metadata_from_path) for channel names and pixel size
+            try:
+                from bactimate.modules.tiff_metadata import read_metadata_from_path
+                meta = read_metadata_from_path(Path(file_path))
+                if meta.get("channel_names") and len(meta["channel_names"]) == num_channels:
+                    channel_names = list(meta["channel_names"])
+                if meta.get("pixel_size_um") is not None and float(meta["pixel_size_um"]) > 0:
+                    pixel_size = float(meta["pixel_size_um"])
+            except Exception:
+                pass
+            return {
+                'file_type': 'tiff',
+                'num_time': num_time,
+                'num_channels': num_channels,
+                'num_z': num_z,
+                'channel_names': channel_names,
+                'pixel_size': pixel_size
+            }
         except Exception:
             return None
     
@@ -1036,15 +1194,21 @@ class ND2ConversionTab(QWidget):
         """Load and display LIF file information. Uses BioIO when available, then aicsimageio/readlif."""
         try:
             self.parent_window.log_output(f"Loading LIF file info: {file_path}\n")
-            info = bioio_get_info(Path(file_path))
-            if info and info.get("file_type") == "lif":
-                self._update_file_info_ui(
-                    file_path, "lif",
-                    info["num_time"], info["num_channels"], info["num_z"],
-                    info["channel_names"], info.get("pixel_size"),
-                )
-                return
-            # Fallback: aicsimageio then readlif
+            # Try BioIO first; on any error (e.g. bioio-lif "too many values to unpack") fall back to aicsimageio
+            try:
+                info = bioio_get_info(Path(file_path))
+                if info and info.get("file_type") == "lif":
+                    self._update_file_info_ui(
+                        file_path, "lif",
+                        info["num_time"], info["num_channels"], info["num_z"],
+                        info["channel_names"], info.get("pixel_size"),
+                    )
+                    return
+            except Exception:
+                # BioIO/bioio-lif can raise e.g. "too many values to unpack (expected 4)" on some LIF files
+                pass
+            # Fallback: aicsimageio then readlif (aicsimageio can raise "too many values to unpack" on some LIFs)
+            aics_success = False
             try:
                 import numpy as np
                 from aicsimageio import AICSImage
@@ -1108,18 +1272,11 @@ class ND2ConversionTab(QWidget):
                     if not channel_names or len(channel_names) != num_channels:
                         channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
                     
-                    # Extract pixel size
-                    pixel_size = None
-                    try:
-                        if hasattr(lif_reader, 'physical_pixel_sizes'):
-                            # physical_pixel_sizes is typically (Z, Y, X)
-                            if lif_reader.physical_pixel_sizes and len(lif_reader.physical_pixel_sizes) >= 3:
-                                pixel_size = float(lif_reader.physical_pixel_sizes[2])  # X dimension
-                    except:
-                        pass
+                    pixel_size = self._safe_lif_pixel_size(lif_reader)
                     
                     self._update_file_info_ui(file_path, 'lif', num_time, num_channels, num_z, 
                                             channel_names, pixel_size)
+                    aics_success = True
                 finally:
                     # Clean up if needed (AICSImage may have resources to close)
                     if hasattr(lif_reader, 'close'):
@@ -1127,32 +1284,46 @@ class ND2ConversionTab(QWidget):
                             lif_reader.close()
                         except:
                             pass
-                    
             except ImportError:
-                # Fallback to readlif if aicsimageio not available
-                try:
-                    from readlif.reader import LifFile
-                    self.parent_window.log_output(f"Loading LIF file info: {file_path}\n")
-                    
-                    lif_file = LifFile(file_path)
-                    # Get first image series
-                    if len(lif_file.get_image_count()) > 0:
-                        image = lif_file.get_image(0)
-                        num_time = image.get_dims()['t'] if 't' in image.get_dims() else 1
-                        num_channels = image.get_dims()['c'] if 'c' in image.get_dims() else 1
-                        num_z = image.get_dims()['z'] if 'z' in image.get_dims() else 1
-                        
-                        channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                        pixel_size = None  # readlif doesn't easily provide pixel size
-                        
-                        self._update_file_info_ui(file_path, 'lif', num_time, num_channels, num_z,
-                                                channel_names, pixel_size)
-                    else:
-                        raise ValueError("No image series found in LIF file")
-                except ImportError:
-                    QMessageBox.warning(self, "LIF Library Missing",
-                                      "The 'aicsimageio' or 'readlif' library is not installed.\n\n"
-                                      "Install with: pip install aicsimageio readlif")
+                pass  # aicsimageio not installed, try readlif
+            except Exception:
+                # aicsimageio can raise e.g. "too many values to unpack (expected 4)" on some LIF files
+                self.parent_window.log_output("AICSImage failed for this LIF, trying readlif...\n")
+                pass
+            
+            if aics_success:
+                return
+            
+            # Fallback to readlif (use microscopy series; Image 0 may be Job/sensor)
+            try:
+                from readlif.reader import LifFile
+                lif_file = LifFile(file_path)
+                if getattr(lif_file, "num_images", 0) <= 0:
+                    raise ValueError("No image series found in LIF file")
+                log_cb = lambda msg: self.parent_window.log_output(msg)
+                best_idx = self._readlif_best_image_index(lif_file, log_cb=log_cb)
+                image = lif_file.get_image(best_idx)
+                num_time, num_z, num_channels = self._readlif_dims(image, log_cb=log_cb)
+                channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
+                pixel_size = None
+                if hasattr(image, "scale") and image.scale and len(image.scale) >= 2:
+                    try:
+                        sx, sy = float(image.scale[0]), float(image.scale[1])
+                        if sx > 0:
+                            pixel_size = 1.0 / sx
+                        elif sy > 0:
+                            pixel_size = 1.0 / sy
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
+                self._update_file_info_ui(file_path, 'lif', num_time, num_channels, num_z,
+                                        channel_names, pixel_size)
+            except ImportError:
+                QMessageBox.warning(self, "LIF Library Missing",
+                                  "The 'aicsimageio' or 'readlif' library is not installed.\n\n"
+                                  "Install with: pip install aicsimageio readlif")
+            except Exception as e:
+                QMessageBox.critical(self, "Error Loading LIF", f"Could not load LIF file:\n{str(e)}")
+                self.parent_window.log_output(f"Error: {str(e)}\n")
         except Exception as e:
             QMessageBox.critical(self, "Error Loading LIF", f"Could not load LIF file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
@@ -1192,21 +1363,32 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
     def _load_tiff_info(self, file_path):
-        """Load and display TIFF file information. Uses BioIO when available, then tifffile; tiff_metadata for calibration."""
+        """Load and display TIFF file information. Uses BioIO when available, then tifffile; tiff_metadata for calibration and channel names."""
         try:
-            from bactimate.modules.tiff_metadata import read_calibration_from_path
+            from bactimate.modules.tiff_metadata import read_calibration_from_path, read_metadata_from_path
             self.parent_window.log_output(f"Loading TIFF file info: {file_path}\n")
             path = Path(file_path)
             # Try BioIO first for consistent dimension reading
             info = bioio_get_info(path)
             if info and info.get("file_type") == "tiff":
-                pixel_size, time_per_frame_min = read_calibration_from_path(path)
+                meta = read_metadata_from_path(path)
+                pixel_size = None
+                if meta.get("pixel_size_um") is not None and float(meta["pixel_size_um"]) > 0:
+                    pixel_size = float(meta["pixel_size_um"])
+                if pixel_size is None and info.get("pixel_size") is not None and float(info["pixel_size"]) > 0:
+                    pixel_size = float(info["pixel_size"])
+                time_per_frame_min = None
+                if meta.get("time_per_frame_min") is not None and float(meta.get("time_per_frame_min", 0)) > 0:
+                    time_per_frame_min = float(meta["time_per_frame_min"])
+                channel_names = meta.get("channel_names") or info.get("channel_names")
+                if not channel_names or len(channel_names) != info.get("num_channels", 1):
+                    channel_names = info.get("channel_names") or [f"Channel_{i+1}" for i in range(info.get("num_channels", 1))]
                 self._update_file_info_ui(
                     file_path, "tiff",
                     info["num_time"], info["num_channels"], info["num_z"],
-                    info["channel_names"],
-                    info.get("pixel_size") or (pixel_size if pixel_size > 0 else None),
-                    time_per_frame_min=time_per_frame_min if time_per_frame_min > 0 else None,
+                    channel_names,
+                    pixel_size,
+                    time_per_frame_min=time_per_frame_min,
                 )
                 return
             import tifffile
@@ -1222,11 +1404,21 @@ class ND2ConversionTab(QWidget):
                 num_pages = len(tif.pages)
                 
                 if ndim == 2:
-                    # Single 2D image or multi-page
+                    # Single 2D image or multi-page (possibly multi-channel from ImageJ)
                     if num_pages > 1:
-                        num_time = num_pages
-                        num_channels = 1
-                        num_z = 1
+                        ij_meta = getattr(tif, "imagej_metadata", None) or {}
+                        ij_channels = ij_meta.get("channels") if isinstance(ij_meta, dict) else None
+                        ij_frames = ij_meta.get("frames") or ij_meta.get("images")
+                        if ij_channels is not None and int(ij_channels) >= 2:
+                            num_channels = int(ij_channels)
+                            num_time = (num_pages // num_channels) if num_channels else num_pages
+                            num_z = 1
+                            if ij_frames is not None:
+                                num_time = int(ij_frames)
+                        else:
+                            num_time = num_pages
+                            num_channels = 1
+                            num_z = 1
                     else:
                         num_time = 1
                         num_channels = 1
@@ -1262,8 +1454,14 @@ class ND2ConversionTab(QWidget):
                     num_channels = shape[2] if len(shape) > 2 else 1
                 
                 channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
-                
-                # pixel_size and time_per_frame_min already from read_calibration_from_path above
+                # Prefer channel names and calibration from tiff_metadata (ImageJ Labels, OME, spacing=, etc.)
+                meta = read_metadata_from_path(path)
+                if meta.get("channel_names") and len(meta["channel_names"]) == num_channels:
+                    channel_names = list(meta["channel_names"])
+                if meta.get("pixel_size_um") and float(meta["pixel_size_um"]) > 0:
+                    pixel_size = float(meta["pixel_size_um"])
+                if meta.get("time_per_frame_min") is not None and float(meta.get("time_per_frame_min", 0)) > 0:
+                    time_per_frame_min = float(meta["time_per_frame_min"])
                 self._update_file_info_ui(
                     file_path, 'tiff', num_time, num_channels, num_z,
                     channel_names, pixel_size if pixel_size > 0 else None,
@@ -2301,109 +2499,137 @@ class ND2ConversionTab(QWidget):
             import numpy as np
             file_path = self.file_path.text()
             max_f = self.max_frames.value() if hasattr(self, "max_frames") else 500
-            # Try BioIO first
-            data = bioio_load_data(Path(file_path), max_frames=max_f, use_first_z_only=True)
-            if data is not None and data.size > 0:
+            # Try BioIO first; on error (e.g. bioio-lif "too many values to unpack") fall back to aicsimageio
+            try:
+                data = bioio_load_data(Path(file_path), max_frames=max_f, use_first_z_only=True)
+                if data is not None and data.size > 0:
+                    preview_dialog = QDialog(self)
+                    preview_dialog.setWindowTitle("File Preview")
+                    preview_dialog.setMinimumSize(900, 700)
+                    preview_dialog.setModal(False)
+                    layout = QVBoxLayout()
+                    num_time, num_channels = data.shape[0], data.shape[1]
+                    num_z = 1
+                    # For unified UI: (T, C, Y, X) is supported; take first channel for 3D display if needed by UI
+                    all_frames = np.ascontiguousarray(data).copy()
+                    self._create_unified_preview_ui(
+                        preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                        **self._get_bleach_preview_kwargs()
+                    )
+                    preview_dialog.setLayout(layout)
+                    preview_dialog.show()
+                    return
+            except Exception:
+                pass
+            # Try aicsimageio
+            aics_preview_ok = False
+            try:
+                from aicsimageio import AICSImage
                 preview_dialog = QDialog(self)
                 preview_dialog.setWindowTitle("File Preview")
                 preview_dialog.setMinimumSize(900, 700)
                 preview_dialog.setModal(False)
                 layout = QVBoxLayout()
-                num_time, num_channels = data.shape[0], data.shape[1]
-                num_z = 1
-                # For unified UI: (T, C, Y, X) is supported; take first channel for 3D display if needed by UI
-                all_frames = np.ascontiguousarray(data).copy()
+                lif_reader = AICSImage(file_path)
+                try:
+                    dims = lif_reader.dims
+                    dims_str = dims.order if hasattr(dims, 'order') else (dims if isinstance(dims, str) else str(dims))
+                    if hasattr(lif_reader, 'get_xarray_data'):
+                        xdata = lif_reader.get_xarray_data()
+                        all_frames = np.array(xdata)
+                        num_time = int(xdata.sizes.get('T', 1))
+                        num_channels = int(xdata.sizes.get('C', 1))
+                        num_z = int(xdata.sizes.get('Z', 1))
+                    else:
+                        all_frames = np.array(lif_reader.data)
+                        shape = all_frames.shape
+                        num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                        num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                        num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                    if len(all_frames.shape) > 3:
+                        indices = [slice(None)] * len(all_frames.shape)
+                        if 'C' in dims_str:
+                            indices[dims_str.index('C')] = 0
+                        if 'Z' in dims_str:
+                            indices[dims_str.index('Z')] = 0
+                        all_frames = all_frames[tuple(indices)]
+                    if len(all_frames.shape) == 2:
+                        all_frames = all_frames[np.newaxis, ...]
+                    elif len(all_frames.shape) == 3 and all_frames.shape[0] > 1000:
+                        all_frames = all_frames.transpose(2, 0, 1)
+                    all_frames = np.ascontiguousarray(all_frames).copy()
+                    self._create_unified_preview_ui(
+                        preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                        **self._get_bleach_preview_kwargs()
+                    )
+                    preview_dialog.setLayout(layout)
+                    preview_dialog.show()
+                    aics_preview_ok = True
+                finally:
+                    if hasattr(lif_reader, 'close'):
+                        try:
+                            lif_reader.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            if aics_preview_ok:
+                return
+            # Fallback: readlif (use microscopy series; Image 0 may be Job/sensor)
+            try:
+                from readlif.reader import LifFile
+                lif_file = LifFile(file_path)
+                if getattr(lif_file, "num_images", 0) <= 0:
+                    raise ValueError("No image series in LIF file")
+                log_cb = lambda msg: self.parent_window.log_output(msg)
+                best_idx = self._readlif_best_image_index(lif_file, log_cb=log_cb)
+                image = lif_file.get_image(best_idx)
+                num_time, num_z, num_channels = self._readlif_dims(image, log_cb=log_cb)
+                n_load = min(max_f, num_time)
+                n_ch = max(1, num_channels)
+                # Load (T, C, Y, X) so the preview channel selector works
+                frames_list = []
+                ref_shape = None
+                for t in range(n_load):
+                    row = []
+                    for c in range(n_ch):
+                        try:
+                            pil_img = image.get_frame(z=0, t=t, c=c)
+                            arr = np.array(pil_img)
+                            if ref_shape is None:
+                                ref_shape = arr.shape
+                            row.append(arr)
+                        except Exception:
+                            row.append(np.zeros(ref_shape or (1024, 1024), dtype=np.uint16))
+                    if len(row) == 1:
+                        frames_list.append(row[0])
+                    else:
+                        frames_list.append(np.stack(row, axis=0))
+                if n_ch > 1:
+                    all_frames = np.ascontiguousarray(np.stack(frames_list, axis=0))  # (T, C, Y, X)
+                else:
+                    all_frames = np.ascontiguousarray(np.stack(frames_list, axis=0))  # (T, Y, X)
+                preview_dialog = QDialog(self)
+                preview_dialog.setWindowTitle("File Preview (readlif)")
+                preview_dialog.setMinimumSize(900, 700)
+                preview_dialog.setModal(False)
+                layout = QVBoxLayout()
                 self._create_unified_preview_ui(
-                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                    preview_dialog, layout, all_frames, n_load, n_ch, num_z, file_path,
                     **self._get_bleach_preview_kwargs()
                 )
                 preview_dialog.setLayout(layout)
                 preview_dialog.show()
                 return
-            import matplotlib.pyplot as plt
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.figure import Figure
-            from aicsimageio import AICSImage
-            preview_dialog = QDialog(self)
-            preview_dialog.setWindowTitle("File Preview")
-            preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)
-            layout = QVBoxLayout()
-            lif_reader = AICSImage(file_path)
-            try:
-                # Get dimensions
-                dims = lif_reader.dims
-                if hasattr(dims, 'order'):
-                    dims_str = dims.order
-                elif isinstance(dims, str):
-                    dims_str = dims
-                else:
-                    dims_str = str(dims)
-                
-                # Get data
-                if hasattr(lif_reader, 'get_xarray_data'):
-                    xdata = lif_reader.get_xarray_data()
-                    all_frames = np.array(xdata)
-                    num_time = int(xdata.sizes.get('T', 1))
-                    num_channels = int(xdata.sizes.get('C', 1))
-                    num_z = int(xdata.sizes.get('Z', 1))
-                else:
-                    all_frames = np.array(lif_reader.data)
-                    shape = all_frames.shape
-                    num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
-                    num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
-                    num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
-                
-                # Reshape to (T, Y, X) for preview (take first channel and z-slice)
-                if len(all_frames.shape) > 3:
-                    # Take first channel and first z-slice
-                    if 'C' in dims_str and 'Z' in dims_str:
-                        c_idx = dims_str.index('C')
-                        z_idx = dims_str.index('Z')
-                        t_idx = dims_str.index('T') if 'T' in dims_str else 0
-                        # Create indexing tuple
-                        indices = [slice(None)] * len(all_frames.shape)
-                        indices[c_idx] = 0  # First channel
-                        indices[z_idx] = 0  # First z-slice
-                        all_frames = all_frames[tuple(indices)]
-                    elif 'C' in dims_str:
-                        c_idx = dims_str.index('C')
-                        indices = [slice(None)] * len(all_frames.shape)
-                        indices[c_idx] = 0
-                        all_frames = all_frames[tuple(indices)]
-                    elif 'Z' in dims_str:
-                        z_idx = dims_str.index('Z')
-                        indices = [slice(None)] * len(all_frames.shape)
-                        indices[z_idx] = 0
-                        all_frames = all_frames[tuple(indices)]
-                
-                # Ensure we have (T, Y, X) shape
-                if len(all_frames.shape) == 2:
-                    all_frames = all_frames[np.newaxis, ...]
-                elif len(all_frames.shape) == 3 and all_frames.shape[0] > 1000:
-                    # Likely (Y, X, T) - transpose
-                    all_frames = all_frames.transpose(2, 0, 1)
-                
-                # Own a contiguous copy so preview/bleach code never touches reader-backed memory (avoids segfault on .copy()).
-                all_frames = np.ascontiguousarray(all_frames).copy()
-                # Use unified preview UI with full LUT controls (and optional bleach preview)
-                self._create_unified_preview_ui(
-                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                    **self._get_bleach_preview_kwargs()
-                )
-                
-            finally:
-                if hasattr(lif_reader, 'close'):
-                    try:
-                        lif_reader.close()
-                    except:
-                        pass
-                        
+            except Exception as e:
+                import traceback
+                self.parent_window.log_output(f"Readlif preview failed: {type(e).__name__}: {e}\n")
+                self.parent_window.log_output(traceback.format_exc())
+            QMessageBox.critical(self, "Error Previewing LIF", "Could not preview LIF with BioIO, AICSImageIO, or readlif.")
         except ImportError:
             QMessageBox.warning(self, "Library Missing",
-                              "LIF preview requires 'bioio' and 'bioio-lif', or 'aicsimageio'.\n\n"
-                              "Install with: pip install bioio bioio-lif\n"
-                              "Or: pip install aicsimageio")
+                              "LIF preview requires 'bioio' and 'bioio-lif', or 'aicsimageio', or 'readlif'.\n\n"
+                              "Install with: pip install aicsimageio readlif")
         except Exception as e:
             QMessageBox.critical(self, "Error Previewing LIF", f"Could not preview LIF file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
@@ -2638,9 +2864,13 @@ class ND2ConversionTab(QWidget):
         elif file_type == 'czi':
             self._convert_czi()
         elif file_type == 'tiff':
-            QMessageBox.information(self, "TIFF File", 
-                                  "The selected file is already a TIFF file.\n"
-                                  "No conversion needed.")
+            num_channels = self.file_info.get('num_channels', 1)
+            if num_channels >= 2:
+                self._convert_tiff()
+            else:
+                QMessageBox.information(self, "TIFF File",
+                                        "The selected file is already a single-channel TIFF.\n"
+                                        "No conversion needed.")
         else:
             QMessageBox.warning(self, "Unsupported Format", f"Conversion not yet implemented for {file_type} files.")
     
@@ -2994,8 +3224,9 @@ class ND2ConversionTab(QWidget):
                 lif_files = [file_path]
                 total_files = 1
             
-            # Output: next to input file or in selected folder (auto)
-            output_base = file_path.parent if file_path.is_file() else file_path
+            # Output: Tif_files folder next to input file or in selected folder (same as ND2 / TIFF split)
+            output_base = (file_path.parent if file_path.is_file() else file_path) / "Tif_files"
+            output_base.mkdir(parents=True, exist_ok=True)
 
             # Get conversion parameters
             max_frames = self.max_frames.value()
@@ -3016,8 +3247,12 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.progress_bar.setValue(progress)
                     QApplication.processEvents()
                     
-                    # Try BioIO first for robust reading
-                    data = bioio_load_data(Path(lif_file), max_frames=max_frames, use_first_z_only=True)
+                    # Try BioIO first; on error (e.g. bioio-lif "too many values to unpack") fall back to AICSImage
+                    data = None
+                    try:
+                        data = bioio_load_data(Path(lif_file), max_frames=max_frames, use_first_z_only=True)
+                    except Exception:
+                        pass
                     if data is not None and data.size > 0:
                         all_frames = np.ascontiguousarray(data)
                         num_time, num_channels = data.shape[0], data.shape[1]
@@ -3052,189 +3287,242 @@ class ND2ConversionTab(QWidget):
                             self.parent_window.log_output(f"  Saved: {output_file.name}\n")
                             self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
                         continue
-                    # Fallback: load with AICSImage
-                    lif_reader = AICSImage(str(lif_file))
+                    # Fallback: load with AICSImage (can raise "too many values to unpack" on some Leica LIFs)
+                    aics_converted = False
                     try:
-                        # Get dimensions
-                        dims = lif_reader.dims
-                        if hasattr(dims, 'order'):
-                            dims_str = dims.order
-                        elif isinstance(dims, str):
-                            dims_str = dims
-                        else:
-                            dims_str = str(dims)
-                        
-                        # Get data
-                        if hasattr(lif_reader, 'get_xarray_data'):
-                            xdata = lif_reader.get_xarray_data()
-                            all_frames = np.array(xdata)
-                            num_time = int(xdata.sizes.get('T', 1))
-                            num_channels = int(xdata.sizes.get('C', 1))
-                            num_z = int(xdata.sizes.get('Z', 1))
-                        else:
-                            all_frames = np.array(lif_reader.data)
-                            shape = all_frames.shape
-                            num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
-                            num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
-                            num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
-                        
-                        # Limit frames
-                        num_time = min(num_time, max_frames)
-                        if 'T' in dims_str:
-                            t_idx = dims_str.index('T')
-                            indices = [slice(None)] * len(all_frames.shape)
-                            indices[t_idx] = slice(0, num_time)
-                            all_frames = all_frames[tuple(indices)]
-                        
-                        # All channels converted (no single-channel selection)
-                        # Take first z-slice if multiple z-slices
-                        if num_z > 1 and 'Z' in dims_str:
-                            z_idx = dims_str.index('Z')
-                            if z_idx < len(all_frames.shape):
-                                indices = [slice(None)] * len(all_frames.shape)
-                                indices[z_idx] = 0
-                                all_frames = all_frames[tuple(indices)]
-                                num_z = 1
-                        
-                        # Reshape to (T, C, Y, X) or (T, Y, X)
-                        # CRITICAL: Don't use all_frames[0] as it might remove time dimension!
-                        # Find time dimension and avoid removing it
-                        if len(all_frames.shape) > 4:
-                            # Find time dimension index
-                            time_dim_idx = None
-                            if 'T' in dims_str:
-                                time_dim_idx = dims_str.index('T')
+                        lif_reader = AICSImage(str(lif_file))
+                        try:
+                            # Get dimensions
+                            dims = lif_reader.dims
+                            if hasattr(dims, 'order'):
+                                dims_str = dims.order
+                            elif isinstance(dims, str):
+                                dims_str = dims
+                            else:
+                                dims_str = str(dims)
                             
-                            # Remove dimensions that are not time, starting from the end
-                            while len(all_frames.shape) > 4:
-                                # Find a dimension to remove (not time dimension)
-                                dim_to_remove = None
-                                for i in range(len(all_frames.shape) - 1, -1, -1):  # Start from end
-                                    if time_dim_idx is None or i != time_dim_idx:
-                                        if all_frames.shape[i] == 1:
-                                            dim_to_remove = i
-                                            break
+                            # Get data
+                            if hasattr(lif_reader, 'get_xarray_data'):
+                                xdata = lif_reader.get_xarray_data()
+                                all_frames = np.array(xdata)
+                                num_time = int(xdata.sizes.get('T', 1))
+                                num_channels = int(xdata.sizes.get('C', 1))
+                                num_z = int(xdata.sizes.get('Z', 1))
+                            else:
+                                all_frames = np.array(lif_reader.data)
+                                shape = all_frames.shape
+                                num_time = shape[dims_str.index('T')] if 'T' in dims_str else 1
+                                num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
+                                num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
+                            
+                            # Limit frames
+                            num_time = min(num_time, max_frames)
+                            if 'T' in dims_str:
+                                t_idx = dims_str.index('T')
+                                indices = [slice(None)] * len(all_frames.shape)
+                                indices[t_idx] = slice(0, num_time)
+                                all_frames = all_frames[tuple(indices)]
+                            
+                            # All channels converted (no single-channel selection)
+                            # Take first z-slice if multiple z-slices
+                            if num_z > 1 and 'Z' in dims_str:
+                                z_idx = dims_str.index('Z')
+                                if z_idx < len(all_frames.shape):
+                                    indices = [slice(None)] * len(all_frames.shape)
+                                    indices[z_idx] = 0
+                                    all_frames = all_frames[tuple(indices)]
+                                    num_z = 1
+                            
+                            # Reshape to (T, C, Y, X) or (T, Y, X)
+                            # CRITICAL: Don't use all_frames[0] as it might remove time dimension!
+                            # Find time dimension and avoid removing it
+                            if len(all_frames.shape) > 4:
+                                # Find time dimension index
+                                time_dim_idx = None
+                                if 'T' in dims_str:
+                                    time_dim_idx = dims_str.index('T')
                                 
-                                if dim_to_remove is not None:
-                                    # Remove singleton dimension
-                                    all_frames = np.squeeze(all_frames, axis=dim_to_remove)
-                                    # Update dims_str if needed
-                                    if dim_to_remove < len(dims_str):
-                                        dims_str = dims_str[:dim_to_remove] + dims_str[dim_to_remove+1:]
-                                        if time_dim_idx is not None and dim_to_remove < time_dim_idx:
-                                            time_dim_idx -= 1
-                                else:
-                                    # No singleton dimensions found, take first of a non-time dimension
-                                    for i in range(len(all_frames.shape) - 1, -1, -1):
+                                # Remove dimensions that are not time, starting from the end
+                                while len(all_frames.shape) > 4:
+                                    # Find a dimension to remove (not time dimension)
+                                    dim_to_remove = None
+                                    for i in range(len(all_frames.shape) - 1, -1, -1):  # Start from end
                                         if time_dim_idx is None or i != time_dim_idx:
-                                            # Create indices to take first element of this dimension
-                                            indices = [slice(None)] * len(all_frames.shape)
-                                            indices[i] = 0
-                                            all_frames = all_frames[tuple(indices)]
-                                            # Update dims_str
-                                            if i < len(dims_str):
-                                                dims_str = dims_str[:i] + dims_str[i+1:]
-                                                if time_dim_idx is not None and i < time_dim_idx:
-                                                    time_dim_idx -= 1
-                                            break
-                        
-                        # Create output filename
-                        output_file = output_base / f"{lif_file.stem}.tif"
-                        
-                        # Save as TIFF - use more robust dimension handling
-                        # Find channel dimension by looking at actual shape after all slicing
-                        current_shape = all_frames.shape
-                        channel_dim = None
-                        
-                        # Try to find channel dimension - look for dimension matching num_channels
-                        # But only if we still have multiple channels
-                        if num_channels > 1:
-                            for i, size in enumerate(current_shape):
-                                if size == num_channels:
-                                    channel_dim = i
-                                    break
-                        
-                        
-                        # Find time dimension to preserve it
-                        time_dim = None
-                        if 'T' in dims_str:
-                            t_idx = dims_str.index('T')
-                            # After slicing, find which dimension corresponds to time
-                            # Look for dimension with size matching num_time
-                            for i, size in enumerate(current_shape):
-                                if size == num_time and num_time > 1:
-                                    time_dim = i
-                                    break
-                            # If time dimension not found by size, try original position
-                            if time_dim is None and t_idx < len(current_shape):
-                                time_dim = t_idx
-                        
-                        if separate_channels and num_channels > 1 and channel_dim is not None:
-                            # Save each channel separately
-                            max_channels = min(num_channels, current_shape[channel_dim])
-                            for ch in range(max_channels):
-                                # Create indexing that selects one channel
-                                indices = [slice(None)] * len(current_shape)
-                                indices[channel_dim] = ch
-                                channel_data = all_frames[tuple(indices)]
+                                            if all_frames.shape[i] == 1:
+                                                dim_to_remove = i
+                                                break
+                                    
+                                    if dim_to_remove is not None:
+                                        # Remove singleton dimension
+                                        all_frames = np.squeeze(all_frames, axis=dim_to_remove)
+                                        # Update dims_str if needed
+                                        if dim_to_remove < len(dims_str):
+                                            dims_str = dims_str[:dim_to_remove] + dims_str[dim_to_remove+1:]
+                                            if time_dim_idx is not None and dim_to_remove < time_dim_idx:
+                                                time_dim_idx -= 1
+                                    else:
+                                        # No singleton dimensions found, take first of a non-time dimension
+                                        for i in range(len(all_frames.shape) - 1, -1, -1):
+                                            if time_dim_idx is None or i != time_dim_idx:
+                                                # Create indices to take first element of this dimension
+                                                indices = [slice(None)] * len(all_frames.shape)
+                                                indices[i] = 0
+                                                all_frames = all_frames[tuple(indices)]
+                                                # Update dims_str
+                                                if i < len(dims_str):
+                                                    dims_str = dims_str[:i] + dims_str[i+1:]
+                                                    if time_dim_idx is not None and i < time_dim_idx:
+                                                        time_dim_idx -= 1
+                                                break
+                            
+                            # Create output filename
+                            output_file = output_base / f"{lif_file.stem}.tif"
+                            
+                            # Save as TIFF - use more robust dimension handling
+                            # Find channel dimension by looking at actual shape after all slicing
+                            current_shape = all_frames.shape
+                            channel_dim = None
+                            
+                            # Try to find channel dimension - look for dimension matching num_channels
+                            # But only if we still have multiple channels
+                            if num_channels > 1:
+                                for i, size in enumerate(current_shape):
+                                    if size == num_channels:
+                                        channel_dim = i
+                                        break
+                            
+                            
+                            # Find time dimension to preserve it
+                            time_dim = None
+                            if 'T' in dims_str:
+                                t_idx = dims_str.index('T')
+                                # After slicing, find which dimension corresponds to time
+                                # Look for dimension with size matching num_time
+                                for i, size in enumerate(current_shape):
+                                    if size == num_time and num_time > 1:
+                                        time_dim = i
+                                        break
+                                # If time dimension not found by size, try original position
+                                if time_dim is None and t_idx < len(current_shape):
+                                    time_dim = t_idx
+                            
+                            if separate_channels and num_channels > 1 and channel_dim is not None:
+                                # Save each channel separately
+                                max_channels = min(num_channels, current_shape[channel_dim])
+                                for ch in range(max_channels):
+                                    # Create indexing that selects one channel
+                                    indices = [slice(None)] * len(current_shape)
+                                    indices[channel_dim] = ch
+                                    channel_data = all_frames[tuple(indices)]
+                                    
+                                    # Remove singleton dimensions but preserve time dimension
+                                    # Only squeeze dimensions that are size 1 and not the time dimension
+                                    axes_to_squeeze = []
+                                    for i, size in enumerate(channel_data.shape):
+                                        if size == 1 and (time_dim is None or i != time_dim):
+                                            axes_to_squeeze.append(i)
+                                    if axes_to_squeeze:
+                                        channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                                    
+                                    # Ensure we have at least 2D (add time dimension if needed)
+                                    if len(channel_data.shape) == 2:
+                                        channel_data = channel_data[np.newaxis, ...]
+                                    
+                                    ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
+                                    tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
+                                    self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
+                            else:
+                                # Combine channels or single channel
+                                if channel_dim is not None and num_channels > 1 and current_shape[channel_dim] > 1:
+                                    # Use max projection across channels
+                                    combined = np.max(all_frames, axis=channel_dim)
+                                else:
+                                    # Single channel or no channel dimension
+                                    combined = all_frames
                                 
                                 # Remove singleton dimensions but preserve time dimension
                                 # Only squeeze dimensions that are size 1 and not the time dimension
                                 axes_to_squeeze = []
-                                for i, size in enumerate(channel_data.shape):
+                                for i, size in enumerate(combined.shape):
                                     if size == 1 and (time_dim is None or i != time_dim):
                                         axes_to_squeeze.append(i)
                                 if axes_to_squeeze:
-                                    channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
+                                    combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
                                 
                                 # Ensure we have at least 2D (add time dimension if needed)
+                                if len(combined.shape) == 2:
+                                    combined = combined[np.newaxis, ...]
+                                
+                                # Log shape for debugging
+                                self.parent_window.log_output(f"  Saving with shape: {combined.shape}\n")
+                                
+                                tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                                self.parent_window.log_output(f"  Saved: {output_file.name}\n")
+                            
+                            self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
+                            aics_converted = True
+                        finally:
+                            if hasattr(lif_reader, 'close'):
+                                try:
+                                    lif_reader.close()
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass  # Try readlif fallback below
+                    if aics_converted:
+                        continue
+                    # Fallback: readlif (when BioIO and AICSImage both fail, e.g. "too many values to unpack")
+                    try:
+                        from readlif.reader import LifFile
+                        lif_file_obj = LifFile(str(lif_file))
+                        if getattr(lif_file_obj, "num_images", 0) <= 0:
+                            raise ValueError("No image series in LIF file")
+                        best_idx = self._readlif_best_image_index(lif_file_obj)
+                        image = lif_file_obj.get_image(best_idx)
+                        num_time, num_z, num_channels = self._readlif_dims(image)
+                        num_time = min(num_time, max_frames)
+                        n_ch = max(1, num_channels)
+                        frames_list = []
+                        for t in range(num_time):
+                            row = []
+                            for c in range(n_ch):
+                                try:
+                                    row.append(np.array(image.get_frame(z=0, t=t, c=c)))
+                                except Exception:
+                                    if row:
+                                        row.append(np.zeros_like(row[0]))
+                                    else:
+                                        row.append(np.zeros((1024, 1024), dtype=np.uint16))
+                            if n_ch == 1:
+                                frames_list.append(row[0])
+                            else:
+                                frames_list.append(np.stack(row, axis=0))
+                        all_frames = np.ascontiguousarray(np.stack(frames_list, axis=0))
+                        output_file = output_base / f"{lif_file.stem}.tif"
+                        if separate_channels and n_ch > 1:
+                            for ch in range(n_ch):
+                                channel_data = all_frames[:, ch, :, :]
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                
                                 ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
                                 tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
-                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
+                                self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name}\n")
+                            self.parent_window.log_output(f"✓ Converted (readlif): {lif_file.name}\n")
                         else:
-                            # Combine channels or single channel
-                            if channel_dim is not None and num_channels > 1 and current_shape[channel_dim] > 1:
-                                # Use max projection across channels
-                                combined = np.max(all_frames, axis=channel_dim)
-                            else:
-                                # Single channel or no channel dimension
-                                combined = all_frames
-                            
-                            # Remove singleton dimensions but preserve time dimension
-                            # Only squeeze dimensions that are size 1 and not the time dimension
-                            axes_to_squeeze = []
-                            for i, size in enumerate(combined.shape):
-                                if size == 1 and (time_dim is None or i != time_dim):
-                                    axes_to_squeeze.append(i)
-                            if axes_to_squeeze:
-                                combined = np.squeeze(combined, axis=tuple(axes_to_squeeze))
-                            
-                            # Ensure we have at least 2D (add time dimension if needed)
-                            if len(combined.shape) == 2:
-                                combined = combined[np.newaxis, ...]
-                            
-                            # Log shape for debugging
-                            self.parent_window.log_output(f"  Saving with shape: {combined.shape}\n")
-                            
-                            tifffile.imwrite(str(output_file), combined, photometric='minisblack')
+                            if all_frames.ndim == 2:
+                                all_frames = all_frames[np.newaxis, ...]
+                            tifffile.imwrite(str(output_file), all_frames, photometric='minisblack')
                             self.parent_window.log_output(f"  Saved: {output_file.name}\n")
-                        
-                        self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
-                        
-                    finally:
-                        if hasattr(lif_reader, 'close'):
-                            try:
-                                lif_reader.close()
-                            except:
-                                pass
-                
+                            self.parent_window.log_output(f"✓ Converted (readlif): {lif_file.name}\n")
+                        continue
+                    except Exception as e2:
+                        self.parent_window.log_output(f"✗ Error converting {lif_file.name}: {str(e2)}\n")
+                        QMessageBox.warning(self, "Conversion Error",
+                                            f"Error converting {lif_file.name}:\n{str(e2)}")
                 except Exception as e:
                     self.parent_window.log_output(f"✗ Error converting {lif_file.name}: {str(e)}\n")
-                    QMessageBox.warning(self, "Conversion Error", 
-                                      f"Error converting {lif_file.name}:\n{str(e)}")
+                    QMessageBox.warning(self, "Conversion Error",
+                                        f"Error converting {lif_file.name}:\n{str(e)}")
             
             # Complete
             self.parent_window.progress_bar.setValue(100)
@@ -3248,6 +3536,92 @@ class ND2ConversionTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Conversion Error", f"LIF conversion failed:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
+        finally:
+            self.convert_btn.setEnabled(True)
+            self.convert_btn.setText("Convert to TIFF")
+            self.parent_window.progress_bar.setVisible(False)
+    
+    def _convert_tiff(self):
+        """Split a multi-channel TIFF into separate per-channel TIFFs (BactiMate convention: stem_fi_<name>.tif, stem_phase.tif)."""
+        try:
+            import tifffile
+            file_path = Path(self.file_path.text())
+            if not file_path.is_file():
+                QMessageBox.warning(self, "No File", "Please select a TIFF file.")
+                return
+            num_time = self.file_info.get("num_time", 1)
+            num_channels = self.file_info.get("num_channels", 1)
+            channel_names = self.file_info.get("channel_names") or [f"Channel_{i+1}" for i in range(num_channels)]
+            if num_channels < 2:
+                QMessageBox.information(self, "TIFF", "This TIFF has only one channel. No split needed.")
+                return
+            # Output: Tif_files in same directory (like ND2)
+            output_base = file_path.parent / "Tif_files"
+            output_base.mkdir(parents=True, exist_ok=True)
+            fi_indices = set()
+            if getattr(self, "fi_channel_checks", None) and len(self.fi_channel_checks) >= num_channels:
+                fi_indices = {i for i, cb in enumerate(self.fi_channel_checks) if cb.isChecked()}
+            max_frames = min(self.max_frames.value(), num_time)
+            self.convert_btn.setEnabled(False)
+            self.convert_btn.setText("Splitting...")
+            self.parent_window.progress_bar.setVisible(True)
+            self.parent_window.progress_bar.setRange(0, 100)
+            self.parent_window.log_output(f"Splitting multi-channel TIFF: {file_path.name} ({num_time} frames, {num_channels} channels)\n")
+            with tifffile.TiffFile(file_path) as tif:
+                first_page = tif.pages[0]
+                shape = first_page.shape
+                num_pages = len(tif.pages)
+                if len(shape) == 2 and num_pages > 1:
+                    # Multipage 2D: ImageJ order T*C (or C*T); use file_info num_time, num_channels
+                    stack = tif.asarray()
+                    if stack.shape[0] != num_pages:
+                        stack = np.array([p.asarray() for p in tif.pages])
+                    n_total = stack.shape[0]
+                    n_t = min(max_frames, num_time)
+                    n_t = min(n_t, n_total // num_channels)
+                    stack = stack[: (n_t * num_channels)]
+                    data = stack.reshape(n_t, num_channels, stack.shape[1], stack.shape[2])
+                else:
+                    raw = tif.asarray()
+                    if raw.ndim == 2:
+                        raw = raw[np.newaxis, np.newaxis, ...]
+                    elif raw.ndim == 3:
+                        if num_channels > 1 and raw.shape[0] == num_channels:
+                            raw = raw[np.newaxis, ...]
+                        else:
+                            raw = raw[:max_frames, np.newaxis, ...]
+                    if raw.ndim == 4:
+                        raw = raw[:max_frames]
+                        if num_channels == 1 and raw.shape[1] > 1:
+                            raw = raw[:, 0:1, ...]
+                    data = raw
+                    n_t = data.shape[0]
+            def _sanitize(s):
+                return "".join(c if c.isalnum() or c in "_-" else "_" for c in (s or "channel")).strip("_") or "channel"
+            phase_used = False
+            for ch in range(num_channels):
+                channel_data = np.ascontiguousarray(data[:, ch])
+                if channel_data.ndim == 2:
+                    channel_data = channel_data[np.newaxis, ...]
+                name = (channel_names[ch] if ch < len(channel_names) else f"Channel_{ch+1}")
+                safe = _sanitize(name)
+                if ch in fi_indices:
+                    out_name = f"{file_path.stem}_fi_{safe}.tif"
+                else:
+                    if not phase_used:
+                        out_name = f"{file_path.stem}_phase.tif"
+                        phase_used = True
+                    else:
+                        out_name = f"{file_path.stem}_{safe}.tif"
+                out_path = output_base / out_name
+                tifffile.imwrite(str(out_path), channel_data, photometric="minisblack")
+                self.parent_window.log_output(f"  Saved: {out_path.name}\n")
+            self.parent_window.progress_bar.setValue(100)
+            QMessageBox.information(self, "Conversion Complete",
+                                    f"Split {file_path.name} into {num_channels} channel TIFF(s) in:\n{output_base}")
+        except Exception as e:
+            self.parent_window.log_output(f"Error: {str(e)}\n")
+            QMessageBox.critical(self, "Split failed", f"Could not split TIFF:\n{str(e)}")
         finally:
             self.convert_btn.setEnabled(True)
             self.convert_btn.setText("Convert to TIFF")

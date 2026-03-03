@@ -126,12 +126,50 @@ def _read_tiff_metadata_into(path: Path, out: dict[str, Any]) -> None:
                         out["bits_per_component"] = int(dtype.itemsize * 8)
                     except (TypeError, ValueError):
                         pass
-            # Placeholder channel list so --- Channels --- shows one line per channel
+            # Channel names: ImageJ "Labels" or OME Channel Name (skip Leica-style position strings like "c:1/3 t:1/50 - LDM 001/Series001")
+            def _looks_like_channel_name(s: str) -> bool:
+                if not s or len(s) > 60:
+                    return False
+                s_lower = s.lower()
+                if "c:1/" in s_lower or "t:1/" in s_lower or " c:" in s_lower or " t:" in s_lower:
+                    return False
+                if "ldm " in s_lower and "series" in s_lower:
+                    return False
+                if s.strip().startswith("c:") or "/" in s and any(c.isdigit() for c in s.split("/")[0]):
+                    return False
+                return True
+
             cc = out.get("channel_count") or 1
-            if not out.get("channel_wavelengths") and cc >= 1:
-                out["channel_wavelengths"] = [
-                    {"name": "Grayscale" if cc == 1 else f"Channel {i+1}"} for i in range(cc)
-                ]
+            channel_names: list[str] = []
+            labels = meta.get("Labels") if isinstance(meta, dict) else None
+            if labels is not None:
+                if isinstance(labels, (list, tuple)):
+                    channel_names = [str(x).strip() for x in labels if x][:cc]
+                elif isinstance(labels, str):
+                    channel_names = [s.strip() for s in labels.split(",") if s.strip()][:cc]
+            if not channel_names and hasattr(tif, "ome_metadata") and tif.ome_metadata:
+                try:
+                    import re
+                    xml = tif.ome_metadata if isinstance(tif.ome_metadata, str) else (tif.ome_metadata.decode("utf-8", errors="ignore") if isinstance(tif.ome_metadata, bytes) else "")
+                    if xml:
+                        for m in re.finditer(r'<Channel[^>]*Name="([^"]*)"', xml):
+                            raw = (m.group(1) or "").strip()
+                            channel_names.append(raw if _looks_like_channel_name(raw) else f"Channel_{len(channel_names)+1}")
+                            if len(channel_names) >= cc:
+                                break
+                except (TypeError, AttributeError):
+                    pass
+            # Use extracted names only if they all look like real channel names (not position strings like "c:1/3 t:1/50 - LDM 001/Series001")
+            if channel_names and len(channel_names) == cc and all(_looks_like_channel_name(n) for n in channel_names):
+                out["channel_names"] = channel_names
+                out["channel_wavelengths"] = [{"name": n} for n in channel_names]
+            else:
+                # Use simple Channel_1, Channel_2 so UI doesn't show confusing Leica/OME position strings
+                out["channel_names"] = [f"Channel_{i+1}" for i in range(cc)]
+                if not out.get("channel_wavelengths") and cc >= 1:
+                    out["channel_wavelengths"] = [
+                        {"name": "Grayscale" if cc == 1 else f"Channel {i+1}"} for i in range(cc)
+                    ]
     except Exception:
         pass
 
@@ -364,6 +402,34 @@ def _parse_nd2_dia_percent(description: str) -> Optional[int]:
     return None
 
 
+def build_acquisition_info_string(
+    meta: dict[str, Any],
+    channel_name: Optional[str] = None,
+    source_name: Optional[str] = None,
+) -> str:
+    """Build a short acquisition info string for embedding in output TIFF (ImageDescription/Info).
+    Includes objective, pixel size, time per frame, and optionally channel name and source file."""
+    lines: list[str] = []
+    if source_name:
+        lines.append(f"Source: {source_name}")
+    obj_name = meta.get("objective_name")
+    obj_mag = meta.get("objective_magnification")
+    if obj_name or obj_mag is not None:
+        parts = [str(obj_name)] if obj_name else []
+        if obj_mag is not None:
+            parts.append(f"{float(obj_mag):.1f}x")
+        lines.append("Objective: " + " ".join(parts))
+    ps = meta.get("pixel_size_um")
+    if ps is not None and float(ps) > 0:
+        lines.append(f"Pixel size: {float(ps):.4f} µm")
+    tp = meta.get("time_per_frame_min")
+    if tp is not None and float(tp) > 0:
+        lines.append(f"Time per frame: {float(tp) * 60:.4f} s")
+    if channel_name:
+        lines.append(f"Channel: {channel_name}")
+    return "\n".join(lines) if lines else ""
+
+
 def format_metadata_for_display(meta: dict[str, Any]) -> str:
     """Format read_metadata_from_path result as a string for the conversion tab metadata panel.
     Shows per-channel exposure and filter when available; otherwise global exposure/filter with clear labels."""
@@ -505,6 +571,12 @@ def read_calibration_from_path(image_path: Optional[Path]) -> tuple[float, float
                                         break
                                     except (IndexError, ValueError):
                                         pass
+                                if pixel_size <= 0 and part.startswith("spacing="):
+                                    try:
+                                        pixel_size = float(part.split("=")[1].strip())
+                                        break
+                                    except (IndexError, ValueError):
+                                        pass
                 if hasattr(tif, "imagej_metadata") and tif.imagej_metadata:
                     m = tif.imagej_metadata
                     if "pixelSize" in m:
@@ -571,6 +643,21 @@ def read_calibration_from_path(image_path: Optional[Path]) -> tuple[float, float
                         if xres_val is not None and xres_val > 0 and unit_val == 3:  # RESUNIT_CENTIMETER
                             pixel_size = 1e4 / xres_val
                     except (TypeError, ValueError, ZeroDivisionError, AttributeError):
+                        pass
+                # OME-TIFF: PhysicalSizeX/Y in µm
+                if pixel_size <= 0 and hasattr(tif, "ome_metadata") and tif.ome_metadata:
+                    try:
+                        import re
+                        xml = tif.ome_metadata if isinstance(tif.ome_metadata, str) else (tif.ome_metadata.decode("utf-8", errors="ignore") if isinstance(tif.ome_metadata, bytes) else "")
+                        if xml:
+                            m = re.search(r'PhysicalSizeX="([^"]+)"', xml)
+                            if m:
+                                pixel_size = float(m.group(1))
+                            if pixel_size <= 0:
+                                m = re.search(r'PhysicalSizeY="([^"]+)"', xml)
+                                if m:
+                                    pixel_size = float(m.group(1))
+                    except (TypeError, ValueError, AttributeError):
                         pass
         elif suffix in (".lif", ".czi"):
             try:

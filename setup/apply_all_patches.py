@@ -409,7 +409,14 @@ def patch_omnipose_gpu_mps() -> bool:
         if new_content != content:
             content = new_content
             patched = True
-    # 4) Fix empty except block (SyntaxError: expected an indented block after 'except')
+    # 4) Fix device string: MPS must be "mps" not "mps:True" (PyTorch rejects "mps:True")
+    import re
+    # Match "mps:" + str(use_torch) or 'mps:'+str(gpu) etc.
+    mps_bug_pattern = re.compile(r'[\"\']mps:[\"\']\s*\+\s*str\s*\(\s*\w+\s*\)')
+    if mps_bug_pattern.search(content):
+        content = mps_bug_pattern.sub('"mps"', content)
+        patched = True
+    # 5) Fix empty except block (SyntaxError: expected an indented block after 'except')
     lines = content.splitlines(keepends=True)
     for i, line in enumerate(lines):
         stripped = line.lstrip()
@@ -1275,6 +1282,33 @@ def patch_cellpose_omni_core_save_model() -> bool:
     return False
 
 
+def patch_cellpose_omni_core_mps_device() -> bool:
+    """Fix MPS device string in cellpose_omni/core.py: use 'mps' not 'mps:{gpu_number}'.
+    When use_gpu(True) is called, gpu_number is True and f'mps:{gpu_number}' becomes 'mps:True', which PyTorch rejects."""
+    core_file = _find_in_syspath("cellpose_omni/core.py")
+    if not core_file:
+        print("  WARNING: Could not find cellpose_omni/core.py")
+        return False
+    content = core_file.read_text()
+    old_line = "device = torch.device(f'mps:{gpu_number}') if ARM else torch.device(f'cuda:{gpu_number}')"
+    new_line = "device = torch.device('mps') if ARM else torch.device(f'cuda:{gpu_number}')"
+    if new_line in content:
+        print("  ✓ cellpose_omni core (MPS device string) already patched")
+        return True
+    if old_line not in content:
+        old_alt = 'device = torch.device(f"mps:{gpu_number}") if ARM else torch.device(f"cuda:{gpu_number}")'
+        if old_alt in content:
+            content = content.replace(old_alt, new_line, 1)
+        else:
+            print("  WARNING: Could not find _use_gpu_torch device line in cellpose_omni/core.py")
+            return False
+    else:
+        content = content.replace(old_line, new_line, 1)
+    core_file.write_text(content)
+    print("  ✓ Patched cellpose_omni core (MPS device string: use 'mps' not 'mps:True')")
+    return True
+
+
 def patch_cellpose_omni_core_ntrain_label() -> bool:
     """Rename training log label ntrain -> ntrain_img in cellpose_omni/core.py."""
     core_files = _find_all_in_syspath("cellpose_omni/core.py")
@@ -1313,6 +1347,7 @@ PATCH_LIST = [
     ("cellpose_pretrained", "cellpose_omni Cellpose: pretrained_model path (user models)", patch_cellpose_omni_cellpose_pretrained),
     ("train_channels", "cellpose_omni __main__: train channels for nchan==2", patch_cellpose_omni_main_train_channels),
     ("cellpose_core_save", "cellpose_omni core: DataParallel save_model", patch_cellpose_omni_core_save_model),
+    ("core_mps_device", "cellpose_omni core: MPS device string (use 'mps' not 'mps:True')", patch_cellpose_omni_core_mps_device),
     ("core_ntrain_label", "cellpose_omni core: log label ntrain -> ntrain_img", patch_cellpose_omni_core_ntrain_label),
 ]
 

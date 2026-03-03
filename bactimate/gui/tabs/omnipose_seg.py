@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from bactimate.gui.constants import PROJECT_ROOT
+from bactimate.gui.constants import BATCH_PROCESS_TIFF_SCRIPT, PROJECT_ROOT
 from bactimate.gui.log_config import get_logger, append_omnipose_debug
 from bactimate.gui.paths import get_omnipose_user_models_dir
 from bactimate.gui.patches import _patch_omnipose_get_masks
@@ -3526,7 +3526,7 @@ class OmniposeSegTab(QWidget):
         if not path.exists():
             errors.append(f"The selected path does not exist: {path}")
             return errors
-        script_path = PROJECT_ROOT / "scripts" / "batch_process_tiff_sequence.py"
+        script_path = BATCH_PROCESS_TIFF_SCRIPT
         if not script_path.exists():
             errors.append(f"Segmentation script not found: {script_path}")
         if self._get_effective_diameter_pixels() < 0:
@@ -3542,12 +3542,12 @@ class OmniposeSegTab(QWidget):
             )
             return
 
-        script_dir = PROJECT_ROOT
+        script_path_str = str(BATCH_PROCESS_TIFF_SCRIPT)
         is_folder = self._is_folder_mode()
         
         if not is_folder:
             # Single file mode
-            script_path = str(script_dir / "scripts" / "batch_process_tiff_sequence.py")
+            script_path = script_path_str
             input_file = Path(self.file_path.text())
             
             # When input is in any Tif_* folder (Tif_files, Tif_files2, Tif_1-3, ...), save masks in that folder's _segmentation_omni subfolder
@@ -3626,7 +3626,7 @@ class OmniposeSegTab(QWidget):
             
             # Process selected files - use batch_process_folder.py but we'll need to filter files
             # For now, let's process each file individually (simpler approach)
-            script_path = str(script_dir / "scripts" / "batch_process_tiff_sequence.py")
+            script_path = script_path_str
             
             # Store files and current index for sequential processing
             self.folder_files = selected_files
