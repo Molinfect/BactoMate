@@ -445,6 +445,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
                 SCRIPT_LOG.warning("Using first %s frames from both images", min_frames)
         
         SCRIPT_LOG.info("FI image loaded: %s", fi_images.shape)
+        if run_foci:
+            SCRIPT_LOG.info("Same image will be used for FI intensity and foci detection (by design).")
     
     results = []
     all_frame_data = []  # Store detailed data for each frame
@@ -887,9 +889,26 @@ def assign_persistent_cell_ids(masks, all_frame_data, pixel_size=0.108, max_dist
     return masks_with_cellids, cellid_mapping
 
 
-def create_filter_visualization(masks, all_frame_data, output_path, masks_original=None):
+def _draw_foci_on_frame(vis_frame, foci_rows, color_rgb, radius=2):
+    """Draw foci as small circles on an RGB frame (H, W, 3). foci_rows: list of dict with 'y', 'x' (int)."""
+    h, w = vis_frame.shape[0], vis_frame.shape[1]
+    r = max(1, min(radius, 8))
+    for row in foci_rows:
+        y, x = int(row.get('y', 0)), int(row.get('x', 0))
+        if y < 0 or y >= h or x < 0 or x >= w:
+            continue
+        y0, y1 = max(0, y - r), min(h, y + r + 1)
+        x0, x1 = max(0, x - r), min(w, x + r + 1)
+        for yy in range(y0, y1):
+            for xx in range(x0, x1):
+                if (yy - y) ** 2 + (xx - x) ** 2 <= r ** 2:
+                    vis_frame[yy, xx, :] = color_rgb
+
+
+def create_filter_visualization(masks, all_frame_data, output_path, masks_original=None, foci_table=None):
     """
     Create visualization showing accepted (green) and rejected (red) cells with persistent CellIDs.
+    When foci_table is provided (Run foci), detected foci are drawn as yellow dots.
     
     Parameters:
     -----------
@@ -902,6 +921,8 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
     masks_original : array, optional
         Original mask array (T, Y, X) with all labels (accepted + rejected) before CellID assignment
         If provided, used to show rejected cells. If None, only accepted cells will be shown.
+    foci_table : list of dict, optional
+        Foci rows (frame 0-based, y, x, ...). When provided, foci are drawn as yellow circles.
     """
     SCRIPT_LOG.info("Creating filter visualization...")
     
@@ -953,6 +974,12 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
         visualization[frame_idx, :, :, 0] = red    # Red channel
         visualization[frame_idx, :, :, 1] = green  # Green channel
         visualization[frame_idx, :, :, 2] = blue   # Blue channel
+        
+        # Overlay detected foci as yellow dots when Run foci was used
+        if foci_table:
+            foci_in_frame = [r for r in foci_table if r.get('frame') == frame_idx]
+            if foci_in_frame:
+                _draw_foci_on_frame(visualization[frame_idx], foci_in_frame, (255, 255, 0), radius=2)
         
         # Add CellID labels if PIL is available
         if PIL_AVAILABLE and mask.max() > 0:
@@ -1006,9 +1033,10 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
     SCRIPT_LOG.info("Visualization statistics: accepted %s, rejected %s, rate %.1f%%", total_accepted, total_rejected, rate)
 
 
-def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_path, masks_original=None):
+def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_path, masks_original=None, foci_table=None):
     """
     Create visualization showing cell masks with FI contours highlighted.
+    When foci_table is provided (Run foci), detected foci are drawn as cyan dots.
     
     Parameters:
     -----------
@@ -1022,6 +1050,8 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
         Path to save visualization TIFF
     masks_original : array, optional
         Original mask array before CellID assignment (for showing all cells)
+    foci_table : list of dict, optional
+        Foci rows (frame 0-based, y, x, ...). When provided, foci are drawn as cyan circles.
     """
     SCRIPT_LOG.info("Creating FI contour visualization...")
     
@@ -1079,6 +1109,12 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
         visualization[frame_idx, :, :, 0][contour_mask] = 255  # Red channel
         visualization[frame_idx, :, :, 1][contour_mask] = 255  # Green channel
         visualization[frame_idx, :, :, 2][contour_mask] = 0     # Blue channel (yellow = red+green)
+        
+        # Overlay detected foci as cyan dots when Run foci was used
+        if foci_table:
+            foci_in_frame = [r for r in foci_table if r.get('frame') == frame_idx]
+            if foci_in_frame:
+                _draw_foci_on_frame(visualization[frame_idx], foci_in_frame, (0, 255, 255), radius=2)
     
     # Save visualization
     SCRIPT_LOG.info("Saving FI contour visualization to: %s", output_path)
@@ -1116,6 +1152,49 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
     # Rename columns for clarity
     df_main.columns = ['Frame', 'Total Cell Area (µm²)', 'Total Cell Area (Relative)', 'Number of Cells']
     
+    # Per-cell foci aggregates from foci_table (frame in foci_table is 0-based; we use 1-based to match Summary/Per-Cell)
+    foci_per_cell_agg = {}
+    if foci_table and len(foci_table) > 0:
+        for r in foci_table:
+            if not r.get('in_cell') or r.get('cell_id') is None:
+                continue
+            frame_1based = r.get('frame', 0) + 1 if isinstance(r.get('frame'), int) else r.get('frame')
+            key = (frame_1based, r['cell_id'])
+            intensity = r.get('intensity')
+            size_px = r.get('size_px', 1)
+            if key not in foci_per_cell_agg:
+                foci_per_cell_agg[key] = {'intensities': [], 'sizes': []}
+            if intensity is not None and (isinstance(intensity, (int, float)) and np.isfinite(intensity)):
+                foci_per_cell_agg[key]['intensities'].append(float(intensity))
+            foci_per_cell_agg[key]['sizes'].append(size_px if size_px is not None else 1)
+        for k, v in foci_per_cell_agg.items():
+            intensities = v['intensities']
+            sizes = v['sizes']
+            v['mean_intensity'] = np.mean(intensities) if intensities else np.nan
+            v['sum_intensity'] = np.sum(intensities) if intensities else np.nan
+            v['max_intensity'] = np.max(intensities) if intensities else np.nan
+            v['mean_size_px'] = np.mean(sizes) if sizes else np.nan
+            v['total_area_px'] = np.sum(sizes) if sizes else np.nan
+    
+    # Add Summary sheet foci columns when run_foci was on
+    if foci_table and len(foci_table) > 0:
+        frame_to_foci = {}
+        for r in foci_table:
+            if not r.get('in_cell'):
+                continue
+            frame_1based = r.get('frame', 0) + 1 if isinstance(r.get('frame'), int) else r.get('frame')
+            frame_to_foci.setdefault(frame_1based, []).append(r)
+        total_foci = []
+        mean_foci_per_cell = []
+        for _, row in df_main.iterrows():
+            f = int(row['Frame'])
+            n_cells = int(row['Number of Cells'])
+            n_foci = len(frame_to_foci.get(f, []))
+            total_foci.append(n_foci)
+            mean_foci_per_cell.append(n_foci / n_cells if n_cells > 0 else np.nan)
+        df_main['Total Foci'] = total_foci
+        df_main['Mean Foci per Cell'] = mean_foci_per_cell
+    
     # Create Excel writer
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         # Main summary sheet
@@ -1144,16 +1223,31 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                     }
                     # Add FI columns if available (contour metrics may be disabled)
                     if 'mean_fi' in cell:
-                        row['Mean FI Intensity'] = cell['mean_fi']
+                        # With channel name (e.g. FI+foci): only whole-cell column (clearer for user)
+                        if fi_channel_name:
+                            row['Mean FI Intensity (whole cell)'] = cell['mean_fi']
+                        else:
+                            row['Mean FI Intensity'] = cell['mean_fi']
                     if 'contour_fi' in cell:
                         row['Contour FI Intensity'] = cell['contour_fi']
                     if 'fi_ratio' in cell:
                         row['FI Ratio (Contour/Mean)'] = cell['fi_ratio']
-                    # Foci columns
+                    # Foci columns: count and IDs (existing)
                     if 'foci_count' in cell:
+                        row['Number of Foci'] = cell['foci_count']
                         row[foci_count_col] = cell['foci_count']
                     if 'foci_ids' in cell:
                         row[foci_ids_col] = ','.join(map(str, cell['foci_ids'])) if cell['foci_ids'] else ''
+                    # Foci intensity/size aggregates (when run_foci was on)
+                    cell_id = cell.get('cell_id', cell.get('label'))
+                    agg_key = (frame_num, cell_id) if cell_id is not None else None
+                    if agg_key and agg_key in foci_per_cell_agg:
+                        agg = foci_per_cell_agg[agg_key]
+                        row['Foci Mean Intensity'] = agg['mean_intensity']
+                        row['Foci Total Intensity'] = agg['sum_intensity']
+                        row['Foci Max Intensity'] = agg['max_intensity']
+                        row['Foci Mean Size (px) [total foci area / N foci]'] = agg['mean_size_px']
+                        row['Foci Total Area (px)'] = agg['total_area_px']
                     detailed_rows.append(row)
             
             if detailed_rows:
@@ -1353,7 +1447,11 @@ Examples:
     # Create visualization if requested
     if args.visualization:
         vis_output = output_dir / f"{input_mask_stem}_filter_visualization.tif"
-        create_filter_visualization(masks_with_cellids, detailed_data, str(vis_output), masks_original=masks_original)
+        create_filter_visualization(
+            masks_with_cellids, detailed_data, str(vis_output),
+            masks_original=masks_original,
+            foci_table=foci_table if args.run_foci else None,
+        )
     
     # Create FI contour visualization only if contour FI was computed
     if args.fi_image and (not args.no_fi_contour):
@@ -1379,7 +1477,11 @@ Examples:
                 fi_images = fi_images[:min_frames]
         
         fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
-        create_fi_contour_visualization(masks_with_cellids, detailed_data, fi_images, str(fi_contour_output), masks_original=masks_original)
+        create_fi_contour_visualization(
+            masks_with_cellids, detailed_data, fi_images, str(fi_contour_output),
+            masks_original=masks_original,
+            foci_table=foci_table if args.run_foci else None,
+        )
     
     # Print summary statistics
     SCRIPT_LOG.info("=" * 60)

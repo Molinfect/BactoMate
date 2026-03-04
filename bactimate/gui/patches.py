@@ -162,12 +162,12 @@ def _apply_qt_paths() -> None:
 
         if not abs_plugin_path:
             try:
-                import PyQt5
-                pyqt5_path = os.path.dirname(PyQt5.__file__)
-                candidate = os.path.join(pyqt5_path, "Qt5", "plugins")
+                import PyQt6
+                pyqt6_path = os.path.dirname(PyQt6.__file__)
+                candidate = os.path.join(pyqt6_path, "Qt6", "plugins")
                 if os.path.exists(candidate):
                     abs_plugin_path = os.path.abspath(candidate)
-                    qt_lib_candidate = os.path.join(pyqt5_path, "Qt5", "lib")
+                    qt_lib_candidate = os.path.join(pyqt6_path, "Qt6", "lib")
                     if os.path.exists(qt_lib_candidate):
                         abs_lib_dir = os.path.abspath(qt_lib_candidate)
             except ImportError:

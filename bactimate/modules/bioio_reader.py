@@ -126,11 +126,16 @@ def load_data(
     path: Path | str,
     scene_index: int = 0,
     max_frames: Optional[int] = None,
+    frame_start: Optional[int] = None,
+    frame_end: Optional[int] = None,
     use_first_z_only: bool = True,
     max_z_projection: bool = False,
 ) -> Optional[Any]:
     """
     Load image data as numpy array (T, C, Y, X) using BioIO.
+    - max_frames: when set (and frame_start/frame_end not set), take first max_frames time points.
+    - frame_start, frame_end: optional 0-based range [frame_start, frame_end). If frame_start is set,
+      only that range is returned (frame_end defaults to frame_start+1 for single-frame extraction).
     - use_first_z_only: if True and Z>1, take only Z=0 (unless max_z_projection).
     - max_z_projection: if True and Z>1, take max over Z.
     Returns numpy array or None on failure.
@@ -163,9 +168,19 @@ def load_data(
             t_idx = order.index("T") if "T" in order else 0
             z_idx = order.index("Z") if "Z" in order else None
 
-            # Limit time frames
+            # Limit time frames: explicit range [frame_start, frame_end) or first max_frames
             num_t = data.shape[t_idx]
-            if max_frames is not None and num_t > max_frames:
+            if frame_start is not None:
+                end = frame_end if frame_end is not None else frame_start + 1
+                start = max(0, min(frame_start, num_t))
+                end = min(end, num_t)
+                if start < end:
+                    slices = [slice(None)] * data.ndim
+                    slices[t_idx] = slice(start, end)
+                    data = data[tuple(slices)]
+                else:
+                    return None
+            elif max_frames is not None and num_t > max_frames:
                 slices = [slice(None)] * data.ndim
                 slices[t_idx] = slice(0, max_frames)
                 data = data[tuple(slices)]

@@ -13,6 +13,7 @@ from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactimate.gui.log_config import get_logger, log_exception
+from bactimate.gui.paths import get_python_executable_for_subprocess
 
 
 class _TrackingLogHandler(logging.Handler):
@@ -80,7 +81,8 @@ class WorkerThread(QThread):
 
     def run(self) -> None:
         try:
-            cmd = [sys.executable, self.script_path] + self.cmd_args
+            python_exe = get_python_executable_for_subprocess()
+            cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             env["TQDM_DISABLE"] = "1"

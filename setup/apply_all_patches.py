@@ -416,6 +416,11 @@ def patch_omnipose_gpu_mps() -> bool:
     if mps_bug_pattern.search(content):
         content = mps_bug_pattern.sub('"mps"', content)
         patched = True
+    # 4b) Fix f-string form that produces 'mps:True' when variable is True (e.g. f'mps:{use_torch}' in omnipose/gpu.py)
+    mps_fstring_pattern = re.compile(r"f['\"]mps:\s*\{\s*\w+\s*\}['\"]")
+    if mps_fstring_pattern.search(content):
+        content = mps_fstring_pattern.sub("'mps'", content)
+        patched = True
     # 5) Fix empty except block (SyntaxError: expected an indented block after 'except')
     lines = content.splitlines(keepends=True)
     for i, line in enumerate(lines):
@@ -1284,7 +1289,8 @@ def patch_cellpose_omni_core_save_model() -> bool:
 
 def patch_cellpose_omni_core_mps_device() -> bool:
     """Fix MPS device string in cellpose_omni/core.py: use 'mps' not 'mps:{gpu_number}'.
-    When use_gpu(True) is called, gpu_number is True and f'mps:{gpu_number}' becomes 'mps:True', which PyTorch rejects."""
+    When use_gpu(True) is called, gpu_number is True and f'mps:{gpu_number}' becomes 'mps:True', which PyTorch rejects.
+    Many cellpose_omni versions get device from omnipose.gpu.get_device(); in that case nothing to patch here."""
     core_file = _find_in_syspath("cellpose_omni/core.py")
     if not core_file:
         print("  WARNING: Could not find cellpose_omni/core.py")
@@ -1295,18 +1301,23 @@ def patch_cellpose_omni_core_mps_device() -> bool:
     if new_line in content:
         print("  ✓ cellpose_omni core (MPS device string) already patched")
         return True
-    if old_line not in content:
-        old_alt = 'device = torch.device(f"mps:{gpu_number}") if ARM else torch.device(f"cuda:{gpu_number}")'
-        if old_alt in content:
-            content = content.replace(old_alt, new_line, 1)
-        else:
-            print("  WARNING: Could not find _use_gpu_torch device line in cellpose_omni/core.py")
-            return False
-    else:
+    if old_line in content:
         content = content.replace(old_line, new_line, 1)
-    core_file.write_text(content)
-    print("  ✓ Patched cellpose_omni core (MPS device string: use 'mps' not 'mps:True')")
-    return True
+        core_file.write_text(content)
+        print("  ✓ Patched cellpose_omni core (MPS device string: use 'mps' not 'mps:True')")
+        return True
+    old_alt = 'device = torch.device(f"mps:{gpu_number}") if ARM else torch.device(f"cuda:{gpu_number}")'
+    if old_alt in content:
+        content = content.replace(old_alt, new_line, 1)
+        core_file.write_text(content)
+        print("  ✓ Patched cellpose_omni core (MPS device string: use 'mps' not 'mps:True')")
+        return True
+    # No device-assignment line in core; device may come from omnipose.gpu.get_device() (patched in omnipose_gpu_mps)
+    if "get_device" in content and "omnipose" in content:
+        print("  ✓ cellpose_omni core (MPS): device from omnipose.gpu (patched there); nothing to change in core.py")
+        return True
+    print("  WARNING: Could not find MPS device line in cellpose_omni/core.py (patch may not be needed for this version)")
+    return False
 
 
 def patch_cellpose_omni_core_ntrain_label() -> bool:

@@ -88,6 +88,22 @@ def _running_from_app_bundle() -> bool:
         return False
 
 
+def get_python_executable_for_subprocess() -> str:
+    """
+    Python executable to use when running scripts in a subprocess (e.g. batch_process_tiff_sequence.py).
+    When running from the .app bundle, the main process is the embedded launcher (Contents/MacOS/BactiMate),
+    which always runs main.py and ignores script args. Using it would open a second GUI. So we use the
+    venv Python inside the bundle instead. In dev, use sys.executable.
+    """
+    if _running_from_app_bundle():
+        root = get_app_root()
+        for name in ("python3", "BactiMate", "python3.11", "python3.12"):
+            exe = root / "venv" / "bin" / name
+            if exe.exists() and os.access(exe, os.X_OK):
+                return str(exe.resolve())
+    return sys.executable
+
+
 def get_logs_dir() -> Path:
     """Directory for session logs, crash log, dock_debug. When running from .app, use Logs inside the app if writable."""
     if _is_installed():

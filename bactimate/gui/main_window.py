@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
         get_omnipose_user_models_dir()
         get_unet_models_dir()
         min_width, min_height = 1200, 700
-        initial_width, initial_height = 1200, 900
+        initial_width, initial_height = 1200, 800
         if sys.platform == "win32":
             # Extra width so 140px button min-width and tab content don't cause horizontal scrollbar
             min_width += 190

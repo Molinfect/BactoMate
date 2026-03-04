@@ -1688,7 +1688,36 @@ class OmniposeSegTab(QWidget):
             
             # Non-modal so user can access main window; parent=main window so preview closes when app quits (e.g. Cmd+Q).
             main_win = self.window() if hasattr(self, "window") and callable(self.window) else None
-            preview_dialog = QDialog(main_win)
+
+            class PreviewDialog(QDialog):
+                """Preview dialog that disconnects and stops segmentation worker on close so QThread is not destroyed while running."""
+                def closeEvent(self, event):
+                    self._dialog_closed = True
+                    w = getattr(self, "_seg_worker", None)
+                    s = getattr(self, "_seg_worker_slot", None)
+                    if w is not None:
+                        if w.isRunning():
+                            w.requestInterruption()
+                            w.quit()
+                            if not w.wait(60000):  # wait up to 60s; do NOT clear worker or close if still running
+                                event.ignore()
+                                QMessageBox.warning(
+                                    self,
+                                    "Segmentation in progress",
+                                    "Please wait for the current segmentation to finish before closing the preview.",
+                                    QMessageBox.StandardButton.Ok,
+                                )
+                                return
+                        if s is not None:
+                            try:
+                                w.finished.disconnect(s)
+                            except Exception:
+                                pass
+                        self._seg_worker = None
+                    self._seg_worker_slot = None
+                    super().closeEvent(event)
+
+            preview_dialog = PreviewDialog(main_win)
             preview_dialog.setWindowTitle("Segmentation Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)
@@ -2379,6 +2408,12 @@ class OmniposeSegTab(QWidget):
             # Cache for segmentation results: key = (frame_idx, diameter, flow_threshold, mask_threshold, cluster, model_type, use_gpu)
             preview_dialog.segmentation_cache = {}
             preview_dialog.display_cache_key = None  # None = show result for main-window params; else show this cached run
+            preview_dialog._seg_request_id = 0
+            preview_dialog._seg_current_requested_frame = 0
+            preview_dialog._seg_worker = None
+            preview_dialog._dialog_closed = False
+            preview_dialog._seg_progress_dialog = None
+            preview_dialog._seg_worker_slot = None
 
             # Round floats for display/cache to avoid binary representation noise (e.g. 0.3 -> 0.30000000000004)
             _PARAM_DECIMALS = 4  # cache key; display uses 2 decimals in format strings
@@ -2425,55 +2460,76 @@ class OmniposeSegTab(QWidget):
                        str(params.get("model_type") or params.get("pretrained_model") or "bact_phase_omni"),
                        bool(params.get("use_gpu", True)))
             
-            # Segmentation worker thread class
-            class SegmentationWorker(QThread):
-                finished = pyqtSignal(object, object)  # mask, error
-                
-                def __init__(self, model, frame, diameter, flow_threshold, mask_threshold, cluster):
+            # Preview segmentation worker: runs model.eval + upscale in background; emits (request_id, frame_idx, cache_key, mask, error_str).
+            # No Qt or cache writes in the worker; main thread applies result and writes cache.
+            class OmniposePreviewWorker(QThread):
+                finished = pyqtSignal(int, int, tuple, object, str)  # request_id, frame_idx, cache_key, mask, error_str
+
+                def __init__(self, request_id, frame_idx, cache_key, model, seg_frame, diameter_seg, flow_threshold,
+                             mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen):
                     super().__init__()
-                    self.model = model
-                    self.frame = frame
-                    self.diameter = diameter
-                    self.flow_threshold = flow_threshold
-                    self.mask_threshold = mask_threshold
-                    self.cluster = cluster
-                
+                    self._request_id = request_id
+                    self._frame_idx = frame_idx
+                    self._cache_key = cache_key
+                    self._model = model
+                    self._seg_frame = np.asarray(seg_frame, dtype=np.float32).copy()
+                    self._diameter_seg = diameter_seg
+                    self._flow_threshold = flow_threshold
+                    self._mask_threshold = mask_threshold
+                    self._cluster = cluster
+                    self._orig_h, self._orig_w = orig_h, orig_w
+                    self._seg_scale = seg_scale
+                    self._is_frozen = is_frozen
+
                 def run(self):
+                    mask, error_str = None, ""
                     try:
-                        # CRITICAL: Ensure all parameters are valid numbers, not None
-                        # This prevents comparison errors in model.eval() which expects numbers
-                        diameter = self.diameter
-                        if diameter is None or not isinstance(diameter, (int, float)):
-                            diameter = 0
-                        diameter = float(diameter)
-                        
-                        flow_threshold = self.flow_threshold
-                        if flow_threshold is None or not isinstance(flow_threshold, (int, float)):
-                            flow_threshold = 0.4
-                        flow_threshold = float(flow_threshold)
-                        mask_threshold = self.mask_threshold
-                        if mask_threshold is None or not isinstance(mask_threshold, (int, float)):
-                            mask_threshold = 0.0
-                        mask_threshold = float(mask_threshold)
-                        
-                        mask, flows, styles, diams = self.model.eval(
-                            self.frame,
-                            channels=[0, 0],
-                            diameter=diameter,
-                            flow_threshold=flow_threshold,
-                            mask_threshold=mask_threshold,
-                            cellprob_threshold=0.0,
-                            do_3D=False,
-                            omni=True,
-                            cluster=self.cluster,
-                            net_avg=False,  # Faster, omni models don't support net_avg anyway
-                            resample=True,
-                            verbose=False
-                        )
-                        self.finished.emit(mask, None)
+                        if self._is_frozen:
+                            max_retries = 3
+                            for attempt in range(max_retries):
+                                try:
+                                    mask, flows, styles, diams = self._model.eval(
+                                        self._seg_frame,
+                                        channels=[0, 0],
+                                        diameter=self._diameter_seg if (self._diameter_seg and self._diameter_seg > 0) else 30.0,
+                                        flow_threshold=self._flow_threshold,
+                                        mask_threshold=self._mask_threshold,
+                                        cellprob_threshold=0.0,
+                                        do_3D=False,
+                                        omni=True,
+                                        cluster=self._cluster,
+                                        net_avg=False,
+                                        resample=False,
+                                        verbose=False,
+                                    )
+                                    break
+                                except TypeError as e:
+                                    if ("'>' not supported" in str(e) or "'<' not supported" in str(e)) and attempt < max_retries - 1:
+                                        d = 30.0 + (attempt * 5.0)
+                                        self._diameter_seg = (d * self._seg_scale) if self._seg_scale < 1.0 else d
+                                        continue
+                                    raise
+                        else:
+                            mask, flows, styles, diams = self._model.eval(
+                                self._seg_frame,
+                                channels=[0, 0],
+                                diameter=self._diameter_seg,
+                                flow_threshold=self._flow_threshold,
+                                mask_threshold=self._mask_threshold,
+                                cellprob_threshold=0.0,
+                                do_3D=False,
+                                omni=True,
+                                cluster=self._cluster,
+                                net_avg=False,
+                                resample=False,
+                                verbose=False,
+                            )
+                        if self._seg_scale < 1.0 and mask is not None:
+                            mask = upsample_mask_to_shape(mask, self._orig_h, self._orig_w)
                     except Exception as e:
-                        self.finished.emit(None, str(e))
-            
+                        error_str = str(e)
+                    self.finished.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
+
             def run_segmentation(frame_idx, use_cache=True):
                 """Run segmentation on a specific frame with caching and background threading"""
                 # Get current parameters
@@ -2509,13 +2565,13 @@ class OmniposeSegTab(QWidget):
                 if use_cache:
                     try:
                         if cache_key in preview_dialog.segmentation_cache:
-                            return preview_dialog.segmentation_cache[cache_key]
+                            return (preview_dialog.segmentation_cache[cache_key], None)
                         # Check disk cache
                         if _disk_path.exists():
                             try:
                                 mask_disk = np.load(_disk_path)
                                 preview_dialog.segmentation_cache[cache_key] = mask_disk
-                                return mask_disk
+                                return (mask_disk, None)
                             except Exception:
                                 pass
                     except (TypeError, ValueError) as e:
@@ -2525,7 +2581,7 @@ class OmniposeSegTab(QWidget):
                 
                 # Load model if needed (only when model type or GPU setting changes)
                 if not load_model():
-                    return None
+                    return (None, "Model load failed")
                 
                 frame = images[frame_idx]
                 # Handle multi-channel: use first channel if needed
@@ -2558,165 +2614,130 @@ class OmniposeSegTab(QWidget):
                 if diameter_seg < 1:
                     diameter_seg = max(1.0, diameter_seg)
                 
-                try:
-                    # Final validation before calling model.eval()
-                    # Double-check all parameters are valid numbers (defensive programming)
-                    assert isinstance(diameter, (int, float)) and diameter is not None, f"Invalid diameter: {diameter}"
-                    assert isinstance(flow_threshold, (int, float)) and flow_threshold is not None, f"Invalid flow_threshold: {flow_threshold}"
-                    assert isinstance(mask_threshold, (int, float)) and mask_threshold is not None, f"Invalid mask_threshold: {mask_threshold}"
-                    
-                    # Run segmentation (synchronously on main thread - if this hangs, GUI freezes)
-                    # Log so user can run from terminal and see progress (same code path for built-in and user models)
-                    kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
-                    get_logger().info(
-                        "Preview: running model.eval() (%s) frame_shape=%s diameter=%s flow_thr=%s",
-                        kind, getattr(seg_frame, "shape", None), diameter_seg, flow_threshold,
-                    )
-                    import sys
-                    is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
-                    
-                    if is_frozen:
-                        # In frozen builds, wrap the call to handle the omnipose bug
-                        max_retries = 3
-                        for attempt in range(max_retries):
-                            try:
-                                mask, flows, styles, diams = preview_dialog.model.eval(
-                                    seg_frame,
-                                    channels=[0, 0],
-                                    diameter=diameter_seg if (diameter_seg and diameter_seg > 0) else 30.0,  # Never use 0 in frozen builds
-                                    flow_threshold=flow_threshold,
-                                    mask_threshold=mask_threshold,
-                                    cellprob_threshold=0.0,
-                                    do_3D=False,
-                                    omni=True,
-                                    cluster=cluster,
-                                    net_avg=False,
-                                    resample=False,  # Faster preview; full run uses resample=True
-                                    verbose=False
-                                )
-                                break  # Success, exit retry loop
-                            except TypeError as e:
-                                if "'>' not supported between instances of 'NoneType'" in str(e) or "'<' not supported between instances of 'NoneType'" in str(e):
-                                    if attempt < max_retries - 1:
-                                        # Try with a different diameter
-                                        diameter = 30.0 + (attempt * 5.0)  # Try 30, 35, 40
-                                        diameter_seg = (diameter * seg_scale) if seg_scale < 1.0 else diameter
-                                        continue
-                                    else:
-                                        # Last attempt failed, raise the error
-                                        raise
-                                else:
-                                    # Different TypeError, raise immediately
-                                    raise
-                    else:
-                        # Not frozen build, use normal call
-                        mask, flows, styles, diams = preview_dialog.model.eval(
-                            seg_frame,
-                            channels=[0, 0],
-                            diameter=diameter_seg,
-                            flow_threshold=flow_threshold,
-                            mask_threshold=mask_threshold,
-                            cellprob_threshold=0.0,
-                            do_3D=False,
-                            omni=True,
-                            cluster=cluster,
-                            net_avg=False,
-                            resample=False,  # Faster preview; full run uses resample=True
-                            verbose=False
-                        )
-                    get_logger().info("Preview: model.eval() finished (mask shape %s)", getattr(mask, "shape", None))
-                    # Upscale mask to original frame size if we ran on downsampled image
-                    if seg_scale < 1.0 and mask is not None:
-                        mask = upsample_mask_to_shape(mask, orig_h, orig_w)
-                    # Debug: log eval result for user vs built-in (see Logs/omnipose_debug.log)
+                # If a worker is already running, only update requested frame and request id; slot will re-trigger.
+                existing = getattr(preview_dialog, "_seg_worker", None)
+                if existing is not None and existing.isRunning():
+                    preview_dialog._seg_request_id += 1
+                    preview_dialog._seg_current_requested_frame = frame_idx
+                    status_label.setText("Segmenting... (requested frame %s)" % (frame_idx + 1))
+                    return (None, None)
+                import sys
+                is_frozen = getattr(sys, "frozen", False) or hasattr(sys, "__compiled__")
+                preview_dialog._seg_request_id += 1
+                preview_dialog._seg_current_requested_frame = frame_idx
+                kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
+                get_logger().info(
+                    "Preview: starting background worker (%s) frame_shape=%s diameter=%s flow_thr=%s",
+                    kind, getattr(seg_frame, "shape", None), diameter_seg, flow_threshold,
+                )
+
+                def _on_seg_worker_finished(rid, fid, ck, m, err):
                     try:
-                        kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
-                        model_id = params.get("pretrained_model") or params.get("model_type") or "?"
-                        n_cells = len(np.unique(mask)) - 1
-                        append_omnipose_debug(
-                            f"[BactiMate eval] kind={kind} model={model_id!r} "
-                            f"diameter={diameter} flow_thr={flow_threshold} mask_thr={mask_threshold} "
-                            f"frame_shape={getattr(frame, 'shape', None)} channels=[0,0] -> "
-                            f"n_cells={n_cells} mask_min={int(mask.min())} mask_max={int(mask.max())}"
-                        )
-                        # When 0 cells: log distance map range so user knows required mask_threshold.
-                        # The *returned* flows from model.eval() may not expose the same channel Omnipose uses
-                        # internally (get_masks uses _d). Omnipose logs the real range as
-                        # "[omnipose no cell pixels] dist min=... max=...". If we read all zeros, tell the user to use that line.
-                        if n_cells == 0 and flows is not None:
+                        if getattr(preview_dialog, "_dialog_closed", False):
+                            return
+                        if rid != getattr(preview_dialog, "_seg_request_id", -1):
+                            update_display(getattr(preview_dialog, "_seg_current_requested_frame", 0))
+                            return
+                        prog = getattr(preview_dialog, "_seg_progress_dialog", None)
+                        if prog is not None:
                             try:
-                                farr = np.asarray(flows) if not isinstance(flows, (list, tuple)) else flows
-                                n_ch = len(farr) if isinstance(farr, (list, tuple)) else (int(farr.shape[0]) if hasattr(farr, "shape") and getattr(farr, "ndim", 0) >= 3 else 1)
-                                best_min, best_max, best_mean = None, None, None
-                                best_idx = -1
-                                for idx in range(n_ch):
-                                    if isinstance(farr, (list, tuple)):
-                                        ch = np.asarray(farr[idx])
-                                    elif hasattr(farr, "shape") and farr.ndim >= 3 and idx < farr.shape[0]:
-                                        ch = np.asarray(farr[idx])
-                                    else:
-                                        ch = np.asarray(farr).ravel()
-                                    if ch.size > 0 and np.issubdtype(ch.dtype, np.floating):
-                                        c_min, c_max, c_mean = float(np.nanmin(ch)), float(np.nanmax(ch)), float(np.nanmean(ch))
-                                        # Prefer a channel that is not all zeros (so we can suggest a real threshold)
-                                        if best_max is None or (best_min == best_max == 0 and (c_min != 0 or c_max != 0 or c_min != c_max)):
-                                            best_min, best_max, best_mean, best_idx = c_min, c_max, c_mean, idx
-                                if best_max is not None and (best_min != 0 or best_max != 0):
-                                    append_omnipose_debug(
-                                        f"[BactiMate 0 cells] distance map (channel {best_idx}): min={best_min:.4f} max={best_max:.4f} mean={best_mean:.4f} "
-                                        f"-> need mask_threshold < {best_max:.2f} (and try flow_threshold=0)"
-                                    )
-                                else:
-                                    append_omnipose_debug(
-                                        "[BactiMate 0 cells] The returned 'flows' do not expose the distance channel (all zeros). "
-                                        "Use the '[omnipose no cell pixels] dist min=... max=...' line in this log for the real distance range — set mask_threshold below that max (e.g. if max=-2.3, try mask_threshold=-3 or -5). "
-                                        "If dist is constant (min=max) and you still get 0 cells after lowering the threshold, the flow field may be flat; try flow_threshold=0."
-                                    )
+                                prog.close()
                             except Exception:
                                 pass
-                    except Exception:
-                        pass
-                    # Cache the result (memory and optional disk)
-                    preview_dialog.segmentation_cache[cache_key] = mask
-                    try:
-                        _cache_dir.mkdir(parents=True, exist_ok=True)
-                        np.save(_disk_path, mask)
-                    except Exception:
-                        pass
-                    return mask
-                except RecursionError as e:
-                    # Handle recursion errors (e.g., from broken runtime hooks)
-                    import traceback
-                    error_details = f"Recursion error detected:\n{str(e)}\n\n"
-                    error_details += f"This may be caused by a bug in this environment.\n"
-                    error_details += f"Try rebuilding the application.\n\n"
-                    error_details += f"Parameters:\n  diameter: {diameter} (type: {type(diameter)})\n  flow_threshold: {flow_threshold} (type: {type(flow_threshold)})\n\n"
-                    error_details += f"Traceback:\n{traceback.format_exc()}"
-                    QMessageBox.critical(preview_dialog, "Segmentation Error - Recursion", 
-                                       f"Could not segment frame:\n{error_details}")
-                    return None
-                except TypeError as e:
-                    import traceback
-                    error_details = f"TypeError in omnipose: {str(e)}\n\n"
-                    error_details += f"Traceback:\n{traceback.format_exc()}"
-                    QMessageBox.critical(preview_dialog, "Segmentation Error", 
-                                       f"Could not segment frame:\n{error_details}")
-                    return None
-                except AssertionError as e:
-                    # Parameter validation error
-                    import traceback
-                    error_details = f"Parameter validation error:\n{str(e)}\n\nParameters:\n  diameter: {diameter} (type: {type(diameter)})\n  flow_threshold: {flow_threshold} (type: {type(flow_threshold)})\n\nTraceback:\n{traceback.format_exc()}"
-                    QMessageBox.critical(preview_dialog, "Segmentation Error", 
-                                       f"Could not segment frame:\n{error_details}")
-                    return None
-                except Exception as e:
-                    # Other errors - include full traceback for debugging
-                    import traceback
-                    error_details = f"{str(e)}\n\nParameters:\n  diameter: {diameter} (type: {type(diameter)})\n  flow_threshold: {flow_threshold} (type: {type(flow_threshold)})\n\nTraceback:\n{traceback.format_exc()}"
-                    QMessageBox.critical(preview_dialog, "Segmentation Error", 
-                                       f"Could not segment frame:\n{error_details}")
-                    return None
-            
+                            preview_dialog._seg_progress_dialog = None
+                        preview_dialog._seg_worker = None
+                        if err:
+                            status_label.setText("Segmentation failed: %s" % err[:80])
+                            status_label.setStyleSheet("color: #FF0000; font-weight: bold;")
+                            resegment_btn.setEnabled(True)
+                            clear_cache_btn.setEnabled(True)
+                            frame_spin.setEnabled(True)
+                            return
+                        preview_dialog.segmentation_cache[ck] = m
+                        try:
+                            import hashlib
+                            import tempfile
+                            _cache_dir = Path(tempfile.gettempdir()) / "bactimate_preview_cache"
+                            _disk_key = hashlib.sha256(f"{file_path}|{ck}".encode()).hexdigest()[:24]
+                            _disk_path = _cache_dir / f"{_disk_key}.npy"
+                            _cache_dir.mkdir(parents=True, exist_ok=True)
+                            np.save(_disk_path, m)
+                        except Exception:
+                            pass
+                        _apply_mask_to_ui(fid, m)
+                        cache_size = len(preview_dialog.segmentation_cache)
+                        status_label.setText(f"Ready (cached: {cache_size})")
+                        status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
+                    except RuntimeError:
+                        pass  # Dialog or widgets already destroyed (e.g. user closed preview)
+
+                worker = OmniposePreviewWorker(
+                    preview_dialog._seg_request_id, frame_idx, cache_key, preview_dialog.model,
+                    seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster,
+                    orig_h, orig_w, seg_scale, is_frozen,
+                )
+                preview_dialog._seg_worker_slot = _on_seg_worker_finished
+                worker.finished.connect(_on_seg_worker_finished)
+                preview_dialog._seg_worker = worker
+                worker.start()
+                return (None, None)
+
+            def _apply_mask_to_ui(frame_idx, mask):
+                """Apply a segmentation mask to the display (used after cache hit or worker result). Re-enables controls."""
+                frame = images[frame_idx]
+                if frame.ndim == 3:
+                    display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                else:
+                    display_frame = frame
+                preview_dialog.masks = mask
+                preview_dialog.current_display_frame = display_frame
+                if lut_data.get("frame_idx") != frame_idx:
+                    lut_data["frame_idx"] = frame_idx
+                    fmin, fmax = float(display_frame.min()), float(display_frame.max())
+                    lut_data["vmin"] = fmin
+                    lut_data["vmax"] = fmax if fmax > fmin else fmin + 1.0
+                    lut_data["frame_min"] = fmin
+                    lut_data["frame_max"] = fmax
+                vmin = lut_data.get("vmin")
+                vmax = lut_data.get("vmax")
+                if vmin is None or vmax is None or vmax <= vmin:
+                    vmin = float(display_frame.min())
+                    vmax = float(display_frame.max()) if display_frame.max() > vmin else vmin + 1.0
+                    lut_data["vmin"], lut_data["vmax"] = vmin, vmax
+                vrange = max(vmax - vmin, 1e-6)
+                display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
+                disp_scaled, mask_scaled = scale_for_preview(display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE)
+                overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
+                pixmap = to_qpixmap(overlay)
+                height, width = overlay.shape[:2]
+                image_canvas.set_pixmap(pixmap, (width, height), reset_view=False)
+                QApplication.processEvents()
+                preview_dialog.display_cache_key = None
+                file_name = Path(file_path).name
+                num_cells = len(np.unique(mask)) - 1
+                params = get_current_parameters()
+                model_name = Path(params["pretrained_model"]).stem if params.get("pretrained_model") else params.get("model_type", "—")
+                params_str = format_omnipose_params_from_params(params)
+                title_label.setText(
+                    f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {model_name} | {file_name}\n"
+                    f"Parameters: {params_str}"
+                )
+                update_histogram(display_frame, lut_data.get("vmin"), lut_data.get("vmax"))
+                resegment_btn.setEnabled(True)
+                clear_cache_btn.setEnabled(True)
+                frame_spin.setEnabled(True)
+                cache_size = len(preview_dialog.segmentation_cache)
+                if num_cells == 0:
+                    if params.get("pretrained_model"):
+                        status_label.setText("No cells detected. Try Flow 0, Mask -2, Diameter 0 or cell size (px). See docs/CUSTOM_MODEL_TROUBLESHOOTING.md.")
+                    else:
+                        status_label.setText(f"Ready (cached: {cache_size}) — no cells")
+                    status_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                else:
+                    status_label.setText(f"Ready (cached: {cache_size})")
+                    status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
+                refresh_cached_runs_combo()
+
             def update_display(frame_idx, show_progress=True, force_recalc=False):
                 """Update the display with segmentation overlay"""
                 # Check cache first
@@ -2734,6 +2755,7 @@ class OmniposeSegTab(QWidget):
                     progress_dialog.setCancelButton(None)  # Don't allow cancellation
                     progress_dialog.show()
                     QApplication.processEvents()
+                    preview_dialog._seg_progress_dialog = progress_dialog
                 
                 # Disable controls during processing
                 if progress_dialog:
@@ -2743,99 +2765,35 @@ class OmniposeSegTab(QWidget):
                 
                 try:
                     frame = images[frame_idx]
-                    # Handle multi-channel: use first channel if needed
                     if frame.ndim == 3:
                         display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
                     else:
                         display_frame = frame
-                    
-                    # Update progress message
                     if progress_dialog:
                         progress_dialog.setLabelText("Running segmentation...")
                         QApplication.processEvents()
-                    
-                    # Run segmentation (with caching)
-                    mask = run_segmentation(frame_idx, use_cache=not force_recalc)
-                    if mask is None:
+                    mask, err = run_segmentation(frame_idx, use_cache=not force_recalc)
+                    if err is not None:
                         if progress_dialog:
                             progress_dialog.close()
-                        status_label.setText("Segmentation failed")
+                            preview_dialog._seg_progress_dialog = None
+                        status_label.setText("Segmentation failed" + (": " + err[:60] if err else ""))
                         status_label.setStyleSheet("color: #FF0000; font-weight: bold;")
+                        resegment_btn.setEnabled(True)
+                        clear_cache_btn.setEnabled(True)
+                        frame_spin.setEnabled(True)
                         return
-                    
-                    preview_dialog.masks = mask
-                    preview_dialog.current_display_frame = display_frame
-                    # Reset LUT range when frame changes so each frame gets its own range initially
-                    if lut_data.get('frame_idx') != frame_idx:
-                        lut_data['frame_idx'] = frame_idx
-                        fmin, fmax = float(display_frame.min()), float(display_frame.max())
-                        lut_data['vmin'] = fmin
-                        lut_data['vmax'] = fmax if fmax > fmin else fmin + 1.0
-                        lut_data['frame_min'] = fmin
-                        lut_data['frame_max'] = fmax
-                    vmin = lut_data.get('vmin')
-                    vmax = lut_data.get('vmax')
-                    if vmin is None or vmax is None or vmax <= vmin:
-                        vmin = float(display_frame.min())
-                        vmax = float(display_frame.max()) if display_frame.max() > vmin else vmin + 1.0
-                        lut_data['vmin'], lut_data['vmax'] = vmin, vmax
-                    vrange = max(vmax - vmin, 1e-6)
-                    display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
-                    # Scale down for preview so overlay + pixmap + zoom/pan paint stay fast (cap 1024)
-                    disp_scaled, mask_scaled = scale_for_preview(
-                        display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE
-                    )
-                    overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
-                    pixmap = to_qpixmap(overlay)
-                    height, width = overlay.shape[:2]
-                    image_canvas.set_pixmap(pixmap, (width, height), reset_view=False)
-                    QApplication.processEvents()
-
-                    preview_dialog.display_cache_key = None  # showing current-params result
-                    file_name = Path(file_path).name
-                    num_cells = len(np.unique(mask)) - 1
-                    params = get_current_parameters()
-                    model_name = Path(params["pretrained_model"]).stem if params.get("pretrained_model") else params.get("model_type", "—")
-                    params_str = format_omnipose_params_from_params(params)
-                    title_label.setText(
-                        f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {model_name} | {file_name}\n"
-                        f"Parameters: {params_str}"
-                    )
-                    update_histogram(display_frame, lut_data.get('vmin'), lut_data.get('vmax'))
-                    
-                    # Close progress dialog
-                    if progress_dialog:
-                        progress_dialog.close()
-                    
-                    # Re-enable controls
-                    resegment_btn.setEnabled(True)
-                    clear_cache_btn.setEnabled(True)
-                    frame_spin.setEnabled(True)
-                    
-                    # Update status
-                    cache_size = len(preview_dialog.segmentation_cache)
-                    if num_cells == 0:
-                        params = get_current_parameters()
-                        if params.get("pretrained_model"):
-                            status_label.setText("No cells detected. Try Flow 0, Mask -2, Diameter 0 or cell size (px). See docs/CUSTOM_MODEL_TROUBLESHOOTING.md.")
-                            status_label.setStyleSheet("color: #FF9800; font-weight: bold;")
-                        else:
-                            if has_cache:
-                                status_label.setText("Ready (from cache) — no cells")
-                            else:
-                                status_label.setText(f"Ready (cached: {cache_size}) — no cells")
-                            status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
-                    else:
-                        if has_cache:
-                            status_label.setText("Ready (from cache)")
-                        else:
-                            status_label.setText(f"Ready (cached: {cache_size})")
-                        status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
-                    refresh_cached_runs_combo()
+                    if mask is not None:
+                        if progress_dialog:
+                            progress_dialog.close()
+                            preview_dialog._seg_progress_dialog = None
+                        _apply_mask_to_ui(frame_idx, mask)
+                        return
+                    # mask is None and err is None: worker was started; slot will update UI and close progress
                 except Exception as e:
                     if progress_dialog:
                         progress_dialog.close()
-                    # Re-enable controls on error
+                        preview_dialog._seg_progress_dialog = None
                     resegment_btn.setEnabled(True)
                     clear_cache_btn.setEnabled(True)
                     frame_spin.setEnabled(True)
@@ -2877,6 +2835,7 @@ class OmniposeSegTab(QWidget):
             frame_spin = QSpinBox()
             frame_spin.setRange(1, num_frames)
             frame_spin.setValue(1)
+            frame_spin.setToolTip(f"Frame 1–{num_frames}. Type a number and press Enter to jump.")
             nav_layout.addWidget(QLabel("Frame:"))
             nav_layout.addWidget(frame_spin)
             nav_layout.addWidget(QLabel(f"of {num_frames}"))
@@ -2928,10 +2887,8 @@ class OmniposeSegTab(QWidget):
                 finally:
                     is_updating_frame = False
             
-            # editingFinished: when user presses Enter or leaves field. valueChanged + 300ms debounce: for arrow keys.
+            # Commit on Enter/focus only (no live valueChanged) so typing "55" doesn't jump to 5
             def on_frame_changed():
-                if hasattr(frame_spin, '_change_timer'):
-                    frame_spin._change_timer.stop()
                 frame_num = frame_spin.value() - 1
                 if 0 <= frame_num < num_frames:
                     go_to_frame(frame_num)
@@ -2941,19 +2898,6 @@ class OmniposeSegTab(QWidget):
                     frame_spin.blockSignals(False)
 
             frame_spin.editingFinished.connect(on_frame_changed)
-            frame_spin._change_timer = QTimer()
-            frame_spin._change_timer.setSingleShot(True)
-            frame_spin._change_timer.timeout.connect(on_frame_changed)
-
-            def on_value_changed(v):
-                if 1 <= v <= num_frames:
-                    frame_spin._change_timer.start(300)
-                else:
-                    frame_spin._change_timer.stop()
-                    frame_spin.blockSignals(True)
-                    frame_spin.setValue(preview_dialog.current_frame + 1)
-                    frame_spin.blockSignals(False)
-            frame_spin.valueChanged.connect(on_value_changed)
             
             nav_layout.addStretch()
             
@@ -3078,15 +3022,9 @@ class OmniposeSegTab(QWidget):
             # Short delay so the preview window has time to paint before we run segmentation
             QTimer.singleShot(80, start_preview)
 
-            # Show cache info in status
-            def update_cache_status():
-                cache_size = len(preview_dialog.segmentation_cache)
-                if cache_size > 0:
-                    status_label.setText(f"Ready (cached: {cache_size})")
-                else:
-                    status_label.setText("Ready")
-
-            QTimer.singleShot(100, update_cache_status)
+            # Do not overwrite status with "Ready" on a fixed timer - that was hiding "Loading model..."
+            # and "Model loaded (GPU: ...)". Status is set by load_model() and by _on_seg_worker_finished
+            # when the first segmentation completes.
             
         except ImportError as e:
             loading_progress.close()

@@ -1475,6 +1475,8 @@ class TrackingTab(QWidget):
                 self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
         
+        # Store for completion popup "Open output folder"
+        self._last_tracking_output_dir = output_dir
         # Create worker thread (output_dir = base / _tracking / {stem}_tracking)
         self.worker = TrackingWorker(
             mask_file, original_file, excel_file,
@@ -1507,6 +1509,22 @@ class TrackingTab(QWidget):
         self.parent_window.progress_bar.setValue(100)
         if success:
             self.parent_window.log_output("✓ Tracking completed successfully!\n")
+            # Completion popup (unified with Omnipose, Analyze Masks, etc.)
+            out_dir = getattr(self, "_last_tracking_output_dir", None)
+            if out_dir is not None and Path(out_dir).exists():
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Tracking Complete")
+                msg.setText("Tracking completed successfully.")
+                msg.setIcon(QMessageBox.Icon.Information)
+                open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                msg.addButton(QMessageBox.StandardButton.Ok)
+                msg.exec()
+                if msg.clickedButton() == open_btn:
+                    from PyQt6.QtCore import QUrl
+                    from PyQt6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_dir)))
+            else:
+                QMessageBox.information(self, "Tracking Complete", "Tracking completed successfully.")
         else:
             QMessageBox.critical(self, "Error", f"Tracking failed:\n{message}")
         from PyQt6.QtCore import QTimer
@@ -1535,7 +1553,22 @@ class TrackingTab(QWidget):
             msg = f"Completed: {n_ok}/{len(tasks)} file(s) tracked successfully."
             if n_fail:
                 msg += f"\n{n_fail} file(s) failed — see Log for errors."
-            QMessageBox.information(self, "Batch Tracking Complete", msg)
+            # Unified: always offer "Open output folder" (first task's output dir)
+            first_output = Path(tasks[0][3]) if tasks and len(tasks[0]) > 3 else None
+            if first_output is not None and first_output.exists():
+                dlg = QMessageBox(self)
+                dlg.setWindowTitle("Batch Tracking Complete")
+                dlg.setText(msg)
+                dlg.setIcon(QMessageBox.Icon.Information)
+                open_btn = dlg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                dlg.addButton(QMessageBox.StandardButton.Ok)
+                dlg.exec()
+                if dlg.clickedButton() == open_btn:
+                    from PyQt6.QtCore import QUrl
+                    from PyQt6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(first_output)))
+            else:
+                QMessageBox.information(self, "Batch Tracking Complete", msg)
             self._update_tracking_button_state()
             return
         mask_path, original_path, excel_path, output_dir = tasks[self.current_task_index]

@@ -254,6 +254,7 @@ def convert_nd2_to_tif(
     input_path: Path,
     output_dir: Optional[Path] = None,
     max_frames: int = 150,
+    single_frame: Optional[int] = None,  # If set, extract only this time point (1-based); overrides max_frames
     separate_channels: bool = True,  # Default to True for multi-channel compatibility
     channel_index: Optional[int] = None,
     drift_correct: bool = False,
@@ -357,9 +358,17 @@ def convert_nd2_to_tif(
                 if num_channels > 1:
                     print(f"  Channels: {', '.join(channel_names)}")
                 
-                # Determine number of frames to extract
-                frames_to_extract = min(max_frames, num_time)
-                print(f"  Extracting frames 1-{frames_to_extract}")
+                # Determine number of frames to extract: single frame (1-based) or first N
+                if single_frame is not None:
+                    frame_idx_0 = max(0, min(single_frame - 1, num_time - 1))
+                    frames_to_extract = 1
+                    frame_suffix = f"_f{single_frame}"  # e.g. _f50 for filename
+                    print(f"  Extracting single frame only: {single_frame} (1-based)")
+                else:
+                    frame_idx_0 = 0
+                    frames_to_extract = min(max_frames, num_time)
+                    frame_suffix = ""
+                    print(f"  Extracting frames 1-{frames_to_extract}")
                 
                 # Fallback: extract pixel size from ND2 metadata if still not set
                 if extracted_pixel_size is None:
@@ -534,9 +543,12 @@ def convert_nd2_to_tif(
                     else:
                         print(f"  Debug: Dimension order unclear, shape[0]={shape[0]}, num_time={num_time}, num_channels={num_channels}")
                 
-                # Extract time frames (first dimension should now be T after potential reshape/transpose)
-                # Always slice to ensure we have exactly frames_to_extract frames
-                if shape[0] > frames_to_extract:
+                # Extract time frames: either [frame_idx_0 : frame_idx_0 + frames_to_extract] or [0 : frames_to_extract]
+                if single_frame is not None:
+                    all_frames = all_frames[frame_idx_0:frame_idx_0 + 1]
+                    frames_to_extract = 1
+                    print(f"  Debug: Sliced to single frame {single_frame}, shape: {all_frames.shape}")
+                elif shape[0] > frames_to_extract:
                     all_frames = all_frames[:frames_to_extract]
                     print(f"  Debug: Sliced to {frames_to_extract} frames, new shape: {all_frames.shape}, size: {all_frames.size}")
                 elif shape[0] < frames_to_extract:
@@ -657,7 +669,7 @@ def convert_nd2_to_tif(
                                         tag = "_foci"
                                     else:
                                         tag = ""
-                                    base = nd2_file.stem + tag
+                                    base = nd2_file.stem + frame_suffix + tag
                                     # Always include channel name in filename (e.g. stem_fi_mScarlet.tif).
                                     # Analyze Masks finds FI via stem_fi or stem_fi_*.
                                     output_filename = f"{base}_{safe_name}.tif"
@@ -668,13 +680,13 @@ def convert_nd2_to_tif(
                             else:
                                 print(f"  Warning: Shape mismatch - all_frames.shape[1]={all_frames.shape[1]} but num_channels={num_channels}")
                                 print(f"  Falling back to single file output")
-                                output_filename = nd2_file.stem + '.tif'
+                                output_filename = nd2_file.stem + frame_suffix + '.tif'
                                 output_path = output_dir / output_filename
                                 acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
                                 _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                         elif len(all_frames.shape) == 3 and num_channels == 1:
                             # Single channel already extracted
-                            output_filename = nd2_file.stem + '.tif'
+                            output_filename = nd2_file.stem + frame_suffix + '.tif'
                             output_path = output_dir / output_filename
                             acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
                             _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
@@ -704,7 +716,7 @@ def convert_nd2_to_tif(
                                         tag = "_foci"
                                     else:
                                         tag = ""
-                                    base = nd2_file.stem + tag
+                                    base = nd2_file.stem + frame_suffix + tag
                                     output_filename = f"{base}_{safe_name}.tif"
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} -> {output_filename}")
@@ -712,13 +724,13 @@ def convert_nd2_to_tif(
                                     _save_tiff_with_metadata(output_path, channel_data, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                             else:
                                 # Fallback: save as single file
-                                output_filename = nd2_file.stem + '.tif'
+                                output_filename = nd2_file.stem + frame_suffix + '.tif'
                                 output_path = output_dir / output_filename
                                 acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
                                 _save_tiff_with_metadata(output_path, all_frames, frames_to_extract, pixel_size=extracted_pixel_size, time_per_frame_min=extracted_time_per_frame, acquisition_info=acq_info)
                     else:
                         # Save as single OME-TIFF file with all channels
-                        output_filename = nd2_file.stem + '.tif'
+                        output_filename = nd2_file.stem + frame_suffix + '.tif'
                         output_path = output_dir / output_filename
                         print(f"  Saving as single OME-TIFF file ({num_channels} channels, {frames_to_extract} timepoints)")
                         acq_info = build_acquisition_info_string(acquisition_meta, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
@@ -739,7 +751,7 @@ def convert_nd2_to_tif(
                     else:
                         channel_suffix = ""
                     
-                    output_filename = nd2_file.stem + channel_suffix + '.tif'
+                    output_filename = nd2_file.stem + frame_suffix + channel_suffix + '.tif'
                     output_path = output_dir / output_filename
                     ch_name = channel_names[channel_index] if channel_index is not None and channel_index < len(channel_names) else None
                     acq_info = build_acquisition_info_string(acquisition_meta, channel_name=ch_name, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
@@ -972,7 +984,14 @@ def main() -> None:
         '-f', '--frames',
         type=int,
         default=150,
-        help='Maximum number of frames to extract (default: 150)'
+        help='Maximum number of frames to extract (default: 150). Ignored when --single-frame is set.'
+    )
+    parser.add_argument(
+        '--single-frame',
+        type=int,
+        default=None,
+        metavar='N',
+        help='Extract only this time point (1-based, e.g. 50 = frame 50). All channels of that frame are included. Overrides --frames.'
     )
     parser.add_argument(
         '--separate-channels',
@@ -1061,6 +1080,7 @@ def main() -> None:
             input_path=Path(args.path),
             output_dir=Path(args.output) if args.output else None,
             max_frames=args.frames,
+            single_frame=args.single_frame,
             separate_channels=separate_channels,
             channel_index=args.channel,
             drift_correct=args.drift_correct,

@@ -161,20 +161,40 @@ class ND2ConversionTab(QWidget):
         params_group = QGroupBox("Conversion Parameters")
         params_layout = QVBoxLayout()
         top_row = QHBoxLayout()
-        frame_label = QLabel("Number of Frames:")
+        self.frame_extract_mode = QComboBox()
+        self.frame_extract_mode.addItems(["First N frames", "Single frame only"])
+        self.frame_extract_mode.setToolTip(
+            "First N frames: extract frames 1 through N (e.g. 50 → frames 1–50).\n"
+            "Single frame only: extract only one time point (all channels) by frame number (e.g. frame 50)."
+        )
+        top_row.addWidget(QLabel("Extract:"))
+        top_row.addWidget(self.frame_extract_mode)
         frame_info_icon = create_info_icon(
             "Number of time frames to extract from the microscopy file.\n\n"
-            "Source: Hardcoded default value\n\n"
-            "The value will automatically update to the maximum number of frames when a file is loaded.\n\n"
-            "Note: Extracting more frames takes longer and uses more disk space.",
+            "First N frames: extract from the start (e.g. 50 = frames 1–50).\n"
+            "Single frame only: extract only one time point by its frame number (1-based); all channels of that frame are included.\n\n"
+            "The maximum value updates when a file is loaded.",
             parent_widget=self
         )
-        top_row.addWidget(frame_label)
+        self.frame_label = QLabel("Number of Frames:")
+        self.frame_label.setToolTip("Used when 'First N frames' is selected.")
+        top_row.addWidget(self.frame_label)
         top_row.addWidget(frame_info_icon)
         self.max_frames = QSpinBox()
         self.max_frames.setRange(1, 10000)
         self.max_frames.setValue(100)
         top_row.addWidget(self.max_frames)
+        self.single_frame_label = QLabel("Frame (1-based):")
+        self.single_frame_label.setToolTip("Used when 'Single frame only' is selected. Extracts only this time point (all channels).")
+        self.single_frame_spin = QSpinBox()
+        self.single_frame_spin.setRange(1, 10000)
+        self.single_frame_spin.setValue(1)
+        top_row.addWidget(self.single_frame_label)
+        top_row.addWidget(self.single_frame_spin)
+        self.single_frame_label.setVisible(False)
+        self.single_frame_spin.setVisible(False)
+        self.frame_extract_mode.currentIndexChanged.connect(self._on_frame_extract_mode_changed)
+        self._on_frame_extract_mode_changed(self.frame_extract_mode.currentIndex())
         top_row.addSpacing(16)
         channel_label = QLabel("Channel Handling:")
         top_row.addWidget(channel_label)
@@ -271,6 +291,25 @@ class ND2ConversionTab(QWidget):
         params_layout.addWidget(corrections_group)
         params_group.setLayout(params_layout)
         return params_group
+
+    def _on_frame_extract_mode_changed(self, index: int) -> None:
+        """Show/hide Number of Frames vs Single frame spinbox based on extract mode."""
+        is_single = index == 1  # "Single frame only"
+        self.frame_label.setVisible(not is_single)
+        self.max_frames.setVisible(not is_single)
+        self.single_frame_label.setVisible(is_single)
+        self.single_frame_spin.setVisible(is_single)
+
+    def _get_frame_range(self, num_time: int) -> tuple[int, int]:
+        """Return (start_0based, end_0based) for conversion. end is exclusive."""
+        if num_time <= 0:
+            return 0, 0
+        if self.frame_extract_mode.currentIndex() == 1:  # Single frame only
+            one_based = self.single_frame_spin.value()
+            start = max(0, min(one_based - 1, num_time - 1))
+            return start, start + 1
+        n = min(self.max_frames.value(), num_time)
+        return 0, n
 
     def select_file(self):
         start_dir = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_ND2)
@@ -491,8 +530,12 @@ class ND2ConversionTab(QWidget):
                 'time_per_frame_min': first_file_info.get('time_per_frame_min'),
             }
             # Update UI with first file's parameters (user can adjust)
-            self.max_frames.setMaximum(first_file_info['num_time'])
-            self.max_frames.setValue(first_file_info['num_time'])  # Automatically set to maximum
+            n_t = first_file_info['num_time']
+            self.max_frames.setMaximum(n_t)
+            self.max_frames.setValue(n_t)  # Automatically set to maximum
+            self.single_frame_spin.setMaximum(max(1, n_t))
+            if self.single_frame_spin.value() > n_t:
+                self.single_frame_spin.setValue(n_t)
             # Channel options panel (FI / Z / Bleach per channel)
             self._rebuild_channel_options(first_file_info['channel_names'], first_file_info['num_channels'])
             self.preview_btn.setEnabled(True)
@@ -1051,9 +1094,9 @@ class ND2ConversionTab(QWidget):
         return best_c, best_z
 
     @staticmethod
-    def _czi_slice_to_t_c_y_x(arr, axes, max_frames=None):
+    def _czi_slice_to_t_c_y_x(arr, axes, max_frames=None, frame_start=None, frame_end=None):
         """Reduce CZI array to (T, C, Y, X) by taking first Z only. axes matches arr.shape.
-        Returns (array, dims_str). Limits T to max_frames if set."""
+        Returns (array, dims_str). Limits T: use [frame_start:frame_end) if frame_start is set, else first max_frames."""
         if not axes or len(axes) != len(arr.shape):
             return arr, ""
         indices = []
@@ -1061,9 +1104,15 @@ class ND2ConversionTab(QWidget):
         for i, ax in enumerate(axes):
             if ax == "Z" and arr.shape[i] > 0:
                 indices.append(0)
-            elif ax == "T" and t_idx is not None and max_frames is not None:
+            elif ax == "T" and t_idx is not None:
                 size = arr.shape[i]
-                indices.append(slice(0, min(int(size), max_frames)))
+                if frame_start is not None:
+                    end = frame_end if frame_end is not None else frame_start + 1
+                    indices.append(slice(max(0, min(frame_start, size)), min(end, size)))
+                elif max_frames is not None:
+                    indices.append(slice(0, min(int(size), max_frames)))
+                else:
+                    indices.append(slice(None))
             else:
                 indices.append(slice(None))
         out = arr[tuple(indices)]
@@ -1073,19 +1122,24 @@ class ND2ConversionTab(QWidget):
         return out, dims_str if dims_str else "TCYX"
 
     @staticmethod
-    def _czi_slice_to_t_c_z_y_x(arr, axes, max_frames=None):
+    def _czi_slice_to_t_c_z_y_x(arr, axes, max_frames=None, frame_start=None, frame_end=None):
         """Reduce CZI array to (T, C, Z, Y, X) keeping Z dimension. axes matches arr.shape.
-        Returns (array, dims_str, z_axis) where z_axis is the index of Z in the returned array.
-        Use for conversion when max Z-projection is needed."""
+        Returns (array, dims_str, z_axis). Limits T: use [frame_start:frame_end) if frame_start is set, else first max_frames."""
         if not axes or len(axes) != len(arr.shape):
             return arr, "", -1
         indices = []
         t_idx = axes.index("T") if "T" in axes else None
         z_idx_in_axes = axes.index("Z") if "Z" in axes else -1
         for i, ax in enumerate(axes):
-            if ax == "T" and t_idx is not None and max_frames is not None:
+            if ax == "T" and t_idx is not None:
                 size = arr.shape[i]
-                indices.append(slice(0, min(int(size), max_frames)))
+                if frame_start is not None:
+                    end = frame_end if frame_end is not None else frame_start + 1
+                    indices.append(slice(max(0, min(frame_start, size)), min(end, size)))
+                elif max_frames is not None:
+                    indices.append(slice(0, min(int(size), max_frames)))
+                else:
+                    indices.append(slice(None))
             else:
                 indices.append(slice(None))
         out = arr[tuple(indices)]
@@ -1488,9 +1542,13 @@ class ND2ConversionTab(QWidget):
         }
         
         # Update frame selector - automatically set to max frames
-        self.max_frames.setMaximum(num_time)
-        self.max_frames.setValue(num_time)  # Automatically set to maximum
-        
+        n_t = num_time
+        self.max_frames.setMaximum(n_t)
+        self.max_frames.setValue(n_t)  # Automatically set to maximum
+        self.single_frame_spin.setMaximum(max(1, n_t))
+        if self.single_frame_spin.value() > n_t:
+            self.single_frame_spin.setValue(n_t)
+
         # Channel options panel (FI / Z / Bleach per channel)
         self._rebuild_channel_options(channel_names, num_channels)
         
@@ -1749,7 +1807,7 @@ class ND2ConversionTab(QWidget):
         frame_spin = QSpinBox()
         frame_spin.setRange(1, num_time)
         frame_spin.setValue(1)
-        frame_spin.setToolTip(f"Jump to frame 1–{num_time}. Enter a number and press Enter.")
+        frame_spin.setToolTip(f"Frame 1–{num_time}. Type a number and press Enter to jump.")
         nav_layout.addWidget(frame_spin)
         nav_layout.addWidget(QLabel(f"of {num_time}"))
         
@@ -1759,7 +1817,7 @@ class ND2ConversionTab(QWidget):
             channel_spin = QSpinBox()
             channel_spin.setRange(1, num_channels)
             channel_spin.setValue(1)
-            channel_spin.setToolTip(f"Select channel to preview (1-{num_channels})")
+            channel_spin.setToolTip(f"Channel 1–{num_channels}. Type a number and press Enter to switch.")
             nav_layout.addWidget(channel_spin)
         else:
             channel_spin = None
@@ -2287,7 +2345,7 @@ class ND2ConversionTab(QWidget):
                     QMessageBox.warning(preview_dialog, "Preview Error", 
                                       f"Could not display frame {idx + 1}:\n{str(e)}")
         
-        # Connect channel selection (if available)
+        # Connect channel selection (if available); commit on Enter/focus only
         if channel_spin is not None:
             def on_channel_changed():
                 """Update frame when channel changes - auto-adjust LUT to new channel"""
@@ -2298,7 +2356,7 @@ class ND2ConversionTab(QWidget):
                     current_vmax = None
                     # This will auto-adjust min/max based on the new channel's intensity range
                     update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
-            channel_spin.valueChanged.connect(on_channel_changed)
+            channel_spin.editingFinished.connect(on_channel_changed)
         
         # Connect "Show bleach correction" checkbox: always use current main-window settings when computing
         if show_bleach_check is not None and bleach_status_label is not None:
@@ -2390,7 +2448,7 @@ class ND2ConversionTab(QWidget):
             sync_timer.start(500)  # Check every 0.5 s
             preview_dialog._bleach_sync_timer = sync_timer  # keep reference
         
-        # editingFinished + debounced valueChanged (300ms) for frame spinbox
+        # Commit on Enter/focus only (no live valueChanged) so typing "55" doesn't jump to 5
         def on_frame_changed():
             user_frame = frame_spin.value()  # 1-based: 1 = first frame
             idx = user_frame - 1
@@ -2402,23 +2460,12 @@ class ND2ConversionTab(QWidget):
                 frame_spin.blockSignals(False)
 
         frame_spin.editingFinished.connect(lambda: QTimer.singleShot(0, on_frame_changed))
-        frame_spin._change_timer = QTimer()
-        frame_spin._change_timer.setSingleShot(True)
-        frame_spin._change_timer.timeout.connect(on_frame_changed)
-
-        def on_value_changed(v):
-            if 1 <= v <= num_time:
-                frame_spin._change_timer.start(300)
-            else:
-                frame_spin._change_timer.stop()
-                frame_spin.blockSignals(True)
-                frame_spin.setValue(preview_dialog.current_frame + 1)
-                frame_spin.blockSignals(False)
-        frame_spin.valueChanged.connect(on_value_changed)
         
-        # Close button (same as other preview windows)
+        # Close button (same as other preview windows). Disable as default so Enter in spinbox doesn't close dialog.
         close_btn = QPushButton("Close")
         close_btn.setMinimumWidth(100)
+        close_btn.setAutoDefault(False)
+        close_btn.setDefault(False)
         close_btn.clicked.connect(preview_dialog.close)
         layout.addWidget(close_btn)
         
@@ -2935,10 +2982,11 @@ class ND2ConversionTab(QWidget):
         first_path = self._conversion_queue[0]
 
         # Build command arguments (path is the file/folder to convert; for queue we pass single file)
-        cmd_args = [
-            str(first_path),
-            '--frames', str(self.max_frames.value()),
-        ]
+        cmd_args = [str(first_path)]
+        if self.frame_extract_mode.currentIndex() == 1:  # Single frame only
+            cmd_args.extend(['--single-frame', str(self.single_frame_spin.value())])
+        else:
+            cmd_args.extend(['--frames', str(self.max_frames.value())])
         
         if self.separate_channels.isChecked():
             cmd_args.append('--separate-channels')
@@ -2999,7 +3047,9 @@ class ND2ConversionTab(QWidget):
             'current_file': 0,
             'file_progress': 0
         }
-        
+        # For completion popup "Open output folder" (TIFFs written next to ND2)
+        self._last_conversion_output_dir = first_path.parent
+
         # Store reference to prevent garbage collection
         self.worker = WorkerThread(str(convert_script), cmd_args, parent=self)
         self.worker.finished.connect(self.on_finished)
@@ -3134,10 +3184,11 @@ class ND2ConversionTab(QWidget):
             next_path = queue[self._conversion_current_index]
             from bactimate.gui.constants import CONVERT_ND2_SCRIPT
             convert_script = CONVERT_ND2_SCRIPT
-            cmd_args = [
-                str(next_path),
-                '--frames', str(self.max_frames.value()),
-            ]
+            cmd_args = [str(next_path)]
+            if self.frame_extract_mode.currentIndex() == 1:
+                cmd_args.extend(['--single-frame', str(self.single_frame_spin.value())])
+            else:
+                cmd_args.extend(['--frames', str(self.max_frames.value())])
             if self.separate_channels.isChecked():
                 cmd_args.append('--separate-channels')
             else:
@@ -3185,6 +3236,25 @@ class ND2ConversionTab(QWidget):
             self._conversion_queue = None
             self._conversion_current_index = 0
         self._performed_this_session = True
+        out_dir = getattr(self, "_last_conversion_output_dir", None)
+        if out_dir is not None and Path(out_dir).exists():
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Conversion Complete")
+            msg.setText(f"Successfully converted {n} file(s) to TIFF.")
+            msg.setIcon(QMessageBox.Icon.Information)
+            open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            if msg.clickedButton() == open_btn:
+                from PyQt6.QtCore import QUrl
+                from PyQt6.QtGui import QDesktopServices
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_dir)))
+        else:
+            QMessageBox.information(
+                self,
+                "Conversion Complete",
+                f"Successfully converted {n} file(s) to TIFF.",
+            )
         self.workflow_step_finished.emit(True)
 
     def _convert_lif(self):
@@ -3229,7 +3299,6 @@ class ND2ConversionTab(QWidget):
             output_base.mkdir(parents=True, exist_ok=True)
 
             # Get conversion parameters
-            max_frames = self.max_frames.value()
             separate_channels = self.separate_channels.isChecked()
 
             # Show progress
@@ -3247,10 +3316,26 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.progress_bar.setValue(progress)
                     QApplication.processEvents()
                     
+                    # Resolve frame range (first N or single frame) from file's num_time
+                    num_time_for_range = 1
+                    try:
+                        info = bioio_get_info(Path(lif_file))
+                        if info:
+                            num_time_for_range = info.get("num_time", 1) or 1
+                    except Exception:
+                        pass
+                    frame_start, frame_end = self._get_frame_range(num_time_for_range)
+                    frame_suffix = f"_f{frame_start + 1}" if (frame_end - frame_start) == 1 else ""
+                    
                     # Try BioIO first; on error (e.g. bioio-lif "too many values to unpack") fall back to AICSImage
                     data = None
                     try:
-                        data = bioio_load_data(Path(lif_file), max_frames=max_frames, use_first_z_only=True)
+                        data = bioio_load_data(
+                            Path(lif_file),
+                            frame_start=frame_start,
+                            frame_end=frame_end,
+                            use_first_z_only=True,
+                        )
                     except Exception:
                         pass
                     if data is not None and data.size > 0:
@@ -3260,7 +3345,8 @@ class ND2ConversionTab(QWidget):
                         current_shape = all_frames.shape
                         channel_dim = 1 if num_channels > 1 else None
                         time_dim = 0
-                        output_file = output_base / f"{lif_file.stem}.tif"
+                        stem_used = lif_file.stem + frame_suffix
+                        output_file = output_base / f"{stem_used}.tif"
                         if separate_channels and num_channels > 1 and channel_dim is not None:
                             max_channels = min(num_channels, current_shape[channel_dim])
                             for ch in range(max_channels):
@@ -3272,7 +3358,7 @@ class ND2ConversionTab(QWidget):
                                     channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
+                                ch_output = output_base / f"{stem_used}_ch{ch+1}.tif"
                                 tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
                                 self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name}\n")
                             self.parent_window.log_output(f"✓ Converted: {lif_file.name}\n")
@@ -3315,13 +3401,14 @@ class ND2ConversionTab(QWidget):
                                 num_channels = shape[dims_str.index('C')] if 'C' in dims_str else 1
                                 num_z = shape[dims_str.index('Z')] if 'Z' in dims_str else 1
                             
-                            # Limit frames
-                            num_time = min(num_time, max_frames)
+                            # Limit frames to selected range (first N or single frame)
                             if 'T' in dims_str:
                                 t_idx = dims_str.index('T')
                                 indices = [slice(None)] * len(all_frames.shape)
-                                indices[t_idx] = slice(0, num_time)
+                                indices[t_idx] = slice(frame_start, min(frame_end, num_time))
                                 all_frames = all_frames[tuple(indices)]
+                            num_time = frame_end - frame_start
+                            stem_used = lif_file.stem + (f"_f{frame_start + 1}" if num_time == 1 else "")
                             
                             # All channels converted (no single-channel selection)
                             # Take first z-slice if multiple z-slices
@@ -3375,8 +3462,8 @@ class ND2ConversionTab(QWidget):
                                                         time_dim_idx -= 1
                                                 break
                             
-                            # Create output filename
-                            output_file = output_base / f"{lif_file.stem}.tif"
+                            # Create output filename (include _fN when single-frame extraction)
+                            output_file = output_base / f"{stem_used}.tif"
                             
                             # Save as TIFF - use more robust dimension handling
                             # Find channel dimension by looking at actual shape after all slicing
@@ -3428,7 +3515,7 @@ class ND2ConversionTab(QWidget):
                                     if len(channel_data.shape) == 2:
                                         channel_data = channel_data[np.newaxis, ...]
                                     
-                                    ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
+                                    ch_output = output_base / f"{stem_used}_ch{ch+1}.tif"
                                     tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
                                     self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
                             else:
@@ -3479,15 +3566,16 @@ class ND2ConversionTab(QWidget):
                             raise ValueError("No image series in LIF file")
                         best_idx = self._readlif_best_image_index(lif_file_obj)
                         image = lif_file_obj.get_image(best_idx)
-                        num_time, num_z, num_channels = self._readlif_dims(image)
-                        num_time = min(num_time, max_frames)
+                        num_time_file, num_z, num_channels = self._readlif_dims(image)
+                        frame_start_rl, frame_end_rl = self._get_frame_range(num_time_file)
+                        num_time = frame_end_rl - frame_start_rl
                         n_ch = max(1, num_channels)
                         frames_list = []
                         for t in range(num_time):
                             row = []
                             for c in range(n_ch):
                                 try:
-                                    row.append(np.array(image.get_frame(z=0, t=t, c=c)))
+                                    row.append(np.array(image.get_frame(z=0, t=frame_start_rl + t, c=c)))
                                 except Exception:
                                     if row:
                                         row.append(np.zeros_like(row[0]))
@@ -3498,13 +3586,14 @@ class ND2ConversionTab(QWidget):
                             else:
                                 frames_list.append(np.stack(row, axis=0))
                         all_frames = np.ascontiguousarray(np.stack(frames_list, axis=0))
-                        output_file = output_base / f"{lif_file.stem}.tif"
+                        stem_used_rl = lif_file.stem + (f"_f{frame_start_rl + 1}" if num_time == 1 else "")
+                        output_file = output_base / f"{stem_used_rl}.tif"
                         if separate_channels and n_ch > 1:
                             for ch in range(n_ch):
                                 channel_data = all_frames[:, ch, :, :]
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                ch_output = output_base / f"{lif_file.stem}_ch{ch+1}.tif"
+                                ch_output = output_base / f"{stem_used_rl}_ch{ch+1}.tif"
                                 tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
                                 self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name}\n")
                             self.parent_window.log_output(f"✓ Converted (readlif): {lif_file.name}\n")
@@ -3561,7 +3650,8 @@ class ND2ConversionTab(QWidget):
             fi_indices = set()
             if getattr(self, "fi_channel_checks", None) and len(self.fi_channel_checks) >= num_channels:
                 fi_indices = {i for i, cb in enumerate(self.fi_channel_checks) if cb.isChecked()}
-            max_frames = min(self.max_frames.value(), num_time)
+            frame_start_tiff, frame_end_tiff = self._get_frame_range(num_time)
+            n_t = frame_end_tiff - frame_start_tiff
             self.convert_btn.setEnabled(False)
             self.convert_btn.setText("Splitting...")
             self.parent_window.progress_bar.setVisible(True)
@@ -3577,9 +3667,10 @@ class ND2ConversionTab(QWidget):
                     if stack.shape[0] != num_pages:
                         stack = np.array([p.asarray() for p in tif.pages])
                     n_total = stack.shape[0]
-                    n_t = min(max_frames, num_time)
                     n_t = min(n_t, n_total // num_channels)
-                    stack = stack[: (n_t * num_channels)]
+                    start_ix = frame_start_tiff * num_channels
+                    end_ix = (frame_start_tiff + n_t) * num_channels
+                    stack = stack[start_ix:end_ix]
                     data = stack.reshape(n_t, num_channels, stack.shape[1], stack.shape[2])
                 else:
                     raw = tif.asarray()
@@ -3589,15 +3680,17 @@ class ND2ConversionTab(QWidget):
                         if num_channels > 1 and raw.shape[0] == num_channels:
                             raw = raw[np.newaxis, ...]
                         else:
-                            raw = raw[:max_frames, np.newaxis, ...]
+                            raw = raw[frame_start_tiff:frame_end_tiff, np.newaxis, ...]
                     if raw.ndim == 4:
-                        raw = raw[:max_frames]
+                        raw = raw[frame_start_tiff:frame_end_tiff]
                         if num_channels == 1 and raw.shape[1] > 1:
                             raw = raw[:, 0:1, ...]
                     data = raw
                     n_t = data.shape[0]
             def _sanitize(s):
                 return "".join(c if c.isalnum() or c in "_-" else "_" for c in (s or "channel")).strip("_") or "channel"
+            stem_suffix_tiff = f"_f{frame_start_tiff + 1}" if n_t == 1 else ""
+            stem_used_tiff = file_path.stem + stem_suffix_tiff
             phase_used = False
             for ch in range(num_channels):
                 channel_data = np.ascontiguousarray(data[:, ch])
@@ -3606,13 +3699,13 @@ class ND2ConversionTab(QWidget):
                 name = (channel_names[ch] if ch < len(channel_names) else f"Channel_{ch+1}")
                 safe = _sanitize(name)
                 if ch in fi_indices:
-                    out_name = f"{file_path.stem}_fi_{safe}.tif"
+                    out_name = f"{stem_used_tiff}_fi_{safe}.tif"
                 else:
                     if not phase_used:
-                        out_name = f"{file_path.stem}_phase.tif"
+                        out_name = f"{stem_used_tiff}_phase.tif"
                         phase_used = True
                     else:
-                        out_name = f"{file_path.stem}_{safe}.tif"
+                        out_name = f"{stem_used_tiff}_{safe}.tif"
                 out_path = output_base / out_name
                 tifffile.imwrite(str(out_path), channel_data, photometric="minisblack")
                 self.parent_window.log_output(f"  Saved: {out_path.name}\n")
@@ -3667,7 +3760,6 @@ class ND2ConversionTab(QWidget):
             output_base = file_path.parent if file_path.is_file() else file_path
 
             # Get conversion parameters
-            max_frames = self.max_frames.value()
             separate_channels = self.separate_channels.isChecked()
             max_z_projection = self.max_z_projection.isChecked()
 
@@ -3686,10 +3778,22 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.progress_bar.setValue(progress)
                     QApplication.processEvents()
                     
+                    # Resolve frame range from file's num_time
+                    num_time_czi = 1
+                    try:
+                        info = bioio_get_info(Path(czi_file))
+                        if info:
+                            num_time_czi = info.get("num_time", 1) or 1
+                    except Exception:
+                        pass
+                    frame_start_czi, frame_end_czi = self._get_frame_range(num_time_czi)
+                    frame_suffix_czi = f"_f{frame_start_czi + 1}" if (frame_end_czi - frame_start_czi) == 1 else ""
+                    
                     # Try BioIO first for robust reading
                     data = bioio_load_data(
                         Path(czi_file),
-                        max_frames=max_frames,
+                        frame_start=frame_start_czi,
+                        frame_end=frame_end_czi,
                         use_first_z_only=not max_z_projection,
                         max_z_projection=max_z_projection,
                     )
@@ -3701,7 +3805,8 @@ class ND2ConversionTab(QWidget):
                         channel_dim = 1 if num_channels > 1 else None
                         time_dim = 0
                         dims_str = "TCYX"
-                        output_file = output_base / f"{czi_file.stem}.tif"
+                        stem_used_czi = czi_file.stem + frame_suffix_czi
+                        output_file = output_base / f"{stem_used_czi}.tif"
                         if separate_channels and num_channels > 1 and channel_dim is not None:
                             max_ch = min(num_channels, current_shape[channel_dim])
                             for ch in range(max_ch):
@@ -3713,7 +3818,7 @@ class ND2ConversionTab(QWidget):
                                     channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                ch_output = output_base / f"{czi_file.stem}_ch{ch+1}.tif"
+                                ch_output = output_base / f"{stem_used_czi}_ch{ch+1}.tif"
                                 tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
                                 self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name}\n")
                             self.parent_window.log_output(f"✓ Converted: {czi_file.name}\n")
@@ -3740,26 +3845,30 @@ class ND2ConversionTab(QWidget):
                     if arr is None or arr.size == 0:
                         raise RuntimeError("czifile returned empty array")
                     if axes and len(axes) == len(arr.shape):
-                        num_time = min(num_time, max_frames)
+                        num_time = frame_end_czi - frame_start_czi
                         if num_z > 1 and max_z_projection:
                             # Keep Z, then max over Z so conversion respects "Max intensity projection" regardless of preview
-                            all_frames, dims_str, z_axis = self._czi_slice_to_t_c_z_y_x(arr, axes, max_frames=max_frames)
+                            all_frames, dims_str, z_axis = self._czi_slice_to_t_c_z_y_x(
+                                arr, axes, frame_start=frame_start_czi, frame_end=frame_end_czi
+                            )
                             if z_axis >= 0:
                                 all_frames = np.max(all_frames, axis=z_axis).astype(all_frames.dtype)
                             dims_str = "".join(a for a in dims_str if a != "Z") or "TCYX"
                         else:
                             # First Z only (or single Z)
-                            all_frames, dims_str = self._czi_slice_to_t_c_y_x(arr, axes, max_frames=max_frames)
+                            all_frames, dims_str = self._czi_slice_to_t_c_y_x(
+                                arr, axes, frame_start=frame_start_czi, frame_end=frame_end_czi
+                            )
                         all_frames = np.ascontiguousarray(all_frames)
                     else:
                         # Fallback when axes not available
                         sh = arr.shape
                         dims_str = ""
                         if len(sh) >= 5:
-                            num_time = min(int(sh[0]), max_frames)
+                            num_time = frame_end_czi - frame_start_czi
                             num_channels = int(sh[1])
                             num_z = int(sh[2])
-                            all_frames = arr[:num_time, :, :, :, :]
+                            all_frames = arr[frame_start_czi:frame_end_czi, :, :, :, :]
                             if max_z_projection and num_z > 1:
                                 all_frames = np.max(all_frames, axis=2).astype(all_frames.dtype)
                             else:
@@ -3767,16 +3876,18 @@ class ND2ConversionTab(QWidget):
                             all_frames = np.ascontiguousarray(all_frames)
                             dims_str = "TCYX"
                         elif len(sh) == 4:
-                            num_time = min(int(sh[0]), max_frames)
+                            num_time = frame_end_czi - frame_start_czi
                             num_channels = int(sh[1])
                             num_z = 1
-                            all_frames = np.ascontiguousarray(arr[:num_time, :, :, :])
+                            all_frames = np.ascontiguousarray(arr[frame_start_czi:frame_end_czi, :, :, :])
                             dims_str = "TCYX"
                         elif len(sh) == 3:
-                            num_time = min(int(sh[0]), max_frames)
+                            num_time = frame_end_czi - frame_start_czi
                             num_channels = 1
                             num_z = 1
-                            all_frames = np.ascontiguousarray(arr[:num_time, :, :][:, np.newaxis, :, :])
+                            all_frames = np.ascontiguousarray(
+                                arr[frame_start_czi:frame_end_czi, :, :][:, np.newaxis, :, :]
+                            )
                             dims_str = "TCYX"
                         else:
                             raise RuntimeError(f"Unexpected CZI shape: {sh}")
@@ -3818,8 +3929,9 @@ class ND2ConversionTab(QWidget):
                                                 time_dim_idx -= 1
                                         break
                     
-                    # Create output filename
-                    output_file = output_base / f"{czi_file.stem}.tif"
+                    # Create output filename (include _fN when single-frame extraction)
+                    stem_used_czi = czi_file.stem + frame_suffix_czi
+                    output_file = output_base / f"{stem_used_czi}.tif"
                     
                     # Save as TIFF - use more robust dimension handling
                     current_shape = all_frames.shape
@@ -3855,7 +3967,7 @@ class ND2ConversionTab(QWidget):
                                 channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                             if len(channel_data.shape) == 2:
                                 channel_data = channel_data[np.newaxis, ...]
-                            ch_output = output_base / f"{czi_file.stem}_ch{ch+1}.tif"
+                            ch_output = output_base / f"{stem_used_czi}_ch{ch+1}.tif"
                             tifffile.imwrite(str(ch_output), channel_data, photometric='minisblack')
                             self.parent_window.log_output(f"  Saved channel {ch+1}: {ch_output.name} ({channel_data.shape})\n")
                     else:
@@ -3901,7 +4013,9 @@ class ND2ConversionTab(QWidget):
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (includes path for workflow replay)."""
         out = get_from_widgets([
+            ("frame_extract_mode", self.frame_extract_mode),
             ("max_frames", self.max_frames),
+            ("single_frame", self.single_frame_spin),
             ("separate_channels", self.separate_channels),
             ("max_z_projection", self.max_z_projection),
             ("drift_correct", self.drift_correct),
@@ -3926,7 +4040,9 @@ class ND2ConversionTab(QWidget):
     def set_session_params(self, data: dict[str, Any]) -> None:
         """Apply saved parameter values. Set file path and load file info first so channel options (FI, Z, Foci, bleach) exist, then apply their checkboxes."""
         apply_to_widgets(data, [
+            ("frame_extract_mode", self.frame_extract_mode),
             ("max_frames", self.max_frames),
+            ("single_frame", self.single_frame_spin),
             ("separate_channels", self.separate_channels),
             ("max_z_projection", self.max_z_projection),
             ("drift_correct", self.drift_correct),

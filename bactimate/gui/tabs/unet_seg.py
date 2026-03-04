@@ -661,7 +661,26 @@ class UNetSegmentTab(QWidget):
         progress.close()
         model_name = model_path.stem
         main_win = self.window() if hasattr(self, "window") and callable(self.window) else None
-        d = QDialog(main_win)
+
+        class PreviewDialog(QDialog):
+            """Disconnects and stops U-Net preview worker on close so QThread is not destroyed while running."""
+            def closeEvent(self, event):
+                self._dialog_closed = True
+                w = getattr(self, "_unet_worker", None)
+                s = getattr(self, "_unet_worker_slot", None)
+                if w is not None:
+                    if w.isRunning():
+                        w.wait(60000)  # wait up to 60s for current segmentation (avoids QThread destroyed-while-running abort)
+                    if s is not None:
+                        try:
+                            w.finished.disconnect(s)
+                        except Exception:
+                            pass
+                    self._unet_worker = None
+                self._unet_worker_slot = None
+                super().closeEvent(event)
+
+        d = PreviewDialog(main_win)
         d.setWindowTitle("Segmentation Preview")
         d.setMinimumSize(900, 700)
         d.setModal(False)
@@ -842,6 +861,12 @@ class UNetSegmentTab(QWidget):
         d.file_name = file_path.name
         d.segmentation_cache = {}
         d.current_frame = 0
+        d._unet_request_id = 0
+        d._unet_current_requested_frame = 0
+        d._unet_worker = None
+        d._unet_progress_dialog = None
+        d._unet_worker_slot = None
+        d._dialog_closed = False
 
         def get_display_frame(idx: int):
             frame = images[idx]
@@ -849,21 +874,29 @@ class UNetSegmentTab(QWidget):
                 return frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
             return frame
 
-        def update_display(frame_idx: int) -> None:
-            d.current_frame = frame_idx
-            if frame_idx in d.segmentation_cache:
-                mask = d.segmentation_cache[frame_idx]
-            else:
+        class UnetPreviewWorker(QThread):
+            """Runs predict_one_image in background; emits (request_id, frame_idx, mask, error_str)."""
+            finished = pyqtSignal(int, int, object, str)
+
+            def __init__(self, request_id: int, frame_idx: int, model: Any, cfg: Any, image: np.ndarray):
+                super().__init__()
+                self._request_id = request_id
+                self._frame_idx = frame_idx
+                self._model = model
+                self._cfg = cfg
+                self._image = np.asarray(image).copy()
+
+            def run(self) -> None:
+                mask, err = None, ""
                 try:
-                    mask = predict_one_image(d.model, d.cfg, images[frame_idx])
+                    mask = predict_one_image(self._model, self._cfg, self._image)
                     mask = (mask > 0).astype(np.uint8)
-                    d.segmentation_cache[frame_idx] = mask
                 except Exception as e:
-                    title_label.setText(
-                        f"Frame {frame_idx + 1} of {num_frames} | Error: {e} | {d.file_name}\n"
-                        f"Parameters: model={d.model_name}"
-                    )
-                    return
+                    err = str(e)
+                self.finished.emit(self._request_id, self._frame_idx, mask, err)
+
+        def _apply_mask_to_ui(frame_idx: int, mask: np.ndarray) -> None:
+            """Apply segmentation result to display; re-enable controls."""
             disp_frame = get_display_frame(frame_idx)
             d.current_display_frame = disp_frame
             d.current_mask = mask
@@ -895,6 +928,82 @@ class UNetSegmentTab(QWidget):
                 f"Parameters: model={d.model_name}"
             )
             update_histogram(disp_frame, lut_data.get("vmin"), lut_data.get("vmax"))
+            if status_label:
+                status_label.setText(f"Ready (cached: {len(d.segmentation_cache)})")
+            if frame_spin is not None:
+                frame_spin.setEnabled(True)
+
+        def update_display(frame_idx: int) -> None:
+            d.current_frame = frame_idx
+            if frame_idx in d.segmentation_cache:
+                _apply_mask_to_ui(frame_idx, d.segmentation_cache[frame_idx])
+                if status_label:
+                    status_label.setText(f"Ready (cached: {len(d.segmentation_cache)})")
+                return
+            existing = getattr(d, "_unet_worker", None)
+            if existing is not None and existing.isRunning():
+                d._unet_request_id += 1
+                d._unet_current_requested_frame = frame_idx
+                if status_label:
+                    status_label.setText("Segmenting... (requested frame %s)" % (frame_idx + 1))
+                title_label.setText(
+                    f"Frame {frame_idx + 1} of {num_frames} | Segmenting... | Model: {d.model_name} | {d.file_name}\n"
+                    f"Parameters: model={d.model_name}"
+                )
+                return
+            d._unet_request_id += 1
+            d._unet_current_requested_frame = frame_idx
+            progress = QProgressDialog("Segmenting frame...", None, 0, 0, d)
+            progress.setWindowTitle("Processing")
+            progress.setAutoClose(False)
+            progress.setCancelButton(None)
+            progress.show()
+            QApplication.processEvents()
+            d._unet_progress_dialog = progress
+
+            def _on_worker_finished(rid: int, fid: int, m: object, err: str) -> None:
+                try:
+                    if getattr(d, "_dialog_closed", False):
+                        return
+                    if rid != getattr(d, "_unet_request_id", -1):
+                        update_display(getattr(d, "_unet_current_requested_frame", 0))
+                        return
+                    prog = getattr(d, "_unet_progress_dialog", None)
+                    if prog is not None:
+                        try:
+                            prog.close()
+                        except Exception:
+                            pass
+                        d._unet_progress_dialog = None
+                    d._unet_worker = None
+                    if err:
+                        title_label.setText(
+                            f"Frame {fid + 1} of {num_frames} | Error: {err[:60]} | {d.file_name}\n"
+                            f"Parameters: model={d.model_name}"
+                        )
+                        if status_label:
+                            status_label.setText("Segmentation failed")
+                        if frame_spin is not None:
+                            frame_spin.setEnabled(True)
+                        return
+                    d.segmentation_cache[fid] = m
+                    _apply_mask_to_ui(fid, m)
+                except RuntimeError:
+                    pass  # Dialog or widgets already destroyed (e.g. user closed preview)
+
+            if frame_spin is not None:
+                frame_spin.setEnabled(False)
+            worker = UnetPreviewWorker(d._unet_request_id, frame_idx, d.model, d.cfg, images[frame_idx])
+            d._unet_worker_slot = _on_worker_finished
+            worker.finished.connect(_on_worker_finished)
+            d._unet_worker = worker
+            worker.start()
+            title_label.setText(
+                f"Frame {frame_idx + 1} of {num_frames} | Segmenting... | Model: {d.model_name} | {d.file_name}\n"
+                f"Parameters: model={d.model_name}"
+            )
+            if status_label:
+                status_label.setText("Segmenting...")
 
         nav_layout = QHBoxLayout()
         nav_layout.addWidget(QLabel("Frame:"))
@@ -902,6 +1011,7 @@ class UNetSegmentTab(QWidget):
         frame_spin.setRange(1, max(1, num_frames))
         frame_spin.setValue(1)
         frame_spin.setPrefix("")
+        frame_spin.setToolTip(f"Frame 1–{num_frames}. Type a number and press Enter to jump.")
         nav_layout.addWidget(frame_spin)
         nav_layout.addWidget(QLabel(f"of {num_frames}"))
         scale_label = QLabel("")
@@ -920,6 +1030,7 @@ class UNetSegmentTab(QWidget):
                 frame_spin.blockSignals(False)
                 update_display(idx)
 
+        # Commit on Enter/focus only (no live valueChanged) so typing "55" doesn't jump to 5
         def on_frame_changed():
             frame_num = frame_spin.value() - 1
             if 0 <= frame_num < num_frames:
@@ -930,20 +1041,6 @@ class UNetSegmentTab(QWidget):
                 frame_spin.blockSignals(False)
 
         frame_spin.editingFinished.connect(on_frame_changed)
-        frame_spin._change_timer = QTimer()
-        frame_spin._change_timer.setSingleShot(True)
-        frame_spin._change_timer.timeout.connect(on_frame_changed)
-
-        def on_value_changed(v: int) -> None:
-            if 1 <= v <= num_frames:
-                frame_spin._change_timer.start(300)
-            else:
-                frame_spin._change_timer.stop()
-                frame_spin.blockSignals(True)
-                frame_spin.setValue(d.current_frame + 1)
-                frame_spin.blockSignals(False)
-
-        frame_spin.valueChanged.connect(on_value_changed)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(d.close)
         layout.addWidget(close_btn)
@@ -1018,7 +1115,17 @@ class UNetSegmentTab(QWidget):
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
             if r.returncode == 0:
                 self.parent_window.log_output(f"U-Net segmentation done: {output_dir}\n")
-                QMessageBox.information(self, "Done", f"Output saved to:\n{output_dir}")
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Done")
+                msg.setText(f"Output saved to:\n{output_dir}")
+                msg.setIcon(QMessageBox.Icon.Information)
+                open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                msg.addButton(QMessageBox.StandardButton.Ok)
+                msg.exec()
+                if msg.clickedButton() == open_btn:
+                    from PyQt6.QtCore import QUrl
+                    from PyQt6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
             else:
                 self.parent_window.log_output(f"Failed: {r.stderr or r.stdout}\n")
                 QMessageBox.warning(self, "Failed", r.stderr or r.stdout or "Unknown error")

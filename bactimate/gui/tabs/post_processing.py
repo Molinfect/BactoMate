@@ -2170,6 +2170,8 @@ class PostProcessingTab(QWidget):
         if self.format_mp4.isChecked():
             formats.append('mp4')
         
+        # For completion popup "Open output folder"
+        self._last_video_output_dir = output_dir
         # Run in worker thread
         self.worker = GrowthCurveVideoWorker(
             video_path,
@@ -2197,10 +2199,28 @@ class PostProcessingTab(QWidget):
         self.process_btn.setEnabled(True)
         self.process_btn.setText("Create Growth Curve Video")
         self.parent_window.progress_bar.setVisible(False)
-        
+
         if success:
-            # Just log the message instead of showing a popup
             self.parent_window.log_output(f"\n✓ {message}\n")
+            out_dir = getattr(self, "_last_video_output_dir", None)
+            if out_dir is not None and Path(out_dir).exists():
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Video Complete")
+                msg.setText(message if message else "Growth curve video(s) created successfully.")
+                msg.setIcon(QMessageBox.Icon.Information)
+                open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                msg.addButton(QMessageBox.StandardButton.Ok)
+                msg.exec()
+                if msg.clickedButton() == open_btn:
+                    from PyQt6.QtCore import QUrl
+                    from PyQt6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_dir)))
+            else:
+                QMessageBox.information(
+                    self,
+                    "Video Complete",
+                    message if message else "Growth curve video(s) created successfully.",
+                )
         else:
             QMessageBox.warning(self, "Error", message)
     

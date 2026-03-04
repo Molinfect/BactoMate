@@ -38,6 +38,22 @@ def run() -> None:
     # Patches (Qt paths, omnipose patch) must run before PyQt6
     import bactimate.gui.patches  # noqa: F401
 
+    # Apply MPS (Apple Silicon) patches to site-packages when running from source, so the batch
+    # subprocess (same Python env) loads patched omnipose/cellpose_omni and uses "mps" not "mps:True".
+    try:
+        from pathlib import Path
+        from bactimate.gui.paths import get_app_root
+        _patch_script = (get_app_root() / "setup" / "apply_all_patches.py").resolve()
+        if _patch_script.exists():
+            import importlib.util
+            _spec = importlib.util.spec_from_file_location("_apply_patches", _patch_script)
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            _mod.patch_omnipose_gpu_mps()
+            _mod.patch_cellpose_omni_core_mps_device()
+    except Exception:
+        pass  # don't block startup; user can run setup/apply_all_patches.py manually
+
     # Windows-only: console encoding and UI fixes (ignored on macOS/Linux)
     if sys.platform == "win32":
         from bactimate.gui.windows_patches import apply_early

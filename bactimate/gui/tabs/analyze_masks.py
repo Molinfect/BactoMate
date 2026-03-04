@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import numpy as np
 import tifffile
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -135,7 +135,7 @@ class AnalyzeMasksTab(QWidget):
         fi_mode_row = QHBoxLayout()
         fi_mode_row.addWidget(self.fi_mode_one_file)
         fi_mode_row.addWidget(self.fi_mode_match_by_name)
-        self.fi_naming_hint = QLabel('(Match "_fi" and "_foci" files with the same stem name to the mask, in the mask folder or its parent)')
+        self.fi_naming_hint = QLabel('(Match stem_fi / stem_foci and stem_fi_* / stem_foci_* to the mask stem; search in mask folder and parent folder)')
         self.fi_naming_hint.setStyleSheet("color: #888; font-size: 9pt;")
         self.fi_naming_hint.setWordWrap(False)
         fi_mode_row.addWidget(self.fi_naming_hint)
@@ -661,13 +661,12 @@ class AnalyzeMasksTab(QWidget):
         self.analyze_btn = QPushButton("Analyze Masks")
         self.analyze_btn.setEnabled(False)  # Disabled until file/folder is selected
         self.analyze_btn.clicked.connect(self.analyze_masks)
-        analyze_btn_row.addWidget(self.analyze_btn)
+        analyze_btn_row.addWidget(self.analyze_btn, 1)  # stretch so same full width as Preview button
         self.analyze_cancel_btn = QPushButton("Cancel")
         self.analyze_cancel_btn.setToolTip("Stop the current analysis run.")
         self.analyze_cancel_btn.setVisible(False)
         self.analyze_cancel_btn.clicked.connect(self._on_analyze_cancel)
         analyze_btn_row.addWidget(self.analyze_cancel_btn)
-        analyze_btn_row.addStretch()
         scroll_layout.addLayout(analyze_btn_row)
 
         # Connect file path changes to update button states and try to load metadata from TIFF
@@ -881,20 +880,23 @@ class AnalyzeMasksTab(QWidget):
                     fi_lines.append(f"• {mask_path.name} → {fi_names}")
                 else:
                     fi_lines.append(f"• {mask_path.name} → (no FI found)")
-            # Summary: one mask file = one segmentation, used once per FI channel (same mask, multiple analyses)
+            # Summary: one mask = one segmentation, used for FI, Foci (if checked), and phase (if found)
+            run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+            desc = "Segmentation used for their FI channel(s)"
+            if run_foci_on:
+                desc += ", Foci (Run foci checked)"
+            desc += ", and phase (if found) each."
             if total_fi_pairings == 0:
                 header = f"{len(masks)} mask file(s); no FI files matched.\n\n"
             elif total_fi_pairings == len(masks):
-                header = f"{len(masks)} mask file(s). Same segmentation used for 1 FI channel each.\n\n"
+                header = f"{len(masks)} mask file(s). {desc}\n\n"
             else:
-                header = f"{len(masks)} mask file(s) → {total_fi_pairings} analyses (same segmentation per file, used once per FI channel below).\n\n"
+                header = f"{len(masks)} mask file(s) → {total_fi_pairings} analyses ({desc})\n\n"
             body = "Analyze FI (mask → FI channel(s)):\n" + "\n".join(fi_lines)
-            run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
             if run_foci_on:
                 foci_lines = []
                 for mask_path in masks:
-                    fi_paths = self._resolve_fi_paths_for_mask(mask_path)
-                    foci_paths = [p for p in fi_paths if "_foci" in p.stem]
+                    foci_paths = self._resolve_foci_paths_for_mask(mask_path)
                     if foci_paths:
                         foci_names = ", ".join(p.name for p in foci_paths)
                         foci_lines.append(f"• {mask_path.name} → {foci_names}")
@@ -954,11 +956,9 @@ class AnalyzeMasksTab(QWidget):
         return path.exists() and path.is_dir()
 
     def _resolve_fi_paths_for_mask(self, mask_path: Path) -> list[Path]:
-        """For batch FI: find all FI files for this mask.
-        Tries: stem_fi / stem_fi_* (e.g. EM13748_AnTC_003_Phase60X_fi.tif).
-        If none found, tries base stem: base_fi / base_fi_* where base = stem without last segment
-        (e.g. EM13748_AnTC_003_Phase60X -> base EM13748_AnTC_003 -> EM13748_AnTC_003_fi_GFP.tif).
-        Search dir: mask's parent, or parent's parent if mask is in _segmentation*.
+        """For Analyze FI: find FI channel files (name must contain _fi). stem_fi / stem_fi_* only.
+        _foci-only files are not included (use _resolve_foci_paths_for_mask for Run foci).
+        If none found, tries base stem. Search dir: mask folder then parent folder.
         """
         parent = mask_path.parent
         if parent.name.startswith("_segmentation"):
@@ -967,31 +967,90 @@ class AnalyzeMasksTab(QWidget):
             search_dir = parent
         stem = mask_path.stem.replace("_masks", "")
 
-        def matches_stem(name: str, s: str) -> bool:
-            if name == f"{s}_fi":
-                return True
-            if name.startswith(f"{s}_fi_"):
-                return True
-            return False
+        def matches_fi(name: str, s: str) -> bool:
+            # Only _fi files for Analyze FI (mean/contour). _foci-only files use _resolve_foci_paths_for_mask.
+            return name == f"{s}_fi" or name.startswith(f"{s}_fi_")
 
-        found: list[Path] = []
-        for f in search_dir.iterdir():
-            if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                continue
-            if matches_stem(f.stem, stem):
-                found.append(f)
+        def search_in(directory: Path) -> list[Path]:
+            out: list[Path] = []
+            if not directory.exists() or not directory.is_dir():
+                return out
+            for f in directory.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if matches_fi(f.stem, stem):
+                    out.append(f)
+            return out
+
+        found: list[Path] = search_in(search_dir)
         if not found and "_" in stem:
             base = stem.rsplit("_", 1)[0]
             for f in search_dir.iterdir():
                 if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
                     continue
-                if matches_stem(f.stem, base):
+                if matches_fi(f.stem, base):
                     found.append(f)
-        return sorted(found, key=lambda p: p.name.lower())
+        if not found and search_dir.parent != search_dir:
+            found = search_in(search_dir.parent)
+            if not found and "_" in stem:
+                base = stem.rsplit("_", 1)[0]
+                for f in search_dir.parent.iterdir():
+                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                        continue
+                    if matches_fi(f.stem, base):
+                        found.append(f)
+        return sorted(set(found), key=lambda p: p.name.lower())
+
+    def _resolve_foci_paths_for_mask(self, mask_path: Path) -> list[Path]:
+        """For Run foci: find _foci channel files. stem_foci / stem_foci_* or stem_fi_* with _foci in name.
+        Search dir: same as FI. Used only when Run foci analysis is checked."""
+        parent = mask_path.parent
+        if parent.name.startswith("_segmentation"):
+            search_dir = parent.parent
+        else:
+            search_dir = parent
+        stem = mask_path.stem.replace("_masks", "")
+
+        def matches_foci(name: str, s: str) -> bool:
+            if name == f"{s}_foci" or name.startswith(f"{s}_foci_"):
+                return True
+            if name.startswith(f"{s}_fi_") and "_foci" in name:
+                return True
+            return False
+
+        def search_in(directory: Path) -> list[Path]:
+            out: list[Path] = []
+            if not directory.exists() or not directory.is_dir():
+                return out
+            for f in directory.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if matches_foci(f.stem, stem):
+                    out.append(f)
+            return out
+
+        found_foci: list[Path] = search_in(search_dir)
+        if not found_foci and "_" in stem:
+            base = stem.rsplit("_", 1)[0]
+            for f in search_dir.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if matches_foci(f.stem, base):
+                    found_foci.append(f)
+        if not found_foci and search_dir.parent != search_dir:
+            found_foci = search_in(search_dir.parent)
+            if not found_foci and "_" in stem:
+                base = stem.rsplit("_", 1)[0]
+                for f in search_dir.parent.iterdir():
+                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                        continue
+                    if matches_foci(f.stem, base):
+                        found_foci.append(f)
+        return sorted(set(found_foci), key=lambda p: p.name.lower())
 
     def _resolve_phase_path_for_mask(self, mask_path: Path) -> Path | None:
         """For batch FI: find the non-FI (phase/original) TIFF that matches this mask, if any.
-        Looks for stem.tif or base.tif in the same search dir as FI, excluding any file with _fi in the name.
+        Looks for stem.tif or base.tif in the same search dir as FI (and parent folder if not found), excluding _fi/_foci files.
         """
         parent = mask_path.parent
         if parent.name.startswith("_segmentation"):
@@ -999,22 +1058,33 @@ class AnalyzeMasksTab(QWidget):
         else:
             search_dir = parent
         stem = mask_path.stem.replace("_masks", "")
-        for f in search_dir.iterdir():
-            if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                continue
-            if "_fi" in f.stem.lower():
-                continue
-            if f.stem == stem:
-                return f
-        if "_" in stem:
-            base = stem.rsplit("_", 1)[0]
-            for f in search_dir.iterdir():
+
+        def find_in(directory: Path) -> Path | None:
+            if not directory.exists() or not directory.is_dir():
+                return None
+            for f in directory.iterdir():
                 if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
                     continue
-                if "_fi" in f.stem.lower():
+                if "_fi" in f.stem.lower() or "_foci" in f.stem.lower():
                     continue
-                if f.stem == base:
+                if f.stem == stem:
                     return f
+            if "_" in stem:
+                base = stem.rsplit("_", 1)[0]
+                for f in directory.iterdir():
+                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                        continue
+                    if "_fi" in f.stem.lower() or "_foci" in f.stem.lower():
+                        continue
+                    if f.stem == base:
+                        return f
+            return None
+
+        p = find_in(search_dir)
+        if p is not None:
+            return p
+        if search_dir.parent != search_dir:
+            return find_in(search_dir.parent)
         return None
 
     def _fi_output_suffix(self, fi_path: Path | None, stem: str) -> str:
@@ -1067,29 +1137,52 @@ class AnalyzeMasksTab(QWidget):
                 lines.append(f"{stem}_masks with {tif_name}")
         return len(mask_stems), n_tif, lines
 
-    def _build_combined_summary_excel(self, excel_paths, output_path, match_log=None):
+    def _build_combined_summary_excel(self, excel_paths, output_path, match_log=None, log_callback=None):
         """Build long + wide combined summary from a list of analysis Excel paths. Returns True on success.
         If match_log is (n_masks, n_tif, lines), writes Logs in column G (G1=Logs, G2=count, G3+=lines).
         If output_path exists and already has Logs in G, appends the new lines to column G instead of overwriting.
+        If log_callback is set (e.g. parent_window.log_output), logs why the build failed when it returns False.
         """
+        def _log(msg: str) -> None:
+            if log_callback:
+                log_callback(msg)
+
+        import re
         import pandas as pd
         from openpyxl import load_workbook
+        from openpyxl.utils.dataframe import dataframe_to_rows
+
+        def _sanitize_sheet_name(name: str, max_len: int = 31) -> str:
+            # Excel: no \ / ? * [ ]
+            s = re.sub(r'[\\/:*?\[\]]', '_', str(name))
+            return s[:max_len] if len(s) > max_len else s
+
         if not excel_paths:
+            _log("Combined summary: no paths provided.\n")
             return False
         frames_long = []
+        missing = []
+        no_summary = []
         for p in excel_paths:
             p = Path(p)
             if not p.exists():
+                missing.append(p.name)
                 continue
             try:
                 df = pd.read_excel(p, sheet_name="Summary")
-            except Exception:
+            except Exception as e:
+                no_summary.append((p.name, str(e)))
                 continue
             if df is None or df.empty:
+                no_summary.append((p.name, "empty Summary sheet"))
                 continue
             df = df.copy()
             df["File"] = p.stem.replace("_analysis", "").replace("_masks_analysis", "")
             frames_long.append(df)
+        if missing:
+            _log(f"Combined summary: {len(missing)} path(s) not found: {', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}\n")
+        if no_summary and not frames_long:
+            _log(f"Combined summary: no Summary sheet could be read. First failure: {no_summary[0][0]} — {no_summary[0][1]}\n")
         if not frames_long:
             return False
         long_df = pd.concat(frames_long, ignore_index=True)
@@ -1097,18 +1190,29 @@ class AnalyzeMasksTab(QWidget):
         cols += [c for c in long_df.columns if c not in cols]
         long_df = long_df[cols]
         wide_df = None
+        wide_err = None
         try:
-            frames = sorted(long_df["Frame"].dropna().unique().astype(int).tolist())
-            wide_data = {"Frame": frames}
-            for f in long_df["File"].unique().tolist():
-                sub = long_df[long_df["File"] == f].set_index("Frame")
-                for col in ["Total Cell Area (µm²)", "Total Cell Area (Relative)", "Number of Cells"]:
-                    if col in sub.columns:
-                        wide_data[f"{f}_{col}"] = sub.reindex(frames)[col].values
-            wide_df = pd.DataFrame(wide_data)
-        except Exception:
+            if "Frame" not in long_df.columns:
+                wide_err = "Summary sheets have no 'Frame' column"
+            else:
+                frames = sorted(long_df["Frame"].dropna().unique().astype(int).tolist())
+                if not frames:
+                    wide_err = "Summary sheets have no Frame values"
+                else:
+                    wide_data = {"Frame": frames}
+                    for f in long_df["File"].unique().tolist():
+                        # Drop duplicate Frame rows per file so set_index/reindex don't raise
+                        sub = long_df[long_df["File"] == f].drop_duplicates(subset=["Frame"], keep="first").set_index("Frame")
+                        for col in ["Total Cell Area (µm²)", "Total Cell Area (Relative)", "Number of Cells"]:
+                            if col in sub.columns:
+                                wide_data[f"{f}_{col}"] = sub.reindex(frames)[col].values
+                    wide_df = pd.DataFrame(wide_data)
+        except Exception as e:
+            wide_err = str(e)
             wide_df = None
         if wide_df is None or wide_df.empty:
+            if wide_err:
+                _log(f"Combined summary: wide table build failed — {wide_err}\n")
             return False
         out_path = Path(output_path)
         existing_log_lines: list[str] = []
@@ -1132,13 +1236,12 @@ class AnalyzeMasksTab(QWidget):
         try:
             with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
                 wide_df.to_excel(writer, sheet_name="Combined Summary (wide)", index=False)
+            wb = load_workbook(output_path)
             if match_log is not None:
                 n_masks, n_tif, lines = match_log
-                wb = load_workbook(output_path)
                 ws = wb["Combined Summary (wide)"]
                 ws["G1"] = "Logs"
                 ws["G2"] = f"{n_masks} mask(s) and {n_tif} tif file(s) matched"
-                # Append: existing pair lines (previous runs) then this run's pairs
                 row = 3
                 for line in existing_log_lines:
                     ws.cell(row=row, column=7, value=line)
@@ -1146,9 +1249,34 @@ class AnalyzeMasksTab(QWidget):
                 for line in lines:
                     ws.cell(row=row, column=7, value=line)
                     row += 1
-                wb.save(output_path)
-                wb.close()
-        except Exception:
+            # Add each analysis file's Per-Cell Data as its own sheet (filename = sheet name)
+            seen_sheet_names = set(wb.sheetnames)
+            for p in excel_paths:
+                p = Path(p)
+                if not p.exists():
+                    continue
+                try:
+                    per_cell = pd.read_excel(p, sheet_name="Per-Cell Data")
+                except Exception:
+                    continue
+                if per_cell is None or per_cell.empty:
+                    continue
+                base_name = p.stem.replace("_analysis", "").replace("_masks_analysis", "")
+                sheet_name = _sanitize_sheet_name(base_name)
+                if sheet_name in seen_sheet_names:
+                    stem = sheet_name[:28] if len(sheet_name) > 28 else sheet_name
+                    n = 1
+                    while f"{stem}_{n}" in seen_sheet_names:
+                        n += 1
+                    sheet_name = f"{stem}_{n}"
+                seen_sheet_names.add(sheet_name)
+                new_ws = wb.create_sheet(title=sheet_name)
+                for row in dataframe_to_rows(per_cell, index=False, header=True):
+                    new_ws.append(row)
+            wb.save(output_path)
+            wb.close()
+        except Exception as e:
+            _log(f"Combined summary: write failed — {e}\n")
             return False
         return True
 
@@ -1248,18 +1376,32 @@ class AnalyzeMasksTab(QWidget):
                         continue
                     if summary_df is None:
                         summary_df = pd.read_excel(excel_path, sheet_name="Summary")
+                    # FI columns to rename (optional; merge still runs if only foci columns present)
                     has_fi = [c for c in fi_col_names if c in df.columns]
-                    if not has_fi:
-                        continue
                     rename = {c: f"{c} ({channel_label})" for c in has_fi}
                     sub = df.rename(columns=rename)
+                    merge_on = [c for c in key_cols if c in merged.columns and c in sub.columns]
+                    # Include FI and Foci columns from this file (not just "FI" in name)
+                    def is_fi_or_foci_col(c: str) -> bool:
+                        if c in key_cols:
+                            return False
+                        up = c.upper()
+                        if "FI" in c or "FOCI" in up or c == "Number of Foci":
+                            return True
+                        if c.startswith("foci_ids_") or "_foci_count" in c:
+                            return True
+                        return False
+                    fi_new = [c for c in sub.columns if c not in merge_on and is_fi_or_foci_col(c) and c not in merged.columns]
                     if merged is None:
                         merged = sub.copy()
                     else:
-                        merge_on = [c for c in key_cols if c in merged.columns and c in sub.columns]
-                        fi_new = [c for c in sub.columns if c not in merge_on and "FI" in c and c not in merged.columns]
                         if merge_on and fi_new:
                             merged = merged.merge(sub[merge_on + fi_new], on=merge_on, how="outer")
+                        elif merge_on and has_fi:
+                            # Renamed FI columns (e.g. "Mean FI Intensity (mScarlet)")
+                            fi_cols_to_add = [rename[c] for c in has_fi if rename[c] in sub.columns and rename[c] not in merged.columns]
+                            if fi_cols_to_add:
+                                merged = merged.merge(sub[merge_on + fi_cols_to_add], on=merge_on, how="outer")
                 if summary_df is not None and merged is not None and not merged.empty and "Frame" in merged.columns:
                     with pd.ExcelWriter(merged_path, engine="openpyxl") as writer:
                         summary_df.to_excel(writer, sheet_name="Summary", index=False)
@@ -1327,7 +1469,9 @@ class AnalyzeMasksTab(QWidget):
                 "No *_analysis.xlsx or *_masks_analysis.xlsx files found in the selected folder or its subfolders.")
             return
         out_path = folder / f"{folder.name}_combined_summary.xlsx"
-        if self._build_combined_summary_excel([str(p) for p in excel_paths], str(out_path)):
+        if self._build_combined_summary_excel(
+            [str(p) for p in excel_paths], str(out_path), log_callback=self.parent_window.log_output
+        ):
             self.parent_window.log_output(f"Combined summary saved to: {out_path}\n")
             QMessageBox.information(self, "Combine Complete", 
                 f"Combined {len(excel_paths)} Summary sheet(s) into:\n{out_path.name}\n\nSheet: 'Combined Summary (wide)'.")
@@ -1713,7 +1857,26 @@ class AnalyzeMasksTab(QWidget):
             loading_progress.setLabelText("Ready! (100%)")
             loading_progress.setValue(100)
             QApplication.processEvents()
-            preview_dialog = QDialog(self)
+
+            class PreviewDialog(QDialog):
+                """Disconnects and stops filter preview worker on close so QThread is not destroyed while running."""
+                def closeEvent(self, event):
+                    self._dialog_closed = True
+                    w = getattr(self, "_preview_worker", None)
+                    s = getattr(self, "_preview_worker_slot", None)
+                    if w is not None:
+                        if w.isRunning():
+                            w.wait(60000)  # wait up to 60s for current filter run (avoids QThread destroyed-while-running abort)
+                        if s is not None:
+                            try:
+                                w.finished.disconnect(s)
+                            except Exception:
+                                pass
+                        self._preview_worker = None
+                    self._preview_worker_slot = None
+                    super().closeEvent(event)
+
+            preview_dialog = PreviewDialog(self)
             preview_dialog.setWindowTitle("Filter Effects Preview")
             preview_dialog.setMinimumSize(900, 700)
             preview_dialog.setModal(False)  # Make non-modal so main window is accessible
@@ -1739,6 +1902,7 @@ class AnalyzeMasksTab(QWidget):
             frame_spin = QSpinBox()
             frame_spin.setRange(1, num_frames)
             frame_spin.setValue(1)
+            frame_spin.setToolTip(f"Frame 1–{num_frames}. Type a number and press Enter to jump.")
             nav_layout.addWidget(frame_spin)
             nav_layout.addWidget(QLabel(f"of {num_frames}"))
             nav_layout.addStretch()
@@ -1777,7 +1941,223 @@ class AnalyzeMasksTab(QWidget):
             
             # Track if we're currently showing the warning dialog to prevent duplicates
             preview_dialog._showing_warning = False
-            
+            preview_dialog._preview_request_id = 0
+            preview_dialog._preview_current_requested_frame = 0
+            preview_dialog._preview_worker = None
+            preview_dialog._preview_progress_dialog = None
+            preview_dialog._preview_worker_slot = None
+            preview_dialog._dialog_closed = False
+
+            # Worker: runs filter pipeline in background; emits (request_id, frame_idx, accepted_list, rejected_list, all_list, num_objects, error_str)
+            class AnalyzeMasksPreviewWorker(QThread):
+                finished = pyqtSignal(int, int, list, list, list, int, str)
+
+                def __init__(self, request_id: int, frame_idx: int, mask_cleaned: np.ndarray, params: dict):
+                    super().__init__()
+                    self._request_id = request_id
+                    self._frame_idx = frame_idx
+                    self._mask_cleaned = np.asarray(mask_cleaned).copy()
+                    self._params = dict(params)
+
+                def run(self) -> None:
+                    err = ""
+                    accepted_list, rejected_list, all_list, num_objects = [], [], [], 0
+                    try:
+                        from bactimate.scripts.analyze_cell_areas import (
+                            calculate_cell_properties,
+                            filter_rod_shaped_cells,
+                            filter_by_size,
+                        )
+                        params = self._params
+                        properties = calculate_cell_properties(
+                            self._mask_cleaned,
+                            pixel_size=params["pixel_size"],
+                            exclude_border=params.get("exclude_border", False),
+                        )
+                        rod_shaped = filter_rod_shaped_cells(
+                            properties,
+                            min_aspect_ratio=params["min_aspect_ratio"],
+                            max_aspect_ratio=params["max_aspect_ratio"],
+                            min_eccentricity=params["min_eccentricity"],
+                            min_solidity=params["min_solidity"],
+                        )
+                        filtered = filter_by_size(
+                            rod_shaped,
+                            min_area_um2=params.get("min_area"),
+                            max_area_um2=params.get("max_area"),
+                            min_width_um=params.get("min_width"),
+                            max_width_um=params.get("max_width"),
+                        )
+                        accepted_labels = {cell["label"] for cell in filtered}
+                        all_labels = set(np.unique(self._mask_cleaned)) - {0}
+                        rejected_labels = all_labels - accepted_labels
+                        accepted_list = list(accepted_labels)
+                        rejected_list = list(rejected_labels)
+                        all_list = list(all_labels)
+                        num_objects = len(all_labels)
+                    except Exception as e:
+                        err = str(e)
+                    self.finished.emit(
+                        self._request_id,
+                        self._frame_idx,
+                        accepted_list,
+                        rejected_list,
+                        all_list,
+                        num_objects,
+                        err,
+                    )
+
+            def _apply_filter_result_to_ui(frame_idx, accepted_list, rejected_list, all_list, num_objects, skip_vis):
+                """Apply filter result to display (called from worker slot). Re-enables controls."""
+                mask = masks[frame_idx]
+                accepted_labels = set(accepted_list)
+                rejected_labels = set(rejected_list)
+                all_labels = set(all_list)
+                preview_dialog.current_frame = frame_idx
+                if skip_vis:
+                    try:
+                        from matplotlib.figure import Figure
+                        from matplotlib.backends.backend_agg import FigureCanvasAgg
+                        import io
+                        from PyQt6.QtGui import QImage, QPixmap
+                        fig = Figure(figsize=(8, 5), facecolor="#2b2b2b")
+                        ax = fig.add_subplot(111)
+                        ax.set_facecolor("#2b2b2b")
+                        ax.tick_params(colors="white")
+                        rate = (len(accepted_labels) / len(all_labels) * 100) if all_labels else 0
+                        ax.text(0.5, 0.5,
+                               f"Visualization skipped due to large number of objects ({num_objects:,})\n\n"
+                               f"Statistics:\n"
+                               f"• Total objects: {len(all_labels):,}\n"
+                               f"• Accepted: {len(accepted_labels):,}\n"
+                               f"• Rejected: {len(rejected_labels):,}\n"
+                               f"• Acceptance rate: {rate:.1f}%",
+                               ha='center', va='center', fontsize=12, color="white",
+                               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                        ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: Statistics Only (Visualization Skipped)", color="white")
+                        ax.axis('off')
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format="png", bbox_inches="tight", facecolor="#2b2b2b", edgecolor="none")
+                        buf.seek(0)
+                        img = QImage()
+                        img.loadFromData(buf.getvalue())
+                        pixmap = QPixmap.fromImage(img)
+                        image_canvas.set_pixmap(pixmap, (pixmap.width(), pixmap.height()), reset_view=False)
+                    except Exception:
+                        title_label.setText(f"{Path(mask_path).name}  |  Frame {frame_idx + 1}/{num_frames}  |  Stats only (vis skipped)")
+                        info_label.setText(f"Accepted: {len(accepted_labels)} | Rejected: {len(rejected_labels)} | Total: {len(all_labels)}")
+                else:
+                    height, width = mask.shape
+                    vis = np.zeros((height, width, 3), dtype=np.uint8)
+                    if accepted_labels:
+                        accepted_array = np.array(list(accepted_labels))
+                        accepted_mask = np.isin(mask, accepted_array)
+                        vis[accepted_mask, 1] = 255
+                    if rejected_labels:
+                        rejected_array = np.array(list(rejected_labels))
+                        rejected_mask = np.isin(mask, rejected_array)
+                        vis[rejected_mask, 0] = 255
+                    do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                    fi_contour_thickness_val = self.fi_contour_thickness.value() if hasattr(self, "fi_contour_thickness") else 1
+                    if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
+                        try:
+                            from skimage.segmentation import find_boundaries
+                            from skimage.morphology import binary_dilation
+                            fi_image = fi_images[frame_idx]
+                            if fi_image.ndim > 2:
+                                fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
+                            accepted_mask_full = np.zeros_like(mask, dtype=bool)
+                            if accepted_labels:
+                                accepted_mask_full = np.isin(mask, np.array(list(accepted_labels)))
+                            if np.any(accepted_mask_full):
+                                temp_mask = np.zeros_like(mask)
+                                temp_mask[accepted_mask_full] = mask[accepted_mask_full]
+                                boundaries = find_boundaries(temp_mask, mode="inner")
+                                contour_mask = boundaries & accepted_mask_full
+                                if fi_contour_thickness_val > 1:
+                                    for _ in range(fi_contour_thickness_val - 1):
+                                        contour_mask = binary_dilation(contour_mask) & accepted_mask_full
+                                fi_norm = np.asarray(fi_image, dtype=np.float32)
+                                if fi_norm.max() > fi_norm.min():
+                                    fi_norm = (fi_norm - fi_norm.min()) / (fi_norm.max() - fi_norm.min()) * 255
+                                else:
+                                    fi_norm = np.zeros_like(fi_norm)
+                                vis_fi = np.stack([fi_norm, fi_norm, fi_norm], axis=-1).astype(np.uint8)
+                                vis_fi[accepted_mask_full, 0] = np.clip(vis_fi[accepted_mask_full, 0].astype(np.int32) - 40, 0, 255).astype(np.uint8)
+                                vis_fi[accepted_mask_full, 1] = 255
+                                vis_fi[accepted_mask_full, 2] = np.clip(vis_fi[accepted_mask_full, 2].astype(np.int32) - 40, 0, 255).astype(np.uint8)
+                                if rejected_labels:
+                                    rej_arr = np.array(list(rejected_labels))
+                                    rej_mask = np.isin(mask, rej_arr)
+                                    vis_fi[rej_mask, 0] = 255
+                                    vis_fi[rej_mask, 1] = np.clip(vis_fi[rej_mask, 1].astype(np.int32) - 40, 0, 255).astype(np.uint8)
+                                    vis_fi[rej_mask, 2] = np.clip(vis_fi[rej_mask, 2].astype(np.int32) - 40, 0, 255).astype(np.uint8)
+                                alpha = 0.6
+                                vis_fi[contour_mask, 0] = (vis_fi[contour_mask, 0].astype(np.float32) * (1 - alpha) + 255 * alpha).astype(np.uint8)
+                                vis_fi[contour_mask, 1] = (vis_fi[contour_mask, 1].astype(np.float32) * (1 - alpha) + 0 * alpha).astype(np.uint8)
+                                vis_fi[contour_mask, 2] = (vis_fi[contour_mask, 2].astype(np.float32) * (1 - alpha) + 255 * alpha).astype(np.uint8)
+                                vis[:] = vis_fi[:]
+                        except Exception:
+                            pass
+                    n_foci_total = 0
+                    raw_median_fi = None
+                    run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+                    if run_foci and fi_images is not None and self.analyze_fi.isChecked():
+                        try:
+                            from bactimate.modules.foci_utils import detect_peaks_skimage as _detect_foci
+                        except ImportError:
+                            _detect_foci = None
+                        if _detect_foci is not None:
+                            try:
+                                fi_image = fi_images[frame_idx]
+                                if fi_image.ndim > 2:
+                                    fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
+                                if fi_image.shape[:2] == vis.shape[:2]:
+                                    raw_median_fi = float(np.median(np.asarray(fi_image, dtype=np.float64)))
+                                    min_rel = self.foci_min_rel.value() if hasattr(self, "foci_min_rel") else 2.0
+                                    min_sep = self.foci_min_separation.value() if hasattr(self, "foci_min_separation") else 2
+                                    min_sz = self.foci_min_size.value() if hasattr(self, "foci_min_size") else 1
+                                    max_sz = self.foci_max_size.value() if hasattr(self, "foci_max_size") else 0
+                                    max_sz = max_sz if max_sz > 0 else None
+                                    peaks = _detect_foci(fi_image, min_rel=min_rel, min_distance=min_sep, min_size=min_sz, max_size=max_sz)
+                                    exclude_outside = bool(getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked())
+                                    if exclude_outside:
+                                        peaks = [p for p in peaks if 0 <= int(p["y"]) < mask.shape[0] and 0 <= int(p["x"]) < mask.shape[1] and mask[int(p["y"]), int(p["x"])] in accepted_labels]
+                                    n_foci_total = len(peaks)
+                                    FOCI_CAP = 500
+                                    orange = np.array([255, 165, 0], dtype=np.uint8)
+                                    r = 3
+                                    h, w = vis.shape[:2]
+                                    for i, p in enumerate(peaks):
+                                        if i >= FOCI_CAP:
+                                            break
+                                        yi, xi = int(p["y"]), int(p["x"])
+                                        for dy in range(-r, r + 1):
+                                            for dx in range(-r, r + 1):
+                                                if dy * dy + dx * dx <= r * r:
+                                                    yk, xk = yi + dy, xi + dx
+                                                    if 0 <= yk < h and 0 <= xk < w:
+                                                        vis[yk, xk] = orange
+                            except Exception:
+                                pass
+                    title = f"Frame {frame_idx + 1}/{num_frames}"
+                    legend = f"Green=Accepted ({len(accepted_labels)})  Red=Rejected ({len(rejected_labels)})"
+                    if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
+                        legend += f"  Magenta=Contour (t={fi_contour_thickness_val})"
+                    if run_foci:
+                        legend += f"  Orange=foci ({n_foci_total})"
+                        if raw_median_fi is not None:
+                            legend += f"  [raw median FI: {raw_median_fi:.0f}  (× min rel = threshold)]"
+                    title_label.setText(f"{Path(mask_path).name}  |  {title}  |  {legend}")
+                    dummy_mask = np.zeros(vis.shape[:2], dtype=np.int32)
+                    vis_scaled, _ = scale_for_preview(vis, dummy_mask)
+                    pixmap = to_qpixmap(vis_scaled)
+                    image_canvas.set_pixmap(pixmap, (vis_scaled.shape[1], vis_scaled.shape[0]), reset_view=False)
+                info_label.setText(f"Accepted: {len(accepted_labels)} | Rejected: {len(rejected_labels)} | Total: {len(all_labels)}")
+                reapply_btn.setEnabled(True)
+                frame_spin.setEnabled(True)
+                preview_dialog._updating_preview = False
+
             # Function to update preview
             def update_preview(frame_idx, show_progress=True):
                 if frame_idx < 0 or frame_idx >= num_frames:
@@ -1919,251 +2299,64 @@ class AnalyzeMasksTab(QWidget):
                     
                     # Get current parameters from main window
                     params = get_current_parameters()
-                    
+                    existing = getattr(preview_dialog, "_preview_worker", None)
+                    if existing is not None and existing.isRunning():
+                        preview_dialog._preview_request_id += 1
+                        preview_dialog._preview_current_requested_frame = frame_idx
+                        info_label.setText("Updating preview... (requested frame %s)" % (frame_idx + 1))
+                        preview_dialog._updating_preview = False
+                        return
+                    preview_dialog._preview_request_id += 1
+                    preview_dialog._preview_current_requested_frame = frame_idx
+                    preview_dialog._preview_skip_vis = skip_visualization
                     if progress_dialog:
-                        progress_dialog.setLabelText(f"Calculating cell properties... ({num_objects:,} objects) (30%)")
-                        progress_dialog.setValue(30)
+                        progress_dialog.setLabelText("Updating preview...")
                         QApplication.processEvents()
-                        if cancelled:
-                            return
-                    
-                    # All non-zero labels in mask (for visualization: show every cell as accepted or rejected)
-                    all_labels = set(np.unique(mask_cleaned)) - {0}
-                    # Calculate properties; when exclude_border=True, border-touching cells are omitted from properties
-                    properties = calculate_cell_properties(
-                        mask_cleaned,
-                        pixel_size=params['pixel_size'],
-                        exclude_border=params.get('exclude_border', False),
-                    )
-                    
-                    if progress_dialog:
-                        progress_dialog.setLabelText("Applying morphological filters... (50%)")
-                        progress_dialog.setValue(50)
-                        QApplication.processEvents()
-                        if cancelled:
-                            return
-                    
-                    # Apply filters with current parameters
-                    rod_shaped = filter_rod_shaped_cells(
-                        properties,
-                        min_aspect_ratio=params['min_aspect_ratio'],
-                        max_aspect_ratio=params['max_aspect_ratio'],
-                        min_eccentricity=params['min_eccentricity'],
-                        min_solidity=params['min_solidity']
-                    )
-                    rod_shaped_labels = {cell['label'] for cell in rod_shaped}
-                    
-                    if progress_dialog:
-                        progress_dialog.setLabelText("Applying size filters... (70%)")
-                        progress_dialog.setValue(70)
-                        QApplication.processEvents()
-                        if cancelled:
-                            return
-                    
-                    filtered = filter_by_size(
-                        rod_shaped,
-                        min_area_um2=params['min_area'],
-                        max_area_um2=params['max_area'],
-                        min_width_um=params['min_width'],
-                        max_width_um=params['max_width']
-                    )
-                    accepted_labels = {cell['label'] for cell in filtered}
-                    rejected_labels = all_labels - accepted_labels
-                    
-                    if progress_dialog:
-                        if skip_visualization:
-                            progress_dialog.setLabelText("Skipping visualization (too many objects)... (85%)")
-                        else:
-                            progress_dialog.setLabelText("Creating visualization... (85%)")
-                        progress_dialog.setValue(85)
-                        QApplication.processEvents()
-                        if cancelled:
-                            return
-                    
-                    # Create visualization using vectorized numpy operations (much faster)
-                    # Skip visualization for very large datasets to prevent crashes
-                    if skip_visualization:
-                        # Show statistics only
-                        fig.clear()
-                        ax = fig.add_subplot(111)
-                        ax.text(0.5, 0.5, 
-                               f"Visualization skipped due to large number of objects ({num_objects:,})\n\n"
-                               f"Statistics:\n"
-                               f"• Total objects: {len(all_labels):,}\n"
-                               f"• Accepted: {len(accepted_labels):,}\n"
-                               f"• Rejected: {len(rejected_labels):,}\n"
-                               f"• Acceptance rate: {len(accepted_labels)/len(all_labels)*100:.1f}%",
-                               ha='center', va='center', fontsize=12,
-                               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-                        ax.set_title(f"Frame {frame_idx + 1}/{num_frames}: Statistics Only (Visualization Skipped)")
-                        ax.axis('off')
-                        canvas.draw()
-                    else:
-                        height, width = mask.shape
-                        vis = np.zeros((height, width, 3), dtype=np.uint8)
-                        
-                        # Convert label sets to arrays for vectorized operations
-                        if accepted_labels:
-                            accepted_array = np.array(list(accepted_labels))
-                            # Use numpy.isin for fast membership testing
-                            accepted_mask = np.isin(mask, accepted_array)
-                            vis[accepted_mask, 1] = 255  # Green channel
-                        
-                        if rejected_labels:
-                            rejected_array = np.array(list(rejected_labels))
-                            rejected_mask = np.isin(mask, rejected_array)
-                            vis[rejected_mask, 0] = 255  # Red channel
-                        
-                        # Add FI contours if enabled: show the contour *region* (pixels used for contour FI)
-                        # so the user can see which area is averaged and judge vs mean intensity.
-                        do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
-                        if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
-                            try:
-                                # Get FI image for this frame
-                                fi_image = fi_images[frame_idx]
-                                # Handle multi-channel FI images
-                                if fi_image.ndim > 2:
-                                    fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
-                                
-                                # Create mask with only accepted cells
-                                accepted_mask_full = np.zeros_like(mask, dtype=bool)
-                                if accepted_labels:
-                                    accepted_array = np.array(list(accepted_labels))
-                                    accepted_mask_full = np.isin(mask, accepted_array)
-                                
-                                # Find contour *region* (same logic as analyze_cell_areas: inner boundary, then dilate within cell)
-                                if np.any(accepted_mask_full):
-                                    temp_mask = np.zeros_like(mask)
-                                    temp_mask[accepted_mask_full] = mask[accepted_mask_full]
-                                    boundaries = find_boundaries(temp_mask, mode='inner')
-                                    # Restrict to accepted cells so contour stays inside cells (matches script)
-                                    contour_mask = boundaries & accepted_mask_full
-                                    if fi_contour_thickness > 1:
-                                        for _ in range(fi_contour_thickness - 1):
-                                            contour_mask = binary_dilation(contour_mask) & accepted_mask_full
-                                    
-                                    # Use FI image as background so user sees actual intensity in contour region
-                                    fi_norm = fi_image.astype(np.float32)
-                                    if fi_norm.max() > fi_norm.min():
-                                        fi_norm = (fi_norm - fi_norm.min()) / (fi_norm.max() - fi_norm.min()) * 255
-                                    else:
-                                        fi_norm = np.zeros_like(fi_norm)
-                                    vis_fi = np.stack([fi_norm, fi_norm, fi_norm], axis=-1).astype(np.uint8)
-                                    # Overlay accepted cells in light green, rejected in light red (so we keep context)
-                                    vis_fi[accepted_mask_full, 0] = np.clip(vis_fi[accepted_mask_full, 0].astype(np.int32) - 40, 0, 255).astype(np.uint8)
-                                    vis_fi[accepted_mask_full, 1] = 255
-                                    vis_fi[accepted_mask_full, 2] = np.clip(vis_fi[accepted_mask_full, 2].astype(np.int32) - 40, 0, 255).astype(np.uint8)
-                                    if rejected_labels:
-                                        rejected_array = np.array(list(rejected_labels))
-                                        rejected_mask = np.isin(mask, rejected_array)
-                                        vis_fi[rejected_mask, 0] = 255
-                                        vis_fi[rejected_mask, 1] = np.clip(vis_fi[rejected_mask, 1].astype(np.int32) - 40, 0, 255).astype(np.uint8)
-                                        vis_fi[rejected_mask, 2] = np.clip(vis_fi[rejected_mask, 2].astype(np.int32) - 40, 0, 255).astype(np.uint8)
-                                    # Contour region: magenta overlay so it's clearly distinct from green (accepted)
-                                    # and easy to see which pixels are used for contour FI
-                                    alpha = 0.6
-                                    vis_fi[contour_mask, 0] = (vis_fi[contour_mask, 0].astype(np.float32) * (1 - alpha) + 255 * alpha).astype(np.uint8)
-                                    vis_fi[contour_mask, 1] = (vis_fi[contour_mask, 1].astype(np.float32) * (1 - alpha) + 0 * alpha).astype(np.uint8)
-                                    vis_fi[contour_mask, 2] = (vis_fi[contour_mask, 2].astype(np.float32) * (1 - alpha) + 255 * alpha).astype(np.uint8)
-                                    # Replace vis with FI-based view when contour is on (so contour area and intensity are visible)
-                                    vis[:] = vis_fi[:]
-                            except Exception as e:
-                                # If contour drawing fails, continue without contours
-                                print(f"Warning: Could not draw FI contours: {str(e)}")
-                        
-                        # Foci overlay: when Run foci analysis is on, detect foci on current FI frame and draw on vis
-                        n_foci_total = 0
-                        raw_median_fi = None  # raw FI median (used for min rel threshold); shown in legend
-                        run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
-                        if run_foci and fi_images is not None and self.analyze_fi.isChecked():
-                            try:
-                                from bactimate.modules.foci_utils import detect_peaks_skimage as _detect_foci
-                            except ImportError:
-                                _detect_foci = None
-                            if _detect_foci is not None:
-                                fi_image = fi_images[frame_idx]
-                                if fi_image.ndim > 2:
-                                    fi_image = fi_image[:, :, 0] if fi_image.shape[2] < 10 else fi_image[0, :, :]
-                                if fi_image.shape[:2] == vis.shape[:2]:
-                                    raw_median_fi = float(np.median(np.asarray(fi_image, dtype=np.float64)))
-                                    min_rel = self.foci_min_rel.value() if hasattr(self, "foci_min_rel") else 2.0
-                                    min_sep = self.foci_min_separation.value() if hasattr(self, "foci_min_separation") else 2
-                                    min_sz = self.foci_min_size.value() if hasattr(self, "foci_min_size") else 1
-                                    max_sz = self.foci_max_size.value() if hasattr(self, "foci_max_size") else 0
-                                    max_sz = max_sz if max_sz > 0 else None
-                                    peaks = _detect_foci(
-                                        fi_image,
-                                        min_rel=min_rel,
-                                        min_distance=min_sep,
-                                        min_size=min_sz,
-                                        max_size=max_sz,
-                                    )
-                                    exclude_outside = bool(getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked())
-                                    if exclude_outside:
-                                        peaks = [p for p in peaks if 0 <= int(p["y"]) < mask.shape[0] and 0 <= int(p["x"]) < mask.shape[1] and mask[int(p["y"]), int(p["x"])] in accepted_labels]
-                                    n_foci_total = len(peaks)
-                                    # Draw up to 500 foci as orange circles (radius 3 px)
-                                    FOCI_CAP = 500
-                                    orange = np.array([255, 165, 0], dtype=np.uint8)
-                                    r = 3
-                                    h, w = vis.shape[:2]
-                                    for i, p in enumerate(peaks):
-                                        if i >= FOCI_CAP:
-                                            break
-                                        yi, xi = int(p["y"]), int(p["x"])
-                                        for dy in range(-r, r + 1):
-                                            for dx in range(-r, r + 1):
-                                                if dy * dy + dx * dx <= r * r:
-                                                    yk, xk = yi + dy, xi + dx
-                                                    if 0 <= yk < h and 0 <= xk < w:
-                                                        vis[yk, xk] = orange
-                        
-                        if progress_dialog:
-                            progress_dialog.setLabelText("Rendering display... (100%)")
-                            progress_dialog.setValue(100)
-                            QApplication.processEvents()
-                            if cancelled:
-                                return
+                        preview_dialog._preview_progress_dialog = progress_dialog
 
-                        # Update Qt-native canvas (same pipeline as Segmentation Preview)
-                        do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
-                        title = f"Frame {frame_idx + 1}/{num_frames}"
-                        legend = f"Green=Accepted ({len(accepted_labels)})  Red=Rejected ({len(rejected_labels)})"
-                        if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
-                            legend += f"  Magenta=Contour (t={fi_contour_thickness})"
-                        if run_foci:
-                            legend += f"  Orange=foci ({n_foci_total})"
-                            if raw_median_fi is not None:
-                                legend += f"  [raw median FI: {raw_median_fi:.0f}  (× min rel = threshold)]"
-                        title_label.setText(f"{Path(mask_path).name}  |  {title}  |  {legend}")
-                        # vis is (H, W, 3) uint8; scale for large images then display
-                        dummy_mask = np.zeros(vis.shape[:2], dtype=np.int32)
-                        vis_scaled, _ = scale_for_preview(vis, dummy_mask)
-                        pixmap = to_qpixmap(vis_scaled)
-                        image_canvas.set_pixmap(pixmap, (vis_scaled.shape[1], vis_scaled.shape[0]), reset_view=False)
-                    
-                    info_label.setText(f"Accepted: {len(accepted_labels)} | Rejected: {len(rejected_labels)} | Total: {len(all_labels)}")
-                    
-                    # Close progress dialog
-                    if progress_dialog:
-                        progress_dialog.setValue(100)
-                        QApplication.processEvents()
-                        progress_dialog.close()
-                    
-                    # Re-enable controls
-                    if progress_dialog:
-                        reapply_btn.setEnabled(True)
-                        frame_spin.setEnabled(True)
-                    
-                    # Clear the updating flag
+                    def _on_preview_worker_finished(rid, fid, acc_list, rej_list, all_list, n_obj, err):
+                        try:
+                            if getattr(preview_dialog, "_dialog_closed", False):
+                                return
+                            if rid != getattr(preview_dialog, "_preview_request_id", -1):
+                                update_preview(getattr(preview_dialog, "_preview_current_requested_frame", 0))
+                                return
+                            prog = getattr(preview_dialog, "_preview_progress_dialog", None)
+                            if prog is not None:
+                                try:
+                                    prog.close()
+                                except Exception:
+                                    pass
+                                preview_dialog._preview_progress_dialog = None
+                            preview_dialog._preview_worker = None
+                            if err:
+                                info_label.setText("Error: %s" % (err[:80]))
+                                reapply_btn.setEnabled(True)
+                                frame_spin.setEnabled(True)
+                                preview_dialog._updating_preview = False
+                                QMessageBox.warning(preview_dialog, "Preview Error", "Could not update preview:\n%s" % err)
+                                return
+                            _apply_filter_result_to_ui(
+                                fid, acc_list, rej_list, all_list, n_obj,
+                                getattr(preview_dialog, "_preview_skip_vis", False),
+                            )
+                        except RuntimeError:
+                            pass  # Dialog or widgets already destroyed (e.g. user closed preview)
+
+                    worker = AnalyzeMasksPreviewWorker(
+                        preview_dialog._preview_request_id, frame_idx, mask_cleaned, params,
+                    )
+                    preview_dialog._preview_worker_slot = _on_preview_worker_finished
+                    worker.finished.connect(_on_preview_worker_finished)
+                    preview_dialog._preview_worker = worker
+                    worker.start()
                     preview_dialog._updating_preview = False
+                    return
                 except Exception as e:
                     if progress_dialog:
                         progress_dialog.close()
-                    # Re-enable controls on error
                     reapply_btn.setEnabled(True)
                     frame_spin.setEnabled(True)
-                    # Clear flags on error
                     if hasattr(preview_dialog, '_updating_preview'):
                         preview_dialog._updating_preview = False
                     if hasattr(preview_dialog, '_showing_warning'):
@@ -2190,10 +2383,8 @@ class AnalyzeMasksTab(QWidget):
                         QMessageBox.warning(preview_dialog, "Preview Error", 
                                           f"Could not display frame {idx + 1}:\n{str(e)}")
             
-            # editingFinished + debounced valueChanged (300ms) for frame spinbox
+            # Commit on Enter/focus only (no live valueChanged) so typing "55" doesn't jump to 5
             def on_frame_changed():
-                if hasattr(frame_spin, '_change_timer'):
-                    frame_spin._change_timer.stop()
                 frame_num = frame_spin.value() - 1
                 if 0 <= frame_num < num_frames:
                     if frame_num != preview_dialog.current_frame:
@@ -2204,19 +2395,6 @@ class AnalyzeMasksTab(QWidget):
                     frame_spin.blockSignals(False)
 
             frame_spin.editingFinished.connect(on_frame_changed)
-            frame_spin._change_timer = QTimer()
-            frame_spin._change_timer.setSingleShot(True)
-            frame_spin._change_timer.timeout.connect(on_frame_changed)
-
-            def on_value_changed(v):
-                if 1 <= v <= num_frames:
-                    frame_spin._change_timer.start(300)
-                else:
-                    frame_spin._change_timer.stop()
-                    frame_spin.blockSignals(True)
-                    frame_spin.setValue(preview_dialog.current_frame + 1)
-                    frame_spin.blockSignals(False)
-            frame_spin.valueChanged.connect(on_value_changed)
             
             nav_layout.addStretch()
             
@@ -2361,10 +2539,19 @@ class AnalyzeMasksTab(QWidget):
                 analysis_dir = base_dir / "_analysis"
                 if batch_fi_on:
                     fi_paths = self._resolve_fi_paths_for_mask(mask_path)
+                    run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
                     if not fi_paths:
-                        self.folder_fi_tasks.append((mask_path, None, analysis_dir / f"{stem}_analysis.xlsx"))
-                        self.folder_phase_per_mask[mask_path] = None
-                        self.parent_window.log_output(f"  No FI file for {mask_path.name} (expected e.g. {stem}_fi.tif or {stem}_fi_*.tif in parent folder)\n")
+                        # No _fi file: if Run foci is on, use _foci file so foci detection can run
+                        foci_paths = self._resolve_foci_paths_for_mask(mask_path) if run_foci_on else []
+                        if run_foci_on and foci_paths:
+                            self.folder_phase_per_mask[mask_path] = self._resolve_phase_path_for_mask(mask_path)
+                            for fp in foci_paths:
+                                suf = self._fi_output_suffix(fp, stem)
+                                self.folder_fi_tasks.append((mask_path, fp, analysis_dir / f"{stem}_analysis{suf}.xlsx"))
+                        else:
+                            self.folder_fi_tasks.append((mask_path, None, analysis_dir / f"{stem}_analysis.xlsx"))
+                            self.folder_phase_per_mask[mask_path] = None
+                            self.parent_window.log_output(f"  No FI/foci file for {mask_path.name} (expected e.g. {stem}_fi.tif or {stem}_foci.tif)\n")
                     else:
                         phase_path = self._resolve_phase_path_for_mask(mask_path)
                         self.folder_phase_per_mask[mask_path] = phase_path
@@ -2436,7 +2623,8 @@ class AnalyzeMasksTab(QWidget):
             
             # Create output path in single _analysis folder
             output_path = base_dir / "_analysis" / f"{input_file.stem}_analysis.xlsx"
-            
+            self._last_analysis_output_dir = output_path.parent  # for completion popup "Open output folder"
+
             # Build command arguments (use resolved input path)
             cmd_args = [
                 str(input_file),
@@ -2563,18 +2751,35 @@ class AnalyzeMasksTab(QWidget):
                 self.parent_window.log_output(f"  {n_fail} task(s) failed — check log above for errors.\n")
             # Merge multiple FI channel outputs into one Excel per mask (one table with two FI columns)
             self._merge_fi_channels_into_one_excel()
+            combined_summary_path = None
             if getattr(self, "create_combined_summary", None) and getattr(self, "create_combined_summary").isChecked() and n_ok > 0:
                 paths = getattr(self, "folder_output_paths", [])
                 if paths and self.folder_files:
+                    # Use same base folder as analysis files (go up from Tif_* or _segmentation)
                     folder = Path(self.folder_files[0]).parent
-                    if folder.name.startswith("_segmentation"):
+                    if folder.name.startswith("Tif_") or folder.name.startswith("_segmentation"):
                         folder = folder.parent
                     out_path = folder / "_analysis" / f"{folder.name}_combined_summary.xlsx"
                     out_path.parent.mkdir(parents=True, exist_ok=True)
                     match_log = self._match_log_from_folder_tasks()
-                    if self._build_combined_summary_excel(paths, str(out_path), match_log=match_log):
+                    if self._build_combined_summary_excel(
+                        paths, str(out_path), match_log=match_log, log_callback=self.parent_window.log_output
+                    ):
+                        combined_summary_path = out_path
                         self.parent_window.log_output(f"Combined summary saved to: {out_path}\n")
+                        if Path(self.folder_files[0]).parent != folder:
+                            self.parent_window.log_output(
+                                f"  (Masks are in a subfolder; combined summary is in the parent folder's _analysis.)\n"
+                            )
+                    else:
+                        self.parent_window.log_output(
+                            f"Combined summary not created (no Summary sheets or build failed). Paths used: {len(paths)}\n"
+                        )
+                elif not paths:
+                    self.parent_window.log_output("Combined summary skipped: no output paths.\n")
             msg = f"Completed: {n_ok}/{n_tasks} task(s) succeeded."
+            if combined_summary_path is not None:
+                msg += f"\n\nCombined summary: {combined_summary_path.name}\n(in {combined_summary_path.parent})"
             if n_fail > 0:
                 msg += f"\n{n_fail} task(s) failed — see Log for errors."
             if success_dirs:
@@ -2583,7 +2788,22 @@ class AnalyzeMasksTab(QWidget):
                     msg += f"\n  • {Path(d).name}"
                 if len(success_dirs) > 5:
                     msg += f"\n  ... and {len(success_dirs) - 5} more (see Log)."
-            QMessageBox.information(self, "Analysis Complete", msg)
+            # Unified: always offer "Open output folder" when we have a path
+            first_dir = Path(success_dirs[0]) if success_dirs else None
+            if first_dir is not None and first_dir.exists():
+                dlg = QMessageBox(self)
+                dlg.setWindowTitle("Analysis Complete")
+                dlg.setText(msg)
+                dlg.setIcon(QMessageBox.Icon.Information)
+                open_btn = dlg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                dlg.addButton(QMessageBox.StandardButton.Ok)
+                dlg.exec()
+                if dlg.clickedButton() == open_btn:
+                    from PyQt6.QtCore import QUrl
+                    from PyQt6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(first_dir)))
+            else:
+                QMessageBox.information(self, "Analysis Complete", msg)
             return
 
         mask_file, fi_path, output_path = self.folder_fi_tasks[self.current_task_index]
@@ -2714,6 +2934,23 @@ class AnalyzeMasksTab(QWidget):
         if success:
             self.parent_window.log_output("✓ Analysis completed successfully!\n")
             self._performed_this_session = True
+            # Completion popup (unified with Omnipose, Tracking, etc.)
+            out_dir = getattr(self, "_last_analysis_output_dir", None)
+            if out_dir is not None and Path(out_dir).exists():
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Analysis Complete")
+                msg.setText("Analysis completed successfully.")
+                msg.setInformativeText(f"Output: {out_dir}")
+                msg.setIcon(QMessageBox.Icon.Information)
+                open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+                msg.addButton(QMessageBox.StandardButton.Ok)
+                msg.exec()
+                if msg.clickedButton() == open_btn:
+                    from PyQt6.QtCore import QUrl
+                    from PyQt6.QtGui import QDesktopServices
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_dir)))
+            else:
+                QMessageBox.information(self, "Analysis Complete", "Analysis completed successfully.")
         else:
             QMessageBox.critical(self, "Error", f"Analysis failed:\n{message}")
         self.workflow_step_finished.emit(success)
