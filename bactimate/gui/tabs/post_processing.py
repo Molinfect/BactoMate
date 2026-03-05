@@ -59,12 +59,12 @@ class PostProcessingTab(QWidget):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
 
-        # Order: Scale bar → Montage → Growth curve video (each in its own frame)
-        scalebar_group = self._build_scalebar_group()
-        scroll_layout.addWidget(scalebar_group)
-
+        # Order: Montage → Scale bar → Growth curve video (each in its own frame)
         montage_group = self._build_montage_group()
         scroll_layout.addWidget(montage_group)
+
+        scalebar_group = self._build_scalebar_group()
+        scroll_layout.addWidget(scalebar_group)
 
         growth_curve_group = self._build_growth_curve_video_group()
         scroll_layout.addWidget(growth_curve_group)
@@ -831,7 +831,6 @@ class PostProcessingTab(QWidget):
             from PIL import Image
             Image.fromarray(out).save(path)
             self.parent_window.log_output(f"Scale bar image saved: {path}\n")
-            QMessageBox.information(self, "Scale bar", f"Saved to:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "Scale bar", f"Save failed: {e}")
 
@@ -1482,7 +1481,6 @@ class PostProcessingTab(QWidget):
             from PIL import Image
             Image.fromarray(out).save(path)
             self.parent_window.log_output(f"Montage saved: {path}\n")
-            QMessageBox.information(self, "Montage", f"Saved to:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "Montage", f"Save failed: {e}")
 
@@ -1523,6 +1521,23 @@ class PostProcessingTab(QWidget):
         hist_canvas.setStyleSheet("background-color: #2b2b2b;")
         hist_canvas.setCursor(Qt.CursorShape.PointingHandCursor)
         lut_layout.addWidget(hist_canvas)
+        min_max_row = QHBoxLayout()
+        min_max_row.addWidget(QLabel("Min:"))
+        min_spin = QDoubleSpinBox()
+        min_spin.setRange(0, 65535)
+        min_spin.setValue(0)
+        min_spin.setDecimals(0)
+        min_spin.setMinimumWidth(90)
+        min_max_row.addWidget(min_spin)
+        min_max_row.addWidget(QLabel("Max:"))
+        max_spin = QDoubleSpinBox()
+        max_spin.setRange(0, 65535)
+        max_spin.setValue(65535)
+        max_spin.setDecimals(0)
+        max_spin.setMinimumWidth(90)
+        min_max_row.addWidget(max_spin)
+        min_max_row.addStretch()
+        lut_layout.addLayout(min_max_row)
         lut_group.setLayout(lut_layout)
         main_layout.addWidget(lut_group)
 
@@ -1559,7 +1574,8 @@ class PostProcessingTab(QWidget):
                 return None
             return idx
 
-        def get_tile_raw_for_hist(tile_idx: int) -> Optional[np.ndarray]:
+        def get_tile_raw_for_hist(tile_idx: int) -> Optional[tuple[np.ndarray, np.dtype]]:
+            """Return (flat float array, original dtype) for histogram. dtype used for full intensity range."""
             layout = dlg._layout
             tiles_list = layout["tiles"]
             if tile_idx < 0 or tile_idx >= len(tiles_list):
@@ -1568,12 +1584,30 @@ class PostProcessingTab(QWidget):
             if arr is None:
                 return None
             if arr.ndim == 2:
-                return arr.astype(np.float64).ravel()
+                return arr.astype(np.float64).ravel(), arr.dtype
             if arr.ndim == 3 and arr.shape[-1] in (1, 3):
                 if arr.shape[-1] == 1:
-                    return arr[..., 0].astype(np.float64).ravel()
-                return arr.mean(axis=-1).astype(np.float64).ravel()
+                    return arr[..., 0].astype(np.float64).ravel(), arr.dtype
+                return arr.mean(axis=-1).astype(np.float64).ravel(), arr.dtype
             return None
+
+        def full_range_for_dtype(dtype: np.dtype, data_min: float, data_max: float) -> tuple[float, float]:
+            """Full possible intensity range for consistent histogram across images (e.g. 0–65535 for 16-bit).
+            When dtype is uint8/uint16 use that range. When unknown (e.g. float), infer from data: if values
+            fit in 0–255 or 0–65535 use that full range so montages can share the same scale; else use data range.
+            """
+            if dtype == np.uint8:
+                return (0.0, 255.0)
+            if dtype == np.uint16:
+                return (0.0, 65535.0)
+            # Unknown or float: infer from data so we still get a stable range when data is really 8/16-bit
+            if data_max <= 255 and data_min >= 0:
+                return (0.0, 255.0)
+            if data_max <= 65535 and data_min >= 0:
+                return (0.0, 65535.0)
+            return (data_min, data_max)
+
+        hist_range: List[tuple[float, float]] = [(0.0, 1.0)]  # (hmin, hmax) for current tile; used by spinboxes and drag
 
         def update_histogram_for_tile(tile_idx: Optional[int]) -> None:
             hist_ax.clear()
@@ -1582,15 +1616,18 @@ class PostProcessingTab(QWidget):
                 hist_ax.text(0.5, 0.5, "Click a tile to select", ha="center", va="center", color="white", fontsize=13, transform=hist_ax.transAxes)
                 hist_ax.set_xlim(0, 1)
                 hist_ax.set_ylim(0, 1)
+                min_spin.setEnabled(False)
+                max_spin.setEnabled(False)
                 hist_canvas.draw()
                 return
             labels = dlg._layout.get("tile_labels", [])
             title = labels[tile_idx] if tile_idx < len(labels) else f"Tile {tile_idx}"
-            flat = get_tile_raw_for_hist(tile_idx)
-            if flat is None or flat.size == 0:
+            result = get_tile_raw_for_hist(tile_idx)
+            if result is None:
                 hist_ax.text(0.5, 0.5, "No data", ha="center", va="center", color="white", transform=hist_ax.transAxes)
                 hist_canvas.draw()
                 return
+            flat, dtype = result
             flat = flat[np.isfinite(flat)]
             if flat.size == 0:
                 hist_canvas.draw()
@@ -1598,20 +1635,24 @@ class PostProcessingTab(QWidget):
             fmin, fmax = float(np.min(flat)), float(np.max(flat))
             if fmax <= fmin:
                 fmax = fmin + 1.0
+            hmin, hmax = full_range_for_dtype(dtype, fmin, fmax)
+            hist_range[0] = (hmin, hmax)
+            n_bins = 256 if hmax - hmin <= 256 else min(1024, max(256, int(hmax - hmin + 1)))
+            hist, bin_edges = np.histogram(flat, bins=n_bins, range=(hmin, hmax))
+            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+            log_counts = np.log1p(hist)
             vmin = current_vmin[0] if current_vmin[0] is not None else float(np.percentile(flat, 2.0))
             vmax = current_vmax[0] if current_vmax[0] is not None else float(np.percentile(flat, 98.0))
+            vmin = max(hmin, min(vmin, hmax - 1e-9))
+            vmax = min(hmax, max(vmax, hmin + 1e-9))
             if vmax <= vmin:
                 vmax = vmin + 1.0
             current_vmin[0], current_vmax[0] = vmin, vmax
-            bins = min(256, max(2, int(fmax - fmin + 1)))
-            hist, bin_edges = np.histogram(flat, bins=bins, range=(fmin, fmax))
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-            log_counts = np.log1p(hist)
             hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.12, color="yellow", zorder=0)
             hist_ax.bar(bin_centers, log_counts, width=bin_edges[1] - bin_edges[0], color="#4A90E2", alpha=0.85, edgecolor="none", zorder=1)
             hist_vmin_line[0] = hist_ax.axvline(vmin, color="#FF6B6B", linewidth=2, linestyle="--", label=f"Min: {vmin:.1f}", zorder=2)
             hist_vmax_line[0] = hist_ax.axvline(vmax, color="#4ECDC4", linewidth=2, linestyle="--", label=f"Max: {vmax:.1f}", zorder=2)
-            hist_ax.set_xlim(fmin, fmax)
+            hist_ax.set_xlim(hmin, hmax)
             y_max = float(np.max(log_counts)) if log_counts.size > 0 else 1.0
             hist_ax.set_ylim(0, y_max * 1.05 if y_max > 0 else 1.0)
             hist_ax.set_xlabel("Intensity", color="white", fontsize=10)
@@ -1622,6 +1663,19 @@ class PostProcessingTab(QWidget):
             hist_ax.margins(x=0.02, y=0.08)
             hist_fig.subplots_adjust(left=0.06, right=0.97, top=0.92, bottom=0.18)
             hist_canvas.draw()
+            # Sync min/max spinboxes to current range and limits (block signals to avoid feedback)
+            min_spin.blockSignals(True)
+            max_spin.blockSignals(True)
+            min_spin.setRange(hmin, hmax)
+            max_spin.setRange(hmin, hmax)
+            min_spin.setValue(vmin)
+            max_spin.setValue(vmax)
+            min_spin.setDecimals(0 if dtype in (np.uint8, np.uint16) else 2)
+            max_spin.setDecimals(0 if dtype in (np.uint8, np.uint16) else 2)
+            min_spin.blockSignals(False)
+            max_spin.blockSignals(False)
+            min_spin.setEnabled(True)
+            max_spin.setEnabled(True)
 
         def refresh_preview(reset_view: bool = True) -> None:
             out = self._build_montage_array(
@@ -1660,19 +1714,62 @@ class PostProcessingTab(QWidget):
             selected_label.setText(f"Selected: tile {idx} — {label}. Drag the histogram lines to set display range.")
             update_histogram_for_tile(idx)
 
+        def apply_min_max_from_spinboxes() -> None:
+            if selected_index[0] is None:
+                return
+            hmin, hmax = hist_range[0]
+            vmin = min_spin.value()
+            vmax = max_spin.value()
+            vmin = max(hmin, min(vmin, hmax - 1e-9))
+            vmax = min(hmax, max(vmax, hmin + 1e-9))
+            if vmax <= vmin:
+                vmax = vmin + 1e-9
+            current_vmin[0], current_vmax[0] = vmin, vmax
+            dlg._per_tile_lut[selected_index[0]] = (vmin, vmax)
+            min_spin.setValue(vmin)
+            max_spin.setValue(vmax)
+            if hist_vmin_line[0] is not None:
+                hist_vmin_line[0].set_xdata([vmin, vmin])
+            if hist_vmax_line[0] is not None:
+                hist_vmax_line[0].set_xdata([vmax, vmax])
+            if hist_vspan[0] is not None:
+                hist_vspan[0].remove()
+            hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.15, color="yellow")
+            hist_canvas.draw()
+            refresh_preview(reset_view=False)
+
+        def on_min_spin_changed() -> None:
+            if selected_index[0] is None or is_updating_lut[0]:
+                return
+            is_updating_lut[0] = True
+            try:
+                apply_min_max_from_spinboxes()
+            finally:
+                is_updating_lut[0] = False
+
+        def on_max_spin_changed() -> None:
+            if selected_index[0] is None or is_updating_lut[0]:
+                return
+            is_updating_lut[0] = True
+            try:
+                apply_min_max_from_spinboxes()
+            finally:
+                is_updating_lut[0] = False
+
+        min_spin.valueChanged.connect(on_min_spin_changed)
+        max_spin.valueChanged.connect(on_max_spin_changed)
+
         def on_hist_press(event):
             if event.inaxes != hist_ax or event.xdata is None or selected_index[0] is None:
                 return
             x = event.xdata
-            flat = get_tile_raw_for_hist(selected_index[0])
-            if flat is None or flat.size == 0:
+            result = get_tile_raw_for_hist(selected_index[0])
+            if result is None or result[0].size == 0:
                 return
-            fmin, fmax = float(np.min(flat)), float(np.max(flat))
-            if fmax <= fmin:
-                fmax = fmin + 1e-9
-            rng = max(fmax - fmin, 1e-9)
-            thresh = max(rng * 0.05, 1e-6)
-            vmin, vmax = current_vmin[0] or fmin, current_vmax[0] or fmax
+            hmin, hmax = hist_range[0]
+            rng = max(hmax - hmin, 1e-9)
+            thresh = max(rng * 0.02, 1e-6)
+            vmin, vmax = current_vmin[0] or hmin, current_vmax[0] or hmax
             if abs(x - vmin) < thresh and abs(x - vmin) <= abs(x - vmax):
                 dragging_line[0] = "min"
             elif abs(x - vmax) < thresh:
@@ -1685,23 +1782,26 @@ class PostProcessingTab(QWidget):
             if event.inaxes != hist_ax or event.xdata is None or dragging_line[0] is None or is_updating_lut[0] or selected_index[0] is None:
                 return
             x = event.xdata
-            flat = get_tile_raw_for_hist(selected_index[0])
-            if flat is None or flat.size == 0:
-                return
-            fmin, fmax = float(np.min(flat)), float(np.max(flat))
-            if fmax <= fmin:
-                fmax = fmin + 1e-9
+            hmin, hmax = hist_range[0]
             is_updating_lut[0] = True
             try:
-                vmin, vmax = current_vmin[0] or fmin, current_vmax[0] or fmax
+                vmin, vmax = current_vmin[0] or hmin, current_vmax[0] or hmax
                 if dragging_line[0] == "min":
-                    new_min = max(fmin, min(x, (current_vmax[0] or fmax) - 1e-9))
+                    new_min = max(hmin, min(x, (current_vmax[0] or hmax) - 1e-9))
                     current_vmin[0] = new_min
                 else:
-                    new_max = min(fmax, max(x, (current_vmin[0] or fmin) + 1e-9))
+                    new_max = min(hmax, max(x, (current_vmin[0] or hmin) + 1e-9))
                     current_vmax[0] = new_max
                 vmin, vmax = current_vmin[0], current_vmax[0]
                 dlg._per_tile_lut[selected_index[0]] = (vmin, vmax)
+                min_spin.blockSignals(True)
+                min_spin.setValue(vmin)
+                min_spin.setRange(hmin, hmax)
+                min_spin.blockSignals(False)
+                max_spin.blockSignals(True)
+                max_spin.setValue(vmax)
+                max_spin.setRange(hmin, hmax)
+                max_spin.blockSignals(False)
                 refresh_preview(reset_view=False)
                 if hist_vmin_line[0] is not None:
                     hist_vmin_line[0].set_xdata([vmin, vmin])
