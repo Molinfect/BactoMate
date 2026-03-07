@@ -27,7 +27,7 @@ from datetime import datetime
 
 
 def _append_omni_debug(msg: str) -> None:
-    """Append a timestamped line to BactiMate omnipose_debug.log if env is set (for Run button / batch path)."""
+    """Append a timestamped line to BactiMate debug log if env BACTIMATE_OMNI_DEBUG_LOG is set (for Run button / batch path)."""
     path = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
     if not path:
         return

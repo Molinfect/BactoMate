@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bactimate.gui.analysis_paths import analysis_dir_from_base, base_dir_for_mask, stem_from_mask_path
 from bactimate.gui.constants import PROJECT_ROOT
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.preferences import get_default_browse_dir
@@ -1163,13 +1164,21 @@ class AnalyzeMasksTab(QWidget):
         frames_long = []
         missing = []
         no_summary = []
+        per_cell_cache: dict[Path, pd.DataFrame | None] = {}  # path -> Per-Cell Data (or None); filled when we open each file once
         for p in excel_paths:
             p = Path(p)
             if not p.exists():
                 missing.append(p.name)
                 continue
             try:
-                df = pd.read_excel(p, sheet_name="Summary")
+                with pd.ExcelFile(p) as xl:
+                    df = pd.read_excel(xl, sheet_name="Summary")
+                    per_cell = None
+                    try:
+                        per_cell = pd.read_excel(xl, sheet_name="Per-Cell Data")
+                    except Exception:
+                        pass
+                    per_cell_cache[p] = per_cell
             except Exception as e:
                 no_summary.append((p.name, str(e)))
                 continue
@@ -1218,28 +1227,29 @@ class AnalyzeMasksTab(QWidget):
         existing_log_lines: list[str] = []
         if out_path.exists() and match_log is not None:
             try:
-                wb = load_workbook(output_path, data_only=True)
-                sheet_name = "Combined Summary (wide)"
-                if sheet_name in wb.sheetnames:
-                    ws = wb[sheet_name]
-                    for r in range(2, min(ws.max_row + 1, 5000)):
-                        val = ws.cell(row=r, column=7).value
+                wb_existing = load_workbook(output_path, data_only=True)
+                sheet_name_wide = "Combined Summary (wide)"
+                if sheet_name_wide in wb_existing.sheetnames:
+                    ws_existing = wb_existing[sheet_name_wide]
+                    for r in range(2, min(ws_existing.max_row + 1, 5000)):
+                        val = ws_existing.cell(row=r, column=7).value
                         if val is None or not str(val).strip():
                             continue
                         s = str(val).strip()
-                        # Keep only pair lines (mask -> tif / mask with tif), not count lines
                         if " -> " in s or " with " in s:
                             existing_log_lines.append(s)
-                wb.close()
+                wb_existing.close()
             except Exception:
                 pass
         try:
-            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-                wide_df.to_excel(writer, sheet_name="Combined Summary (wide)", index=False)
-            wb = load_workbook(output_path)
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Combined Summary (wide)"
+            for row in dataframe_to_rows(wide_df, index=False, header=True):
+                ws.append(row)
             if match_log is not None:
                 n_masks, n_tif, lines = match_log
-                ws = wb["Combined Summary (wide)"]
                 ws["G1"] = "Logs"
                 ws["G2"] = f"{n_masks} mask(s) and {n_tif} tif file(s) matched"
                 row = 3
@@ -1249,17 +1259,15 @@ class AnalyzeMasksTab(QWidget):
                 for line in lines:
                     ws.cell(row=row, column=7, value=line)
                     row += 1
-            # Add each analysis file's Per-Cell Data as its own sheet (filename = sheet name)
             seen_sheet_names = set(wb.sheetnames)
             for p in excel_paths:
                 p = Path(p)
                 if not p.exists():
                     continue
-                try:
-                    per_cell = pd.read_excel(p, sheet_name="Per-Cell Data")
-                except Exception:
+                per_cell = per_cell_cache.get(p)
+                if per_cell is None:
                     continue
-                if per_cell is None or per_cell.empty:
+                if per_cell.empty:
                     continue
                 base_name = p.stem.replace("_analysis", "").replace("_masks_analysis", "")
                 sheet_name = _sanitize_sheet_name(base_name)
@@ -1274,7 +1282,6 @@ class AnalyzeMasksTab(QWidget):
                 for row in dataframe_to_rows(per_cell, index=False, header=True):
                     new_ws.append(row)
             wb.save(output_path)
-            wb.close()
         except Exception as e:
             _log(f"Combined summary: write failed — {e}\n")
             return False
@@ -2532,11 +2539,9 @@ class AnalyzeMasksTab(QWidget):
             for mask_path in selected_files:
                 # Use resolved paths so the subprocess finds files regardless of current working directory
                 mask_path = mask_path.resolve()
-                base_dir = mask_path.parent
-                if base_dir.name.startswith("Tif_") or "_segmentation" in base_dir.name:
-                    base_dir = base_dir.parent
-                stem = mask_path.stem.replace("_masks", "")
-                analysis_dir = base_dir / "_analysis"
+                base_dir = base_dir_for_mask(mask_path)
+                stem = stem_from_mask_path(mask_path)
+                analysis_dir = analysis_dir_from_base(base_dir)
                 if batch_fi_on:
                     fi_paths = self._resolve_fi_paths_for_mask(mask_path)
                     run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
@@ -2616,13 +2621,8 @@ class AnalyzeMasksTab(QWidget):
                     )
                     return
 
-            # Determine base directory (go up one level if input is in Tif_* or _segmentation folder)
-            base_dir = input_file.parent
-            if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
-                base_dir = base_dir.parent
-            
-            # Create output path in single _analysis folder
-            output_path = base_dir / "_analysis" / f"{input_file.stem}_analysis.xlsx"
+            base_dir = base_dir_for_mask(input_file)
+            output_path = analysis_dir_from_base(base_dir) / f"{input_file.stem}_analysis.xlsx"
             self._last_analysis_output_dir = output_path.parent  # for completion popup "Open output folder"
 
             # Build command arguments (use resolved input path)
@@ -2755,11 +2755,8 @@ class AnalyzeMasksTab(QWidget):
             if getattr(self, "create_combined_summary", None) and getattr(self, "create_combined_summary").isChecked() and n_ok > 0:
                 paths = getattr(self, "folder_output_paths", [])
                 if paths and self.folder_files:
-                    # Use same base folder as analysis files (go up from Tif_* or _segmentation)
-                    folder = Path(self.folder_files[0]).parent
-                    if folder.name.startswith("Tif_") or folder.name.startswith("_segmentation"):
-                        folder = folder.parent
-                    out_path = folder / "_analysis" / f"{folder.name}_combined_summary.xlsx"
+                    folder = base_dir_for_mask(Path(self.folder_files[0]))
+                    out_path = analysis_dir_from_base(folder) / f"{folder.name}_combined_summary.xlsx"
                     out_path.parent.mkdir(parents=True, exist_ok=True)
                     match_log = self._match_log_from_folder_tasks()
                     if self._build_combined_summary_excel(

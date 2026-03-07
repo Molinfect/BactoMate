@@ -1,32 +1,17 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-03 19:01:36",
+  "timestamp": "2026-03-06 22:00:31",
   "tabs": {
     "nd2": {
-      "max_frames": 109,
+      "frame_extract_mode": "First N frames",
+      "max_frames": 100,
+      "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
-      "drift_correct": true,
+      "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
-      "bleach_fluorescence_channels": [
-        false,
-        false
-      ],
-      "fi_channels": [
-        true,
-        false
-      ],
-      "foci_channels": [
-        false,
-        false
-      ],
-      "zproject_channels": [
-        false,
-        false
-      ],
-      "file_path": "/Users/philipppopp/Desktop/Bas08-MCP-pars/",
-      "performed": true
+      "performed": false
     },
     "segmentation": {
       "model": "bact_phase_omni",

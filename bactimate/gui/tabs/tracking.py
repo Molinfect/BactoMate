@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bactimate.gui.analysis_paths import base_dir_for_mask, find_analysis_excel_for_mask
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.image_utils import scale_for_preview, to_qpixmap
 from bactimate.gui.preferences import get_default_browse_dir
@@ -736,11 +737,8 @@ class TrackingTab(QWidget):
 
     @staticmethod
     def _tracking_output_dir(mask_path: Path) -> Path:
-        """Compute output directory for tracking: base_dir / _tracking / {stem}_tracking.
-        base_dir is one level above if mask is inside Tif_*, _segmentation*, or _analysis."""
-        base = mask_path.parent
-        if base.name.startswith("Tif_") or "_segmentation" in base.name or base.name == "_analysis":
-            base = base.parent
+        """Compute output directory for tracking: base_dir / _tracking / {stem}_tracking."""
+        base = base_dir_for_mask(mask_path)
         return base / "_tracking" / f"{mask_path.stem}_tracking"
 
     @staticmethod
@@ -1042,19 +1040,6 @@ class TrackingTab(QWidget):
             visualization[frame_idx] = vis_frame
         return visualization
 
-    @staticmethod
-    def _resolve_analysis_excel_for_mask(mask_path: Path, base_dir: Path) -> Path | None:
-        """Find analysis Excel for this mask in base_dir / _analysis (e.g. {stem}_analysis.xlsx)."""
-        stem = mask_path.stem.replace("_masks", "")
-        analysis_dir = base_dir / "_analysis"
-        if not analysis_dir.is_dir():
-            return None
-        for name in (f"{stem}_analysis.xlsx", f"{stem}_masks_analysis.xlsx"):
-            p = analysis_dir / name
-            if p.is_file():
-                return p
-        return None
-
     def run_tracking(self):
         # Expand Status & Session logs so the user can see progress during long-running tracking
         if hasattr(self.parent_window, "expand_status_log"):
@@ -1111,12 +1096,10 @@ class TrackingTab(QWidget):
             # Single-file tracking
             mask_file = selected[0].resolve()
             output_dir = self._tracking_output_dir(mask_file)
-            base_dir = mask_file.parent
-            if base_dir.name.startswith("Tif_") or "_segmentation" in base_dir.name:
-                base_dir = base_dir.parent
+            base_dir = base_dir_for_mask(mask_file)
             original_path = self._resolve_original_for_mask(mask_file) if self.create_vis_cb.isChecked() else None
             original_file = str(original_path) if original_path else None
-            excel_path = self._resolve_analysis_excel_for_mask(mask_file, base_dir)
+            excel_path = find_analysis_excel_for_mask(mask_file, base_dir)
             excel_file = str(excel_path) if excel_path else None
             model_name = self.model_combo.currentText()
             mode = self.mode_combo.currentText()
@@ -1129,12 +1112,10 @@ class TrackingTab(QWidget):
         tasks = []
         for mask_path in selected:
             mask_path = mask_path.resolve()
-            base_dir = mask_path.parent
-            if base_dir.name.startswith("Tif_") or "_segmentation" in base_dir.name:
-                base_dir = base_dir.parent
+            base_dir = base_dir_for_mask(mask_path)
             output_dir = self._tracking_output_dir(mask_path)
             original_path = self._resolve_original_for_mask(mask_path) if self.create_vis_cb.isChecked() else None
-            excel_path = self._resolve_analysis_excel_for_mask(mask_path, base_dir)
+            excel_path = find_analysis_excel_for_mask(mask_path, base_dir)
             tasks.append((mask_path, original_path, excel_path, output_dir))
         model_name = self.model_combo.currentText()
         mode = self.mode_combo.currentText()

@@ -47,7 +47,6 @@ from bactimate.gui.tabs import (
     PostProcessingTab,
     ND2ConversionTab,
     OmniposeSegTab,
-    SAM2SegmentTab,
     SessionLogsPanel,
     TrackingTab,
     UNetSegmentTab,
@@ -112,7 +111,6 @@ def _get_tab_classes() -> Tuple[Type[Any], ...]:
         AnalyzeMasksTab,
         TrackingTab,
         PostProcessingTab,
-        SAM2SegmentTab,
     )
 
 
@@ -196,7 +194,6 @@ class MainWindow(QMainWindow):
             AnalyzeMasksTab,
             TrackingTab,
             PostProcessingTab,
-            SAM2SegmentTab,
         ) = _get_tab_classes()
 
         tabs = QTabWidget()
@@ -206,11 +203,9 @@ class MainWindow(QMainWindow):
         self.analyze_tab = AnalyzeMasksTab(self)
         self.tracking_tab = TrackingTab(self)
         self.post_processing_tab = PostProcessingTab(self)
-        self.sam2_tab = SAM2SegmentTab(self)
         tabs.addTab(self.nd2_tab, "TIFF Conversion")
         tabs.addTab(self.omnipose_seg_tab, "Omnipose Segment")
         tabs.addTab(self.unet_segment_tab, "U-NET Segment")
-        # tabs.addTab(self.sam2_tab, "SAM2 Segment")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.post_processing_tab, "Post-processing")
@@ -833,7 +828,7 @@ def main() -> None:
 
     def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
         traceback.print_exception(exc_type, exc_value, exc_traceback)
-        # Write to project Logs/crash.log so we can read it for debugging
+        # Write to this run's debug log so we can read it for debugging
         try:
             lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
             block = "".join(lines)

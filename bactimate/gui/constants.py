@@ -10,8 +10,10 @@ from bactimate.gui.paths import get_app_root, get_logs_dir, get_script_path
 PROJECT_ROOT = get_app_root()
 LOGS_DIR = get_logs_dir()
 
-# Keep only the last N session log files; older ones are deleted after each save
-MAX_SESSION_LOGS = 100
+# Log retention: keep only the last N files so logs don't grow indefinitely
+MAX_SESSION_LOGS = 100   # session JSONs (saved parameters)
+MAX_LAUNCH_LOGS = 20     # launch_*.log (one per app launch, from launch_gui.sh)
+MAX_DEBUG_LOGS = 10      # debug_*.log (one per run: crash + Omnipose/debug lines)
 
 # Script paths for subprocess calls
 # Prefer package script (bactimate/scripts/); fallback to get_script_path for installed/frozen layouts
@@ -21,7 +23,6 @@ _pkg_batch_tiff = get_app_root() / "bactimate" / "scripts" / "batch_process_tiff
 BATCH_PROCESS_TIFF_SCRIPT = _pkg_batch_tiff if _pkg_batch_tiff.exists() else get_script_path("batch_process_tiff_sequence.py")
 
 # Tab (key, display label) in display order. Used for session gather/apply and session log overview.
-# SAM2 omitted while tab is not in use (commented out in main_window).
 SESSION_TAB_KEYS = [
     ("nd2", "TIFF Conversion"),
     ("segmentation", "Omnipose Segment"),
@@ -36,7 +37,6 @@ TAB_WIDGET_ATTR = {
     "nd2": "nd2_tab",
     "segmentation": "omnipose_seg_tab",
     "unet_segment": "unet_segment_tab",
-    "sam2": "sam2_tab",
     "analyze_masks": "analyze_tab",
     "tracking": "tracking_tab",
     "growth_curve_video": "post_processing_tab",

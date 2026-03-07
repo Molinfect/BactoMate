@@ -105,7 +105,7 @@ def get_python_executable_for_subprocess() -> str:
 
 
 def get_logs_dir() -> Path:
-    """Directory for session logs, crash log, dock_debug. When running from .app, use Logs inside the app if writable."""
+    """Directory for session logs (*_session.json), launch logs (launch_*.log), and debug logs (debug_*.log). When running from .app, use Logs inside the app if writable."""
     if _is_installed():
         return _get_user_data_logs_dir()
     if sys.platform == "darwin" and _running_from_app_bundle():

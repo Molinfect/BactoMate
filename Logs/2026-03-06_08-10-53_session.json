@@ -1,35 +1,16 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-03 23:21:21",
+  "timestamp": "2026-03-06 08:10:53",
   "tabs": {
     "nd2": {
-      "max_frames": 50,
+      "frame_extract_mode": "First N frames",
+      "max_frames": 100,
+      "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
-      "bleach_fluorescence_channels": [
-        false,
-        false,
-        false
-      ],
-      "fi_channels": [
-        false,
-        false,
-        false
-      ],
-      "foci_channels": [
-        false,
-        false,
-        false
-      ],
-      "zproject_channels": [
-        false,
-        false,
-        false
-      ],
-      "file_path": "/Users/philipppopp/Desktop/Test_data/LiF/2026.03.01_Ecoli_GFP.lif",
       "performed": false
     },
     "segmentation": {
@@ -62,7 +43,7 @@
       "unet_model_name": ""
     },
     "analyze_masks": {
-      "pixel_size": 0.325,
+      "pixel_size": 0.108,
       "min_aspect_ratio": 1.5,
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
@@ -87,6 +68,7 @@
       "foci_min_size": 1,
       "foci_max_size": 0,
       "foci_exclude_outside_cells": false,
+      "file_path": "/Users/philipppopp/Desktop/Bas08-MCP-pars/Tif_files/_analysis/test/",
       "performed": false
     },
     "tracking": {
@@ -95,7 +77,7 @@
       "use_gpu": true,
       "create_vis": true,
       "batch": false,
-      "filter_pixel_size": 0.325,
+      "filter_pixel_size": 0.108,
       "filter_time_per_frame": 1.0,
       "filter_time_per_frame_unit": "min",
       "performed": false

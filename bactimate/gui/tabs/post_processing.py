@@ -377,15 +377,14 @@ class PostProcessingTab(QWidget):
         opt_row2.addWidget(self.scalebar_show_label)
         opt_row2.addStretch()
         layout.addLayout(opt_row2)
-        # Buttons
+        # Buttons (50/50)
         btn_row = QHBoxLayout()
-        preview_btn = QPushButton("Preview")
+        preview_btn = QPushButton("Preview scale bar")
         preview_btn.clicked.connect(self._preview_scalebar)
-        save_btn = QPushButton("Save image with scale bar")
+        save_btn = QPushButton("Save with scale bar")
         save_btn.clicked.connect(self._save_scalebar)
-        btn_row.addWidget(preview_btn)
-        btn_row.addWidget(save_btn)
-        btn_row.addStretch()
+        btn_row.addWidget(preview_btn, 1)
+        btn_row.addWidget(save_btn, 1)
         layout.addLayout(btn_row)
         group.setLayout(layout)
         return group
@@ -449,15 +448,14 @@ class PostProcessingTab(QWidget):
         grid_row.addStretch()
         layout.addLayout(grid_row)
 
-        # —— Buttons ———
+        # —— Buttons (50/50) ———
         btn_row = QHBoxLayout()
         preview_montage_btn = QPushButton("Preview montage")
         preview_montage_btn.clicked.connect(self._preview_montage)
         save_montage_btn = QPushButton("Save montage")
         save_montage_btn.clicked.connect(self._save_montage)
-        btn_row.addWidget(preview_montage_btn)
-        btn_row.addWidget(save_montage_btn)
-        btn_row.addStretch()
+        btn_row.addWidget(preview_montage_btn, 1)
+        btn_row.addWidget(save_montage_btn, 1)
         layout.addLayout(btn_row)
         group.setLayout(layout)
         return group
@@ -489,7 +487,7 @@ class PostProcessingTab(QWidget):
         layout.addWidget(QLabel(f"File: {nd2_path.name}\nSet color per channel (Auto = from metadata):"))
         form = QFormLayout()
         combos: List[tuple] = []
-        choices = ["Auto", "Grayscale", "Red", "Green", "Blue", "Yellow", "Cyan", "Magenta"]
+        choices = ["Auto", "Grayscale", "Red", "Orange", "Green", "Blue", "Yellow", "Cyan", "Magenta"]
         for i, name in enumerate(channel_names):
             cb = QComboBox()
             cb.addItems(choices)
@@ -518,14 +516,15 @@ class PostProcessingTab(QWidget):
         """Open dialog to set display color per tile (by tile index). Works for any montage source (ND2, TIFFs, folder)."""
         tiles = layout.get("tiles", [])
         labels = layout.get("tile_labels", [])
-        preset_names = ["Default", "Grayscale", "Red", "Green", "Blue", "Yellow", "Cyan", "Magenta", "Pick…"]
+        preset_names = ["Default", "Grayscale", "Red", "Orange", "Green", "Blue", "Yellow", "Cyan", "Magenta", "Pick…"]
         preset_to_rgb = {
             "Default": None,
             "Grayscale": (1.0, 1.0, 1.0),
-            "Red": (1.0, 0.0, 0.0),
-            "Green": (0.0, 1.0, 0.0),
-            "Blue": (0.0, 0.0, 1.0),
-            "Yellow": (1.0, 1.0, 0.0),
+            "Red": (204 / 255.0, 0.0, 0.0),
+            "Orange": (242 / 255.0, 137 / 255.0, 26 / 255.0), 
+            "Green": (86 / 255.0, 207 / 255.0, 33 / 255.0),
+            "Blue": (0 / 255.0, 0 / 255.0, 225 / 255.0),
+            "Yellow": (231 / 255.0, 213 / 255.0, 32 / 255.0),
             "Cyan": (0.0, 1.0, 1.0),
             "Magenta": (1.0, 0.0, 1.0),
         }
@@ -822,7 +821,7 @@ class PostProcessingTab(QWidget):
         default_path = Path(self.scalebar_path.text().strip())
         default_path = default_path.parent / f"{default_path.stem}_scalebar.png"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save image with scale bar", str(default_path),
+            self, "Save with scale bar", str(default_path),
             "PNG (*.png);;TIFF (*.tif *.tiff);;All (*)"
         )
         if not path:
@@ -841,6 +840,7 @@ class PostProcessingTab(QWidget):
         "gray": (1.0, 1.0, 1.0),
         "grayscale": (1.0, 1.0, 1.0),
         "red": (1.0, 0.0, 0.0),
+        "orange": (1.0, 86 / 255.0, 0.0),  # RGB (255, 86, 0) — dsRED / mScarlet / 561 nm
         "green": (0.0, 1.0, 0.0),
         "blue": (0.0, 0.0, 1.0),
         "yellow": (1.0, 1.0, 0.0),
@@ -856,7 +856,9 @@ class PostProcessingTab(QWidget):
         n = name.strip().lower()
         if "phase" in n or "bf" == n or "brightfield" in n or "trans" in n or "transmission" in n:
             return (1.0, 1.0, 1.0)  # grayscale
-        if "mscarlet" in n or "mcherry" in n or "rfp" in n or "dsred" in n or "red" in n or "cy3" in n or "texas" in n:
+        if "mscarlet" in n or "dsred" in n or "561" in n or "orange" in n:
+            return (1.0, 86 / 255.0, 0.0)  # orange RGB (255, 86, 0) — dsRED / mScarlet / 561 nm
+        if "mcherry" in n or "rfp" in n or "red" in n or "cy3" in n or "texas" in n:
             return (1.0, 0.0, 0.0)
         if "gfp" in n or "egfp" in n or "fitc" in n or "green" in n:
             return (0.0, 1.0, 0.0)
@@ -869,7 +871,7 @@ class PostProcessingTab(QWidget):
         return (0.0, 1.0, 0.0)  # default green
 
     # Default colors for multiple single-channel (non-ND2) images: cycle so each file gets a different color.
-    _CYCLE_COLORS = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0))  # R,G,B,Y,C,M
+    _CYCLE_COLORS = ((1.0, 0.0, 0.0), (1.0, 86 / 255.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0))  # R, orange (255,86,0), G, B, Y, C, M
 
     def _get_channel_colors_for_path(
         self, path: Path, n_channels: int, entry_index: Optional[int] = None
@@ -902,7 +904,9 @@ class PostProcessingTab(QWidget):
     _CHANNEL_SUFFIXES = [
         ("_phase", "phase"), ("_Phase", "phase"),
         ("_gfp", "GFP"), ("_GFP", "GFP"), ("_egfp", "GFP"),
-        ("_mscarlet", "mScarlet"), ("_mScarlet", "mScarlet"), ("_mcherry", "mCherry"), ("_rfp", "RFP"),
+        ("_mscarlet", "mScarlet"), ("_mScarlet", "mScarlet"), ("_dsred", "dsRED"), ("_dsRed", "dsRED"),
+        ("_mcherry", "mCherry"), ("_rfp", "RFP"),
+        ("_561", "561nm"), ("_orange", "Orange"),
         ("_yfp", "YFP"), ("_YFP", "YFP"), ("_venus", "Venus"),
         ("_cfp", "CFP"), ("_cyan", "Cyan"),
         ("_red", "red"), ("_green", "green"), ("_blue", "blue"),
@@ -923,23 +927,25 @@ class PostProcessingTab(QWidget):
 
     @staticmethod
     def _channel_sort_key(channel_name: str) -> tuple:
-        """Sort key: phase first (0), then red(1), green(2), blue(3), yellow(4), cyan(5), magenta(6), else (7, name)."""
+        """Sort key: phase first (0), then red(1), orange(2), green(3), blue(4), yellow(5), cyan(6), magenta(7), else (8, name)."""
         n = channel_name.strip().lower()
         if "phase" in n or n in ("bf", "brightfield", "trans"):
             return (0, n)
-        if "red" in n or "mscarlet" in n or "mcherry" in n or "rfp" in n or "cy3" in n:
+        if "mcherry" in n or "rfp" in n or "red" in n or "cy3" in n:
             return (1, n)
-        if "green" in n or "gfp" in n or "fitc" in n:
+        if "mscarlet" in n or "dsred" in n or "561" in n or "orange" in n:
             return (2, n)
-        if "blue" in n:
+        if "green" in n or "gfp" in n or "fitc" in n:
             return (3, n)
-        if "yellow" in n or "yfp" in n or "venus" in n:
+        if "blue" in n:
             return (4, n)
-        if "cyan" in n or "cfp" in n:
+        if "yellow" in n or "yfp" in n or "venus" in n:
             return (5, n)
-        if "magenta" in n or "cy5" in n:
+        if "cyan" in n or "cfp" in n:
             return (6, n)
-        return (7, n)
+        if "magenta" in n or "cy5" in n:
+            return (7, n)
+        return (8, n)
 
     def _get_montage_datasets(self) -> List[dict]:
         """
@@ -2051,7 +2057,7 @@ class PostProcessingTab(QWidget):
             default_path = Path(self.scalebar_path.text().strip())
             default_path = default_path.parent / f"{default_path.stem}_scalebar.png"
             path, _ = QFileDialog.getSaveFileName(
-                dlg, "Save image with scale bar", str(default_path),
+                dlg, "Save with scale bar", str(default_path),
                 "PNG (*.png);;TIFF (*.tif *.tiff);;All (*)"
             )
             if not path:
@@ -2073,7 +2079,7 @@ class PostProcessingTab(QWidget):
             "Reload image and redraw scale bar using current main-window settings (pixel size, length, position, font size, etc.). Resets zoom/pan to fit."
         )
         update_btn.clicked.connect(on_update)
-        save_btn = QPushButton("Save image with scale bar")
+        save_btn = QPushButton("Save with scale bar")
         save_btn.clicked.connect(on_save)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dlg.close)

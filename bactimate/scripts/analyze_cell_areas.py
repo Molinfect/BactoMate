@@ -1248,6 +1248,13 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                         row['Foci Max Intensity'] = agg['max_intensity']
                         row['Foci Mean Size (px) [total foci area / N foci]'] = agg['mean_size_px']
                         row['Foci Total Area (px)'] = agg['total_area_px']
+                        # Foci mean intensity ratio to whole-cell mean FI (when both available)
+                        mean_fi = cell.get('mean_fi')
+                        if mean_fi is not None and isinstance(mean_fi, (int, float)) and np.isfinite(mean_fi) and mean_fi > 0:
+                            fi_val = float(mean_fi)
+                            foci_mean = agg.get('mean_intensity')
+                            if foci_mean is not None and np.isfinite(foci_mean):
+                                row['Foci Mean Intensity Ratio'] = float(foci_mean) / fi_val
                     detailed_rows.append(row)
             
             if detailed_rows:

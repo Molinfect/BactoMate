@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bactimate"
-version = "1.5"
-description = "Batch processing and analysis GUI for microscopy (Omnipose, tracking, SAM2)"
+version = "1.6"
+description = "Batch processing and analysis GUI for microscopy (Omnipose, tracking)"
 readme = "docs/README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -23,15 +23,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 
-# Optional extras for install: pip install -e .[sam2] or pip install -e .[cuda]
-# Base install remains: pip install -r requirements.txt (or pip install -e .)
+# Optional extras: pip install -e .[cuda] for CUDA PyTorch.
+# Base install: pip install -r requirements.txt (or pip install -e .)
 [project.optional-dependencies]
-sam2 = [
-    "sam2>=0.1.0",
-    "huggingface_hub>=0.16.0",
-    "torch>=2.5.1",
-    "torchvision>=0.20.1",
-]
 cuda = [
     "torch",
     "torchvision",
@@ -39,7 +33,6 @@ cuda = [
 # Install CUDA-built PyTorch manually, e.g.:
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 # Base workflow: install from repo with pip install -r requirements.txt
-# Optional: pip install -e .[sam2] to add SAM2 extra deps (sam2, huggingface_hub, torch>=2.5.1).
 
 [project.scripts]
 bactimate = "bactimate.__main__:main"

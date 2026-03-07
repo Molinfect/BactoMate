@@ -14,6 +14,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 - [Troubleshooting](#troubleshooting)
 - [Testing](#testing)
 - [Available Scripts](#available-scripts)
+- [Release Notes](#release-notes)
 
 ## Quick Start
 
@@ -23,7 +24,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 ./launch_gui.sh
 ```
 
-This opens the BactiMate GUI. Tabs: **TIFF Conversion** (ND2/LIF/CZI → TIFF), **Omnipose Segment** (segment single file or folder, train models), **Analyze Masks** (morphology, filters, optional fluorescence intensity — one FI file or match by name), **Tracking** (Trackastra), **Post-processing** (add scale bar to image, montage, growth curve video), **Session Logs**. For a complete reference to every tab, setting, and workflow, see the **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**.
+This opens the BactiMate GUI. Tabs: **TIFF Conversion** (ND2/LIF/CZI → TIFF), **Omnipose Segment** (segment single file or folder, train models), **Analyze Masks** (morphology, filters, optional fluorescence intensity — one FI file or match by name), **Tracking** (Trackastra), **Post-processing** (add scale bar to image, montage, growth curve video), **Session Logs**. For a complete reference to every tab, setting, and workflow, see the **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**. For what changed in each version, see **[Release Notes](RELEASE_NOTES.md)**.
 
 ### Process a Single File (Command Line)
 
@@ -71,7 +72,7 @@ python -m bactimate.scripts.batch_process_folder /path/to/folder \
    - Replace `cu118` with your CUDA version (check with `nvidia-smi` or `nvcc --version`)
 
 3. **Optional extras (pyproject.toml):**
-   - Install with SAM2 extra (e.g. newer torch): `pip install -e .[sam2]`
+   - CUDA PyTorch: `pip install -e .[cuda]` (or install torch from PyTorch index manually).
    - Key dependencies in `requirements.txt` are pinned for reproducible builds (e.g. PyQt6, numpy).
 
 4. **For fresh setup (optional):**
@@ -174,9 +175,9 @@ For structure and cross-machine notes, see the **[User Manual](BACTIMATE_USER_MA
 
 - **User-trained models (0 cells, different behaviour):** Use negative mask threshold (e.g. -2) for user models if needed; prefer fewer epochs (e.g. 50) and lower learning rate when fine-tuning. Run **Check pipeline** in the GUI (Omnipose Segment) or `python -m bactimate.scripts.check_omnipose_pipeline compare a.pth b.pth`. **Full details:** User Manual **Appendix B** (training troubleshooting: head drift, background as cells) and **Section 4.8** (user-trained vs built-in models).
 - **Checkpoint format:** BactiMate saves checkpoints with `state_dict` + `nchan`/`nclasses`. The loader is patched via `setup/apply_all_patches.py` (run by `launch_gui.sh`). If segmentation fails, run **Check pipeline** and ensure "Loader unwraps checkpoint dict" is Yes.
-- **App bundle won't launch / no logs / won't reopen:** There are two log locations. **Use this one to see every launch:** **`~/Library/Application Support/BactiMate/Logs/launch.log`** — the launcher appends a line here every time it runs (from project or from the .app). Open it in Finder: **Go → Go to Folder** → paste `~/Library/Application Support/BactiMate/Logs`. If the app **doesn't open again** after you quit: (1) Check that file — each launch adds a line like `2026-03-01T23:45:00 [from /path] === BactiMate launch attempt ===`. If there is **no new line** when you try to reopen, the launcher did not run (Dock/Finder is not starting it; remove the Dock icon and always start by double‑clicking BactiMate.app). (2) Full logs (launch.log, dock_debug.txt, crash.log, omnipose_debug.log) when running from the .app are in that same folder; when running from the project they are in `BactiMate-main-V1.0/Logs/`. (3) To see errors in the terminal when reopening, run: `"/path/to/BactiMate.app/Contents/MacOS/BactiMate"` then quit and run the same command again.
+- **App bundle won't launch / no logs / won't reopen:** BactiMate uses **three log types** (all under a **Logs** folder). **To see whether the launcher ran:** on macOS open **`~/Library/Application Support/BactiMate/Logs/launch.log`** — the launcher appends one line per launch with the path to the full launch log. **Go → Go to Folder** → paste `~/Library/Application Support/BactiMate/Logs`. If the app **doesn't open again** after you quit: (1) Check that file — each launch adds a line like `2026-03-02T12:00:00 [from /path] full log: …/Logs/launch_2026-03-02_12-00-00.log`. If there is **no new line** when you try to reopen, the launcher did not run (remove the Dock icon and always start by double‑clicking BactiMate.app). (2) **Full logs:** launch output is in timestamped **launch_*.log** (last 20 kept); crash and Omnipose/debug in **debug_*.log** (last 10 kept); session JSONs in **\*_session.json** (last 100). When running from the .app these are in Application Support or inside the app’s Logs; from the project they are in `BactiMate-main-V1.0/Logs/`. (3) To see errors in the terminal when reopening, run: `"/path/to/BactiMate.app/Contents/MacOS/BactiMate"` then quit and run the same command again.
 - **App icon shows grey frame or wrong icon:** The app icon is built from **only** `img/logo2.png` (no extra background is added). Any grey or black in the icon is in that file. For an icon that is 100% your graphic (e.g. only the blue bacterium): use a `logo2.png` that contains only that graphic (e.g. on transparency, no grey or black frame). Then run `./build/create_icons.sh` and `./build/build_app_bundle.sh` again. Rebuild the DMG if needed.
-- **"No bundled framework" / "Bundle requires Python" in launch.log:** The .app does not ship its own Python; it uses the venv, which points at your Mac’s Python (e.g. Homebrew). On the build machine that’s normal and the app should run. Only relevant when moving the .app to another Mac without Python. Not the cause of "won’t reopen" on the same machine.
+- **"No bundled framework" / "Bundle requires Python" in launch_*.log:** The .app does not ship its own Python; it uses the venv, which points at your Mac’s Python (e.g. Homebrew). On the build machine that’s normal and the app should run. Only relevant when moving the .app to another Mac without Python. Not the cause of "won’t reopen" on the same machine.
 - **Dock opens Python.app or wrong app after pinning:** The app uses a **native launcher** so the main process is BactiMate, not Python. After rebuilding with `./build/build_app_bundle.sh`: remove any old BactiMate/Python icon from the Dock, then **pin BactiMate.app** by dragging it from Finder onto the Dock. "Keep in Dock" from the running app should now pin BactiMate correctly. If you still see Python.app opening: rebuild the app and re-pin from Finder.
 - **Two Dock icons:** With the native launcher you should see only one BactiMate icon. If you still see two, remove the extra from the Dock and re-pin BactiMate.app from Finder.
 - **PyQt6 (cocoa plugin):** `./setup/repair_pyqt6.sh`
@@ -211,7 +212,11 @@ See repo for full test checklist (launch, model loading, segmentation, batch, er
 - `setup/repair_pyqt6.sh`, `setup/setup_fresh_env.sh`, `setup/install_cuda_pytorch.sh`, `setup/clear_models.sh`
 - `build/build_app_bundle.sh`, `build/create_dmg.sh`, `build/create_icons.sh`
 
-**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**.
+**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactiMate User Manual](BACTIMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**.
+
+## Release Notes
+
+See **[RELEASE_NOTES.md](RELEASE_NOTES.md)** for a version-by-version list of changes. Append a new section there when you release a new version.
 
 ## License
 

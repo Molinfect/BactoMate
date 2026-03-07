@@ -36,13 +36,18 @@ else
     LOG_DIR="$PROJECT_ROOT/Logs"
 fi
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/launch.log"
+# Timestamped launch log (one per run); keep last 20 so logs don't grow indefinitely (matches MAX_LAUNCH_LOGS in constants.py)
+LAUNCH_KEEP=20
+for f in $(ls -t "$LOG_DIR"/launch_*.log 2>/dev/null | tail -n +$((LAUNCH_KEEP))); do
+    rm -f "$f" 2>/dev/null || true
+done
+LOG_FILE="$LOG_DIR/launch_$(date '+%Y-%m-%d_%H-%M-%S').log"
 # On macOS also ensure Application Support exists and write one line there so "reopen didn't run" can be diagnosed
 CANONICAL_LOG=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
     CANONICAL_LOG="$HOME/Library/Application Support/BactiMate/Logs/launch.log"
     mkdir -p "$(dirname "$CANONICAL_LOG")"
-    echo "$(date '+%Y-%m-%dT%H:%M:%S') [from ${PROJECT_ROOT:-?}] === BactiMate launch attempt ===" >> "$CANONICAL_LOG" 2>/dev/null || true
+    echo "$(date '+%Y-%m-%dT%H:%M:%S') [from ${PROJECT_ROOT:-?}] full log: $LOG_FILE" >> "$CANONICAL_LOG" 2>/dev/null || true
     # Dock/reopen diagnostics: use same LOG_DIR (inside app or Application Support)
     if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
         DOCK_DEBUG="$LOG_DIR/dock_debug.txt"

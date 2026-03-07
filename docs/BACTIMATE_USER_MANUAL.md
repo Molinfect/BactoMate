@@ -82,8 +82,6 @@ Tabs appear in this order:
 5. **Post-processing** — Add scale bar to image; build montage from folder/files; growth curve video (TIFF sequence + Excel → side-by-side graph and video).
 6. **Session Logs** — List recent session logs, view saved parameters, and apply them to the current session.
 
-**Note:** A “SAM2 Segment” tab exists in the codebase but is not shown in the tab bar (commented out). This manual does not document it.
-
 ### 2.4 Status & Log (bottom panel)
 
 - **Progress bar:** Hidden by default; shown during long-running jobs (e.g. batch segmentation, conversion). Range 0–100; format “%p%”.
@@ -374,7 +372,7 @@ Omnipose/cellpose_omni often saves trained checkpoints with the network state un
 
 **Debug log (user vs built-in model)**
 
-When loading models and running segmentation, BactiMate writes lines to **Logs/omnipose_debug.log** (project `Logs` folder, or under Application Support on installed builds). Each line is timestamped. You’ll see:
+When loading models and running segmentation, BactiMate writes lines to **current run's debug log** (e.g. **Logs/debug_2026-03-02_12-00-00.log** in the project `Logs` folder, or under Application Support on installed builds). Only the last 10 debug logs are kept. Each line is timestamped. You’ll see:
 - **USER_MODEL pre-load**: checkpoint inspection (nchan, nclasses, first_layer_shape, keys) before the patched loader runs.
 - **cellpose_omni load**: what the patched loader inferred (nchan, nclasses, ckpt_keys, state_dict sample).
 - **USER_MODEL / BUILTIN post-load**: `model.cp.nchan` and `model.cp.nclasses` after loading.
@@ -477,7 +475,7 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 ### 5.6a Run foci analysis
 
-When **Analyze FI** is enabled, an optional **Run foci analysis** check box is available. When checked, the app detects **foci** (bright spots) in the FI channel per frame and adds a **foci count** and a **Foci** sheet to the Excel output.
+When **Analyze FI** is enabled, an optional **Run foci analysis** check box is available. When checked, the app detects **foci** (bright spots) in the FI channel per frame and adds a **foci count** and a **Foci** sheet to the Excel output. The **Per-Cell Data** sheet (when “Include detailed per-cell data” is on) gets: Number of Foci, Foci Mean Intensity, Foci Total Intensity, Foci Max Intensity, Foci Mean Size (px), Foci Total Area (px), and **Foci Mean Intensity Ratio** (foci mean intensity ÷ whole-cell mean FI intensity; only when both FI and Run foci are enabled).
 
 - **Run foci analysis:** Check box; default **unchecked**. Enabled only when Analyze FI is on. Detects foci in the FI channel per frame; adds foci count and Foci sheet to Excel.
 - **Exclude foci outside / rejected cells:** Check box; default **unchecked**. When checked, only foci inside **accepted** cells are included; when unchecked, all detected foci are included.
@@ -720,6 +718,7 @@ A: After you load a **multi-channel** microscopy file, the tab builds a set of c
 - **Omnipose models (GitHub):** https://github.com/kevinjohncutler/omnipose-models
 - **Trackastra:** https://github.com/weigertlab/trackastra (tracking models and modes).
 - **Project README:** `docs/README.md` (installation, quick start, command-line, troubleshooting).
+- **Release notes:** `docs/RELEASE_NOTES.md` (what changed in each version).
 - **Training mask format:** See `docs/TRAINING_MASKS.md` if present (instance vs binary masks).
 - **Training troubleshooting (head drift, 0 cells, background as cells):** **Appendix B** in this manual.
 - **BactiMate and Omnipose (technical):** **Appendix C** in this manual.

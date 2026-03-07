@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BactiMate – batch processing and analysis GUI for microscopy (Omnipose, tracking, SAM2).
+BactiMate – batch processing and analysis GUI for microscopy (Omnipose, tracking).
 
 Usage:
     python main.py

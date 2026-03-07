@@ -835,7 +835,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                                         break
             except Exception:
                 pass
-            # Debug log for user-model load (compare with built-in in Logs/omnipose_debug.log)
+            # Debug log for user-model load (compare with built-in in Logs/debug_*.log)
             try:
                 import datetime as _dt
                 _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")

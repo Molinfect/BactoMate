@@ -9,7 +9,7 @@ Comprehensive diagnostic for user-trained Omnipose models that produce flat dist
   - BactiMate vs Omnipose: what we change (nothing architectural); how we save
 
 Use when a model trained on top of a pretrained Omnipose model gives 0 cells and
-Logs/omnipose_debug.log shows constant distance (e.g. min=max=-2.3) and/or flat flow.
+Logs/debug_*.log shows constant distance (e.g. min=max=-2.3) and/or flat flow.
 
 Usage:
   python -m bactimate.scripts.diagnose_flat_model omnipose_user_models/1000.pth
@@ -264,7 +264,7 @@ def run_forward_pass_checks(
             if out["n_cells"] == 0 and out["flows_per_channel"]:
                 constants = [(i, mn, mx) for i, mn, mx, _ in out["flows_per_channel"] if mn == mx]
                 if constants:
-                    _warn("At least one channel is constant. If that is the distance channel, set mask_threshold below that value (see Logs/omnipose_debug.log '[omnipose no cell pixels] dist max=...').")
+                    _warn("At least one channel is constant. If that is the distance channel, set mask_threshold below that value (see Logs/debug_*.log '[omnipose no cell pixels] dist max=...').")
         else:
             _warn("Could not read flow channels from eval return value.")
 
@@ -477,7 +477,7 @@ def run_recommendations(
         _info("  3. Check that training and inference use the same channel order and value range (section 3).")
     elif had_flat:
         _info("Forward pass gave 0 cells (or failed). Try:")
-        _info("  1. Earlier checkpoint; 2. mask_threshold below distance max (Logs/omnipose_debug.log); 3. flow_threshold=0.")
+        _info("  1. Earlier checkpoint; 2. mask_threshold below distance max (Logs/debug_*.log); 3. flow_threshold=0.")
     else:
         _info("Forward pass found cells. If you see 0 cells elsewhere or background-as-cell, see section 4 (per-tile norm).")
     _info("")

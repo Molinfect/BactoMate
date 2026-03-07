@@ -543,7 +543,7 @@ def run_checkpoint_comparison(
         if out0_bias_key is not None and out0_bias_key in states[0]:
             lines.append("")
             lines.append("=== Output head verdict (inference uses distance > mask_threshold) ===")
-            lines.append("  (Bias mean is from the checkpoint only. At inference, distance map = f(image); it can be much more negative than the bias. If 0 cells with low mask_threshold, check Logs/omnipose_debug.log for the actual distance range.)")
+            lines.append("  (Bias mean is from the checkpoint only. At inference, distance map = f(image); it can be much more negative than the bias. If 0 cells with low mask_threshold, check Logs/debug_*.log for the actual distance range.)")
             weight_max_ok = 0.2
             for s, label in zip(states, labels):
                 t_b = s[out0_bias_key]

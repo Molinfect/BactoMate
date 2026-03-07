@@ -1,9 +1,11 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-02 14:29:45",
+  "timestamp": "2026-03-06 22:03:15",
   "tabs": {
     "nd2": {
+      "frame_extract_mode": "First N frames",
       "max_frames": 100,
+      "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
