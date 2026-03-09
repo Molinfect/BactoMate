@@ -475,13 +475,53 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 ### 5.6a Run foci analysis
 
-When **Analyze FI** is enabled, an optional **Run foci analysis** check box is available. When checked, the app detects **foci** (bright spots) in the FI channel per frame and adds a **foci count** and a **Foci** sheet to the Excel output. The **Per-Cell Data** sheet (when “Include detailed per-cell data” is on) gets: Number of Foci, Foci Mean Intensity, Foci Total Intensity, Foci Max Intensity, Foci Mean Size (px), Foci Total Area (px), and **Foci Mean Intensity Ratio** (foci mean intensity ÷ whole-cell mean FI intensity; only when both FI and Run foci are enabled).
+When **Analyze FI** is enabled, an optional **Run foci analysis** check box is available. When checked, the app detects **foci** (bright spots) in the FI channel per frame and adds a **foci count** and a **Foci** sheet to the Excel output.
+
+**Foci sheet columns:** foci_id, cell_id, frame, channel_name, y, x, intensity, **Area (px)** (connected pixel count above 80% of peak, within same cell), **Area (µm²)** (Area (px) × pixel_size²; pixel size from metadata or tab setting), **Mean intensity (focus blob)**, **Rel intensity (peak/frame median)**, in_cell.
+
+The **Per-Cell Data** sheet (when “Include detailed per-cell data” is on) gets: Number of Foci, Foci Mean Intensity, Foci Total Intensity, Foci Max Intensity, **Foci Mean Area (px)**, Foci Total Area (px), and **Foci Mean Intensity Ratio** (foci mean intensity ÷ whole-cell mean FI intensity; only when both FI and Run foci are enabled).
 
 - **Run foci analysis:** Check box; default **unchecked**. Enabled only when Analyze FI is on. Detects foci in the FI channel per frame; adds foci count and Foci sheet to Excel.
 - **Exclude foci outside / rejected cells:** Check box; default **unchecked**. When checked, only foci inside **accepted** cells are included; when unchecked, all detected foci are included.
-- **Min relative intensity:** Double spin [0.5, 20]; default 2.0. **Min separation (px):** Spin [1, 20]; default 2. **Min size (px), Max size (px):** Filter foci by connected-component size (max 0 = no upper limit).
+- **Min relative intensity:** Double spin [0.5, 100]; default 2.0. Mode: **per frame** / **per cell** / **both**. **Min separation (px):** Spin [1, 50]; default 2. **Min area (µm²), Max area (µm²):** Double spin, 3 decimals; min [0.001, 6.0] default 0.200, max [0, 6.0] default 0.800 (0 = no maximum). Values are converted to pixels using Pixel Size (µm) for detection. **Min peak (raw), Min focus mean:** Optional brightness filters (0 = off). **Tip:** If you see fewer foci than expected, try lowering Min separation (e.g. 1 px), Min relative intensity, or Min area (e.g. 0.001 µm²).
 
 **Naming for foci:** When using **Match FI by name**, the app also looks for files with **"_foci"** in the name (e.g. `stem_foci.tif`). In **TIFF Conversion**, tick **Foci** for a channel to save it with `_foci` in the filename. The feedback list shows which mask files will use which _foci file(s).
+
+### 5.6b Foci analysis and Excel export (detailed)
+
+This section gives a comprehensive explanation of how foci analysis works and what the Excel output contains when **Run foci analysis** is enabled.
+
+**What is foci analysis?**
+
+Foci analysis detects **bright spots** (foci) in the fluorescence intensity (FI) channel of your images. It runs per frame: for each frame, the FI image is preprocessed (smoothing, background reduction, sharpening), local intensity maxima (peaks) are found, and each peak is characterized by its raw intensity at the peak pixel, the size and mean intensity of a connected region around the peak (pixels with intensity ≥ 80% of the peak value, restricted to the same cell as the peak), and a relative intensity (peak / frame median). Peaks are then filtered by your settings (min/max area in µm², min separation, min relative intensity in per-frame or per-cell mode, optional min peak raw and min focus mean) and assigned to cells via the segmentation mask. Only foci that pass all filters are written to the Excel and counted in Per-Cell Data.
+
+**How focus “size” and “area” are defined**
+
+- The **peak** is the single brightest pixel (local maximum) in a neighbourhood.
+- The **focus blob** is the set of pixels that are (1) connected to the peak, (2) have intensity ≥ **80% of the peak** (configurable in code; default 0.8), and (3) lie within the same cell as the peak (pixels in other cells are never included). The **area (px)** is the number of pixels in this blob; **Area (µm²)** = area (px) × (pixel size)². A very bright peak with a gradual intensity fall-off can therefore have a large blob; a compact bright spot has a smaller blob.
+
+**Excel output when Run foci is on**
+
+The analysis Excel can contain up to **three sheets**:
+
+1. **Summary**  
+   One row per frame. Columns include Frame, Total Cell Area (µm²), Total Cell Area (Relative), Number of Cells. When Run foci is on, **Total Foci** and **Mean Foci per Cell** are added (frame-level foci count and average per cell).
+
+2. **Per-Cell Data**  
+   One row per cell per frame. Columns: Frame, Cell_ID, Cell Label, morphology (Area, Length, Width, Aspect Ratio, Eccentricity, Solidity), optional FI (Mean FI Intensity, Contour FI, FI ratio). When Run foci is on: **Number of Foci**, channel-specific **foci count** (e.g. `foci_foci_count`), **foci_ids** (comma-separated list of foci IDs, e.g. `1,2`), and aggregates over that cell’s foci: **Foci Mean Intensity**, **Foci Total Intensity**, **Foci Max Intensity**, **Foci Mean Area (px)**, **Foci Total Area (px)**, **Foci Mean Intensity Ratio** (when mean FI is available). Use this sheet for cell-level summaries (how many foci per cell, average intensity, etc.).
+
+3. **Foci**  
+   **One row per focus.** Columns: foci_id, cell_id, frame, channel_name, y, x, intensity (peak raw), Area (px), Area (µm²), Mean intensity (focus blob), Rel intensity (peak/frame median), in_cell. This is the canonical table for per-focus data. To get all foci for a given cell, filter or join on **cell_id** (and frame if needed). Multiple foci in one cell appear as multiple rows with the same cell_id; no comma-separated lists in this sheet.
+
+**When is the Foci sheet present?**
+
+- **Single mask, single run:** The Foci sheet is written whenever **Run foci analysis** is checked and an FI channel is used. It may be empty if no foci pass the filters.
+- **Folder with multiple FI channels:** When the GUI merges results from several channels into one Excel, it now includes the **Foci** sheet from the first channel Excel that has one. The merged workbook then has Summary, Per-Cell Data, and Foci.
+
+**Using the Foci sheet in downstream analysis**
+
+- Link back to cells: filter or join the Foci sheet on **cell_id** (and **frame** if you have multiple frames) to get all foci belonging to each cell. In Excel: filter by cell_id; in Python/R: merge or group by (frame, cell_id).
+- Per-focus metrics (intensity, area µm², mean intensity, rel intensity) are only in the Foci sheet; Per-Cell Data holds only aggregates and the list of foci_ids.
 
 ### 5.7 Buttons and actions
 
@@ -491,7 +531,7 @@ When **Analyze FI** is enabled, an optional **Run foci analysis** check box is a
 
 ### 5.8 Session parameters (Analyze Masks)
 
-Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_match_by_name, single_fi_path, analyze_fi_contour, fi_contour_thickness, run_foci, foci_min_rel, foci_min_separation, foci_min_size, foci_max_size, foci_exclude_outside_cells, file_path, combine_folder_path, etc.
+Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min solidity, min/max area, min/max width, min length, detailed, create_vis, create_combined_summary, exclude_border, analyze_fi, fi_match_by_name, single_fi_path, analyze_fi_contour, fi_contour_thickness, run_foci, foci_min_rel, foci_min_separation, foci_min_area_um2, foci_max_area_um2, foci_exclude_outside_cells, file_path, combine_folder_path, etc.
 
 ---
 
@@ -795,13 +835,16 @@ This appendix reproduces the **(?)** info icon texts as they appear in the appli
 “Number of prediction classes (2 = flow + distance; 3 adds boundary). Use 3 for typical Omnipose bacteria models (recommended).”
 
 **Analyze Masks — Pixel Size (µm) (Section 5.3)**  
-“Pixel size in micrometers (µm) for area calculations. Default: 0.108 µm. This value is used to convert pixel areas to µm². Common: 100x ~0.108, 60x ~0.18, 40x ~0.27. Tip: Check your microscope settings or ND2 metadata.”
+“Pixel size in µm per pixel for area and distance calculations. Used for: cell area (µm²), size filters, and focus Area (µm²) in the Foci sheet (Area (µm²) = Area (px) × pixel_size²). Source: Read from file metadata when available; otherwise the tab value (default 0.108) is used.”
 
 **Analyze Masks — Min/Max Aspect Ratio, Min Eccentricity, Min Solidity (Section 5.3)**  
 See Section 5.3 for full text; each describes the morphological filter (length/width, eccentricity 0–1, solidity area/convex_hull) and typical values for rod-shaped cells.
 
 **Analyze Masks — Size filters (Section 5.3)**  
 Min/Max Area (µm²), Min/Max Width (µm), Min Length (µm): 0 means no limit; otherwise objects outside the range are excluded. Info texts describe filtering of undersized/oversized and too-narrow/too-wide/too-short objects.
+
+**Analyze Masks — Run foci (Section 5.6a)**  
+Detect foci (bright spots) in the FI channel per frame; add foci count and a Foci sheet to Excel. Foci sheet columns: foci_id, cell_id, frame, channel_name, y, x, intensity, Area (px), Area (µm²), Mean intensity (focus blob), Rel intensity (peak/frame median), in_cell. Area (µm²) uses the pixel size from metadata or the tab setting.
 
 **Tracking — Model (Section 6.2)**  
 “Pretrained Trackastra model. general_2d: General-purpose 2D, fast. general_2d_w_SAM2_features: Enhanced with SAM2, better for some data (e.g. bacteria), slower. Note: Trackastra won the 7th Cell Tracking Challenge (ISBI 2024).”

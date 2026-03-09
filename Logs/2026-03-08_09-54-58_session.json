@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-05 22:04:43",
+  "timestamp": "2026-03-08 09:54:58",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
@@ -22,6 +22,7 @@
       "cluster": false,
       "create_overlay": true,
       "trained_models_this_session": [],
+      "file_path": "/Users/philipppopp/Desktop/2026-03-07/test2/",
       "omnipose_pretrained": "bact_phase_omni",
       "omnipose_n_epochs": 50,
       "omnipose_lr": 0.01,
@@ -31,7 +32,7 @@
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
       "omnipose_use_tiled": true,
-      "performed": false
+      "performed": true
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -56,19 +57,22 @@
       "detailed": true,
       "create_vis": true,
       "export_csv": false,
-      "exclude_border": false,
+      "exclude_border": true,
       "create_combined_summary": false,
-      "analyze_fi": false,
+      "analyze_fi": true,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
       "fi_contour_thickness": 1,
-      "run_foci": false,
-      "foci_min_rel": 2.0,
-      "foci_min_separation": 2,
-      "foci_min_size": 1,
+      "run_foci": true,
+      "foci_min_rel": 10.0,
+      "foci_min_rel_mode": "per frame",
+      "foci_min_rel_cell": 2.0,
+      "foci_min_separation": 5,
+      "foci_min_size": 5,
       "foci_max_size": 0,
       "foci_exclude_outside_cells": false,
-      "performed": false
+      "file_path": "/Users/philipppopp/Desktop/2026-03-07/test2/EM19765_Phase_omnipose_segmentation/",
+      "performed": true
     },
     "tracking": {
       "model": "general_2d",

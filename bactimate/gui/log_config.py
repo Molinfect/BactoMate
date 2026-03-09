@@ -104,15 +104,21 @@ def append_omnipose_debug(msg: str) -> None:
 def write_crash_log(text: str) -> None:
     """Append an uncaught exception traceback to this run's debug log for debugging."""
     path = get_crash_log_path()
-    if path is None:
-        return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(text)
-            f.write("\n")
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(text)
+                f.write("\n")
+        else:
+            sys.stderr.write("[BactiMate debug log path not set] ")
+            sys.stderr.write(text)
+            sys.stderr.write("\n")
+            sys.stderr.flush()
     except Exception:
-        pass
+        sys.stderr.write(text)
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 def log_exception(log: logging.Logger, msg: str = "Exception") -> None:

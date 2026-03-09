@@ -46,60 +46,149 @@ def focus_size_at_peak(
     image: np.ndarray,
     y: int,
     x: int,
-    threshold_frac: float = 0.5,
+    threshold_frac: float = 0.8,
     max_radius: int = 5,
 ) -> int:
+    """Connected-component size (pixels) of the focus containing (y, x)."""
+    size, _ = focus_size_and_mean_at_peak(image, y, x, threshold_frac, max_radius)
+    return size
+
+
+def focus_size_and_mean_at_peak(
+    image: np.ndarray,
+    y: int,
+    x: int,
+    threshold_frac: float = 0.8,
+    max_radius: int = 5,
+    labeled_mask: Optional[np.ndarray] = None,
+) -> Tuple[int, float]:
     """
-    Compute connected-component size (pixels) of the focus containing (y, x).
-    Threshold in a window around the peak at peak_intensity * threshold_frac.
+    Compute size (pixels) and mean intensity of the connected focus blob containing (y, x).
+    Threshold in a window at peak_intensity * threshold_frac. Returns (size_px, mean_intensity).
+
+    Area is a pixel count only; this module does not use pixel_size. Physical area in µm²
+    is area_px * (pixel_size**2), applied by the caller (GUI/Excel) when pixel size is known.
+
+    If labeled_mask is provided (same shape as image), only pixels in the same cell as (y,x)
+    are counted, so size never includes pixels from another cell or background. Peak in
+    background (label 0) is not restricted.
     """
     from skimage.measure import label as sk_label
     h, w = image.shape[:2]
     if y < 0 or y >= h or x < 0 or x >= w:
-        return 0
+        return 1, 0.0
     peak_val = float(image[y, x])
     if not np.isfinite(peak_val) or peak_val <= 0:
-        return 1
+        return 1, peak_val
     thresh = peak_val * threshold_frac
     y0 = max(0, y - max_radius)
     y1 = min(h, y + max_radius + 1)
     x0 = max(0, x - max_radius)
     x1 = min(w, x + max_radius + 1)
-    window = image[y0:y1, x0:x1]
+    window = np.asarray(image[y0:y1, x0:x1], dtype=np.float64)
     binary = (window >= thresh).astype(np.uint8)
+    if labeled_mask is not None and labeled_mask.shape[:2] == image.shape[:2]:
+        cell_val = int(labeled_mask[y, x])
+        if cell_val != 0:
+            mask_window = np.asarray(labeled_mask[y0:y1, x0:x1], dtype=np.int32)
+            binary = binary & (mask_window == cell_val).astype(np.uint8)
     labeled, n = sk_label(binary, connectivity=2, return_num=True)
     if n == 0:
-        return 1
+        return 1, peak_val
     ly, lx = y - y0, x - x0
     if ly < 0 or ly >= labeled.shape[0] or lx < 0 or lx >= labeled.shape[1]:
-        return 1
+        return 1, peak_val
     lab = int(labeled[ly, lx])
     if lab == 0:
-        return 1
-    return int(np.sum(labeled == lab))
+        return 1, peak_val
+    mask = labeled == lab
+    size = int(np.sum(mask))
+    mean_val = float(np.mean(window[mask])) if size > 0 else peak_val
+    return size, mean_val
+
+
+def get_focus_blob_mask(
+    image: np.ndarray,
+    y: int,
+    x: int,
+    threshold_frac: float = 0.8,
+    max_radius: int = 5,
+    labeled_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Return a boolean mask (same shape as image) that is True on the connected focus blob
+    containing (y, x). Uses the same logic as focus_size_and_mean_at_peak (threshold at
+    peak * threshold_frac, same cell if labeled_mask given). Use for drawing the actual
+    focus shape in the preview.
+    """
+    from skimage.measure import label as sk_label
+    h, w = image.shape[:2]
+    out = np.zeros((h, w), dtype=bool)
+    if y < 0 or y >= h or x < 0 or x >= w:
+        return out
+    peak_val = float(image[y, x])
+    if not np.isfinite(peak_val) or peak_val <= 0:
+        out[y, x] = True
+        return out
+    thresh = peak_val * threshold_frac
+    y0 = max(0, y - max_radius)
+    y1 = min(h, y + max_radius + 1)
+    x0 = max(0, x - max_radius)
+    x1 = min(w, x + max_radius + 1)
+    window = np.asarray(image[y0:y1, x0:x1], dtype=np.float64)
+    binary = (window >= thresh).astype(np.uint8)
+    if labeled_mask is not None and labeled_mask.shape[:2] == image.shape[:2]:
+        cell_val = int(labeled_mask[y, x])
+        if cell_val != 0:
+            mask_window = np.asarray(labeled_mask[y0:y1, x0:x1], dtype=np.int32)
+            binary = binary & (mask_window == cell_val).astype(np.uint8)
+    labeled, n = sk_label(binary, connectivity=2, return_num=True)
+    if n == 0:
+        out[y, x] = True
+        return out
+    ly, lx = y - y0, x - x0
+    if ly < 0 or ly >= labeled.shape[0] or lx < 0 or lx >= labeled.shape[1]:
+        out[y, x] = True
+        return out
+    lab = int(labeled[ly, lx])
+    if lab == 0:
+        out[y, x] = True
+        return out
+    out[y0:y1, x0:x1] = (labeled == lab)
+    return out
 
 
 def detect_peaks_skimage(
     image: np.ndarray,
-    min_rel: float = 2.0,
+    min_rel: Optional[float] = 2.0,
     min_distance: int = 2,
     min_size: int = 1,
     max_size: Optional[int] = None,
+    min_peak_raw: Optional[float] = None,
+    min_focus_mean: Optional[float] = None,
     use_preprocessing: bool = True,
     sigma_smooth: float = DEFAULT_SIGMA_SMOOTH,
     bg_radius: int = DEFAULT_BG_RADIUS,
     sharpen_radius: float = DEFAULT_SHARPEN_RADIUS,
     sharpen_amount: float = DEFAULT_SHARPEN_AMOUNT,
-    size_threshold_frac: float = 0.5,
+    size_threshold_frac: float = 0.8,
     size_max_radius: int = 5,
+    labeled_mask: Optional[np.ndarray] = None,
 ) -> List[Dict[str, Any]]:
     """
     Detect foci in a 2D image. Returns list of dicts with keys:
-    y, x, intensity, size_px (and optionally rel_intensity).
+    y, x, intensity, size_px, mean_intensity (and optionally rel_intensity).
 
-    Min relative intensity filter uses the raw (pre-processing) image: peaks are kept only
-    where raw_intensity >= raw_median * min_rel, so the threshold is in the same units as
-    the user's image. Peak detection still uses the preprocessed image for better localization.
+    If labeled_mask (same shape as image) is provided, focus size is counted only within the
+    same cell as the peak, so pixels from other cells are never included.
+
+    All user-facing values are in raw image units:
+    - Intensity threshold: raw_intensity >= raw_median * min_rel (raw_median = median of whole frame).
+    - min_peak_raw: if > 0, keep only peaks with raw intensity at peak >= this (keeps obvious bright foci).
+    - min_focus_mean: if > 0, keep only peaks whose focus blob mean intensity >= this (keeps bright compact, drops diffuse dim).
+    - Focus size (min_size, max_size): measured on the raw image (connected pixels above 80% of peak in raw).
+    When min_rel is None or <= 0: no intensity filter at this stage (for per-cell mode, filter later).
+    Peak positions are found on the preprocessed image for better localization; then intensity and size use raw.
     """
     raw_img = np.asarray(image, dtype=np.float64)
     if raw_img.ndim != 2 or raw_img.size == 0:
@@ -116,11 +205,11 @@ def detect_peaks_skimage(
     img_median = float(np.median(img))
     if img_median <= 0:
         img_median = 1e-10
-    # Threshold for peak_local_max on preprocessed image (reduces candidate count)
+    # Threshold for peak_local_max on preprocessed image (reduces candidate count). When min_rel is None (per-cell), use a low threshold so we don't miss weak peaks.
     if min_rel is not None and min_rel > 0:
         min_abs = img_median * min_rel
     else:
-        min_abs = None
+        min_abs = img_median * 0.5  # low bar when filtering later per-cell
     coords = peak_local_max(img, min_distance=min_distance, threshold_abs=min_abs)
     if coords.size == 0:
         return []
@@ -133,20 +222,28 @@ def detect_peaks_skimage(
         raw_int = float(raw_intensities[k])
         if min_raw_abs is not None and raw_int < min_raw_abs:
             continue
-        size_px = focus_size_at_peak(
-            img, yi, xi,
+        if min_peak_raw is not None and min_peak_raw > 0 and raw_int < min_peak_raw:
+            continue
+        # Size and mean of focus blob on raw image (same blob as for size filter)
+        # If labeled_mask given, count only pixels in the same cell as the peak
+        size_px, mean_int = focus_size_and_mean_at_peak(
+            raw_img, yi, xi,
             threshold_frac=size_threshold_frac,
             max_radius=size_max_radius,
+            labeled_mask=labeled_mask,
         )
         if min_size is not None and size_px < min_size:
             continue
         if max_size is not None and max_size > 0 and size_px > max_size:
+            continue
+        if min_focus_mean is not None and min_focus_mean > 0 and mean_int < min_focus_mean:
             continue
         rel = raw_int / raw_median
         peaks.append({
             "y": yi,
             "x": xi,
             "intensity": raw_int,
+            "mean_intensity": mean_int,
             "rel_intensity": rel,
             "size_px": size_px,
         })
@@ -163,7 +260,7 @@ def assign_peaks_to_cells(
     Assign each peak to a cell (label) using the mask. Optionally dilate labels.
 
     Returns:
-        foci_rows: list of dicts with keys foci_id, cell_id, frame, y, x, intensity, size_px, in_cell.
+        foci_rows: list of dicts with keys foci_id, cell_id, frame, y, x, intensity, size_px, mean_intensity, rel_intensity, in_cell.
         cell_foci_ids: (cell_id, frame) -> list of foci_id (for building foci_ids column).
     """
     if not peaks:
@@ -188,6 +285,8 @@ def assign_peaks_to_cells(
                 "x": xi,
                 "intensity": p.get("intensity", np.nan),
                 "size_px": p.get("size_px", 1),
+                "mean_intensity": p.get("mean_intensity", np.nan),
+                "rel_intensity": p.get("rel_intensity", np.nan),
                 "in_cell": False,
             })
             foci_id += 1
@@ -202,6 +301,8 @@ def assign_peaks_to_cells(
             "x": xi,
             "intensity": p.get("intensity", np.nan),
             "size_px": p.get("size_px", 1),
+            "mean_intensity": p.get("mean_intensity", np.nan),
+            "rel_intensity": p.get("rel_intensity", np.nan),
             "in_cell": in_cell,
         })
         if in_cell:

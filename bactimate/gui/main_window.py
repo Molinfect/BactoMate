@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         self._log_group.setStyleSheet("")
 
     def closeEvent(self, event):
-        # Wait for tracking worker to finish so we never destroy a running QThread
+        # Wait for any running workers so we never destroy a QThread while it is running
         tracking_tab = getattr(self, "tracking_tab", None)
         if tracking_tab is not None and getattr(tracking_tab, "worker", None) is not None:
             worker = tracking_tab.worker
@@ -342,6 +342,17 @@ class MainWindow(QMainWindow):
                 self.setWindowTitle("Waiting for tracking to finish…")
                 QApplication.processEvents()
                 worker.wait(300000)  # wait up to 5 minutes
+                self.setWindowTitle(old_title)
+        # Wait for Analyze Masks filter preview worker if dialog is open
+        analyze_tab = getattr(self, "analyze_tab", None)
+        preview_dialog = getattr(analyze_tab, "_filter_preview_dialog", None) if analyze_tab else None
+        if preview_dialog is not None:
+            w = getattr(preview_dialog, "_preview_worker", None)
+            if w is not None and w.isRunning():
+                old_title = self.windowTitle()
+                self.setWindowTitle("Waiting for filter preview to finish…")
+                QApplication.processEvents()
+                w.wait(120000)  # wait up to 2 minutes
                 self.setWindowTitle(old_title)
         self._save_geometry_and_state()
         self._save_session_log()
@@ -397,6 +408,10 @@ class MainWindow(QMainWindow):
                 out[key] = tab.get_session_params()
         return out
 
+    # Keys that refer to file/folder paths. When applying a session we do not restore these,
+    # so the user's current paths (e.g. new input to re-run with same settings) are kept.
+    _SESSION_PATH_KEYS = frozenset({"file_path", "single_fi_path"})
+
     def apply_session_params(self, data: dict[str, Any]) -> None:
         if not isinstance(data, dict):
             return
@@ -405,7 +420,10 @@ class MainWindow(QMainWindow):
                 continue
             tab = getattr(self, TAB_WIDGET_ATTR[key])
             if hasattr(tab, "set_session_params"):
-                tab.set_session_params(data[key])
+                tab_data = dict(data[key])
+                for path_key in self._SESSION_PATH_KEYS:
+                    tab_data.pop(path_key, None)
+                tab.set_session_params(tab_data)
 
     def run_workflow_from_session(self, log_data: dict[str, Any]) -> None:
         """Apply session params from log (FI, z-stack, foci, model, filters, etc.); run full pipeline (conversion → segment → analyze → tracking) on the current TIFF Conversion path only. That path is the new file/folder; downstream steps use outputs from the previous step (Tif_files → _segmentation_omni → analyze → tracking). So you can run the same analysis type from a session on a different file or folder."""
@@ -745,11 +763,25 @@ class MainWindow(QMainWindow):
             return
         if not text.endswith("\n") and message.endswith("\n"):
             text += "\n"
-        self.log_text.append(text)
         scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        # Only auto-scroll to bottom if user is already near the bottom (so scrolling up to read is not overridden)
+        at_bottom = scrollbar.maximum() - scrollbar.value() <= 20
+        self.log_text.append(text)
+        if at_bottom:
+            scrollbar.setValue(scrollbar.maximum())
         message_lower = message.lower()
+        # Don't show indeterminate bar when the message indicates run finished (would leave bar "moving" after done)
         if any(
+            done in message_lower
+            for done in [
+                "merged ", "removed ", "analysis complete", "completed successfully",
+                "task(s) succeeded", "cancelled", "combined summary saved",
+            ]
+        ):
+            self.progress_bar.setVisible(False)
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+        elif any(
             keyword in message_lower
             for keyword in [
                 "applying drift correction",
@@ -769,7 +801,6 @@ class MainWindow(QMainWindow):
                 "starting nd2 conversion",
                 "converted:",
                 "starting mask analysis",
-                "analysis complete",
                 "starting batch",
                 "create growth curve",
             ]

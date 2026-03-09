@@ -143,7 +143,7 @@ Options: `--recursive`, `--skip-processing` (analyze only if masks exist), `--de
 
 ## Cell Area Analysis
 
-Analyze mask TIFFs (morphology filters, area in µm²):
+Analyze mask TIFFs (morphology filters, area in µm²). Optionally analyze fluorescence intensity (FI) and run **foci analysis** to detect bright spots in the FI channel. See **[User Manual](BACTIMATE_USER_MANUAL.md)** Section 5 and **5.6b** for full details.
 
 ```bash
 python -m bactimate.scripts.analyze_cell_areas masks.tif --pixel-size 0.108 \
@@ -151,7 +151,21 @@ python -m bactimate.scripts.analyze_cell_areas masks.tif --pixel-size 0.108 \
     --detailed --visualization
 ```
 
-See **[User Manual](BACTIMATE_USER_MANUAL.md)** Section 5 for all filters and options.
+### Foci analysis and Excel export
+
+When **Run foci analysis** is enabled (GUI: Analyze Masks → Analyze FI → Run foci analysis; CLI: `--fi-image` and `--run-foci`), the analysis detects **foci** (bright spots) in the FI channel per frame and adds foci counts plus a **Foci** sheet to the Excel.
+
+**How foci are detected:** Local intensity maxima (peaks) are found on a preprocessed FI image. For each peak, a **focus blob** is defined as the connected region of pixels with intensity ≥ **80% of the peak** and within the same segmented cell. Focus **area (px)** is the pixel count of this blob; **Area (µm²)** = area (px) × (pixel size)². Peaks are filtered by min/max area (µm²), min separation, min relative intensity (per frame or per cell), and optional min peak raw / min focus mean; only passing foci are exported.
+
+**Excel sheets when Run foci is on:**
+
+| Sheet | Description |
+|-------|-------------|
+| **Summary** | One row per frame; includes Total Foci and Mean Foci per Cell. |
+| **Per-Cell Data** | One row per cell: morphology, FI, **Number of Foci**, **foci_ids** (comma-separated, e.g. 1,2), and aggregates (Foci Mean/Total/Max Intensity, Foci Mean/Total Area, Foci Mean Intensity Ratio). |
+| **Foci** | **One row per focus.** Columns: foci_id, cell_id, frame, channel_name, y, x, intensity (peak raw), Area (px), Area (µm²), Mean intensity (focus blob), Rel intensity (peak/frame median), in_cell. Use this sheet for per-focus metrics; link back to cells via **cell_id** (filter or join). Multiple foci in one cell = multiple rows with the same cell_id. |
+
+When analyzing a **folder** with multiple FI channels, the merged Excel includes the Foci sheet from the first channel that has one. For a complete reference to parameters, filters, and workflows, see **[User Manual](BACTIMATE_USER_MANUAL.md)** Section 5.6a and 5.6b.
 
 ## Building App Bundles
 

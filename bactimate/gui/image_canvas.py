@@ -1,14 +1,19 @@
 """
 Qt-native image canvas: display a QPixmap with zoom (wheel) and pan (middle-drag).
 No matplotlib dependency. Optional signals for click/drag in image coordinates.
+Zoom/pan tooltip is shown only until the user has used zoom or pan once (then suppressed).
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QPointF, QRect, pyqtSignal
-from PyQt6.QtGui import QPixmap, QPainter, QWheelEvent, QMouseEvent, QResizeEvent, QPaintEvent
+from PyQt6.QtGui import QPixmap, QPainter, QKeyEvent, QWheelEvent, QMouseEvent, QResizeEvent, QPaintEvent
 from PyQt6.QtWidgets import QWidget
+
+
+# Substring that identifies the standard zoom/pan hint so we can suppress it once the user has tried zoom/pan
+_ZOOM_PAN_TOOLTIP_MARKER = "Zoom: mouse wheel"
 
 
 class ImageCanvas(QWidget):
@@ -35,7 +40,48 @@ class ImageCanvas(QWidget):
         self.selection_button = Qt.MouseButton.LeftButton
         self.click_button = Qt.MouseButton.LeftButton
         self.pan_button = Qt.MouseButton.MiddleButton
+        self._base_tooltip: str = ""
+        self._foci_hover_data: Optional[List[Tuple[float, float, str, float]]] = None  # (x, y, tooltip, max_radius) in image coords; radius limits hit area
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # allow + / - keyboard zoom when focused
+
+    def set_foci_hover_data(self, data: Optional[List[Tuple[float, float, str, float]]]) -> None:
+        """Set optional list of (x, y, tooltip_str, max_radius) for focus peaks. Tooltip shown only when cursor is within max_radius of peak. None to clear."""
+        self._foci_hover_data = data
+        if data is None:
+            super().setToolTip(self._effective_base_tooltip())
+
+    def setToolTip(self, text: str) -> None:
+        """Store as base tooltip; if no foci hover data, set as current tooltip. Suppress zoom/pan hint if already seen."""
+        self._base_tooltip = text or ""
+        try:
+            from bactimate.gui.preferences import get_preview_zoom_pan_tip_seen
+            if text and _ZOOM_PAN_TOOLTIP_MARKER in text and get_preview_zoom_pan_tip_seen():
+                text = ""
+        except Exception:
+            pass
+        if self._foci_hover_data is None:
+            super().setToolTip(text)
+
+    def _effective_base_tooltip(self) -> str:
+        """Base tooltip to show on hover; empty if zoom/pan hint and user has already used zoom/pan."""
+        text = self._base_tooltip or ""
+        try:
+            from bactimate.gui.preferences import get_preview_zoom_pan_tip_seen
+            if text and _ZOOM_PAN_TOOLTIP_MARKER in text and get_preview_zoom_pan_tip_seen():
+                return ""
+        except Exception:
+            pass
+        return text
+
+    def _mark_zoom_pan_used(self) -> None:
+        """Remember that the user used zoom/pan and clear the long tooltip so it does not pop up again."""
+        try:
+            from bactimate.gui.preferences import set_preview_zoom_pan_tip_seen
+            set_preview_zoom_pan_tip_seen()
+            super().setToolTip("")
+        except Exception:
+            pass
 
     def set_pixmap(
         self,
@@ -113,6 +159,27 @@ class ImageCanvas(QWidget):
         self._zoom = new_zoom
         self.update()
         self.view_scale_changed.emit(self.view_scale())
+        self._mark_zoom_pan_used()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._pixmap is None or not self._image_size:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal, Qt.Key.Key_Asterisk):  # + (numpad), = (US), +/* (e.g. German main keyboard)
+            factor = 1.1
+        elif key in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):  # - and _ (same key, with/without Shift)
+            factor = 1 / 1.1
+        else:
+            super().keyPressEvent(event)
+            return
+        new_zoom = max(0.1, min(10.0, self._zoom * factor))
+        if new_zoom != self._zoom:
+            self._zoom = new_zoom
+            self.update()
+            self.view_scale_changed.emit(self.view_scale())
+            self._mark_zoom_pan_used()
+        event.accept()
 
     def _is_pan_button(self, button: Qt.MouseButton) -> bool:
         """True if this button should start pan (middle, or left when not in selection mode)."""
@@ -157,6 +224,27 @@ class ImageCanvas(QWidget):
             image_pos = self._widget_to_image(event.position())
             if image_pos is not None:
                 self.drag_updated.emit(image_pos[0], image_pos[1])
+        # Foci hover tooltips: show only when cursor is within this focus's radius (so not "closest" when far from all)
+        if self._foci_hover_data:
+            image_pos = self._widget_to_image(event.position())
+            if image_pos is not None:
+                ix, iy = float(image_pos[0]), float(image_pos[1])
+                best_tooltip: Optional[str] = None
+                best_d_sq = float("inf")
+                for item in self._foci_hover_data:
+                    if len(item) >= 4:
+                        xd, yd, tooltip, max_r = item[0], item[1], item[2], item[3]
+                    else:
+                        xd, yd, tooltip = item[0], item[1], item[2]
+                        max_r = 25.0
+                    d_sq = (ix - xd) * (ix - xd) + (iy - yd) * (iy - yd)
+                    if d_sq <= max_r * max_r and d_sq < best_d_sq:
+                        best_d_sq = d_sq
+                        best_tooltip = tooltip
+                base = self._effective_base_tooltip()
+                super().setToolTip(best_tooltip if best_tooltip is not None else base)
+            else:
+                super().setToolTip(self._effective_base_tooltip())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -166,6 +254,8 @@ class ImageCanvas(QWidget):
                 self.clicked_image.emit(image_pos[0], image_pos[1])
             self._left_potential_click = False
         elif self._is_pan_button(event.button()) or (event.button() == self.click_button and self._dragging):
+            if self._dragging:
+                self._mark_zoom_pan_used()
             self._dragging = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
         elif event.button() == self.selection_button and self._dragging_selection:

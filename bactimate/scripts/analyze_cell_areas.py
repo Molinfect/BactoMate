@@ -190,7 +190,7 @@ def calculate_fi_intensities(mask, fi_image, cell_label, boundaries=None, contou
             SCRIPT_LOG.warning("FI image shape %s doesn't match mask shape %s", fi_image.shape, mask.shape)
             return np.nan, np.nan, np.nan
     
-    # Calculate mean FI intensity of entire cell (always available)
+    # Mean FI intensity of entire cell: FI channel pixel values at cell mask (raw fluorescence)
     cell_pixels = fi_image[cell_mask]
     mean_fi = np.mean(cell_pixels) if len(cell_pixels) > 0 else np.nan
 
@@ -340,7 +340,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
                   remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True,
                   exclude_border=False,
-                  run_foci=False, foci_min_rel=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
+                  run_foci=False, foci_min_rel=2.0, foci_min_rel_mode="per_cell", foci_min_rel_cell=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
+                  foci_min_peak_raw=0, foci_min_focus_mean=0,
                   foci_exclude_outside_cells=False,
                   fi_channel_name=None):
     """
@@ -531,16 +532,50 @@ def analyze_masks(masks_path, pixel_size=0.108,
             if fi_image.shape[:2] != mask_cleaned.shape[:2]:
                 SCRIPT_LOG.warning("FI image shape %s != mask shape %s, skipping foci for frame %s", fi_image.shape[:2], mask_cleaned.shape[:2], frame_idx + 1)
             else:
+                mode = (foci_min_rel_mode or "per_cell").strip().lower()
+                use_per_frame = mode in ("per_frame", "both")
+                use_per_cell = mode in ("per_cell", "both")
+                cell_factor = float(foci_min_rel_cell) if use_per_cell and mode == "both" else (float(foci_min_rel) if use_per_cell else None)
                 peaks = detect_peaks_skimage(
                     fi_image,
-                    min_rel=foci_min_rel,
+                    min_rel=foci_min_rel if use_per_frame else None,
                     min_distance=foci_min_separation,
                     min_size=foci_min_size,
                     max_size=foci_max_size,
+                    min_peak_raw=foci_min_peak_raw if foci_min_peak_raw and float(foci_min_peak_raw) > 0 else None,
+                    min_focus_mean=foci_min_focus_mean if foci_min_focus_mean and float(foci_min_focus_mean) > 0 else None,
+                    labeled_mask=mask_cleaned,
                 )
                 foci_rows, cell_foci_ids = assign_peaks_to_cells(
                     peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx
                 )
+                if use_per_cell and cell_factor is not None and cell_factor > 0 and filtered:
+                    # Per-cell filter: keep only foci with (focus intensity / cell mean FI) >= cell_factor.
+                    # Cell mean FI = mean of ALL pixels inside the cell mask (whole segmentation), so dim
+                    # regions (edges, poles) pull the mean down; foci can pass the ratio even if max image value is modest.
+                    label_to_mean_fi = {c['label']: c.get('mean_fi') for c in filtered if c.get('mean_fi') is not None and np.isfinite(c.get('mean_fi')) and c.get('mean_fi') > 0}
+                    new_foci_rows = []
+                    for row in foci_rows:
+                        if not row.get('in_cell') or row.get('cell_id') is None:
+                            new_foci_rows.append(row)
+                            continue
+                        cell_id = row['cell_id']
+                        mean_fi = label_to_mean_fi.get(cell_id)
+                        if mean_fi is None or mean_fi <= 0:
+                            continue
+                        intensity = row.get('intensity')
+                        if intensity is None or not np.isfinite(intensity):
+                            continue
+                        ratio = float(intensity) / float(mean_fi)
+                        if ratio >= cell_factor:
+                            new_foci_rows.append(row)
+                    foci_rows = new_foci_rows
+                    # Rebuild cell_foci_ids from kept rows only
+                    cell_foci_ids = {}
+                    for row in foci_rows:
+                        if row.get('in_cell') and row.get('cell_id') is not None:
+                            key = (row['cell_id'], frame_idx)
+                            cell_foci_ids.setdefault(key, []).append(row['foci_id'])
                 # Attach foci count and foci_ids to each cell (key by label, frame_idx)
                 for cell in filtered:
                     key = (cell['label'], frame_idx)
@@ -1122,7 +1157,7 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
     SCRIPT_LOG.info("FI contour visualization saved")
 
 
-def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None, export_csv=False):
+def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None, export_csv=False, pixel_size=0.108):
     """
     Save results to Excel file and optionally to CSV files.
     
@@ -1135,12 +1170,14 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
     detailed_data : list of dict, optional
         Detailed per-cell data for additional sheets
     foci_table : list of dict, optional
-        Foci rows (foci_id, cell_id, frame, channel_name, y, x, intensity, size_px, in_cell)
+        Foci rows (foci_id, cell_id, frame, channel_name, y, x, intensity, size_px, mean_intensity, rel_intensity, in_cell)
     fi_channel_name : str, optional
         Channel name for foci count/foci_ids columns (e.g. GFP)
     export_csv : bool, optional
         If True, also write Summary, Per-Cell Data, and Foci (if present) as CSV files
         next to the Excel file (same stem with _summary.csv, _per_cell.csv, _foci.csv).
+    pixel_size : float, optional
+        Pixel size in µm; used to add focus area (µm²) = area_px * pixel_size² to the Foci sheet (default 0.108).
     """
     output_path = Path(output_path)
     # Create main results DataFrame
@@ -1246,7 +1283,7 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                         row['Foci Mean Intensity'] = agg['mean_intensity']
                         row['Foci Total Intensity'] = agg['sum_intensity']
                         row['Foci Max Intensity'] = agg['max_intensity']
-                        row['Foci Mean Size (px) [total foci area / N foci]'] = agg['mean_size_px']
+                        row['Foci Mean Area (px)'] = agg['mean_size_px']
                         row['Foci Total Area (px)'] = agg['total_area_px']
                         # Foci mean intensity ratio to whole-cell mean FI (when both available)
                         mean_fi = cell.get('mean_fi')
@@ -1266,11 +1303,16 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
         if foci_table is not None:
             df_foci = pd.DataFrame(foci_table)
             if len(df_foci) > 0:
-                # Reorder columns for clarity
-                cols = ['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'size_px', 'in_cell']
+                # Add area (µm²) = area_px * pixel_size²
+                ps = float(pixel_size) if pixel_size and pixel_size > 0 else 0.108
+                df_foci['area_um2'] = df_foci['size_px'].astype(float).mul(ps ** 2)
+                # Reorder and rename columns for clarity
+                col_map = {'size_px': 'Area (px)', 'area_um2': 'Area (µm²)', 'mean_intensity': 'Mean intensity (focus blob)', 'rel_intensity': 'Rel intensity (peak/frame median)'}
+                df_foci = df_foci.rename(columns={k: v for k, v in col_map.items() if k in df_foci.columns})
+                cols = ['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell']
                 df_foci = df_foci[[c for c in cols if c in df_foci.columns]]
             else:
-                df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'size_px', 'in_cell'])
+                df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell'])
             df_foci.to_excel(writer, sheet_name='Foci', index=False)
     
     # Optionally write CSV files (same stem as Excel)
@@ -1357,13 +1399,21 @@ Examples:
     parser.add_argument('--run-foci', action='store_true',
                        help='Run foci detection on the FI channel and add foci count and Foci sheet')
     parser.add_argument('--foci-min-rel', type=float, default=2.0,
-                       help='Min relative intensity (peak/median) for foci (default: 2.0)')
+                       help='Min relative intensity factor for foci (default: 2.0)')
+    parser.add_argument('--foci-min-rel-mode', type=str, default='per_cell', choices=['per_frame', 'per_cell', 'both'],
+                       help='Apply min relative intensity per frame, per cell, or both (default: per_cell)')
+    parser.add_argument('--foci-min-rel-cell', type=float, default=2.0,
+                       help='Cell factor when --foci-min-rel-mode is both (focus / cell mean FI ≥ this value) (default: 2.0)')
     parser.add_argument('--foci-min-separation', type=int, default=2,
                        help='Min distance between foci in pixels (default: 2)')
     parser.add_argument('--foci-min-size', type=int, default=1,
                        help='Min focus size in pixels (default: 1)')
     parser.add_argument('--foci-max-size', type=int, default=None,
                        help='Max focus size in pixels (0 or omit = no limit)')
+    parser.add_argument('--foci-min-peak-raw', type=float, default=0,
+                       help='Min raw intensity at focus peak; 0 = off (default: 0)')
+    parser.add_argument('--foci-min-focus-mean', type=float, default=0,
+                       help='Min mean intensity of focus blob; 0 = off (default: 0)')
     parser.add_argument('--foci-exclude-outside-cells', action='store_true',
                        help='Exclude foci that fall outside any cell from counts and Foci sheet')
     parser.add_argument('--foci-channel-name', type=str, default=None,
@@ -1429,9 +1479,13 @@ Examples:
         exclude_border=args.exclude_border,
         run_foci=args.run_foci,
         foci_min_rel=args.foci_min_rel,
+        foci_min_rel_mode=getattr(args, 'foci_min_rel_mode', 'per_cell'),
+        foci_min_rel_cell=getattr(args, 'foci_min_rel_cell', 2.0),
         foci_min_separation=args.foci_min_separation,
         foci_min_size=args.foci_min_size,
         foci_max_size=args.foci_max_size,
+        foci_min_peak_raw=getattr(args, 'foci_min_peak_raw', 0),
+        foci_min_focus_mean=getattr(args, 'foci_min_focus_mean', 0),
         foci_exclude_outside_cells=getattr(args, 'foci_exclude_outside_cells', False),
         fi_channel_name=fi_channel_name,
     )
@@ -1515,6 +1569,7 @@ Examples:
         foci_table=foci_table if args.run_foci else None,
         fi_channel_name=fi_channel_name if args.run_foci else None,
         export_csv=getattr(args, 'export_csv', False),
+        pixel_size=args.pixel_size,
     )
     
     SCRIPT_LOG.info("Analysis complete!")

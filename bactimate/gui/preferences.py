@@ -82,6 +82,20 @@ def set_state(data: QByteArray) -> None:
     _settings().setValue("main_window/state", data)
 
 
+# Preview image canvas: once user has used zoom/pan, we stop showing the long hover tooltip
+def get_preview_zoom_pan_tip_seen() -> bool:
+    """True if user has already used zoom or pan in any preview (we then suppress the long tooltip)."""
+    val = _settings().value("preview_zoom_pan_tip_seen", False)
+    if val is True or val == "true" or val == 1 or val == "1":
+        return True
+    return False
+
+
+def set_preview_zoom_pan_tip_seen() -> None:
+    """Mark that the user has used zoom/pan in a preview so we stop showing the tip."""
+    _settings().setValue("preview_zoom_pan_tip_seen", True)
+
+
 def get_building_unet_path() -> str:
     """Return saved path to Building U-NET project, or empty string."""
     val = _settings().value("building_unet_path", "")

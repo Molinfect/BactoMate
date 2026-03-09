@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-06 08:15:01",
+  "timestamp": "2026-03-08 11:14:50",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
@@ -58,16 +58,21 @@
       "export_csv": false,
       "exclude_border": false,
       "create_combined_summary": false,
-      "analyze_fi": false,
+      "analyze_fi": true,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
       "fi_contour_thickness": 1,
-      "run_foci": false,
+      "run_foci": true,
       "foci_min_rel": 2.0,
-      "foci_min_separation": 2,
-      "foci_min_size": 1,
-      "foci_max_size": 0,
+      "foci_min_rel_mode": "per frame",
+      "foci_min_rel_cell": 2.0,
+      "foci_min_separation": 5,
+      "foci_min_size": 5,
+      "foci_max_size": 50,
+      "foci_min_peak_raw": 0.0,
+      "foci_min_focus_mean": 0.0,
       "foci_exclude_outside_cells": false,
+      "file_path": "/Users/philipppopp/Desktop/2026-03-07/test/EM19765_Phase_omnipose_segmentation/",
       "performed": false
     },
     "tracking": {
