@@ -372,7 +372,7 @@ Omnipose/cellpose_omni often saves trained checkpoints with the network state un
 
 **Debug log (user vs built-in model)**
 
-When loading models and running segmentation, BactiMate writes lines to **current run's debug log** (e.g. **Logs/debug_2026-03-02_12-00-00.log** in the project `Logs` folder, or under Application Support on installed builds). Only the last 10 debug logs are kept. Each line is timestamped. You’ll see:
+When loading models and running segmentation, BactiMate writes lines to **the current run's GUI log** (e.g. **Logs/bactimate_gui_2026-03-02_12-00-00.log** in the project `Logs` folder, or under Application Support on installed builds). Only the last 20 GUI logs are kept. Each line is timestamped. You’ll see:
 - **USER_MODEL pre-load**: checkpoint inspection (nchan, nclasses, first_layer_shape, keys) before the patched loader runs.
 - **cellpose_omni load**: what the patched loader inferred (nchan, nclasses, ckpt_keys, state_dict sample).
 - **USER_MODEL / BUILTIN post-load**: `model.cp.nchan` and `model.cp.nclasses` after loading.

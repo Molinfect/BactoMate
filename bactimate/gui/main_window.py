@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
-from bactimate.gui.log_config import get_logger, log_exception, write_crash_log
+from bactimate.gui.log_config import get_logger, log_exception, write_crash_log, write_gui_log_line
 from bactimate.gui.preferences import (
     get_geometry,
     get_last_dir,
@@ -341,9 +341,17 @@ class MainWindow(QMainWindow):
                 old_title = self.windowTitle()
                 self.setWindowTitle("Waiting for tracking to finish…")
                 QApplication.processEvents()
-                worker.wait(300000)  # wait up to 5 minutes
+                if not worker.wait(300000):  # wait up to 5 minutes; if timeout, do not close
+                    self.setWindowTitle(old_title)
+                    QMessageBox.warning(
+                        self,
+                        "Please wait",
+                        "Tracking is still running. Wait for it to finish or cancel it, then close the application.",
+                    )
+                    event.ignore()
+                    return
                 self.setWindowTitle(old_title)
-        # Wait for Analyze Masks filter preview worker if dialog is open
+        # Wait for Analyze Masks filter preview worker if dialog is open (never destroy QThread while running)
         analyze_tab = getattr(self, "analyze_tab", None)
         preview_dialog = getattr(analyze_tab, "_filter_preview_dialog", None) if analyze_tab else None
         if preview_dialog is not None:
@@ -352,7 +360,15 @@ class MainWindow(QMainWindow):
                 old_title = self.windowTitle()
                 self.setWindowTitle("Waiting for filter preview to finish…")
                 QApplication.processEvents()
-                w.wait(120000)  # wait up to 2 minutes
+                if not w.wait(120000):  # wait up to 2 minutes; if timeout, do not close
+                    self.setWindowTitle(old_title)
+                    QMessageBox.warning(
+                        self,
+                        "Please wait",
+                        "Filter Effects Preview is still computing. Close the preview window first or wait for it to finish, then close the application.",
+                    )
+                    event.ignore()
+                    return
                 self.setWindowTitle(old_title)
         self._save_geometry_and_state()
         self._save_session_log()
@@ -859,11 +875,17 @@ def main() -> None:
 
     def pyqt6_exception_handler(exc_type, exc_value, exc_traceback):
         traceback.print_exception(exc_type, exc_value, exc_traceback)
-        # Write to this run's debug log so we can read it for debugging
         try:
+            import threading
+            thread_name = getattr(threading.current_thread(), "name", "unknown")
             lines = traceback.format_exception(exc_type, exc_value, exc_traceback)
             block = "".join(lines)
-            write_crash_log(f"\n--- {datetime.now().isoformat()} ---\n{block}")
+            write_crash_log(
+                f"\n--- Uncaught exception {datetime.now().isoformat()} ---\n"
+                f"Thread: {thread_name}\n"
+                f"(If this occurs when closing the Filter Effects Preview or during Analyze Masks, a background thread may still have been running.)\n"
+                f"{block}"
+            )
         except Exception:
             pass
 
@@ -887,6 +909,31 @@ def main() -> None:
                 _set_macos_dock_icon(icon_path)
         app.setStyle("Fusion")
         app.setStyleSheet(get_modern_stylesheet())
+        # Route Qt messages (e.g. QThread destroyed while running) to the same GUI log
+        try:
+            from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+            def _qt_message_handler(msg_type, context, message):
+                try:
+                    level = "unknown"
+                    if msg_type == QtMsgType.QtDebugMsg:
+                        level = "QtDebug"
+                    elif msg_type == QtMsgType.QtInfoMsg:
+                        level = "QtInfo"
+                    elif msg_type == QtMsgType.QtWarningMsg:
+                        level = "QtWarning"
+                    elif msg_type == QtMsgType.QtCriticalMsg:
+                        level = "QtCritical"
+                    elif msg_type == QtMsgType.QtFatalMsg:
+                        level = "QtFatal"
+                    loc = ""
+                    if context is not None and getattr(context, "function", None):
+                        loc = f" ({getattr(context, 'file', '')}:{getattr(context, 'line', '')} {context.function})"
+                    write_gui_log_line(level, f"{message}{loc}")
+                except Exception:
+                    pass
+            qInstallMessageHandler(_qt_message_handler)
+        except Exception:
+            pass
         if sys.platform == "win32":
             try:
                 from bactimate.gui.windows_patches import apply_after_ui

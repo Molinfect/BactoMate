@@ -1972,7 +1972,7 @@ class OmniposeSegTab(QWidget):
                         if pretrained_path and os.path.isfile(pretrained_path):
                             status_label.setText("Loading user model...")
                             QApplication.processEvents()
-                            # Debug: inspect checkpoint before load (see Logs/debug_*.log)
+                            # Debug: inspect checkpoint before load (see Logs/bactimate_gui_*.log)
                             try:
                                 inspect_info = inspect_omnipose_checkpoint(pretrained_path)
                                 ckpt_nout = inspect_info.get("output_layer_out_channels")
@@ -2108,7 +2108,7 @@ class OmniposeSegTab(QWidget):
                             model_type=current_model_type, 
                             omni=True
                         )
-                        # Debug: built-in model load (see Logs/debug_*.log)
+                        # Debug: built-in model load (see Logs/bactimate_gui_*.log)
                         try:
                             cp = getattr(preview_dialog.model, "cp", None)
                             nchan = getattr(cp, "nchan", None)

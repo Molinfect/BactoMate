@@ -6,11 +6,11 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ## v1.6 (2026-03)
 
-### Logs (three types, bounded size)
+### Logs (single GUI log + session logs)
 
 - **Session logs:** Unchanged; last 100 `*_session.json` files kept.
-- **Launch logs:** One **launch_YYYY-MM-DD_HH-MM-SS.log** per run (from `launch_gui.sh`). Only the last 20 launch logs are kept so they don’t grow indefinitely. On macOS, `~/Library/Application Support/BactiMate/Logs/launch.log` still gets one line per launch with the path to the full log.
-- **Debug log:** One **debug_YYYY-MM-DD_HH-MM-SS.log** per run; crash tracebacks and Omnipose/model debug lines go here. Only the last 10 debug logs are kept. (Previously: separate `crash.log` and `omnipose_debug.log` with no retention.)
+- **Single GUI log:** One **bactimate_gui_YYYY-MM-DD_HH-MM-SS.log** per run (from `launch_gui.sh`). Only the last 20 GUI logs are kept so they don’t grow indefinitely. On macOS, `~/Library/Application Support/BactiMate/Logs/launch.log` still gets one line per launch with the path to the full GUI log.
+- **Single GUI log (continued):** Crash tracebacks, Qt messages (e.g. QThread destroyed while running), and Omnipose/model debug lines are written to the same file by Python. No separate debug log.
 
 ### Analysis
 

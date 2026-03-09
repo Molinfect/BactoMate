@@ -51,7 +51,7 @@ from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactimate.gui.utils import safe_imread
 from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_selection_dialog
 from bactimate.gui.workers import WorkerThread
-from bactimate.gui.log_config import get_logger, write_crash_log
+from bactimate.gui.log_config import get_logger, write_crash_log, write_gui_log_line
 from bactimate.modules.tiff_metadata import read_calibration_from_path_or_original
 from bactimate.modules.validation import paths_exist, mask_fi_spatial_shape_match
 
@@ -2062,6 +2062,7 @@ class AnalyzeMasksTab(QWidget):
                     s = getattr(self, "_preview_worker_slot", None)
                     if w is not None and w.isRunning():
                         # Don't block event loop or destroy thread: hide and close when worker finishes
+                        write_gui_log_line("Preview", "Filter Effects Preview: worker still running, deferring close until it finishes (dialog hidden)")
                         self._dialog_closed = True
                         self._close_pending = True
                         self.hide()
@@ -2727,6 +2728,7 @@ class AnalyzeMasksTab(QWidget):
                     def _on_preview_worker_finished(rid, fid, acc_list, rej_list, all_list, n_obj, err):
                         try:
                             if getattr(preview_dialog, "_close_pending", False):
+                                write_gui_log_line("Preview", "Filter Effects Preview: worker finished, closing dialog (was deferred)")
                                 w = getattr(preview_dialog, "_preview_worker", None)
                                 s = getattr(preview_dialog, "_preview_worker_slot", None)
                                 if w is not None and s is not None:

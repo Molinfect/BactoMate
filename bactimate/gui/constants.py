@@ -12,8 +12,7 @@ LOGS_DIR = get_logs_dir()
 
 # Log retention: keep only the last N files so logs don't grow indefinitely
 MAX_SESSION_LOGS = 100   # session JSONs (saved parameters)
-MAX_LAUNCH_LOGS = 20     # launch_*.log (one per app launch, from launch_gui.sh)
-MAX_DEBUG_LOGS = 10      # debug_*.log (one per run: crash + Omnipose/debug lines)
+MAX_GUI_LOGS = 20       # bactimate_gui_*.log (single log per run: launch + crash + Qt + debug)
 
 # Script paths for subprocess calls
 # Prefer package script (bactimate/scripts/); fallback to get_script_path for installed/frozen layouts

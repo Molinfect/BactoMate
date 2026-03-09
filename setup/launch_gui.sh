@@ -36,12 +36,13 @@ else
     LOG_DIR="$PROJECT_ROOT/Logs"
 fi
 mkdir -p "$LOG_DIR"
-# Timestamped launch log (one per run); keep last 20 so logs don't grow indefinitely (matches MAX_LAUNCH_LOGS in constants.py)
-LAUNCH_KEEP=20
-for f in $(ls -t "$LOG_DIR"/launch_*.log 2>/dev/null | tail -n +$((LAUNCH_KEEP))); do
+# Single GUI log per run (launch + Python crash/Qt/debug all go here); keep last 20 (matches MAX_GUI_LOGS)
+GUI_LOG_KEEP=20
+for f in $(ls -t "$LOG_DIR"/bactimate_gui_*.log 2>/dev/null | tail -n +$((GUI_LOG_KEEP))); do
     rm -f "$f" 2>/dev/null || true
 done
-LOG_FILE="$LOG_DIR/launch_$(date '+%Y-%m-%d_%H-%M-%S').log"
+LOG_FILE="$LOG_DIR/bactimate_gui_$(date '+%Y-%m-%d_%H-%M-%S').log"
+export BACTIMATE_GUI_LOG="$LOG_FILE"
 # On macOS also ensure Application Support exists and write one line there so "reopen didn't run" can be diagnosed
 CANONICAL_LOG=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
