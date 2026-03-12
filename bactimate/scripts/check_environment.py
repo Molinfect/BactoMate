@@ -3,15 +3,31 @@
 Check that BactiMate's required and optional dependencies are available.
 Run from CLI: python -m bactimate.scripts.check_environment
 Or from GUI: Help → Check environment
+
+This checks the **current process** (the one running the GUI). When running from
+the .app, conversion, batch, analyze, and U-Net run in this same process, so
+the result applies to those features.
 """
 from __future__ import annotations
 
 import sys
 
 
+def _running_from_app_bundle() -> bool:
+    """True when app root is inside a .app bundle."""
+    try:
+        from bactimate.gui.paths import get_app_root
+        root = get_app_root()
+        return "Contents/Resources" in str(root) or (root.parent / "MacOS").is_dir()
+    except Exception:
+        return False
+
+
 def check_environment() -> str:
-    """Check imports and return a multi-line report (OK or missing/error per component)."""
+    """Check imports in this process and return a multi-line report (OK or missing/error per component)."""
     lines = ["BactiMate environment check", "=" * 40]
+    lines.append("(Checking this process — the one running the GUI.)")
+    lines.append("")
     all_ok = True
 
     # Core (required for GUI and basic use)
@@ -63,8 +79,16 @@ def check_environment() -> str:
         lines.append("  ---  BioIO check skipped")
 
     lines.append("")
+    # Clarify what the check means and how scripts run
+    if _running_from_app_bundle():
+        lines.append("From .app: conversion, batch, analyze, U-Net run in this same process (in-process),")
+        lines.append("so the results above apply to those features.")
+    else:
+        lines.append("From dev/source: scripts may run in a subprocess using the same Python as this process.")
+    lines.append("")
+
     if all_ok:
-        lines.append("Result: All required dependencies are available.")
+        lines.append("Result: All required dependencies are available in this process.")
     else:
         lines.append("Result: Some required dependencies are missing. Install with: pip install -r requirements.txt")
     return "\n".join(lines)

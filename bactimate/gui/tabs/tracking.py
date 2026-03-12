@@ -1856,6 +1856,7 @@ class TrajectoryPreviewDialog(QDialog):
         self._title_label.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 6px;")
         layout.addWidget(self._title_label)
         self._canvas = ImageCanvas()
+        self._canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
         self._canvas.setMinimumSize(400, 300)
         self._canvas.setStyleSheet("background-color: #1e1e1e;")
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)

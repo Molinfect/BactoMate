@@ -1807,7 +1807,7 @@ class ND2ConversionTab(QWidget):
         frame_spin = QSpinBox()
         frame_spin.setRange(1, num_time)
         frame_spin.setValue(1)
-        frame_spin.setToolTip(f"Frame 1–{num_time}. Type a number and press Enter to jump.")
+        frame_spin.setToolTip(f"Frame 1–{num_time}. Updates after a short pause or press Enter to jump immediately.")
         nav_layout.addWidget(frame_spin)
         nav_layout.addWidget(QLabel(f"of {num_time}"))
         
@@ -1817,7 +1817,7 @@ class ND2ConversionTab(QWidget):
             channel_spin = QSpinBox()
             channel_spin.setRange(1, num_channels)
             channel_spin.setValue(1)
-            channel_spin.setToolTip(f"Channel 1–{num_channels}. Type a number and press Enter to switch.")
+            channel_spin.setToolTip(f"Channel 1–{num_channels}. Updates after a short pause or press Enter to switch immediately.")
             nav_layout.addWidget(channel_spin)
         else:
             channel_spin = None
@@ -2345,7 +2345,9 @@ class ND2ConversionTab(QWidget):
                     QMessageBox.warning(preview_dialog, "Preview Error", 
                                       f"Could not display frame {idx + 1}:\n{str(e)}")
         
-        # Connect channel selection (if available); commit on Enter/focus only
+        # Debounce delay for frame/channel spinboxes (update after this many ms of no change, or on Enter)
+        _DEBOUNCE_MS = 400
+        # Connect channel selection (if available); debounced or on Enter
         if channel_spin is not None:
             def on_channel_changed():
                 """Update frame when channel changes - auto-adjust LUT to new channel"""
@@ -2356,7 +2358,15 @@ class ND2ConversionTab(QWidget):
                     current_vmax = None
                     # This will auto-adjust min/max based on the new channel's intensity range
                     update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
-            channel_spin.editingFinished.connect(on_channel_changed)
+            channel_debounce = QTimer(preview_dialog)
+            channel_debounce.setSingleShot(True)
+            channel_debounce.timeout.connect(on_channel_changed)
+            preview_dialog._channel_debounce_timer = channel_debounce
+            def on_channel_value_changed():
+                channel_debounce.stop()
+                channel_debounce.start(_DEBOUNCE_MS)
+            channel_spin.valueChanged.connect(on_channel_value_changed)
+            channel_spin.editingFinished.connect(lambda: (channel_debounce.stop(), on_channel_changed()))
         
         # Connect "Show bleach correction" checkbox: always use current main-window settings when computing
         if show_bleach_check is not None and bleach_status_label is not None:
@@ -2448,7 +2458,7 @@ class ND2ConversionTab(QWidget):
             sync_timer.start(500)  # Check every 0.5 s
             preview_dialog._bleach_sync_timer = sync_timer  # keep reference
         
-        # Commit on Enter/focus only (no live valueChanged) so typing "55" doesn't jump to 5
+        # Debounced frame change: update after ~400 ms of no typing, or immediately on Enter
         def on_frame_changed():
             user_frame = frame_spin.value()  # 1-based: 1 = first frame
             idx = user_frame - 1
@@ -2459,7 +2469,15 @@ class ND2ConversionTab(QWidget):
                 frame_spin.setValue(preview_dialog.current_frame + 1)
                 frame_spin.blockSignals(False)
 
-        frame_spin.editingFinished.connect(lambda: QTimer.singleShot(0, on_frame_changed))
+        frame_debounce = QTimer(preview_dialog)
+        frame_debounce.setSingleShot(True)
+        frame_debounce.timeout.connect(on_frame_changed)
+        preview_dialog._frame_debounce_timer = frame_debounce
+        def on_frame_value_changed():
+            frame_debounce.stop()
+            frame_debounce.start(_DEBOUNCE_MS)
+        frame_spin.valueChanged.connect(on_frame_value_changed)
+        frame_spin.editingFinished.connect(lambda: (frame_debounce.stop(), QTimer.singleShot(0, on_frame_changed)))
         
         # Close button (same as other preview windows). Disable as default so Enter in spinbox doesn't close dialog.
         close_btn = QPushButton("Close")

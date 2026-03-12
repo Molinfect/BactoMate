@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
 
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QEventLoop, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -41,6 +40,7 @@ from PyQt6.QtWidgets import (
 
 from bactimate.gui.log_config import get_logger
 from bactimate.gui.paths import get_unet_models_dir
+from bactimate.gui.workers import WorkerThread
 from bactimate.gui.preferences import LAST_DIR_UNET_SEGMENT
 from bactimate.gui.mask_utils import (
     UNET_MASKS_TILED_SUBDIR,
@@ -54,44 +54,6 @@ from bactimate.gui.widgets import DragDropGroupBox, create_info_icon
 from bactimate.modules.tiff_metadata import read_calibration_from_path_or_original
 from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.image_utils import build_segmentation_overlay, scale_for_preview, to_qpixmap
-
-
-class _UnetTrainWorker(QThread):
-    """Runs U-Net training subprocess in background so the GUI stays responsive."""
-    log_line = pyqtSignal(str)
-    finished_with = pyqtSignal(bool, str)  # success, message
-
-    def __init__(self, cmd: list, model_name: str):
-        super().__init__()
-        self.cmd = cmd
-        self.model_name = model_name
-        self._proc = None
-
-    def run(self) -> None:
-        import os
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        try:
-            self._proc = subprocess.Popen(
-                self.cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
-            )
-            for line in self._proc.stdout:
-                if line:
-                    self.log_line.emit(line.rstrip())
-            self._proc.wait()
-            if self._proc.returncode == 0:
-                self.finished_with.emit(True, "Model saved.")
-            else:
-                self.finished_with.emit(False, f"Training exited with code {self._proc.returncode}.")
-        except Exception as e:
-            self.finished_with.emit(False, str(e))
-        finally:
-            self._proc = None
 
 
 class UNetSegmentTab(QWidget):
@@ -389,27 +351,29 @@ class UNetSegmentTab(QWidget):
         self.training_log.clear()
         self.training_log.append("Running patch config analysis...")
         QApplication.processEvents()
-        analyze_cmd = [
-            sys.executable, "-m", "bactimate.scripts.unet_analyze_patch_config",
+        analyze_cmd_args = [
+            "bactimate.scripts.unet_analyze_patch_config",
             "--train-path", train_dir_str,
             "--output", str(config_path),
             "--img-filter", self.img_filter_edit.text().strip(),
             "--mask-filter", self.mask_filter_edit.text().strip() or "_mask",
         ]
-        try:
-            r = subprocess.run(analyze_cmd, capture_output=True, text=True, timeout=300)
-            self.training_log.append(r.stdout or "")
-            if r.stderr:
-                self.training_log.append(r.stderr)
-            if r.returncode != 0:
-                self.training_log.append("Analyze failed. Check training data and filters.")
-                return
-        except Exception as e:
-            self.training_log.append(f"Analyze error: {e}")
+        analyze_worker = WorkerThread("-m", analyze_cmd_args, parent=self)
+        result_holder = [None, None]  # success, message
+        loop = QEventLoop(self)
+        def on_analyze_done(success: bool, message: str) -> None:
+            result_holder[0], result_holder[1] = success, message
+            loop.quit()
+        analyze_worker.finished.connect(on_analyze_done)
+        analyze_worker.progress.connect(lambda line: self.training_log.append(line.strip()) if line.strip() else None)
+        analyze_worker.start()
+        loop.exec()
+        if not result_holder[0]:
+            self.training_log.append(result_holder[1] or "Analyze failed. Check training data and filters.")
             return
         self.training_log.append("Starting training... (GUI stays responsive)")
-        train_cmd = [
-            sys.executable, "-m", "bactimate.scripts.unet_train_patches",
+        train_cmd_args = [
+            "bactimate.scripts.unet_train_patches",
             "--train-path", train_dir_str,
             "--config-path", str(config_path),
             "--output-model-path", str(model_path),
@@ -421,9 +385,10 @@ class UNetSegmentTab(QWidget):
         ]
         self.start_training_btn.setEnabled(False)
         self.start_training_btn.setText("Training…")
-        self._unet_train_worker = _UnetTrainWorker(train_cmd, name)
-        self._unet_train_worker.log_line.connect(self._on_training_log_line)
-        self._unet_train_worker.finished_with.connect(self._on_training_finished)
+        self._unet_train_model_name = name
+        self._unet_train_worker = WorkerThread("-m", train_cmd_args, parent=self)
+        self._unet_train_worker.progress.connect(self._on_training_log_line)
+        self._unet_train_worker.finished.connect(self._on_training_finished)
         self._unet_train_worker.start()
 
     def _on_training_log_line(self, line: str) -> None:
@@ -438,7 +403,7 @@ class UNetSegmentTab(QWidget):
     def _on_training_finished(self, success: bool, message: str) -> None:
         self.start_training_btn.setEnabled(True)
         self.start_training_btn.setText("Start training")
-        name = getattr(self._unet_train_worker, "model_name", "")
+        name = getattr(self, "_unet_train_model_name", "")
         if success:
             self.training_log.append("Training finished. " + message)
             self._refresh_model_combo()
@@ -1104,37 +1069,39 @@ class UNetSegmentTab(QWidget):
             input_dir = path
             output_dir = path / "_segmentation_unet"
         output_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            sys.executable, "-m", "bactimate.scripts.unet_predict_patches",
+        predict_cmd_args = [
+            "bactimate.scripts.unet_predict_patches",
             "-i", str(input_dir),
             "-o", str(output_dir),
             "-m", str(model_path),
         ]
         self.parent_window.log_output(f"Running U-Net segmentation: {input_dir} -> {output_dir}\n")
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-            if r.returncode == 0:
-                self.parent_window.log_output(f"U-Net segmentation done: {output_dir}\n")
-                msg = QMessageBox(self)
-                msg.setWindowTitle("Done")
-                msg.setText(f"Output saved to:\n{output_dir}")
-                msg.setIcon(QMessageBox.Icon.Information)
-                open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
-                msg.addButton(QMessageBox.StandardButton.Ok)
-                msg.exec()
-                if msg.clickedButton() == open_btn:
-                    from PyQt6.QtCore import QUrl
-                    from PyQt6.QtGui import QDesktopServices
-                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
-            else:
-                self.parent_window.log_output(f"Failed: {r.stderr or r.stdout}\n")
-                QMessageBox.warning(self, "Failed", r.stderr or r.stdout or "Unknown error")
-        except subprocess.TimeoutExpired:
-            self.parent_window.log_output("Timed out.\n")
-            QMessageBox.warning(self, "Timeout", "Segmentation timed out.")
-        except Exception as e:
-            self.parent_window.log_output(f"Error: {e}\n")
-            QMessageBox.warning(self, "Error", str(e))
+        predict_worker = WorkerThread("-m", predict_cmd_args, parent=self)
+        result_holder = [None, None]  # success, message
+        loop = QEventLoop(self)
+        def on_predict_done(success: bool, message: str) -> None:
+            result_holder[0], result_holder[1] = success, message
+            loop.quit()
+        predict_worker.finished.connect(on_predict_done)
+        predict_worker.progress.connect(self.parent_window.log_output)
+        predict_worker.start()
+        loop.exec()
+        if result_holder[0]:
+            self.parent_window.log_output(f"U-Net segmentation done: {output_dir}\n")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Done")
+            msg.setText(f"Output saved to:\n{output_dir}")
+            msg.setIcon(QMessageBox.Icon.Information)
+            open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+            msg.addButton(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            if msg.clickedButton() == open_btn:
+                from PyQt6.QtCore import QUrl
+                from PyQt6.QtGui import QDesktopServices
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
+        else:
+            self.parent_window.log_output((result_holder[1] or "Unknown error") + "\n")
+            QMessageBox.warning(self, "Failed", result_holder[1] or "Unknown error")
 
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""

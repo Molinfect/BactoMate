@@ -45,7 +45,7 @@ from PyQt6.QtWidgets import (
 
 from bactimate.gui.constants import BATCH_PROCESS_TIFF_SCRIPT, PROJECT_ROOT
 from bactimate.gui.log_config import get_logger, append_omnipose_debug
-from bactimate.gui.paths import get_omnipose_user_models_dir
+from bactimate.gui.paths import get_omnipose_user_models_dir, get_python_executable_for_subprocess
 from bactimate.gui.patches import _patch_omnipose_get_masks
 from bactimate.gui.preferences import LAST_DIR_SEGMENTATION
 from bactimate.gui.session_params import apply_to_widgets, get_from_widgets
@@ -88,6 +88,9 @@ BUILTIN_OMNIPOSE_MODELS = [
     "bact_fluor_omni",
     "bact_phase_affinity",
 ]
+# Inference-only model: official Cellpose + Cellpose-SAM (cpsam); separate backend, no training.
+CELLPOSE_SAM_DISPLAY = "Cellpose-SAM"
+CELLPOSE_SAM_MODEL = "cellpose_sam"
 # Extension for user-trained model files saved in get_omnipose_user_models_dir()
 USER_MODEL_EXTENSION = ".pth"
 
@@ -110,6 +113,7 @@ SEGMENTATION_MODEL_DEFAULTS = {
     "bact_phase_omni": (30.0, 0.4, 0.0),
     "bact_fluor_omni": (30.0, 0.4, 0.0),
     "bact_phase_affinity": (30.0, 0.4, 0.0),
+    CELLPOSE_SAM_MODEL: (30.0, 0.4, 0.0),
 }
 # Fallback for other built-in names (e.g. bact_omni) or user models
 SEGMENTATION_DEFAULT_FALLBACK = (30.0, 0.4, 0.0)
@@ -916,7 +920,7 @@ class OmniposeSegTab(QWidget):
         self.omnipose_training_log.append("Starting Omnipose training (this may take a while)…")
 
         cmd = [
-            sys.executable, "-m", "omnipose", "--train",
+            get_python_executable_for_subprocess(), "-m", "omnipose", "--train",
             "--dir", train_dir_abs,
             "--mask_filter", mask_filter,
             "--pretrained_model", str(pretrained_arg),
@@ -1169,6 +1173,14 @@ class OmniposeSegTab(QWidget):
                     self.flow_threshold.setValue(f)
                     self.mask_threshold.setValue(m)
                     return
+                if model_type == CELLPOSE_SAM_MODEL:
+                    self.model_status_label.setText("✓ Cellpose-SAM")
+                    self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
+                    d, f, m = SEGMENTATION_MODEL_DEFAULTS.get(CELLPOSE_SAM_MODEL, SEGMENTATION_DEFAULT_FALLBACK)
+                    self.diameter.setValue(d)
+                    self.flow_threshold.setValue(f)
+                    self.mask_threshold.setValue(m)
+                    return
                 from cellpose_omni.models import MODEL_DIR
                 torch_str = "torch"
                 basename = f"{model_type}{torch_str}_0"
@@ -1351,9 +1363,9 @@ class OmniposeSegTab(QWidget):
     def _get_available_models(self):
         """
         Return display names for the model dropdown: built-in Omnipose models first,
-        then user-trained models (filename stem) from get_omnipose_user_models_dir().
+        then Cellpose-SAM (inference-only), then user-trained models (filename stem).
         """
-        names = list(BUILTIN_OMNIPOSE_MODELS)
+        names = list(BUILTIN_OMNIPOSE_MODELS) + [CELLPOSE_SAM_DISPLAY]
         try:
             user_dir = get_omnipose_user_models_dir()
             for p in sorted(user_dir.glob(f"*{USER_MODEL_EXTENSION}")):
@@ -1370,6 +1382,8 @@ class OmniposeSegTab(QWidget):
         """
         if display_name in BUILTIN_OMNIPOSE_MODELS:
             return (display_name, None)
+        if display_name == CELLPOSE_SAM_DISPLAY:
+            return (CELLPOSE_SAM_MODEL, None)
         try:
             user_path = get_omnipose_user_models_dir() / f"{display_name}{USER_MODEL_EXTENSION}"
             if user_path.is_file():
@@ -1481,7 +1495,7 @@ class OmniposeSegTab(QWidget):
         if not Path(self.file_path.text()).exists():
             QMessageBox.warning(self, "Not Found", "The selected file or folder does not exist.")
             return
-        
+
         is_folder = self._is_folder_mode()
         if is_folder:
             # Folder mode: show file selection dialog first
@@ -1968,6 +1982,28 @@ class OmniposeSegTab(QWidget):
                     try:
                         import os
                         from urllib.error import HTTPError  # required for except HTTPError below (must be in scope for all paths)
+                        # Cellpose-SAM: official cellpose + cpsam (no cellpose_omni)
+                        if current_model_type == CELLPOSE_SAM_MODEL:
+                            status_label.setText("Loading Cellpose-SAM...")
+                            QApplication.processEvents()
+                            try:
+                                from cellpose import models as cellpose_models
+                                preview_dialog.model = cellpose_models.CellposeModel(
+                                    pretrained_model="cpsam",
+                                    gpu=current_use_gpu,
+                                )
+                            except ImportError as e:
+                                status_label.setText("Cellpose-SAM requires: pip install cellpose")
+                                get_logger().exception("Cellpose-SAM preview: cellpose not installed")
+                                return False
+                            except Exception as e:
+                                status_label.setText("Cellpose-SAM load failed: %s" % (str(e)[:60],))
+                                get_logger().exception("Cellpose-SAM preview load failed")
+                                return False
+                            preview_dialog._last_model_key = current_key
+                            preview_dialog._last_use_gpu = current_use_gpu
+                            set_loaded_status()
+                            return True
                         # User-trained model: load by path
                         if pretrained_path and os.path.isfile(pretrained_path):
                             status_label.setText("Loading user model...")
@@ -2460,13 +2496,25 @@ class OmniposeSegTab(QWidget):
                        str(params.get("model_type") or params.get("pretrained_model") or "bact_phase_omni"),
                        bool(params.get("use_gpu", True)))
             
+            def _preview_to_three_channel(img):
+                """Convert image to 3-channel (H, W, 3) for Cellpose-SAM. Grayscale duplicated."""
+                arr = np.asarray(img, dtype=np.float32)
+                if arr.ndim == 2:
+                    return np.stack([arr, arr, arr], axis=-1)
+                if arr.ndim == 3:
+                    if arr.shape[-1] == 1:
+                        return np.concatenate([arr, arr, arr], axis=-1)
+                    if arr.shape[-1] == 3:
+                        return arr
+                return np.stack([arr, arr, arr], axis=-1)
+
             # Preview segmentation worker: runs model.eval + upscale in background; emits (request_id, frame_idx, cache_key, mask, error_str).
             # No Qt or cache writes in the worker; main thread applies result and writes cache.
             class OmniposePreviewWorker(QThread):
                 finished = pyqtSignal(int, int, tuple, object, str)  # request_id, frame_idx, cache_key, mask, error_str
 
                 def __init__(self, request_id, frame_idx, cache_key, model, seg_frame, diameter_seg, flow_threshold,
-                             mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen):
+                             mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=False):
                     super().__init__()
                     self._request_id = request_id
                     self._frame_idx = frame_idx
@@ -2480,11 +2528,31 @@ class OmniposeSegTab(QWidget):
                     self._orig_h, self._orig_w = orig_h, orig_w
                     self._seg_scale = seg_scale
                     self._is_frozen = is_frozen
+                    self._is_cellpose_sam = is_cellpose_sam
 
                 def run(self):
                     mask, error_str = None, ""
                     try:
-                        if self._is_frozen:
+                        if self._is_cellpose_sam:
+                            img_3ch = _preview_to_three_channel(self._seg_frame)
+                            result = self._model.eval(
+                                [img_3ch],
+                                diameter=self._diameter_seg if (self._diameter_seg and self._diameter_seg > 0) else None,
+                                flow_threshold=self._flow_threshold,
+                                cellprob_threshold=self._mask_threshold,
+                                batch_size=1,
+                            )
+                            if isinstance(result, tuple):
+                                batch_masks = result[0]
+                            else:
+                                batch_masks = result
+                            if isinstance(batch_masks, np.ndarray) and batch_masks.ndim == 3:
+                                mask = batch_masks[0].astype(np.uint16)
+                            else:
+                                mask = np.asarray(batch_masks[0], dtype=np.uint16)
+                            if self._seg_scale < 1.0 and mask is not None:
+                                mask = upsample_mask_to_shape(mask, self._orig_h, self._orig_w)
+                        elif self._is_frozen:
                             max_retries = 3
                             for attempt in range(max_retries):
                                 try:
@@ -2606,7 +2674,10 @@ class OmniposeSegTab(QWidget):
                 mask_threshold = params['mask_threshold']
                 cluster = params['cluster']
                 # When diameter is 0 (GUI "auto"), use model default so we don't pass 0 or clamp to 1
-                default_diameters_preview = {"bact_phase_omni": 30.0, "bact_omni": 30.0, "bact_fluor_omni": 30.0}
+                default_diameters_preview = {
+                    "bact_phase_omni": 30.0, "bact_omni": 30.0, "bact_fluor_omni": 30.0,
+                    CELLPOSE_SAM_MODEL: 30.0,
+                }
                 effective_diameter = (diameter if (diameter is not None and diameter > 0) else
                                      default_diameters_preview.get(params.get("model_type") or "", 30.0))
                 # Diameter in downscaled image pixels (so Omnipose uses correct relative cell size)
@@ -2671,10 +2742,11 @@ class OmniposeSegTab(QWidget):
                     except RuntimeError:
                         pass  # Dialog or widgets already destroyed (e.g. user closed preview)
 
+                is_cellpose_sam = params.get("model_type") == CELLPOSE_SAM_MODEL
                 worker = OmniposePreviewWorker(
                     preview_dialog._seg_request_id, frame_idx, cache_key, preview_dialog.model,
                     seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster,
-                    orig_h, orig_w, seg_scale, is_frozen,
+                    orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=is_cellpose_sam,
                 )
                 preview_dialog._seg_worker_slot = _on_seg_worker_finished
                 worker.finished.connect(_on_seg_worker_finished)
@@ -3163,7 +3235,9 @@ class OmniposeSegTab(QWidget):
         path = get_checkable_model_path(model_type, user_path, ensure_builtin_cached=False)
         model_label = QLabel(f"Current model: {display}")
         if path is None and (model_type or user_path):
-            if model_type:
+            if model_type == CELLPOSE_SAM_MODEL:
+                model_label.setText(f"Current model: {display} (uses official cellpose + cpsam)")
+            elif model_type:
                 model_label.setText(f"Current model: {display} (not cached — enable 'Download built-in…' and run, or run segmentation once)")
             else:
                 model_label.setText(f"Current model: {display} (file not found)")
@@ -3330,6 +3404,9 @@ class OmniposeSegTab(QWidget):
                             except Exception as e:
                                 lines.append(f"Model check error: {e}")
                                 lines.append("")
+                        elif model_type == CELLPOSE_SAM_MODEL:
+                            lines.append("Cellpose-SAM: uses official cellpose package (cpsam). No .pth file to check.")
+                            lines.append("")
                         elif not any("Model resolve error" in ln for ln in lines):
                             lines.append("Model check skipped: no model file (user model missing or built-in not cached).")
                             lines.append("")

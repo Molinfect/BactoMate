@@ -8,6 +8,9 @@
 omnipose>=1.0.6,<3.0.0
 cellpose-omni>=0.6.0,<1.0.0
 
+# Cellpose-SAM (Omnipose tab → model "Cellpose-SAM")
+cellpose>=2.0.0
+
 # Image processing (upper bounds reduce resolver backtracking)
 numpy>=1.21.0,<3.0.0
 scipy>=1.7.0,<2.0.0

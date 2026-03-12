@@ -861,6 +861,142 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
     print("✓ Overlay saved")
 
 
+# Cellpose-SAM (official cellpose + cpsam): inference-only path when --model cellpose_sam
+CELLPOSE_SAM_MODEL = "cellpose_sam"
+
+
+def _to_three_channel(image):
+    """Convert image to 3-channel (H, W, 3) for Cellpose-SAM. Grayscale is duplicated."""
+    arr = np.asarray(image, dtype=np.float32)
+    if arr.ndim == 2:
+        return np.stack([arr, arr, arr], axis=-1)
+    if arr.ndim == 3:
+        if arr.shape[-1] == 1:
+            return np.concatenate([arr, arr, arr], axis=-1)
+        if arr.shape[-1] == 2:
+            return np.concatenate([arr, arr[..., 0:1]], axis=-1)
+        if arr.shape[-1] == 3:
+            return arr
+    raise ValueError(f"Cellpose-SAM expects 2D or 3-channel image; got shape {getattr(image, 'shape', '?')}")
+
+
+def process_frames_with_cellpose_sam(
+    frame_paths,
+    diameter=30.0,
+    flow_threshold=0.4,
+    mask_threshold=0.0,
+    use_gpu=True,
+    batch_size=8,
+):
+    """
+    Run Cellpose-SAM (official cellpose, pretrained_model='cpsam') on a list of frame paths.
+    Returns list of mask arrays (same length as frame_paths).
+    """
+    try:
+        from cellpose import models
+    except ImportError as e:
+        raise ImportError(
+            "Cellpose-SAM requires the official 'cellpose' package. "
+            "Install with: pip install cellpose"
+        ) from e
+
+    print("\nInitializing Cellpose-SAM model (cpsam)...")
+    model = models.CellposeModel(pretrained_model="cpsam", gpu=use_gpu)
+
+    masks = []
+    num_frames = len(frame_paths)
+    batch_size = max(1, min(batch_size, num_frames))
+    num_batches = (num_frames + batch_size - 1) // batch_size
+
+    for batch_idx in range(num_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, num_frames)
+        batch_paths = frame_paths[start:end]
+        batch_images = []
+        for p in batch_paths:
+            img = safe_imread(p)
+            if img.ndim == 3 and img.shape[0] < 10:
+                img = img[0]
+            batch_images.append(_to_three_channel(img))
+
+        batch_num = batch_idx + 1
+        print(f"Processing batch {batch_num}/{num_batches}: frames {start + 1}-{end} of {num_frames}")
+        result = model.eval(
+            batch_images,
+            diameter=diameter if diameter > 0 else None,
+            flow_threshold=flow_threshold,
+            cellprob_threshold=mask_threshold,
+            batch_size=len(batch_images),
+        )
+        if isinstance(result, tuple):
+            batch_masks = result[0]
+        else:
+            batch_masks = result
+        if isinstance(batch_masks, np.ndarray) and batch_masks.ndim == 3:
+            for i in range(batch_masks.shape[0]):
+                masks.append(batch_masks[i].astype(np.uint16))
+        else:
+            for m in batch_masks:
+                masks.append(np.asarray(m, dtype=np.uint16))
+
+        progress_pct = int((len(masks) / num_frames) * 100)
+        print(f"✓ Batch {batch_num}/{num_batches} complete: {len(masks)}/{num_frames} frames ({progress_pct}%)")
+
+    return masks
+
+
+def _run_cellpose_sam_pipeline(args, output_dir):
+    """Run full pipeline for Cellpose-SAM: split TIFF, segment, concatenate masks, optional overlay."""
+    frame_paths, temp_dir, _ = split_multipage_tiff(
+        args.input,
+        output_dir=args.save_frames if getattr(args, "save_frames", None) else None,
+        prefix="frame",
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    masks_output = os.path.join(output_dir, f"{Path(args.input).stem}_masks.tif")
+
+    try:
+        diameter = float(args.diameter) if getattr(args, "diameter", 0) else 30.0
+        if diameter <= 0:
+            diameter = 30.0
+        masks = process_frames_with_cellpose_sam(
+            frame_paths,
+            diameter=diameter,
+            flow_threshold=float(getattr(args, "flow_threshold", 0.4)),
+            mask_threshold=float(getattr(args, "mask_threshold", 0.0)),
+            use_gpu=not getattr(args, "no_gpu", False),
+            batch_size=int(getattr(args, "batch_size", 32)),
+        )
+        concatenate_masks(masks, masks_output, source_image_path=args.input)
+
+        if not getattr(args, "no_overlay", False):
+            overlay_dir = os.path.join(output_dir, "overlays")
+            os.makedirs(overlay_dir, exist_ok=True)
+            images = safe_imread(args.input)
+            if images.ndim == 3:
+                if images.shape[-1] < 10:
+                    images = images.transpose(2, 0, 1)[np.newaxis, ...]
+                else:
+                    images = images[:, np.newaxis, :, :]
+            elif images.ndim == 4:
+                if images.shape[-1] < 10:
+                    images = images.transpose(0, 3, 1, 2)
+                elif images.shape[0] < 10:
+                    images = images.transpose(1, 0, 2, 3)
+            overlay_output = os.path.join(overlay_dir, f"{Path(args.input).stem}_overlay.tif")
+            overlay_masks_on_images(images, masks, overlay_output)
+            print(f"  Overlay saved to: {overlay_output}")
+
+        print(f"\n{'='*60}")
+        print("✓ Cellpose-SAM processing complete!")
+        print(f"  Masks saved to: {masks_output}")
+        print(f"{'='*60}")
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            print("\nCleaning up temporary files...")
+            shutil.rmtree(temp_dir)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Batch process multipage TIFF sequences with Omnipose',
@@ -885,7 +1021,7 @@ Examples:
     parser.add_argument('--output', '-o', type=str, default=None,
                        help='Output directory (default: same as input)')
     parser.add_argument('--model', type=str, default='bact_phase_omni',
-                       help='Omnipose model type (e.g. bact_phase_omni) or path to a user-trained .pth model')
+                       help='Omnipose model (e.g. bact_phase_omni), path to .pth, or cellpose_sam for Cellpose-SAM')
     parser.add_argument('--diameter', type=float, default=0,
                        help='Cell diameter in pixels (0 for auto-detection, default: 0)')
     parser.add_argument('--channels', type=int, nargs=2, default=[0, 0],
@@ -927,7 +1063,12 @@ Examples:
     
     os.makedirs(output_dir, exist_ok=True)
     print(f"Output directory: {output_dir}")
-    
+
+    # Cellpose-SAM path: use official cellpose + cpsam (separate from Omnipose)
+    if args.model == CELLPOSE_SAM_MODEL:
+        _run_cellpose_sam_pipeline(args, output_dir)
+        return
+
     # Step 1: Split multipage TIFF
     frame_dir = args.save_frames if args.save_frames else None
     frame_paths, temp_dir, image_shape = split_multipage_tiff(

@@ -9,12 +9,14 @@ Usage:
     python -m bactimate
     bactimate   (after pip install -e .)
 """
-# Diagnostic for follow_build.py: record who is running (pid, parent, executable, argv0)
+# launch_chain.log: one line per start (pid, ppid, executable, argv0) for launch diagnostics.
+# Used by follow_build.py to verify how the .app was started. Safe to ignore or delete; not the main GUI log.
 if __name__ == "__main__":
     try:
         import os
         import sys
         chain_log = os.path.expanduser("~/Library/Logs/BactiMate/launch_chain.log")
+        os.makedirs(os.path.dirname(chain_log), exist_ok=True)
         with open(chain_log, "a") as f:
             f.write("MAIN_PY pid=%s ppid=%s executable=%s argv0=%s\n" % (
                 os.getpid(), os.getppid(), getattr(sys, "executable", ""), sys.argv[0] if sys.argv else ""

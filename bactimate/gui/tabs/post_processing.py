@@ -903,6 +903,8 @@ class PostProcessingTab(QWidget):
     # TIFF filename suffixes → channel name for grouping (stem must end with one of these).
     _CHANNEL_SUFFIXES = [
         ("_phase", "phase"), ("_Phase", "phase"),
+        ("_phase60x", "phase"), ("_Phase60X", "phase"), ("_phase40x", "phase"), ("_phase100x", "phase"),  # e.g. EM13748_AnTC_004_Phase60X
+        ("_fi", "FI"), ("_FI", "FI"),  # generic fluorescence (e.g. untitled_fi.tif + untitled_phase.tif → one merged tile)
         ("_gfp", "GFP"), ("_GFP", "GFP"), ("_egfp", "GFP"),
         ("_mscarlet", "mScarlet"), ("_mScarlet", "mScarlet"), ("_dsred", "dsRED"), ("_dsRed", "dsRED"),
         ("_mcherry", "mCherry"), ("_rfp", "RFP"),
@@ -978,19 +980,19 @@ class PostProcessingTab(QWidget):
             datasets.append({"type": "nd2", "path": p})
 
         if tiff_paths:
-            # Group TIFFs by base name (from _infer_channel_from_stem)
-            groups: dict[str, List[tuple[Path, str]]] = {}
-            for p in tiff_paths:
-                inferred = self._infer_channel_from_stem(p.stem)
-                if inferred:
-                    base, ch_name = inferred
-                    groups.setdefault(base, []).append((p, ch_name))
-                else:
-                    # No recognized channel suffix → one dataset per file (single channel)
-                    datasets.append({"type": "single_tiff", "path": p})
-            for base, channel_list in groups.items():
+            # Two or more TIFFs: one group → tile per file + one Merged tile (colors from filename when detected, else user can set in montage)
+            if len(tiff_paths) >= 2:
+                channel_list: List[tuple[Path, str]] = []
+                for p in tiff_paths:
+                    inferred = self._infer_channel_from_stem(p.stem)
+                    ch_name = inferred[1] if inferred else p.stem
+                    channel_list.append((p, ch_name))
                 channel_list.sort(key=lambda x: self._channel_sort_key(x[1]))
+                base = channel_list[0][0].stem if channel_list else "montage"
                 datasets.append({"type": "tiff_group", "base": base, "channels": channel_list})
+            else:
+                # Single TIFF: one tile only (no merge)
+                datasets.append({"type": "single_tiff", "path": tiff_paths[0]})
 
         return datasets
 
@@ -1006,11 +1008,16 @@ class PostProcessingTab(QWidget):
             return []
         if p.is_file():
             return [p] if p.suffix.lower() in self._MONTAGE_EXTS else []
-        # Folder: include all ND2 and TIFF
+        # Folder: include all ND2 and TIFF (deduplicate by resolved path so each file appears once)
         paths = []
+        seen = set()
         for ext in self._MONTAGE_EXTS:
-            paths.extend(p.glob(f"*{ext}"))
-        paths = [x for x in paths if x.is_file()]
+            for x in p.glob(f"*{ext}"):
+                if x.is_file():
+                    r = x.resolve()
+                    if r not in seen:
+                        seen.add(r)
+                        paths.append(x)
         return sorted(paths, key=lambda x: x.name)
 
     def _build_montage_array(
@@ -1157,12 +1164,28 @@ class PostProcessingTab(QWidget):
             try:
                 if path.suffix.lower() in (".tif", ".tiff"):
                     import tifffile
-                    arr = tifffile.imread(str(path), key=frame_index)
+                    try:
+                        arr = tifffile.imread(str(path))
+                    except Exception:
+                        arr = tifffile.imread(str(path), key=frame_index)
+                    arr = np.asarray(arr)
+                    # Single 2D: keep. (Y,X,C) C<=4: take first channel. (T,Y,X) or (T,C,Y,X): take first frame
+                    if arr.ndim == 3:
+                        if arr.shape[-1] in (1, 2, 3, 4):
+                            arr = arr[..., 0]
+                        else:
+                            arr = arr[frame_index]
+                    elif arr.ndim == 4:
+                        arr = arr[frame_index]
+                        if arr.shape[-1] in (1, 2, 3, 4):
+                            arr = arr[..., 0]
+                        elif arr.shape[0] in (1, 2, 3, 4):
+                            arr = np.transpose(arr, (1, 2, 0))[..., 0]
                 else:
                     arr = safe_imread(str(path))
                     if arr.ndim >= 3 and arr.shape[0] <= 4:
                         arr = arr[0]
-                arr = np.asarray(arr)
+                    arr = np.asarray(arr)
                 if arr.ndim > 2:
                     arr = arr[..., 0] if arr.shape[-1] <= 4 else arr[0]
                 return np.asarray(arr)
@@ -1305,8 +1328,10 @@ class PostProcessingTab(QWidget):
                 continue
             if per_tile_color_override and idx in per_tile_color_override and color_or_none is not None:
                 color_or_none = per_tile_color_override[idx]
-            # Rebuild merged tile from channel LUTs when user adjusted per-channel display range
-            if label.endswith(" Merged") and color_or_none is None and idx > 0 and per_tile_lut and any(i in per_tile_lut for i in range(idx)):
+            # Rebuild merged tile from preceding channel tiles when user adjusted color and/or LUT on any of them
+            has_lut = per_tile_lut and any(i in per_tile_lut for i in range(idx))
+            has_color_override = per_tile_color_override and any(i in per_tile_color_override for i in range(idx))
+            if label.endswith(" Merged") and color_or_none is None and idx > 0 and (has_lut or has_color_override):
                 try:
                     ch_arrays = [np.asarray(tiles[i][0]).squeeze() for i in range(idx)]
                     if all(a.ndim == 2 for a in ch_arrays) and len(ch_arrays) >= 1:
@@ -1324,7 +1349,7 @@ class PostProcessingTab(QWidget):
                             per_tile_color_override[i] if (per_tile_color_override and i in per_tile_color_override) else tiles[i][2]
                             for i in range(idx)
                         ]
-                        per_ch_lut = {i: per_tile_lut[i] for i in range(idx) if i in per_tile_lut}
+                        per_ch_lut = {i: per_tile_lut[i] for i in range(idx) if i in per_tile_lut} if per_tile_lut else {}
                         arr = _compose_merged_with_lut(arr_hwc, colors_ch, per_ch_lut)
                 except Exception:
                     pass
@@ -1548,6 +1573,7 @@ class PostProcessingTab(QWidget):
         main_layout.addWidget(lut_group)
 
         image_canvas = ImageCanvas()
+        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
         image_canvas.enable_drag_selection = True
         image_canvas.click_button = Qt.MouseButton.LeftButton
         image_canvas.selection_button = Qt.MouseButton.RightButton  # so left-click selects tile, not drag
@@ -1744,7 +1770,8 @@ class PostProcessingTab(QWidget):
             hist_canvas.draw()
             refresh_preview(reset_view=False)
 
-        def on_min_spin_changed() -> None:
+        def on_spin_editing_finished() -> None:
+            """Apply LUT when user finishes editing (Enter or focus leave). Lets you type full number without preview jumping on each digit."""
             if selected_index[0] is None or is_updating_lut[0]:
                 return
             is_updating_lut[0] = True
@@ -1753,17 +1780,8 @@ class PostProcessingTab(QWidget):
             finally:
                 is_updating_lut[0] = False
 
-        def on_max_spin_changed() -> None:
-            if selected_index[0] is None or is_updating_lut[0]:
-                return
-            is_updating_lut[0] = True
-            try:
-                apply_min_max_from_spinboxes()
-            finally:
-                is_updating_lut[0] = False
-
-        min_spin.valueChanged.connect(on_min_spin_changed)
-        max_spin.valueChanged.connect(on_max_spin_changed)
+        min_spin.editingFinished.connect(on_spin_editing_finished)
+        max_spin.editingFinished.connect(on_spin_editing_finished)
 
         def on_hist_press(event):
             if event.inaxes != hist_ax or event.xdata is None or selected_index[0] is None:
@@ -1831,15 +1849,16 @@ class PostProcessingTab(QWidget):
         update_histogram_for_tile(None)
 
         def on_update() -> None:
+            # Rebuild with current spacing/border/paths but keep existing per-tile LUT and color overrides
             result = self._build_montage_array(
                 return_layout=True,
+                per_tile_lut=dlg._per_tile_lut,
                 per_tile_color_override=getattr(self, "montage_tile_color_overrides", None) or {},
             )
             if result is None:
                 return
             out, new_layout = result
             dlg._layout = new_layout
-            dlg._per_tile_lut.clear()
             dlg._current_displayed = out
             selected_index[0] = None
             current_vmin[0], current_vmax[0] = None, None
@@ -1875,13 +1894,21 @@ class PostProcessingTab(QWidget):
         btn_row = QHBoxLayout()
         update_btn = QPushButton("Update")
         update_btn.setToolTip("Rebuild montage from main-window settings (paths, grid). Resets per-tile LUT.")
+        update_btn.setAutoDefault(False)
+        update_btn.setDefault(False)
         update_btn.clicked.connect(on_update)
         edit_colors_btn = QPushButton("Edit channel colors…")
         edit_colors_btn.setToolTip("Set display color per tile (phase, GFP, RFP, etc.). Default = auto from source.")
+        edit_colors_btn.setAutoDefault(False)
+        edit_colors_btn.setDefault(False)
         edit_colors_btn.clicked.connect(on_edit_colors)
         save_btn = QPushButton("Save montage")
+        save_btn.setAutoDefault(False)
+        save_btn.setDefault(False)
         save_btn.clicked.connect(on_save)
         close_btn = QPushButton("Close")
+        close_btn.setAutoDefault(False)
+        close_btn.setDefault(False)
         close_btn.clicked.connect(dlg.close)
         btn_row.addWidget(update_btn)
         btn_row.addWidget(edit_colors_btn)
@@ -1932,6 +1959,7 @@ class PostProcessingTab(QWidget):
         layout.addWidget(lut_group)
 
         image_canvas = ImageCanvas()
+        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
         layout.addWidget(image_canvas, 1)
 
         dlg._raw = raw.copy()
@@ -2111,6 +2139,7 @@ class PostProcessingTab(QWidget):
         layout = QVBoxLayout(dlg)
 
         image_canvas = ImageCanvas()
+        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
         image_canvas.set_pixmap(pixmap, (w, h), reset_view=True)
         layout.addWidget(image_canvas, 1)
 

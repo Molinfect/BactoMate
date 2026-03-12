@@ -1,6 +1,7 @@
 """
 Background workers for long-running tasks (subprocess runner, tracking, growth curve video).
 """
+import io
 import logging
 import os
 import subprocess
@@ -12,8 +13,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from bactimate.gui.log_config import get_logger, log_exception
-from bactimate.gui.paths import get_python_executable_for_subprocess
+from bactimate.gui.log_config import get_logger, log_exception, write_crash_log
+from bactimate.gui.paths import get_app_root, get_python_executable_for_subprocess
 
 
 class _TrackingLogHandler(logging.Handler):
@@ -79,8 +80,139 @@ class WorkerThread(QThread):
         tqdm_pattern = re.compile(r"^\d+%\s*\|[#\s]+\|\s*\d+/\d+\s*\[.*\]\s*$")
         return bool(tqdm_pattern.match(stripped))
 
+    def _run_script_in_process(self, module_path: str, main_name: str = "main", argv_first: str = None) -> bool:
+        """Run a script's main() in this thread (same interpreter = has bundled deps). argv_first = first argv element (e.g. script name)."""
+        old_argv = list(sys.argv)
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        buf = io.StringIO()
+        try:
+            if argv_first is not None:
+                sys.argv = [argv_first] + [str(a) for a in self.cmd_args]
+            else:
+                sys.argv = [str(self.script_path)] + [str(a) for a in self.cmd_args]
+            sys.stdout = buf
+            sys.stderr = buf
+            try:
+                import importlib
+                mod = importlib.import_module(module_path)
+                main_fn = getattr(mod, main_name)
+                code = main_fn()
+                if code is None:
+                    code = 0
+            except SystemExit as e:
+                c = getattr(e, "code", None)
+                code = c if isinstance(c, int) else (0 if c is None else 1)
+            finally:
+                sys.argv = old_argv
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+            output = buf.getvalue()
+            for line in output.splitlines():
+                line = line.strip()
+                if line:
+                    self.progress.emit(self.strip_ansi_codes(line) + "\n")
+            self.finished.emit(code == 0, output)
+            return True
+        except Exception as e:
+            sys.argv = old_argv
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            err_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+            write_crash_log("Worker (in-process script) failed:\n" + err_msg)
+            self.finished.emit(False, err_msg)
+            return True
+
+    def _run_convert_nd2_in_process(self) -> bool:
+        """Run convert_nd2_to_tif in this thread (same interpreter = has numpy)."""
+        return self._run_script_in_process("bactimate.scripts.convert_nd2_to_tif", argv_first=str(self.script_path))
+
+    def _run_batch_tiff_in_process(self) -> bool:
+        """Run batch_process_tiff_sequence in this thread (same interpreter = has numpy, cellpose_omni, etc.)."""
+        return self._run_script_in_process("bactimate.scripts.batch_process_tiff_sequence", argv_first=str(self.script_path))
+
+    def _run_analyze_cell_areas_in_process(self) -> bool:
+        """Run analyze_cell_areas via -m in this thread. cmd_args = [module_name, ...cli_args]."""
+        return self._run_module_main_in_process("bactimate.scripts.analyze_cell_areas", "analyze_cell_areas")
+
+    def _run_module_main_in_process(self, module_path: str, argv0: str) -> bool:
+        """Run a module's main() in this thread. cmd_args = [module_name, ...cli_args]. argv0 = first argv for the script."""
+        old_argv = list(sys.argv)
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        buf = io.StringIO()
+        try:
+            sys.argv = [argv0] + [str(a) for a in (self.cmd_args[1:] if len(self.cmd_args) > 1 else [])]
+            sys.stdout = buf
+            sys.stderr = buf
+            try:
+                import importlib
+                mod = importlib.import_module(module_path)
+                main_fn = getattr(mod, "main")
+                code = main_fn()
+                if code is None:
+                    code = 0
+            except SystemExit as e:
+                c = getattr(e, "code", None)
+                code = c if isinstance(c, int) else (0 if c is None else 1)
+            finally:
+                sys.argv = old_argv
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+            output = buf.getvalue()
+            for line in output.splitlines():
+                line = line.strip()
+                if line:
+                    self.progress.emit(self.strip_ansi_codes(line) + "\n")
+            self.finished.emit(code == 0, output)
+            return True
+        except Exception as e:
+            sys.argv = old_argv
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            err_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+            write_crash_log("Worker (%s in-process) failed:\n%s" % (argv0, err_msg))
+            self.finished.emit(False, err_msg)
+            return True
+
+    def _is_running_from_app_bundle(self) -> bool:
+        """True when app root is inside a .app bundle (e.g. Contents/Resources)."""
+        try:
+            root = get_app_root()
+            return "Contents/Resources" in str(root) or (root.parent / "MacOS").is_dir()
+        except Exception:
+            return False
+
     def run(self) -> None:
         try:
+            # When running from .app (or frozen): subprocess often has no numpy. Run scripts in-process.
+            # Use sys.frozen, app-bundle path, or script path inside BactiMate.app so in-process works.
+            from_app = self._is_running_from_app_bundle()
+            frozen = getattr(sys, "frozen", False) or getattr(sys, "__compiled__", False)
+            sp = Path(self.script_path) if self.script_path else Path("")
+            sp_str = str(self.script_path)
+            script_in_app = "BactiMate.app" in sp_str and "Contents" in sp_str
+            if from_app or frozen or script_in_app:
+                if "convert_nd2_to_tif" in sp.name or "convert_nd2_to_tif" in sp_str:
+                    self._run_convert_nd2_in_process()
+                    return
+                if "batch_process_tiff_sequence" in sp.name or "batch_process_tiff_sequence" in sp_str:
+                    self._run_batch_tiff_in_process()
+                    return
+                if self.script_path == "-m" and self.cmd_args:
+                    first = str(self.cmd_args[0])
+                    if "analyze_cell_areas" in first:
+                        self._run_analyze_cell_areas_in_process()
+                        return
+                    if "unet_analyze_patch_config" in first:
+                        self._run_module_main_in_process("bactimate.scripts.unet_analyze_patch_config", "unet_analyze_patch_config")
+                        return
+                    if "unet_train_patches" in first:
+                        self._run_module_main_in_process("bactimate.scripts.unet_train_patches", "unet_train_patches")
+                        return
+                    if "unet_predict_patches" in first:
+                        self._run_module_main_in_process("bactimate.scripts.unet_predict_patches", "unet_predict_patches")
+                        return
             python_exe = get_python_executable_for_subprocess()
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
@@ -136,11 +268,13 @@ class WorkerThread(QThread):
             if process.returncode == 0:
                 self.finished.emit(True, output)
             else:
+                write_crash_log("Worker script failed (exit %s):\n%s" % (process.returncode, output))
                 self.finished.emit(False, output)
         except Exception as e:
             self._process = None
             log_exception(get_logger(), "WorkerThread.run failed")
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+            write_crash_log("WorkerThread.run exception:\n" + error_msg)
             self.finished.emit(False, error_msg)
 
 
