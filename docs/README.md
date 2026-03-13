@@ -174,7 +174,7 @@ BactiMate can be packaged into a macOS `.app` bundle (venv + project files, no N
 1. **Setup:** `./setup/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
 2. **Icon (required for distributable app):** Ensure `img/logo2.png` is your desired app icon, then run `./build/create_icons.sh`. The build will fail with a clear error if no valid icon ends up in the bundle.
 3. **Build:** `./build/build_app_bundle.sh` → `BactiMate.app` (build verifies launcher, script, Python, and icon)
-4. **DMG:** `./build/create_dmg.sh` → `dist/BactiMate.dmg` (app + Applications symlink for drag‑to‑install)
+4. **DMG:** `./build/create_dmg.sh` → `dist/BactiMate.dmg` (app + Applications symlink + **Open BactiMate.command** for first-time open on new Macs)
 
 **Distribution checklist** (before shipping the DMG):
 
@@ -182,6 +182,7 @@ BactiMate can be packaged into a macOS `.app` bundle (venv + project files, no N
 - **Launch:** Double‑click the app (or `open BactiMate.app`) — it opens once.
 - **Reopen:** Quit the app, then double‑click again (or click the Dock icon if you pinned it). It must open again (see Troubleshooting if it doesn’t).
 - **Dock:** One BactiMate icon; after quit, clicking the pinned Dock icon reopens the app (pin by dragging BactiMate.app from Finder to the Dock).
+- **New Macs (no Apple Developer ID):** The DMG includes **Open BactiMate.command**. Tell users: after dragging BactiMate to Applications, double‑click that script once; it clears macOS quarantine so the app opens. Then they can open BactiMate.app normally.
 
 For structure and cross-machine notes, see the **[User Manual](BACTIMATE_USER_MANUAL.md)**.
 
@@ -194,6 +195,7 @@ For structure and cross-machine notes, see the **[User Manual](BACTIMATE_USER_MA
 - **"No bundled framework" / "Bundle requires Python" in bactimate_gui_*.log:** The .app does not ship its own Python; it uses the venv, which points at your Mac’s Python (e.g. Homebrew). On the build machine that’s normal and the app should run. Only relevant when moving the .app to another Mac without Python. Not the cause of "won’t reopen" on the same machine.
 - **Dock opens Python.app or wrong app after pinning:** The app uses a **native launcher** so the main process is BactiMate, not Python. After rebuilding with `./build/build_app_bundle.sh`: remove any old BactiMate/Python icon from the Dock, then **pin BactiMate.app** by dragging it from Finder onto the Dock. "Keep in Dock" from the running app should now pin BactiMate correctly. If you still see Python.app opening: rebuild the app and re-pin from Finder.
 - **Two Dock icons:** With the native launcher you should see only one BactiMate icon. If you still see two, remove the extra from the Dock and re-pin BactiMate.app from Finder.
+- **"App is damaged" on another Mac:** macOS shows this when the app is not signed with a Developer ID (we use ad‑hoc signing). No payment needed: the DMG includes **Open BactiMate.command**. User drags BactiMate to Applications, then double‑clicks that script once; it clears quarantine and opens the app. After that, opening BactiMate.app works. Alternatively: Right‑click BactiMate.app → Open (first time), or in Terminal: `xattr -cr /Applications/BactiMate.app`.
 - **PyQt6 (cocoa plugin):** `./setup/repair_pyqt6.sh`
 - **GUI won't start:** `source venv/bin/activate`, `pip show PyQt6`, `./setup/repair_pyqt6.sh`, or `./setup/setup_fresh_env.sh`
 - **Segmentation fault:** If the GUI crashes immediately after opening, try recreating the environment: `./setup/setup_fresh_env.sh`. If the crash happens when using a specific file type (e.g. CZI), the issue may be in that code path—report with file type and steps.

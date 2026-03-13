@@ -2,16 +2,16 @@
 """
 Apply all BactiMate compatibility patches in one place.
 Patches applied:
-1. peakdetect - scipy ifft import fix (scipy >= 1.10)
-2. cellpose_omni - model_type parameter fix (architecture detection)
-3. cellpose_omni - model URL fix (GitHub instead of Cellpose server)
-4. cellpose_omni - register bact_phase_affinity (checkpoint is 1-channel; do not set nchan=2)
-5. cellpose_omni transforms - trim to nchan after reshape (so 1-channel models get 1-channel input)
-6. cellpose_omni io - NumPy 2.0 safe TIFF read (newbyteorder removed in NumPy 2.0)
-7. cellpose_omni models - Cellpose.__init__ accepts pretrained_model (path) for user-trained models;
+1. cellpose_omni - model_type parameter fix (architecture detection)
+2. cellpose_omni - model URL fix (GitHub instead of Cellpose server)
+3. cellpose_omni - register bact_phase_affinity (checkpoint is 1-channel; do not set nchan=2)
+4. cellpose_omni transforms - trim to nchan after reshape (so 1-channel models get 1-channel input)
+5. cellpose_omni io - NumPy 2.0 safe TIFF read (newbyteorder removed in NumPy 2.0)
+6. cellpose_omni models - Cellpose.__init__ accepts pretrained_model (path) for user-trained models;
    nchan/nclasses from checkpoint top-level only; nclasses 2 or 3 (default 3), never infer 4 from state_dict
-8. cellpose_omni __main__ - pass channels to model.train() when nchan==2 so grayscale is duplicated to 2 channels
-9. cellpose_omni core - DataParallel unwrap when saving model (self.net.module.save_model when wrapped)
+7. cellpose_omni __main__ - pass channels to model.train() when nchan==2 so grayscale is duplicated to 2 channels
+8. cellpose_omni core - DataParallel unwrap when saving model (self.net.module.save_model when wrapped)
+(peakdetect patch exists but is not in the default list; BactiMate uses skimage for foci, not the peakdetect package.)
 """
 
 import sys
@@ -41,11 +41,12 @@ def _find_all_in_syspath(relative_path: str) -> list[Path]:
 
 
 def patch_peakdetect() -> bool:
-    """Patch peakdetect/peakdetect.py to fix scipy ifft import (scipy >= 1.10)."""
+    """Patch peakdetect/peakdetect.py to fix scipy ifft import (scipy >= 1.10).
+    BactiMate does not use the peakdetect package (foci use skimage.peak_local_max).
+    This patch is for environments that have peakdetect as a transitive dep; when absent we skip silently."""
     peakdetect_file = _find_in_syspath("peakdetect/peakdetect.py")
     if not peakdetect_file:
-        print("WARNING: Could not find peakdetect/peakdetect.py (package may not be installed yet)")
-        return False
+        return False  # not installed; skip silently (no warning)
 
     content = peakdetect_file.read_text()
     if "except ImportError:" in content and "scipy.fft" in content:
@@ -1343,8 +1344,8 @@ def patch_cellpose_omni_core_ntrain_label() -> bool:
 
 
 # Ordered list of (name, description, patch_func) for --only / --list. Names are used as: --only resnet_load,cellpose_pretrained
+# peakdetect omitted: BactiMate does not use it (foci use skimage); patch_peakdetect exists for --only peakdetect if needed
 PATCH_LIST = [
-    ("peakdetect", "peakdetect: scipy ifft compatibility", patch_peakdetect),
     ("cellpose_omni", "cellpose_omni: model_type + model URL", patch_cellpose_omni),
     ("transforms", "cellpose_omni transforms: nchan trim", patch_cellpose_omni_transforms),
     ("io", "cellpose_omni io: NumPy 2.0 TIFF read", patch_cellpose_omni_io),

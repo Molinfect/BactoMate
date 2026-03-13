@@ -214,6 +214,15 @@ class WorkerThread(QThread):
                         self._run_module_main_in_process("bactimate.scripts.unet_predict_patches", "unet_predict_patches")
                         return
             python_exe = get_python_executable_for_subprocess()
+            # Never use the .app launcher as subprocess Python: it would start a second GUI. Force in-process for our scripts.
+            exe_str = str(python_exe).lower()
+            if "bactimate" in exe_str and ("macos" in exe_str or exe_str.endswith("bactimate")):
+                if "convert_nd2_to_tif" in sp.name or "convert_nd2_to_tif" in sp_str:
+                    self._run_convert_nd2_in_process()
+                    return
+                if "batch_process_tiff_sequence" in sp.name or "batch_process_tiff_sequence" in sp_str:
+                    self._run_batch_tiff_in_process()
+                    return
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"

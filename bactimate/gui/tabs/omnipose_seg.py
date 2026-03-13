@@ -3089,8 +3089,8 @@ class OmniposeSegTab(QWidget):
             def start_preview():
                 preview_dialog.raise_()
                 preview_dialog.activateWindow()
-                # Use show_progress=False for the initial frame to avoid a progress dialog on top
-                update_display(0, show_progress=False)
+                # Show the same small "Processing" window as Re-segment so the user sees that segmentation is running
+                update_display(0, show_progress=True)
             # Short delay so the preview window has time to paint before we run segmentation
             QTimer.singleShot(80, start_preview)
 
