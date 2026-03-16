@@ -1060,7 +1060,7 @@ class UNetSegmentTab(QWidget):
             return
         if path.is_file():
             input_dir = path.parent
-            # When input is in a Tif_* folder, put masks in that folder's _segmentation_unet (like Omnipose uses _segmentation_omni)
+            # When input is in a Tif_* folder, put masks in that folder's _segmentation_unet (Omnipose uses _segmentation_<model>, e.g. _segmentation_bact_phase_omni)
             if path.parent.name.startswith("Tif_"):
                 output_dir = path.parent / "_segmentation_unet"
             else:

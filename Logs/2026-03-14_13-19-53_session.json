@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-08 14:24:21",
+  "timestamp": "2026-03-14 13:19:53",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
@@ -31,7 +31,8 @@
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
       "omnipose_use_tiled": true,
-      "performed": false
+      "performed": false,
+      "segment_filename_filter": ""
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -48,16 +49,16 @@
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
       "min_solidity": 0.7,
-      "min_area": 0.0,
+      "min_area": 2.0,
       "max_area": 0.0,
       "min_width": 0.0,
       "max_width": 0.0,
       "min_length": 0.0,
       "detailed": true,
-      "create_vis": true,
+      "create_vis": false,
       "export_csv": false,
       "exclude_border": false,
-      "create_combined_summary": false,
+      "create_combined_summary": true,
       "analyze_fi": true,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
@@ -71,9 +72,10 @@
       "foci_max_area_um2": 0.8,
       "foci_min_peak_raw": 0.0,
       "foci_min_focus_mean": 0.0,
-      "foci_exclude_outside_cells": false,
-      "file_path": "/Users/philipppopp/Desktop/2026-03-07/30min/Tif_files/_segmentation_omni/MOI5/",
-      "performed": false
+      "foci_exclude_outside_cells": true,
+      "foci_detection_mode": 1,
+      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/Tif_files/_segmentation_cellpose_sam/",
+      "performed": true
     },
     "tracking": {
       "model": "general_2d",

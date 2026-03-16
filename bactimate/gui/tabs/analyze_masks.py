@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bactimate.gui.analyze_masks_preview_vis import build_preview_vis
 from bactimate.gui.analysis_paths import analysis_dir_from_base, base_dir_for_mask, stem_from_mask_path
 from bactimate.gui.constants import PROJECT_ROOT
 from bactimate.gui.image_canvas import ImageCanvas
@@ -168,25 +169,40 @@ class AnalyzeMasksTab(QWidget):
         self.run_foci = QCheckBox("Run foci analysis")
         self.run_foci.setChecked(False)
         run_foci_row.addWidget(self.run_foci)
-        run_foci_row.addWidget(create_info_icon(
-            "Detect foci (bright spots) in the FI channel per frame; add foci count and a **Foci** sheet to Excel.\n\n"
-            "Foci sheet columns: foci_id, cell_id, frame, channel_name, y, x, intensity, Area (px), Area (µm²), "
-            "Mean intensity (focus blob), Rel intensity (peak/frame median), in_cell. Area (µm²) uses the pixel size from metadata or the tab setting.",
-            parent_widget=self
-        ))
-        run_foci_row.addSpacing(12)
+        run_foci_row.addSpacing(8)
         self.foci_exclude_outside_cells = QCheckBox("Exclude foci outside / rejected cells")
         self.foci_exclude_outside_cells.setChecked(False)
         run_foci_row.addWidget(self.foci_exclude_outside_cells)
+        run_foci_row.addSpacing(12)
+        run_foci_row.addWidget(QLabel("Detection:"))
+        self.foci_detection_mode = QComboBox()
+        self.foci_detection_mode.addItems(["Manual parameters", "Auto-detect (data-driven)", "Spotiflow (deep learning)"])
+        self.foci_detection_mode.setCurrentIndex(0)
+        self.foci_detection_mode.setMinimumContentsLength(18)
+        self.foci_detection_mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.foci_detection_mode.currentIndexChanged.connect(self._update_foci_mode_visibility)
+        run_foci_row.addWidget(self.foci_detection_mode, 0)
+        run_foci_row.addSpacing(8)
         run_foci_row.addWidget(create_info_icon(
-            "When checked: only foci inside accepted cells (cells that passed size/width filters) are "
-            "included in the Foci sheet and per-cell foci counts. Foci in the background and foci "
-            "inside rejected cells are excluded.\n\n"
-            "When unchecked: all detected foci are included (inside and outside cells).",
+            "**Run foci:** Detect bright spots in the FI channel per frame; add foci count and a **Foci** sheet to Excel "
+            "(foci_id, cell_id, frame, y, x, intensity, Area (px/µm²), Mean intensity, Rel intensity, in_cell).\n\n"
+            "**Exclude foci outside / rejected cells:** When checked, only foci inside accepted cells are included; "
+            "when unchecked, all detected foci are included.\n\n"
+            "**Detection:**\n"
+            "• **Manual:** Cell-first: we start from the mask and each cell. Inside each cell we find local maxima, "
+            "build the focus blob (connected pixels ≥ 80% of peak, same cell), then apply your filters (min peak, min/max area, min focus mean). "
+            "The per-cell factor (e.g. 1.6) compares the **focus blob mean** to the **mean of the rest of the cell** (cell minus focus); "
+            "a focus is kept only if focus mean ≥ factor × rest-of-cell mean. The focus never contributes to that baseline.\n"
+            "• **Auto-detect:** Cell-first, no manual thresholds; region-growing from each cell's brightest pixel.\n"
+            "• **Spotiflow:** Deep learning–based spot detection; very robust and threshold-free. Uses PyTorch; GPU recommended for speed.",
             parent_widget=self
         ))
         run_foci_row.addStretch()
         fi_content_layout.addLayout(run_foci_row)
+        # Manual parameters — shown only when Detection = Manual
+        self.foci_manual_params_container = QWidget()
+        foci_manual_layout = QVBoxLayout(self.foci_manual_params_container)
+        foci_manual_layout.setContentsMargins(0, 0, 0, 0)
         foci_params_row = QHBoxLayout()
         self.foci_min_rel_label = QLabel("Min relative intensity:")
         foci_params_row.addWidget(self.foci_min_rel_label)
@@ -194,11 +210,12 @@ class AnalyzeMasksTab(QWidget):
         self.foci_min_rel.setRange(0.5, 100.0)
         self.foci_min_rel.setValue(2.0)
         self.foci_min_rel.setDecimals(1)
+        self.foci_min_rel.setSingleStep(0.1)
         foci_params_row.addWidget(self.foci_min_rel)
         self.foci_min_rel_mode = QComboBox()
         self.foci_min_rel_mode.addItems(["per cell", "per frame", "both"])
         self.foci_min_rel_mode.setCurrentIndex(0)  # default: per cell (first in list)
-        self.foci_min_rel_mode.setToolTip("Per frame: frame median × factor. Per cell: (focus / cell mean FI) ≥ factor. Both: apply frame and cell factors.")
+        self.foci_min_rel_mode.setToolTip("Per frame: frame median × factor. Per cell: (focus blob mean) / (mean of cell excluding focus) ≥ factor. Both: apply frame and cell factors.")
         self.foci_min_rel_mode.currentTextChanged.connect(self._update_foci_mode_visibility)
         foci_params_row.addWidget(self.foci_min_rel_mode)
         # Second factor (cell) — visible only when mode is "both"
@@ -207,7 +224,8 @@ class AnalyzeMasksTab(QWidget):
         self.foci_min_rel_cell.setRange(0.5, 100.0)
         self.foci_min_rel_cell.setValue(2.0)
         self.foci_min_rel_cell.setDecimals(1)
-        self.foci_min_rel_cell.setToolTip("When mode is Both: minimum (focus intensity / cell mean FI) for in-cell foci.")
+        self.foci_min_rel_cell.setSingleStep(0.1)
+        self.foci_min_rel_cell.setToolTip("When mode is Both: minimum (focus blob mean) / (mean of cell excluding focus) for in-cell foci.")
         foci_params_row.addWidget(self.foci_min_rel_cell_label)
         foci_params_row.addWidget(self.foci_min_rel_cell)
         self.foci_min_rel_cell_label.setVisible(False)
@@ -219,13 +237,11 @@ class AnalyzeMasksTab(QWidget):
             "So if the image has a lot of dark background, the frame median is low and the threshold (median × factor) can be much lower than factor × cell mean — you may see more foci than expected. "
             "Example: frame median 500, factor 2 → threshold 1000 (raw); cell mean 1500 → 2× would be 3000, but we use 1000. "
             "Good when you want one global cutoff per image.\n\n"
-            "• Per cell: For each cell, only foci with (focus intensity / whole-cell mean FI) ≥ this value are kept. "
-            "The baseline is each cell’s mean intensity (not median). "
-            "A focus must be at least this many times brighter than the cell average. "
-            "Good when cells differ in brightness.\n\n"
-            "• Both: Apply two filters. First, exclude peaks below (frame median × Frame factor) — use the first number. "
-            "Then, for foci inside cells, keep only those with (focus intensity / cell mean FI) ≥ Cell factor — use the second number. "
-            "So you get a global cutoff and a per-cell cutoff.",
+            "• Per cell: For each cell, only foci where (focus blob mean) / (mean of rest of cell) ≥ this value are kept. "
+            "The focus blob is the connected region we built; the rest of the cell excludes it, so the focus never contributes to the baseline. "
+            "A focus must be at least this many times brighter than the cytoplasm. Good when cells differ in brightness.\n\n"
+            "• Both: First exclude peaks below (frame median × Frame factor). "
+            "Then, for in-cell foci, keep only those with (focus blob mean) / (mean of cell excluding focus) ≥ Cell factor.",
             parent_widget=self
         ))
         foci_params_row.addWidget(QLabel("Min separation (px):"))
@@ -251,8 +267,8 @@ class AnalyzeMasksTab(QWidget):
         self.foci_min_area_um2 = QDoubleSpinBox()
         self.foci_min_area_um2.setRange(0.001, 6.0)
         self.foci_min_area_um2.setDecimals(3)
-        self.foci_min_area_um2.setSingleStep(0.001)
-        self.foci_min_area_um2.setValue(0.200)
+        self.foci_min_area_um2.setSingleStep(0.01)
+        self.foci_min_area_um2.setValue(0.100)
         self.foci_min_area_um2.setFixedWidth(80)
         foci_params_row.addWidget(self.foci_min_area_um2)
         foci_params_row.addWidget(QLabel("Max area (µm²):"))
@@ -263,13 +279,13 @@ class AnalyzeMasksTab(QWidget):
         self.foci_max_area_um2 = QDoubleSpinBox()
         self.foci_max_area_um2.setRange(0.0, 6.0)
         self.foci_max_area_um2.setDecimals(3)
-        self.foci_max_area_um2.setSingleStep(0.001)
-        self.foci_max_area_um2.setValue(0.800)
+        self.foci_max_area_um2.setSingleStep(0.01)
+        self.foci_max_area_um2.setValue(0.400)
         self.foci_max_area_um2.setSpecialValueText("0 (no max)")
         self.foci_max_area_um2.setFixedWidth(80)
         foci_params_row.addWidget(self.foci_max_area_um2)
         foci_params_row.addStretch()
-        fi_content_layout.addLayout(foci_params_row)
+        foci_manual_layout.addLayout(foci_params_row)
         # Second row: optional brightness filters (below min rel intensity row)
         foci_params_row2 = QHBoxLayout()
         foci_params_row2.addWidget(QLabel("Min peak (raw):"))
@@ -301,8 +317,10 @@ class AnalyzeMasksTab(QWidget):
         self.foci_min_focus_mean.setSpecialValueText("0 (off)")
         foci_params_row2.addWidget(self.foci_min_focus_mean)
         foci_params_row2.addStretch()
-        fi_content_layout.addLayout(foci_params_row2)
-        self.foci_params_widgets = [self.foci_min_rel, self.foci_min_rel_mode, self.foci_min_rel_cell_label, self.foci_min_rel_cell, self.foci_min_separation, self.foci_min_area_um2, self.foci_max_area_um2, self.foci_min_peak_raw, self.foci_min_focus_mean, self.foci_exclude_outside_cells]
+        foci_manual_layout.addLayout(foci_params_row2)
+        fi_content_layout.addWidget(self.foci_manual_params_container)
+        # Manual-only widgets (Exclude foci outside is not here — it applies to all detection modes)
+        self.foci_params_widgets = [self.foci_min_rel, self.foci_min_rel_mode, self.foci_min_rel_cell_label, self.foci_min_rel_cell, self.foci_min_separation, self.foci_min_area_um2, self.foci_max_area_um2, self.foci_min_peak_raw, self.foci_min_focus_mean]
         self.fi_content.setVisible(False)
         fi_layout.addWidget(self.fi_content)
 
@@ -768,7 +786,7 @@ class AnalyzeMasksTab(QWidget):
             "Path to a mask TIFF file or folder of mask TIFFs to analyze.\n\n"
             "Single file: one *_analysis.xlsx and optional filter visualization TIFF.\n"
             "Folder: one analysis Excel per mask file (and optional combined summary if enabled in Options).\n\n"
-            "You can select the _segmentation_omni or _segmentation_unet folder even if it contains an overlays/ "
+            "You can select a segmentation folder (e.g. _segmentation_bact_phase_omni, _segmentation_unet) even if it contains an overlays/ "
             "subfolder or *_filter_visualization.tif files — those are ignored; only *_masks.tif (and similar) are used.",
             self,
         ))
@@ -1018,23 +1036,39 @@ class AnalyzeMasksTab(QWidget):
             self.run_foci.setEnabled(analyze_fi_on)
             if not analyze_fi_on:
                 self.run_foci.setChecked(False)
+        manual_foci = self._is_foci_manual_mode()
         for w in getattr(self, "foci_params_widgets", []):
-            w.setEnabled(analyze_fi_on and run_foci_on)
+            w.setEnabled(analyze_fi_on and run_foci_on and manual_foci)
         self._update_fi_contour_state()
         if hasattr(self, "_update_foci_mode_visibility"):
             self._update_foci_mode_visibility()
 
+    def _is_foci_manual_mode(self) -> bool:
+        """True if foci detection mode is Manual parameters (manual sliders apply)."""
+        if not getattr(self, "foci_detection_mode", None):
+            return True
+        return self.foci_detection_mode.currentIndex() == 0
+
     def _update_foci_mode_visibility(self) -> None:
-        """Show Frame/Cell factor labels and cell spinbox only when mode is 'both'."""
-        if not getattr(self, "foci_min_rel_mode", None):
-            return
-        is_both = self.foci_min_rel_mode.currentText().strip().lower() == "both"
-        if getattr(self, "foci_min_rel_label", None):
-            self.foci_min_rel_label.setText("Frame factor:" if is_both else "Min relative intensity:")
-        if getattr(self, "foci_min_rel_cell_label", None):
-            self.foci_min_rel_cell_label.setVisible(is_both)
-        if getattr(self, "foci_min_rel_cell", None):
-            self.foci_min_rel_cell.setVisible(is_both)
+        """Show/hide manual params block; show Frame/Cell factor labels when mode is 'both'; enable widgets when Detection = Manual."""
+        manual_foci = self._is_foci_manual_mode()
+        run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+        analyze_fi_on = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+        if getattr(self, "foci_manual_params_container", None) is not None:
+            self.foci_manual_params_container.setVisible(analyze_fi_on and run_foci_on and manual_foci)
+        if getattr(self, "foci_min_rel_mode", None):
+            is_both = self.foci_min_rel_mode.currentText().strip().lower() == "both"
+            if getattr(self, "foci_min_rel_label", None):
+                self.foci_min_rel_label.setText("Frame factor:" if is_both else "Min relative intensity:")
+            if getattr(self, "foci_min_rel_cell_label", None):
+                self.foci_min_rel_cell_label.setVisible(is_both)
+            if getattr(self, "foci_min_rel_cell", None):
+                self.foci_min_rel_cell.setVisible(is_both)
+        for w in getattr(self, "foci_params_widgets", []):
+            w.setEnabled(analyze_fi_on and run_foci_on and manual_foci)
+        # Exclude foci outside / rejected cells applies to all detection modes (Manual, Auto-detect, Spotiflow)
+        if hasattr(self, "foci_exclude_outside_cells"):
+            self.foci_exclude_outside_cells.setEnabled(analyze_fi_on and run_foci_on)
         self._update_fi_feedback()
 
     def _update_fi_contour_state(self, *_args):
@@ -1081,23 +1115,32 @@ class AnalyzeMasksTab(QWidget):
                     out.append(f)
             return out
 
+        def try_base(directory: Path, s: str) -> list[Path]:
+            out = []
+            for f in directory.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if matches_fi(f.stem, s):
+                    out.append(f)
+            return out
+
         found: list[Path] = search_in(search_dir)
         if not found and "_" in stem:
             base = stem.rsplit("_", 1)[0]
-            for f in search_dir.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                    continue
-                if matches_fi(f.stem, base):
-                    found.append(f)
+            found = try_base(search_dir, base)
+        # Fallback: stem like EM19763_NoPhage__Phase60X vs FI file EM19763_NoPhage_fi_foci_mScarlet — use part before "__"
+        if not found and "__" in stem:
+            base_double = stem.split("__")[0]
+            if base_double:
+                found = try_base(search_dir, base_double)
         if not found and search_dir.parent != search_dir:
             found = search_in(search_dir.parent)
             if not found and "_" in stem:
-                base = stem.rsplit("_", 1)[0]
-                for f in search_dir.parent.iterdir():
-                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                        continue
-                    if matches_fi(f.stem, base):
-                        found.append(f)
+                found = try_base(search_dir.parent, stem.rsplit("_", 1)[0])
+            if not found and "__" in stem:
+                base_double = stem.split("__")[0]
+                if base_double:
+                    found = try_base(search_dir.parent, base_double)
         return sorted(set(found), key=lambda p: p.name.lower())
 
     def _resolve_foci_paths_for_mask(self, mask_path: Path) -> list[Path]:
@@ -1128,23 +1171,32 @@ class AnalyzeMasksTab(QWidget):
                     out.append(f)
             return out
 
+        def try_base_foci(directory: Path, s: str) -> list[Path]:
+            out = []
+            for f in directory.iterdir():
+                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                if matches_foci(f.stem, s):
+                    out.append(f)
+            return out
+
         found_foci: list[Path] = search_in(search_dir)
         if not found_foci and "_" in stem:
             base = stem.rsplit("_", 1)[0]
-            for f in search_dir.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                    continue
-                if matches_foci(f.stem, base):
-                    found_foci.append(f)
+            found_foci = try_base_foci(search_dir, base)
+        # Fallback: stem like EM19763_NoPhage__Phase60X vs FI/foci file EM19763_NoPhage_fi_foci_mScarlet — use part before "__"
+        if not found_foci and "__" in stem:
+            base_double = stem.split("__")[0]
+            if base_double:
+                found_foci = try_base_foci(search_dir, base_double)
         if not found_foci and search_dir.parent != search_dir:
             found_foci = search_in(search_dir.parent)
             if not found_foci and "_" in stem:
-                base = stem.rsplit("_", 1)[0]
-                for f in search_dir.parent.iterdir():
-                    if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                        continue
-                    if matches_foci(f.stem, base):
-                        found_foci.append(f)
+                found_foci = try_base_foci(search_dir.parent, stem.rsplit("_", 1)[0])
+            if not found_foci and "__" in stem:
+                base_double = stem.split("__")[0]
+                if base_double:
+                    found_foci = try_base_foci(search_dir.parent, base_double)
         return sorted(set(found_foci), key=lambda p: p.name.lower())
 
     def _resolve_phase_path_for_mask(self, mask_path: Path) -> Path | None:
@@ -1297,6 +1349,7 @@ class AnalyzeMasksTab(QWidget):
         cols += [c for c in long_df.columns if c not in cols]
         long_df = long_df[cols]
         wide_df = None
+        overview_df = None  # Per-file overview for single-time-point analyses
         wide_err = None
         try:
             if "Frame" not in long_df.columns:
@@ -1306,18 +1359,95 @@ class AnalyzeMasksTab(QWidget):
                 if not frames:
                     wide_err = "Summary sheets have no Frame values"
                 else:
+                    # Single time point (e.g. one frame per file): build per-file overview instead of Frame-centric wide
+                    single_time_point = len(frames) == 1
+                    if single_time_point:
+                        overview_rows = []
+                        for f in long_df["File"].unique().tolist():
+                            sub_summary = long_df[long_df["File"] == f].iloc[0]
+                            row = {"File": f}
+                            for c in ["Number of Cells", "Total Cell Area (µm²)", "Total Cell Area (Relative)"]:
+                                if c in sub_summary.index:
+                                    row[c] = sub_summary[c]
+                            # Enrich from Per-Cell Data for this file
+                            path_for_file = next((Path(p) for p in excel_paths if Path(p).stem.replace("_analysis", "").replace("_masks_analysis", "") == f), None)
+                            if path_for_file is None:
+                                path_for_file = next((Path(p) for p in excel_paths if f in Path(p).stem), None)
+                            if path_for_file is not None:
+                                per_cell = per_cell_cache.get(path_for_file)
+                                if per_cell is not None and not per_cell.empty:
+                                    n_cells = len(per_cell)
+                                    row["Number of Cells"] = n_cells
+                                    if "Total Cell Area (µm²)" not in row and "Area (µm²)" in per_cell.columns:
+                                        row["Total Cell Area (µm²)"] = per_cell["Area (µm²)"].sum()
+                                    # Cells with foci
+                                    foci_col = None
+                                    for cand in ("Number of Foci", "GFP_foci_count", "FI_foci_count"):
+                                        if cand in per_cell.columns:
+                                            foci_col = cand
+                                            break
+                                    if foci_col is not None:
+                                        n_with_foci = (per_cell[foci_col].fillna(0) > 0).sum()
+                                        row["Cells with foci"] = int(n_with_foci)
+                                    # Mean FI (whole cell)
+                                    for fi_col in ("Mean FI Intensity (whole cell)", "Mean FI Intensity"):
+                                        if fi_col in per_cell.columns:
+                                            row["Mean FI (cells)"] = per_cell[fi_col].mean()
+                                            break
+                                    # Mean Foci intensity (over cells that have foci, or all)
+                                    if "Foci Mean Intensity" in per_cell.columns:
+                                        row["Mean Foci intensity"] = per_cell["Foci Mean Intensity"].mean()
+                            overview_rows.append(row)
+                        overview_df = pd.DataFrame(overview_rows)
+                        # Prefer column order for readability
+                        pref = ["File", "Number of Cells", "Total Cell Area (µm²)", "Total Cell Area (Relative)", "Cells with foci", "Mean FI (cells)", "Mean Foci intensity"]
+                        extra = [c for c in overview_df.columns if c not in pref]
+                        overview_df = overview_df[[c for c in pref if c in overview_df.columns] + extra]
+                    # Frame-centric wide table (for growth/video, multi-frame); add per-frame stats from Per-Cell when available
                     wide_data = {"Frame": frames}
+                    # Per (file, frame) aggregates from Per-Cell Data for extra columns
+                    per_file_frame_agg: dict = {}
+                    for p in excel_paths:
+                        p = Path(p)
+                        per_cell = per_cell_cache.get(p)
+                        if per_cell is None or per_cell.empty or "Frame" not in per_cell.columns:
+                            continue
+                        f_name = p.stem.replace("_analysis", "").replace("_masks_analysis", "")
+                        per_file_frame_agg[f_name] = {}
+                        foci_col = next((c for c in ("Number of Foci", "GFP_foci_count", "FI_foci_count") if c in per_cell.columns), None)
+                        fi_col = next((c for c in ("Mean FI Intensity (whole cell)", "Mean FI Intensity") if c in per_cell.columns), None)
+                        foci_mean_col = "Foci Mean Intensity" if "Foci Mean Intensity" in per_cell.columns else None
+                        for frame_val in per_cell["Frame"].dropna().unique():
+                            fr = int(frame_val) if frame_val == frame_val else None
+                            if fr is None:
+                                continue
+                            pc = per_cell[per_cell["Frame"] == frame_val]
+                            agg = {}
+                            if foci_col is not None:
+                                agg["cells_with_foci"] = int((pc[foci_col].fillna(0) > 0).sum())
+                            if fi_col is not None:
+                                agg["mean_fi"] = pc[fi_col].mean()
+                            if foci_mean_col is not None:
+                                agg["mean_foci"] = pc[foci_mean_col].mean()
+                            per_file_frame_agg[f_name][fr] = agg
                     for f in long_df["File"].unique().tolist():
-                        # Drop duplicate Frame rows per file so set_index/reindex don't raise
                         sub = long_df[long_df["File"] == f].drop_duplicates(subset=["Frame"], keep="first").set_index("Frame")
                         for col in ["Total Cell Area (µm²)", "Total Cell Area (Relative)", "Number of Cells"]:
                             if col in sub.columns:
                                 wide_data[f"{f}_{col}"] = sub.reindex(frames)[col].values
+                        # Per-frame stats from Per-Cell (cells with foci, mean FI, mean foci)
+                        agg_by_frame = per_file_frame_agg.get(f, {})
+                        wide_data[f"{f}_Cells with foci"] = [agg_by_frame.get(fr, {}).get("cells_with_foci", None) for fr in frames]
+                        wide_data[f"{f}_Mean FI (cells)"] = [agg_by_frame.get(fr, {}).get("mean_fi", None) for fr in frames]
+                        wide_data[f"{f}_Mean Foci intensity"] = [agg_by_frame.get(fr, {}).get("mean_foci", None) for fr in frames]
                     wide_df = pd.DataFrame(wide_data)
         except Exception as e:
             wide_err = str(e)
             wide_df = None
-        if wide_df is None or wide_df.empty:
+            overview_df = None
+        # Use overview as main sheet when single time point, else wide
+        sheet_df = overview_df if (overview_df is not None and not overview_df.empty) else wide_df
+        if sheet_df is None or sheet_df.empty:
             if wide_err:
                 _log(f"Combined summary: wide table build failed — {wide_err}\n")
             return False
@@ -1343,8 +1473,9 @@ class AnalyzeMasksTab(QWidget):
             from openpyxl import Workbook
             wb = Workbook()
             ws = wb.active
-            ws.title = "Combined Summary (wide)"
-            for row in dataframe_to_rows(wide_df, index=False, header=True):
+            sheet_title = "Combined Summary (overview)" if (overview_df is not None and not overview_df.empty) else "Combined Summary (wide)"
+            ws.title = sheet_title
+            for row in dataframe_to_rows(sheet_df, index=False, header=True):
                 ws.append(row)
             if match_log is not None:
                 n_masks, n_tif, lines = match_log
@@ -1687,6 +1818,8 @@ class AnalyzeMasksTab(QWidget):
             d["foci_min_focus_mean"] = self.foci_min_focus_mean.value()
         if hasattr(self, "foci_exclude_outside_cells"):
             d["foci_exclude_outside_cells"] = self.foci_exclude_outside_cells.isChecked()
+        if hasattr(self, "foci_detection_mode"):
+            d["foci_detection_mode"] = self.foci_detection_mode.currentIndex()
         path_txt = (self.file_path.text() or "").strip()
         if path_txt:
             d["file_path"] = path_txt
@@ -1807,6 +1940,13 @@ class AnalyzeMasksTab(QWidget):
                 pass
         if "foci_exclude_outside_cells" in data and hasattr(self, "foci_exclude_outside_cells"):
             self.foci_exclude_outside_cells.setChecked(bool(data["foci_exclude_outside_cells"]))
+        if "foci_detection_mode" in data and hasattr(self, "foci_detection_mode"):
+            try:
+                idx = int(data["foci_detection_mode"])
+                if 0 <= idx < self.foci_detection_mode.count():
+                    self.foci_detection_mode.setCurrentIndex(idx)
+            except (TypeError, ValueError):
+                pass
         if "file_path" in data and data.get("file_path"):
             self.file_path.setText(str(data["file_path"]).strip())
         if "performed" in data:
@@ -2162,20 +2302,36 @@ class AnalyzeMasksTab(QWidget):
             preview_dialog._dialog_closed = False
             preview_dialog._close_pending = False
 
-            # Worker: runs filter pipeline in background; emits (request_id, frame_idx, accepted_list, rejected_list, all_list, num_objects, error_str)
+            # Worker: runs filter pipeline + builds overlay in background; main thread only scales and displays
             class AnalyzeMasksPreviewWorker(QThread):
-                finished = pyqtSignal(int, int, list, list, list, int, str)
+                progress = pyqtSignal(int, str)  # percent 0-100, message for progress dialog
+                # finished: rid, fid, acc_list, rej_list, all_list, n_obj, err, vis, peaks_for_hover, n_foci, raw_median_fi, min_rel, mode_txt
+                finished = pyqtSignal(int, int, list, list, list, int, str, object, object, int, object, object, str)
 
-                def __init__(self, request_id: int, frame_idx: int, mask_cleaned: np.ndarray, params: dict):
+                def __init__(
+                    self,
+                    request_id: int,
+                    frame_idx: int,
+                    mask_cleaned: np.ndarray,
+                    params: dict,
+                    fi_image: Optional[np.ndarray],
+                    display_params: dict,
+                    skip_vis: bool,
+                ):
                     super().__init__()
                     self._request_id = request_id
                     self._frame_idx = frame_idx
                     self._mask_cleaned = np.asarray(mask_cleaned).copy()
                     self._params = dict(params)
+                    self._fi_image = np.asarray(fi_image).copy() if fi_image is not None else None
+                    self._display_params = dict(display_params) if display_params else {}
+                    self._skip_vis = bool(skip_vis)
 
                 def run(self) -> None:
                     err = ""
                     accepted_list, rejected_list, all_list, num_objects = [], [], [], 0
+                    vis, peaks_for_hover = None, None
+                    n_foci_total, raw_median_fi, min_rel, mode_txt = 0, None, None, ""
                     try:
                         from bactimate.scripts.analyze_cell_areas import (
                             calculate_cell_properties,
@@ -2183,11 +2339,13 @@ class AnalyzeMasksTab(QWidget):
                             filter_by_size,
                         )
                         params = self._params
+                        self.progress.emit(20, "Computing cell properties... (20%)")
                         properties = calculate_cell_properties(
                             self._mask_cleaned,
                             pixel_size=params["pixel_size"],
                             exclude_border=params.get("exclude_border", False),
                         )
+                        self.progress.emit(45, "Filtering shape... (45%)")
                         rod_shaped = filter_rod_shaped_cells(
                             properties,
                             min_aspect_ratio=params["min_aspect_ratio"],
@@ -2195,6 +2353,7 @@ class AnalyzeMasksTab(QWidget):
                             min_eccentricity=params["min_eccentricity"],
                             min_solidity=params["min_solidity"],
                         )
+                        self.progress.emit(70, "Applying size filter... (70%)")
                         filtered = filter_by_size(
                             rod_shaped,
                             min_area_um2=params.get("min_area"),
@@ -2209,6 +2368,22 @@ class AnalyzeMasksTab(QWidget):
                         rejected_list = list(rejected_labels)
                         all_list = list(all_labels)
                         num_objects = len(all_labels)
+                        self.progress.emit(85, "Building overlay... (85%)")
+                        if not self._skip_vis:
+                            dp = self._display_params
+                            progress_cb = lambda p, m: self.progress.emit(p, m)
+                            vis, peaks_for_hover, n_foci_total, raw_median_fi, min_rel, mode_txt = build_preview_vis(
+                                self._mask_cleaned,
+                                set(accepted_list),
+                                set(rejected_list),
+                                self._fi_image,
+                                dp.get("do_fi_contour", False),
+                                dp.get("fi_contour_thickness_val", 1),
+                                dp.get("run_foci", False),
+                                dp.get("foci_snapshot"),
+                                progress_callback=progress_cb,
+                            )
+                        self.progress.emit(90, "Ready to draw... (90%)")
                     except Exception as e:
                         err = str(e)
                     self.finished.emit(
@@ -2219,6 +2394,12 @@ class AnalyzeMasksTab(QWidget):
                         all_list,
                         num_objects,
                         err,
+                        vis,
+                        peaks_for_hover if peaks_for_hover is not None else [],
+                        n_foci_total,
+                        raw_median_fi,
+                        min_rel,
+                        mode_txt,
                     )
 
             def _apply_filter_result_to_ui(frame_idx, accepted_list, rejected_list, all_list, num_objects, skip_vis, foci_snapshot=None):
@@ -2596,7 +2777,10 @@ class AnalyzeMasksTab(QWidget):
                     progress_dialog.setAutoClose(False)
                     progress_dialog.setAutoReset(False)
                     progress_dialog.setValue(0)
+                    progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
                     progress_dialog.show()
+                    progress_dialog.raise_()
+                    progress_dialog.activateWindow()
                     QApplication.processEvents()
                     
                     def check_cancelled():
@@ -2680,7 +2864,10 @@ class AnalyzeMasksTab(QWidget):
                             progress_dialog.setAutoClose(False)
                             progress_dialog.setAutoReset(False)
                             progress_dialog.setValue(10)
+                            progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
                             progress_dialog.show()
+                            progress_dialog.raise_()
+                            progress_dialog.activateWindow()
                             progress_dialog.canceled.connect(check_cancelled)
                             QApplication.processEvents()
                     
@@ -2696,7 +2883,9 @@ class AnalyzeMasksTab(QWidget):
                     _mode = (self.foci_min_rel_mode.currentText().strip().lower() if getattr(self, "foci_min_rel_mode", None) else "") or "per_cell"
                     ps = float(self.pixel_size.value() or 0.108)
                     min_sz, max_sz = self._foci_area_um2_to_px(ps)
+                    detection_mode = self.foci_detection_mode.currentIndex() if getattr(self, "foci_detection_mode", None) else 0
                     preview_dialog._preview_foci_snapshot = {
+                        "detection_mode": detection_mode,
                         "min_rel": self.foci_min_rel.value() if hasattr(self, "foci_min_rel") else 2.0,
                         "mode": _mode,
                         "cell_factor": (self.foci_min_rel_cell.value() if _mode == "both" and hasattr(self, "foci_min_rel_cell") else self.foci_min_rel.value()) if hasattr(self, "foci_min_rel") else 2.0,
@@ -2725,7 +2914,7 @@ class AnalyzeMasksTab(QWidget):
                         QApplication.processEvents()
                         preview_dialog._preview_progress_dialog = progress_dialog
 
-                    def _on_preview_worker_finished(rid, fid, acc_list, rej_list, all_list, n_obj, err):
+                    def _on_preview_worker_finished(rid, fid, acc_list, rej_list, all_list, n_obj, err, vis, peaks_for_hover, n_foci_total, raw_median_fi, min_rel, mode_txt):
                         try:
                             if getattr(preview_dialog, "_close_pending", False):
                                 write_gui_log_line("Preview", "Filter Effects Preview: worker finished, closing dialog (was deferred)")
@@ -2746,14 +2935,14 @@ class AnalyzeMasksTab(QWidget):
                                 update_preview(getattr(preview_dialog, "_preview_current_requested_frame", 0))
                                 return
                             prog = getattr(preview_dialog, "_preview_progress_dialog", None)
-                            if prog is not None:
-                                try:
-                                    prog.close()
-                                except Exception:
-                                    pass
-                                preview_dialog._preview_progress_dialog = None
                             preview_dialog._preview_worker = None
                             if err:
+                                if prog is not None:
+                                    try:
+                                        prog.close()
+                                    except Exception:
+                                        pass
+                                    preview_dialog._preview_progress_dialog = None
                                 stack = getattr(preview_dialog, "_preview_stack", None)
                                 if stack is not None and stack.currentIndex() == 1:
                                     stack.setCurrentIndex(0)
@@ -2764,11 +2953,105 @@ class AnalyzeMasksTab(QWidget):
                                 QMessageBox.warning(preview_dialog, "Preview Error", "Could not update preview:\n%s" % err)
                                 return
                             foci_snapshot = getattr(preview_dialog, "_preview_foci_snapshot", None)
-                            _apply_filter_result_to_ui(
-                                fid, acc_list, rej_list, all_list, n_obj,
-                                getattr(preview_dialog, "_preview_skip_vis", False),
-                                foci_snapshot=foci_snapshot,
-                            )
+                            if prog is not None:
+                                try:
+                                    prog.setLabelText("Drawing preview... (95%)")
+                                    prog.setValue(95)
+                                    QApplication.processEvents()
+                                except Exception:
+                                    pass
+                            if vis is not None:
+                                # Fast path: overlay already built in worker; main thread only scales and displays
+                                accepted_labels = set(acc_list)
+                                rejected_labels = set(rej_list)
+                                preview_dialog.current_frame = fid
+                                stack = getattr(preview_dialog, "_preview_stack", None)
+                                if stack is not None and stack.currentIndex() == 1:
+                                    stack.setCurrentIndex(0)
+                                dummy_mask = np.zeros(vis.shape[:2], dtype=np.int32)
+                                vis_scaled, _ = scale_for_preview(vis, dummy_mask)
+                                pixmap = to_qpixmap(vis_scaled)
+                                image_canvas.set_pixmap(pixmap, (vis_scaled.shape[1], vis_scaled.shape[0]), reset_view=False)
+                                do_fi_contour = bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked())
+                                fi_contour_thickness_val = self.fi_contour_thickness.value() if hasattr(self, "fi_contour_thickness") else 1
+                                run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+                                title = f"Frame {fid + 1}/{num_frames}"
+                                legend = f"Green=Accepted ({len(accepted_labels)} cells)  Red=Rejected ({len(rejected_labels)})"
+                                if fi_images is not None and self.analyze_fi.isChecked() and do_fi_contour:
+                                    legend += f"  Magenta=Contour (t={fi_contour_thickness_val})"
+                                if run_foci:
+                                    legend += f"  |  Orange=foci ({n_foci_total})"
+                                    if raw_median_fi is not None and min_rel is not None:
+                                        legend += f"  [raw median FI: {raw_median_fi:.0f}  (× {min_rel} = threshold)]"
+                                    elif raw_median_fi is not None and mode_txt and "cell" in mode_txt:
+                                        legend += f"  [per-cell filter applied]"
+                                title_label.setText(f"{Path(mask_path).name}  |  {title}  |  {legend}")
+                                if peaks_for_hover and run_foci:
+                                    h_vis, w_vis = vis.shape[0], vis.shape[1]
+                                    h_s, w_s = vis_scaled.shape[0], vis_scaled.shape[1]
+                                    scale_x = w_s / w_vis if w_vis else 1
+                                    scale_y = h_s / h_vis if h_vis else 1
+                                    mask = masks[fid]
+                                    label_to_mean_fi = {}
+                                    if fi_images is not None and fid < len(fi_images):
+                                        fi_flat = np.asarray(fi_images[fid], dtype=np.float64)
+                                        if fi_flat.ndim > 2:
+                                            fi_flat = fi_flat[:, :, 0] if fi_flat.shape[2] < 10 else fi_flat[0, :, :]
+                                        if fi_flat.shape[:2] == mask.shape[:2]:
+                                            for lab in accepted_labels:
+                                                cell_mask = (mask == lab)
+                                                if np.any(cell_mask):
+                                                    cell_pixels = fi_flat[cell_mask]
+                                                    label_to_mean_fi[lab] = float(np.mean(cell_pixels)) if cell_pixels.size > 0 else np.nan
+                                    mode_txt_hover = ((foci_snapshot or {}).get("mode") or "per_cell").strip().lower()
+                                    ps = float(self.pixel_size.value()) if hasattr(self, "pixel_size") else 0
+                                    hover_list = []
+                                    for p in peaks_for_hover:
+                                        yi, xi = int(p["y"]), int(p["x"])
+                                        x_disp = xi * scale_x
+                                        y_disp = yi * scale_y
+                                        cell_mean = None
+                                        area_px = max(1, int(p.get("size_px", 0)))
+                                        r_img = (area_px / np.pi) ** 0.5
+                                        r_disp = max(4.0, min(20.0, r_img * min(scale_x, scale_y)))
+                                        parts = ["Peak at (%d, %d)" % (xi, yi), "peak raw intensity: %.0f" % p.get("intensity", 0)]
+                                        if ps > 0 and area_px >= 0:
+                                            parts.append("area (µm²): %.3f" % (area_px * (ps ** 2)))
+                                        if "mean_intensity" in p:
+                                            parts.append("mean_intensity: %.0f" % p["mean_intensity"])
+                                        if 0 <= yi < mask.shape[0] and 0 <= xi < mask.shape[1]:
+                                            cell_id = int(mask[yi, xi])
+                                            cell_mean = label_to_mean_fi.get(cell_id)
+                                            if cell_mean is not None and np.isfinite(cell_mean):
+                                                parts.append("cell_id: %d  cell mean FI: %.0f" % (cell_id, cell_mean))
+                                        if "cell" in mode_txt_hover and cell_mean is not None and cell_mean > 0:
+                                            peak_val = p.get("intensity", 0) or 0
+                                            parts.append("rel_intensity: %.2f (peak / cell mean FI)" % (peak_val / cell_mean))
+                                        elif "rel_intensity" in p:
+                                            parts.append("rel_intensity: %.2f (peak / frame median)" % p["rel_intensity"])
+                                        hover_list.append((x_disp, y_disp, "\n".join(parts), r_disp))
+                                    image_canvas.set_foci_hover_data(hover_list)
+                                else:
+                                    image_canvas.set_foci_hover_data(None)
+                                info_label.setText(f"Accepted: {len(accepted_labels)} | Rejected: {len(rejected_labels)} | Total: {len(all_list)}")
+                                reapply_btn.setEnabled(True)
+                                frame_spin.setEnabled(True)
+                                preview_dialog._updating_preview = False
+                            else:
+                                _apply_filter_result_to_ui(
+                                    fid, acc_list, rej_list, all_list, n_obj,
+                                    True,
+                                    foci_snapshot=foci_snapshot,
+                                )
+                            if prog is not None:
+                                try:
+                                    prog.setLabelText("Done. (100%)")
+                                    prog.setValue(100)
+                                    QApplication.processEvents()
+                                    prog.close()
+                                except Exception:
+                                    pass
+                                preview_dialog._preview_progress_dialog = None
                         except RuntimeError:
                             pass  # Dialog or widgets already destroyed (e.g. user closed preview)
                         except Exception as e:
@@ -2790,10 +3073,40 @@ class AnalyzeMasksTab(QWidget):
                             except Exception:
                                 pass
 
+                    def _on_preview_progress(percent: int, msg: str):
+                        p = getattr(preview_dialog, "_preview_progress_dialog", None)
+                        if p is not None and not cancelled:
+                            try:
+                                p.setValue(percent)
+                                p.setLabelText(msg)
+                                QApplication.processEvents()
+                            except Exception:
+                                pass
+
+                    fi_image_for_worker = None
+                    if fi_images is not None and frame_idx < len(fi_images):
+                        fi_img = fi_images[frame_idx]
+                        if fi_img is not None:
+                            fi_image_for_worker = np.asarray(fi_img)
+                            if fi_image_for_worker.ndim > 2:
+                                fi_image_for_worker = fi_image_for_worker[:, :, 0] if fi_image_for_worker.shape[2] < 10 else fi_image_for_worker[0, :, :]
+                    display_params = {
+                        "do_fi_contour": bool(getattr(self, "analyze_fi_contour", None) and self.analyze_fi_contour.isChecked()),
+                        "fi_contour_thickness_val": self.fi_contour_thickness.value() if hasattr(self, "fi_contour_thickness") else 1,
+                        "run_foci": bool(getattr(self, "run_foci", None) and self.run_foci.isChecked()),
+                        "foci_snapshot": getattr(preview_dialog, "_preview_foci_snapshot", None),
+                    }
                     worker = AnalyzeMasksPreviewWorker(
-                        preview_dialog._preview_request_id, frame_idx, mask_cleaned, params,
+                        preview_dialog._preview_request_id,
+                        frame_idx,
+                        mask_cleaned,
+                        params,
+                        fi_image_for_worker,
+                        display_params,
+                        skip_visualization,
                     )
                     preview_dialog._preview_worker_slot = _on_preview_worker_finished
+                    worker.progress.connect(_on_preview_progress)
                     worker.finished.connect(_on_preview_worker_finished)
                     preview_dialog._preview_worker = worker
                     worker.start()
@@ -3115,6 +3428,7 @@ class AnalyzeMasksTab(QWidget):
                     cmd_args.append('--no-fi-contour')
                 if getattr(self, "run_foci", None) and self.run_foci.isChecked():
                     cmd_args.append('--run-foci')
+                    cmd_args.extend(['--foci-detection-mode', str(self.foci_detection_mode.currentIndex() if getattr(self, 'foci_detection_mode', None) else 0)])
                     cmd_args.extend(['--foci-min-rel', str(self.foci_min_rel.value())])
                     mode_txt = self.foci_min_rel_mode.currentText().strip().lower() if getattr(self, 'foci_min_rel_mode', None) else ''
                     if mode_txt == 'both':
@@ -3319,6 +3633,7 @@ class AnalyzeMasksTab(QWidget):
                     cmd_args.append('--no-fi-contour')
                 if getattr(self, "run_foci", None) and self.run_foci.isChecked():
                     cmd_args.append('--run-foci')
+                    cmd_args.extend(['--foci-detection-mode', str(self.foci_detection_mode.currentIndex() if getattr(self, 'foci_detection_mode', None) else 0)])
                     cmd_args.extend(['--foci-min-rel', str(self.foci_min_rel.value())])
                     mode_txt = self.foci_min_rel_mode.currentText().strip().lower() if getattr(self, 'foci_min_rel_mode', None) else ''
                     if mode_txt == 'both':

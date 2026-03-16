@@ -112,7 +112,7 @@ class TrackingTab(QWidget):
         path_layout.addWidget(create_info_icon(
             "Path to a mask TIFF file or folder of mask TIFFs to track.\n\n"
             "Single file: leave Batch unchecked and select a mask TIFF (Browse File).\n"
-            "Folder: check Batch in Tracking Parameters and select a folder (e.g. _segmentation_omni or _segmentation_unet); "
+            "Folder: check Batch in Tracking Parameters and select a folder (e.g. _segmentation_bact_phase_omni, _segmentation_unet); "
             "tracking runs for each mask in the folder (one or more).\n\n"
             "Outputs are always written to a _tracking folder at the same level as the segmentation folder.",
             self,
@@ -645,7 +645,7 @@ class TrackingTab(QWidget):
             self._update_tracking_button_state()
 
     def select_folder(self):
-        """Open folder dialog to select a folder (e.g. _segmentation_omni or _segmentation_unet)."""
+        """Open folder dialog to select a folder (e.g. _segmentation_bact_phase_omni, _segmentation_unet)."""
         folder_path = QFileDialog.getExistingDirectory(
             self, "Select Folder Containing Mask Files", get_default_browse_dir()
         )

@@ -1078,30 +1078,24 @@ class PostProcessingTab(QWidget):
             return np.clip(out, 0.0, 1.0)
 
         def _compose_merged(arr_hwc: np.ndarray, colors: List[tuple]) -> np.ndarray:
-            """Merge: phase contrast (gray) as visible base + FI channels in their colors. Percentile LUT so weak channels aren't black."""
+            """Merge: each channel in its assigned color (including the first). Uses percentile LUT so weak channels aren't black."""
             return _compose_merged_with_lut(arr_hwc, colors, {})
 
         def _compose_merged_with_lut(arr_hwc: np.ndarray, colors: List[tuple], per_ch_lut: dict) -> np.ndarray:
-            """Like _compose_merged but use per_ch_lut[channel_index] = (vmin, vmax) when present."""
+            """Merge: each channel contributes in its color (colors[0] for channel 0, etc.). Phase/first channel no longer forced to gray."""
             h, w = arr_hwc.shape[0], arr_hwc.shape[1]
             C = arr_hwc.shape[-1]
-            phase = _normalize_plane_with_lut(arr_hwc[..., 0], *(per_ch_lut.get(0) or (None, None))) if C >= 1 else np.zeros((h, w), dtype=np.float64)
-            fi_rgb = np.zeros((h, w, 3), dtype=np.float64)
-            for c in range(1, min(C, len(colors))):
+            comp_rgb = np.zeros((h, w, 3), dtype=np.float64)
+            for c in range(min(C, len(colors))):
                 vmin, vmax = per_ch_lut.get(c) or (None, None)
                 plane = _normalize_plane_with_lut(arr_hwc[..., c], vmin, vmax)
                 r, g, b = colors[c]
-                fi_rgb[..., 0] += plane * r
-                fi_rgb[..., 1] += plane * g
-                fi_rgb[..., 2] += plane * b
-            if fi_rgb.max() > 1e-9:
-                fi_rgb = fi_rgb / fi_rgb.max()
-            phase_weight = 0.45
-            out = np.zeros((h, w, 3), dtype=np.float64)
-            out[..., 0] = phase_weight * phase + (1 - phase_weight) * fi_rgb[..., 0]
-            out[..., 1] = phase_weight * phase + (1 - phase_weight) * fi_rgb[..., 1]
-            out[..., 2] = phase_weight * phase + (1 - phase_weight) * fi_rgb[..., 2]
-            out = out / max(out.max(), 1e-9)
+                comp_rgb[..., 0] += plane * r
+                comp_rgb[..., 1] += plane * g
+                comp_rgb[..., 2] += plane * b
+            if comp_rgb.max() > 1e-9:
+                comp_rgb = comp_rgb / comp_rgb.max()
+            out = comp_rgb / max(comp_rgb.max(), 1e-9)
             return (out * 255).clip(0, 255).astype(np.uint8)
 
         def load_nd2_or_multichannel_tiff(path: Path, frame_index: int = 0) -> Optional[tuple[np.ndarray, List[str], List[tuple], int]]:
@@ -1353,9 +1347,10 @@ class PostProcessingTab(QWidget):
                         arr = _compose_merged_with_lut(arr_hwc, colors_ch, per_ch_lut)
                 except Exception:
                     pass
-            # Resolve (vmin, vmax) for this tile: per_tile_lut override, else global, else percentile
+            # Resolve (vmin, vmax) for this tile: per_tile_lut override, else global, else percentile.
+            # Merged tile has no LUT: it is fully determined by the channel tiles' LUTs and colors.
             vmin_override, vmax_override = None, None
-            if per_tile_lut and idx in per_tile_lut:
+            if per_tile_lut and idx in per_tile_lut and not label.endswith(" Merged"):
                 vmin_override, vmax_override = per_tile_lut[idx]
                 if vmax_override <= vmin_override:
                     vmax_override = vmin_override + 1e-9
@@ -1737,13 +1732,20 @@ class PostProcessingTab(QWidget):
             if idx is None:
                 return
             selected_index[0] = idx
-            if idx in dlg._per_tile_lut:
-                current_vmin[0], current_vmax[0] = dlg._per_tile_lut[idx]
-            else:
-                current_vmin[0], current_vmax[0] = None, None
             labels = layout.get("tile_labels", [])
             label = labels[idx] if idx < len(labels) else f"Tile {idx}"
-            selected_label.setText(f"Selected: tile {idx} — {label}. Drag the histogram lines to set display range.")
+            is_merged_tile = label.endswith(" Merged")
+            if is_merged_tile:
+                lut_group.setEnabled(False)
+                selected_label.setText(f"Selected: tile {idx} — {label}. The merged image has no separate LUT; it is derived from the channel tiles above. Adjust those tiles to change the merge.")
+                current_vmin[0], current_vmax[0] = None, None
+            else:
+                lut_group.setEnabled(True)
+                if idx in dlg._per_tile_lut:
+                    current_vmin[0], current_vmax[0] = dlg._per_tile_lut[idx]
+                else:
+                    current_vmin[0], current_vmax[0] = None, None
+                selected_label.setText(f"Selected: tile {idx} — {label}. Drag the histogram lines to set display range.")
             update_histogram_for_tile(idx)
 
         def apply_min_max_from_spinboxes() -> None:
@@ -1883,15 +1885,25 @@ class PostProcessingTab(QWidget):
                 return
             try:
                 from PIL import Image
-                Image.fromarray(dlg._current_displayed).save(path)
+                img = Image.fromarray(dlg._current_displayed)
+                dpi = int(dlg._export_dpi_combo.currentText().split()[0])
+                if path.lower().endswith((".png", ".tif", ".tiff")):
+                    img.save(path, dpi=(dpi, dpi))
+                else:
+                    img.save(path)
                 self.parent_window.log_output(f"Montage saved: {path}\n")
-                QMessageBox.information(dlg, "Montage", f"Saved to:\n{path}")
+                dlg.close()
             except Exception as e:
                 QMessageBox.warning(dlg, "Montage", f"Save failed: {e}")
 
         refresh_preview(reset_view=True)
 
         btn_row = QHBoxLayout()
+        btn_row.addWidget(QLabel("PNG DPI:"))
+        dlg._export_dpi_combo = QComboBox()
+        dlg._export_dpi_combo.addItems(["300 DPI", "600 DPI", "900 DPI", "1200 DPI", "2400 DPI"])
+        dlg._export_dpi_combo.setToolTip("Resolution (DPI) for PNG/TIFF export. Applied when you save from this preview.")
+        btn_row.addWidget(dlg._export_dpi_combo)
         update_btn = QPushButton("Update")
         update_btn.setToolTip("Rebuild montage from main-window settings (paths, grid). Resets per-tile LUT.")
         update_btn.setAutoDefault(False)
@@ -2092,9 +2104,14 @@ class PostProcessingTab(QWidget):
                 return
             try:
                 from PIL import Image
-                Image.fromarray(dlg._current_displayed).save(path)
+                img = Image.fromarray(dlg._current_displayed)
+                dpi = int(dlg._export_dpi_combo.currentText().split()[0])
+                if path.lower().endswith((".png", ".tif", ".tiff")):
+                    img.save(path, dpi=(dpi, dpi))
+                else:
+                    img.save(path)
                 self.parent_window.log_output(f"Scale bar image saved: {path}\n")
-                QMessageBox.information(dlg, "Scale bar", f"Saved to:\n{path}")
+                dlg.close()
             except Exception as e:
                 QMessageBox.warning(dlg, "Scale bar", f"Save failed: {e}")
 
@@ -2102,6 +2119,11 @@ class PostProcessingTab(QWidget):
         refresh_preview(reset_view=True)
 
         btn_row = QHBoxLayout()
+        btn_row.addWidget(QLabel("PNG DPI:"))
+        dlg._export_dpi_combo = QComboBox()
+        dlg._export_dpi_combo.addItems(["300 DPI", "600 DPI", "900 DPI", "1200 DPI", "2400 DPI"])
+        dlg._export_dpi_combo.setToolTip("Resolution (DPI) for PNG/TIFF export. Applied when you save from this preview.")
+        btn_row.addWidget(dlg._export_dpi_combo)
         update_btn = QPushButton("Update")
         update_btn.setToolTip(
             "Reload image and redraw scale bar using current main-window settings (pixel size, length, position, font size, etc.). Resets zoom/pan to fit."

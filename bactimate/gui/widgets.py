@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -169,15 +170,22 @@ def show_file_selection_dialog(
     files,
     title="Select Files",
     message="Select files to process (all selected by default):",
+    initial_filename_filter="",
+    return_filename_filter=False,
 ):
     """
     Show a dialog with checkboxes for file selection.
 
+    initial_filename_filter: if non-empty, pre-fill "Select matching" and apply it so
+        files whose name contains this string (case-insensitive) are selected at open.
+    return_filename_filter: if True, return (selected_files, filter_string) or (None, None);
+        otherwise return selected_files or None (backward compatible).
+
     Returns:
-        List of selected file paths, or None if cancelled.
+        List of selected file paths (or (list, filter_str) if return_filename_filter), or None if cancelled.
     """
     if not files:
-        return None
+        return (None, None) if return_filename_filter else None
 
     dialog = QDialog(parent)
     dialog.setWindowTitle(title)
@@ -195,6 +203,19 @@ def show_file_selection_dialog(
     deselect_all_btn = QPushButton("Deselect All")
     button_layout.addWidget(select_all_btn)
     button_layout.addWidget(deselect_all_btn)
+    # "Select matching" row: line edit + button
+    filter_label = QLabel("Select TIF files containing:")
+    filter_label.setStyleSheet("color: #cccccc;")
+    filter_edit = QLineEdit()
+    filter_edit.setPlaceholderText("e.g. phase")
+    filter_edit.setClearButtonEnabled(True)
+    if initial_filename_filter:
+        filter_edit.setText(initial_filename_filter.strip())
+    select_matching_btn = QPushButton("Select matching")
+    select_matching_btn.setToolTip("Select all files whose name contains the text above (case-insensitive).")
+    button_layout.addWidget(filter_label)
+    button_layout.addWidget(filter_edit, 1)
+    button_layout.addWidget(select_matching_btn)
     button_layout.addStretch()
     layout.addLayout(button_layout)
 
@@ -215,8 +236,23 @@ def show_file_selection_dialog(
         for item in file_items:
             item.setCheckState(Qt.CheckState.Unchecked)
 
+    def select_matching():
+        text = (filter_edit.text() or "").strip().lower()
+        if not text:
+            select_all()
+            return
+        for item in file_items:
+            path = item.data(Qt.ItemDataRole.UserRole)
+            name = (path.name if hasattr(path, "name") else str(path)).lower()
+            item.setCheckState(Qt.CheckState.Checked if text in name else Qt.CheckState.Unchecked)
+
     select_all_btn.clicked.connect(select_all)
     deselect_all_btn.clicked.connect(deselect_all)
+    select_matching_btn.clicked.connect(select_matching)
+
+    # Apply initial filter when dialog opens so re-run starts with matching files selected
+    if initial_filename_filter and (initial_filename_filter.strip().lower()):
+        select_matching()
 
     layout.addWidget(file_list)
 
@@ -237,7 +273,12 @@ def show_file_selection_dialog(
             item = file_list.item(i)
             if item.checkState() == Qt.CheckState.Checked:
                 selected_files.append(item.data(Qt.ItemDataRole.UserRole))
+        filter_used = (filter_edit.text() or "").strip() if return_filename_filter else ""
+        if return_filename_filter:
+            return (selected_files if selected_files else None, filter_used)
         return selected_files if selected_files else None
+    if return_filename_filter:
+        return (None, None)
     return None
 
 

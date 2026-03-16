@@ -144,7 +144,7 @@ class ND2ConversionTab(QWidget):
         self.re_run_analysis_btn.clicked.connect(self._apply_session_to_path)
         self.re_run_analysis_btn.setEnabled(False)
         re_run_info_icon = create_info_icon(
-            "Re-run analysis: Set the path above to your new file or folder (can be different from the session log). Choose a session log (JSON). The app applies all parameters from that session (FI, z-stack, foci, model, filters, etc.) and runs the full pipeline on this path: conversion → segment → analyze → tracking. Outputs go next to the input (Tif_files, _segmentation_omni, etc.). Same analysis type, different data.",
+            "Re-run analysis: Set the path above to your new file or folder (can be different from the session log). Choose a session log (JSON). The app applies all parameters from that session (FI, z-stack, foci, model, filters, etc.) and runs the full pipeline on this path: conversion → segment → analyze → tracking. Outputs go next to the input (Tif_files, _segmentation_<model>, etc.). Same analysis type, different data.",
             self,
         )
         self.file_path.textChanged.connect(self._update_re_run_analysis_enabled)
@@ -1594,10 +1594,9 @@ class ND2ConversionTab(QWidget):
         
         file_path_obj = Path(self.file_path.text())
         
-        # Check if it's a folder - if so, show file selection dialog
+        # When path is a folder: use the first supported file for preview (same as conversion defaults). No "select a file" dialog.
         if file_path_obj.is_dir():
             folder = file_path_obj
-            # Find all supported files in the folder
             supported_files = sorted(
                 list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
                 list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
@@ -1605,132 +1604,27 @@ class ND2ConversionTab(QWidget):
                 list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
                 list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
             )
-            
             if not supported_files:
-                QMessageBox.warning(self, "No Files Found", 
-                                  "No supported microscopy files (ND2, LIF, CZI, TIFF) found in the selected folder.")
+                QMessageBox.warning(self, "No Files Found",
+                                    "No supported microscopy files (ND2, LIF, CZI, TIFF) found in the selected folder.")
                 return
-            
-            # Show file selection dialog
-            file_dialog = QDialog(self)
-            file_dialog.setWindowTitle("Select File for Preview")
-            file_dialog.setMinimumSize(500, 400)
-            
-            layout = QVBoxLayout()
-            
-            # Label
-            label = QLabel("Select a file to preview:")
-            label.setStyleSheet("color: #ffffff; font-size: 11pt; padding: 10px;")
-            layout.addWidget(label)
-            
-            # List widget with file names
-            file_list = QListWidget()
-            file_list.setStyleSheet(
-                "QListWidget {"
-                "background-color: #2b2b2b;"
-                "color: #ffffff;"
-                "font-size: 11pt;"
-                "border: 1px solid #555555;"
-                "border-radius: 4px;"
-                "padding: 5px;"
-                "}"
-                "QListWidget::item {"
-                "padding: 8px;"
-                "border-bottom: 1px solid #3a3a3a;"
-                "}"
-                "QListWidget::item:selected {"
-                "background-color: #5D6D7E;"
-                "color: #ffffff;"
-                "}"
-                "QListWidget::item:hover {"
-                "background-color: #3a3a3a;"
-                "}"
-            )
-            
-            # Add file names to list
-            for f in supported_files:
-                file_list.addItem(f.name)
-            
-            # Select first item by default
-            if file_list.count() > 0:
-                file_list.setCurrentRow(0)
-            
-            # Enable double-click to accept
-            def on_item_double_clicked(item):
-                file_dialog.accept()
-            
-            file_list.itemDoubleClicked.connect(on_item_double_clicked)
-            
-            layout.addWidget(file_list)
-            
-            # Buttons
-            button_layout = QHBoxLayout()
-            button_layout.addStretch()
-            
-            cancel_btn = QPushButton("Cancel")
-            cancel_btn.setStyleSheet(
-                "QPushButton {"
-                "background-color: #5D6D7E;"
-                "color: white;"
-                "font-weight: bold;"
-                "padding: 6px 12px;"
-                "border: none;"
-                "border-radius: 4px;"
-                "}"
-                "QPushButton:hover {"
-                "background-color: #34495E;"
-                "}"
-            )
-            cancel_btn.clicked.connect(file_dialog.reject)
-            button_layout.addWidget(cancel_btn)
-            
-            ok_btn = QPushButton("Preview")
-            ok_btn.setStyleSheet(
-                "QPushButton {"
-                "background-color: #2196F3;"
-                "color: white;"
-                "font-weight: bold;"
-                "padding: 6px 12px;"
-                "border: none;"
-                "border-radius: 4px;"
-                "}"
-                "QPushButton:hover {"
-                "background-color: #1976D2;"
-                "}"
-            )
-            ok_btn.clicked.connect(file_dialog.accept)
-            button_layout.addWidget(ok_btn)
-            
-            layout.addLayout(button_layout)
-            file_dialog.setLayout(layout)
-            
-            # Show dialog and get selected file
-            if file_dialog.exec() == QDialog.DialogCode.Accepted:
-                current_item = file_list.currentItem()
-                if current_item:
-                    selected_file_name = current_item.text()
-                    selected_file = folder / selected_file_name
-                    
-                    # Load info for the selected file (so we know file_type, channels, etc.) but do NOT change the path
-                    original_path = self.file_path.text()
-                    self.file_path.setText(str(selected_file))
-                    self.load_file_info(str(selected_file))
-                    
-                    if self.file_info:
-                        file_type = self.file_info.get('file_type', 'nd2')
-                        if file_type == 'nd2':
-                            self._preview_nd2()
-                        elif file_type == 'lif':
-                            self._preview_lif()
-                        elif file_type == 'czi':
-                            self._preview_czi()
-                        elif file_type == 'tiff':
-                            self._preview_tiff()
-                        else:
-                            QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
-                    
-                    # Restore path to folder so Convert still runs on the folder (preview choice must not change path)
-                    self.file_path.setText(original_path)
+            first_file = supported_files[0]
+            original_path = self.file_path.text()
+            self.file_path.setText(str(first_file))
+            self.load_file_info(str(first_file))
+            if self.file_info:
+                file_type = self.file_info.get("file_type", "nd2")
+                if file_type == "nd2":
+                    self._preview_nd2()
+                elif file_type == "lif":
+                    self._preview_lif()
+                elif file_type == "czi":
+                    self._preview_czi()
+                elif file_type == "tiff":
+                    self._preview_tiff()
+                else:
+                    QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
+            self.file_path.setText(original_path)
             return
         
         # Single file mode - check if file info is loaded
@@ -4130,4 +4024,47 @@ class ND2ConversionTab(QWidget):
                 pass
         if "performed" in data:
             self._performed_this_session = bool(data["performed"])
+
+    def apply_channel_options_from_session(self, data: dict) -> None:
+        """Apply only FI/Foci/bleach/Z-project channel checkboxes from session data.
+        Use after loading a different file (e.g. on Re-run) so the new file's channel list
+        gets the same FI/Foci selection as the original session."""
+        if not isinstance(data, dict):
+            return
+        if "bleach_fluorescence_channels" in data and getattr(self, "bleach_channel_checks", None):
+            try:
+                states = data["bleach_fluorescence_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.bleach_channel_checks):
+                            self.bleach_channel_checks[i].setChecked(bool(checked))
+            except (TypeError, ValueError):
+                pass
+        if "fi_channels" in data and getattr(self, "fi_channel_checks", None):
+            try:
+                states = data["fi_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.fi_channel_checks):
+                            self.fi_channel_checks[i].setChecked(bool(checked))
+            except Exception:
+                pass
+        if "foci_channels" in data and getattr(self, "foci_channel_checks", None):
+            try:
+                states = data["foci_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.foci_channel_checks):
+                            self.foci_channel_checks[i].setChecked(bool(checked))
+            except (TypeError, ValueError):
+                pass
+        if "zproject_channels" in data and getattr(self, "zproject_channel_checks", None):
+            try:
+                states = data["zproject_channels"]
+                if isinstance(states, list):
+                    for i, checked in enumerate(states):
+                        if i < len(self.zproject_channel_checks):
+                            self.zproject_channel_checks[i].setChecked(bool(checked))
+            except (TypeError, ValueError):
+                pass
 

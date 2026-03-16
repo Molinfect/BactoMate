@@ -179,16 +179,13 @@ def detect_peaks_skimage(
     Detect foci in a 2D image. Returns list of dicts with keys:
     y, x, intensity, size_px, mean_intensity (and optionally rel_intensity).
 
-    If labeled_mask (same shape as image) is provided, focus size is counted only within the
-    same cell as the peak, so pixels from other cells are never included.
+    When labeled_mask is provided, detection is cell-first: we iterate over each cell and find
+    local maxima only inside that cell (no global frame scan). For each candidate peak we build
+    the focus blob (connected pixels >= 80% of peak, same cell), then apply min_peak_raw,
+    min_size, max_size, min_focus_mean. All intensity/size use the raw image.
 
-    All user-facing values are in raw image units:
-    - Intensity threshold: raw_intensity >= raw_median * min_rel (raw_median = median of whole frame).
-    - min_peak_raw: if > 0, keep only peaks with raw intensity at peak >= this (keeps obvious bright foci).
-    - min_focus_mean: if > 0, keep only peaks whose focus blob mean intensity >= this (keeps bright compact, drops diffuse dim).
-    - Focus size (min_size, max_size): measured on the raw image (connected pixels above 80% of peak in raw).
-    When min_rel is None or <= 0: no intensity filter at this stage (for per-cell mode, filter later).
-    Peak positions are found on the preprocessed image for better localization; then intensity and size use raw.
+    When labeled_mask is None, we run peak_local_max on the full (preprocessed) image with
+    threshold min_rel * img_median, then apply the same blob and filters on raw.
     """
     raw_img = np.asarray(image, dtype=np.float64)
     if raw_img.ndim != 2 or raw_img.size == 0:
@@ -196,7 +193,19 @@ def detect_peaks_skimage(
     raw_median = float(np.median(raw_img))
     if raw_median <= 0:
         raw_median = 1e-10
+    h, w = raw_img.shape
 
+    if labeled_mask is not None and labeled_mask.shape[:2] == (h, w):
+        # Cell-first: elevated regions (connected components above cell_mean × min_rel), then 80% blob + filters
+        peaks = _detect_peaks_skimage_per_cell(
+            raw_img, labeled_mask, raw_median,
+            min_rel, min_distance, min_size, max_size,
+            min_peak_raw, min_focus_mean,
+            size_threshold_frac, size_max_radius,
+        )
+        return peaks
+
+    # Legacy path: full-image peak_local_max when no mask
     img = raw_img.copy()
     if use_preprocessing:
         img = enhance_foci_image(
@@ -205,18 +214,13 @@ def detect_peaks_skimage(
     img_median = float(np.median(img))
     if img_median <= 0:
         img_median = 1e-10
-    # Threshold for peak_local_max on preprocessed image (reduces candidate count). When min_rel is None (per-cell), use a low threshold so we don't miss weak peaks.
-    if min_rel is not None and min_rel > 0:
-        min_abs = img_median * min_rel
-    else:
-        min_abs = img_median * 0.5  # low bar when filtering later per-cell
+    min_abs = (img_median * min_rel) if (min_rel is not None and min_rel > 0) else (img_median * 0.5)
     coords = peak_local_max(img, min_distance=min_distance, threshold_abs=min_abs)
     if coords.size == 0:
         return []
-    # Raw intensity at each peak (for user-facing filter and output)
     raw_intensities = raw_img[coords[:, 0], coords[:, 1]]
     min_raw_abs = (raw_median * min_rel) if (min_rel is not None and min_rel > 0) else None
-    peaks: List[Dict[str, Any]] = []
+    peaks = []
     for k in range(len(coords)):
         yi, xi = int(coords[k, 0]), int(coords[k, 1])
         raw_int = float(raw_intensities[k])
@@ -224,8 +228,6 @@ def detect_peaks_skimage(
             continue
         if min_peak_raw is not None and min_peak_raw > 0 and raw_int < min_peak_raw:
             continue
-        # Size and mean of focus blob on raw image (same blob as for size filter)
-        # If labeled_mask given, count only pixels in the same cell as the peak
         size_px, mean_int = focus_size_and_mean_at_peak(
             raw_img, yi, xi,
             threshold_frac=size_threshold_frac,
@@ -240,13 +242,80 @@ def detect_peaks_skimage(
             continue
         rel = raw_int / raw_median
         peaks.append({
-            "y": yi,
-            "x": xi,
-            "intensity": raw_int,
-            "mean_intensity": mean_int,
-            "rel_intensity": rel,
-            "size_px": size_px,
+            "y": yi, "x": xi, "intensity": raw_int, "mean_intensity": mean_int,
+            "rel_intensity": rel, "size_px": size_px,
         })
+    return peaks
+
+
+def _detect_peaks_skimage_per_cell(
+    raw_img: np.ndarray,
+    labeled_mask: np.ndarray,
+    raw_median: float,
+    min_rel: Optional[float],
+    min_distance: int,
+    min_size: int,
+    max_size: Optional[int],
+    min_peak_raw: Optional[float],
+    min_focus_mean: Optional[float],
+    size_threshold_frac: float,
+    size_max_radius: int,
+) -> List[Dict[str, Any]]:
+    """
+    Cell-first: find elevated regions (connected components with intensity >= cell_mean × min_rel),
+    use each region's max pixel as seed, build 80% blob, apply filters. Merge candidates within min_distance.
+    """
+    from skimage.measure import label as sk_label
+    h, w = raw_img.shape
+    raw_median = raw_median if raw_median > 0 else 1e-10
+    factor = float(min_rel) if min_rel is not None and min_rel > 0 else 1.0
+    factor = max(0.5, factor)
+    peaks: List[Dict[str, Any]] = []
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        cell_mask = (labeled_mask == lab)
+        cell_mean = float(np.mean(raw_img[cell_mask]))
+        if not np.isfinite(cell_mean) or cell_mean <= 0:
+            continue
+        thresh = cell_mean * factor
+        elevated = (raw_img >= thresh) & cell_mask
+        if not np.any(elevated):
+            continue
+        labeled = sk_label(elevated.astype(np.uint8), connectivity=2)
+        for comp_id in np.unique(labeled):
+            if comp_id == 0:
+                continue
+            comp_mask = (labeled == comp_id)
+            n_px = int(np.sum(comp_mask))
+            if n_px < 2:
+                continue
+            ys, xs = np.where(comp_mask)
+            vals = raw_img[ys, xs]
+            idx_max = int(np.argmax(vals))
+            yi, xi = int(ys[idx_max]), int(xs[idx_max])
+            raw_int = float(raw_img[yi, xi])
+            if min_peak_raw is not None and min_peak_raw > 0 and raw_int < min_peak_raw:
+                continue
+            size_px, mean_int = focus_size_and_mean_at_peak(
+                raw_img, yi, xi,
+                threshold_frac=size_threshold_frac,
+                max_radius=size_max_radius,
+                labeled_mask=labeled_mask,
+            )
+            if min_size is not None and size_px < min_size:
+                continue
+            if max_size is not None and max_size > 0 and size_px > max_size:
+                continue
+            if min_focus_mean is not None and min_focus_mean > 0 and mean_int < min_focus_mean:
+                continue
+            rel = raw_int / raw_median
+            peaks.append({
+                "y": yi, "x": xi, "intensity": raw_int, "mean_intensity": mean_int,
+                "rel_intensity": rel, "size_px": size_px,
+            })
+    if min_distance > 0 and len(peaks) > 1:
+        peaks = _merge_nearby_peaks(peaks, merge_distance_px=float(min_distance))
     return peaks
 
 
@@ -310,3 +379,446 @@ def assign_peaks_to_cells(
             cell_foci_ids.setdefault(key, []).append(foci_id)
         foci_id += 1
     return foci_rows, cell_foci_ids
+
+
+def _cell_cov_map(image: np.ndarray, labeled_mask: np.ndarray) -> Dict[int, float]:
+    """Per-label coefficient of variation (std/mean) of pixel intensity inside each cell. Skips background (0)."""
+    out: Dict[int, float] = {}
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or labeled_mask is None or raw.shape != labeled_mask.shape:
+        return out
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        pixels = raw[labeled_mask == lab]
+        if pixels.size < 3:
+            continue
+        mu = float(np.mean(pixels))
+        if mu <= 0 or not np.isfinite(mu):
+            continue
+        std = float(np.std(pixels))
+        if np.isfinite(std) and std >= 0:
+            out[int(lab)] = std / mu
+    return out
+
+
+def _cell_area_map(labeled_mask: np.ndarray) -> Dict[int, int]:
+    """Per-label pixel count (area in px). Skips background (0)."""
+    out: Dict[int, int] = {}
+    if labeled_mask is None or labeled_mask.size == 0:
+        return out
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        out[int(lab)] = int(np.sum(labeled_mask == lab))
+    return out
+
+
+def _cell_mean_map(image: np.ndarray, labeled_mask: np.ndarray) -> Dict[int, float]:
+    """Per-label mean pixel intensity inside each cell. Skips background (0)."""
+    out: Dict[int, float] = {}
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or labeled_mask is None or raw.shape != labeled_mask.shape:
+        return out
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        pixels = raw[labeled_mask == lab]
+        if pixels.size < 2:
+            continue
+        mu = float(np.mean(pixels))
+        if np.isfinite(mu) and mu > 0:
+            out[int(lab)] = mu
+    return out
+
+
+def _cell_percentile_map(
+    image: np.ndarray,
+    labeled_mask: np.ndarray,
+    percentile: float = 90.0,
+) -> Dict[int, float]:
+    """Per-label percentile of pixel intensity inside each cell (e.g. 90 = 90th percentile). No fixed multipliers."""
+    out: Dict[int, float] = {}
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or labeled_mask is None or raw.shape != labeled_mask.shape:
+        return out
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        pixels = raw[labeled_mask == lab]
+        if pixels.size < 5:
+            continue
+        pct = float(np.percentile(pixels, percentile))
+        if np.isfinite(pct):
+            out[int(lab)] = pct
+    return out
+
+
+def _cell_foci_thresholds(
+    image: np.ndarray,
+    labeled_mask: np.ndarray,
+    cov_map: Dict[int, float],
+    median_cov: float,
+    percentile_uniform: float,
+    percentile_heterogeneous: float,
+    percentile_large_blob: float,
+) -> Dict[int, Tuple[Optional[float], Optional[float]]]:
+    """
+    Per-cell intensity thresholds for foci (no fixed multipliers). Returns label -> (thresh_standard, thresh_large).
+    Standard threshold uses percentile_uniform (low CoV) or percentile_heterogeneous (high CoV). Large-blob threshold
+    uses percentile_large_blob for diffuse/big foci. All from that cell's own pixel distribution.
+    """
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or labeled_mask is None or raw.shape != labeled_mask.shape:
+        return {}
+    out: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        pixels = raw[labeled_mask == lab]
+        if pixels.size < 5:
+            continue
+        cell_cov = cov_map.get(lab) if cov_map else None
+        p = percentile_heterogeneous if (median_cov > 0 and cell_cov is not None and cell_cov >= median_cov) else percentile_uniform
+        thresh_std = float(np.percentile(pixels, p))
+        thresh_large = float(np.percentile(pixels, percentile_large_blob))
+        if np.isfinite(thresh_std) and np.isfinite(thresh_large):
+            out[int(lab)] = (thresh_std, thresh_large)
+    return out
+
+
+def _region_grow_above_threshold(
+    image: np.ndarray,
+    cell_mask: np.ndarray,
+    seed_y: int,
+    seed_x: int,
+    threshold: float,
+) -> np.ndarray:
+    """
+    Grow a connected region from (seed_y, seed_x) by adding 8-connected neighbors
+    where image >= threshold, restricted to cell_mask. Returns boolean mask (same shape as image).
+    """
+    h, w = image.shape[:2]
+    if seed_y < 0 or seed_y >= h or seed_x < 0 or seed_x >= w:
+        return np.zeros_like(cell_mask, dtype=bool)
+    if not cell_mask[seed_y, seed_x] or float(image[seed_y, seed_x]) < threshold:
+        return np.zeros_like(cell_mask, dtype=bool)
+    out = np.zeros_like(cell_mask, dtype=bool)
+    out[seed_y, seed_x] = True
+    img_flat = np.asarray(image, dtype=np.float64).ravel()
+    cell_flat = np.asarray(cell_mask, dtype=bool).ravel()
+    # 8-connected neighbors
+    dy = (-1, -1, -1, 0, 0, 1, 1, 1)
+    dx = (-1, 0, 1, -1, 1, -1, 0, 1)
+    frontier = [(seed_y, seed_x)]
+    while frontier:
+        r, c = frontier.pop()
+        for i in range(8):
+            nr, nc = r + dy[i], c + dx[i]
+            if 0 <= nr < h and 0 <= nc < w and cell_mask[nr, nc] and not out[nr, nc]:
+                if float(image[nr, nc]) >= threshold:
+                    out[nr, nc] = True
+                    frontier.append((nr, nc))
+    return out
+
+
+def _merge_nearby_peaks(peaks: List[Dict[str, Any]], merge_distance_px: float = 11.0) -> List[Dict[str, Any]]:
+    """Merge peaks within merge_distance_px, keeping the one with highest intensity. Use distance > 2*blob max_radius (e.g. 11 for max_radius=5) so focus regions do not overlap."""
+    if len(peaks) <= 1 or merge_distance_px <= 0:
+        return peaks
+    used = [False] * len(peaks)
+    out: List[Dict[str, Any]] = []
+    for i, p in enumerate(peaks):
+        if used[i]:
+            continue
+        yi, xi = float(p.get("y", 0)), float(p.get("x", 0))
+        intensity_i = float(p.get("intensity", 0) or 0)
+        best = p
+        best_int = intensity_i
+        for j in range(i + 1, len(peaks)):
+            if used[j]:
+                continue
+            q = peaks[j]
+            yj, xj = float(q.get("y", 0)), float(q.get("x", 0))
+            dist = np.sqrt((yi - yj) ** 2 + (xi - xj) ** 2)
+            if dist <= merge_distance_px:
+                used[j] = True
+                q_int = float(q.get("intensity", 0) or 0)
+                if q_int > best_int:
+                    best_int = q_int
+                    best = q
+        out.append(best)
+    return out
+
+
+def detect_peaks_cell_first_region_grow(
+    image: np.ndarray,
+    labeled_mask: np.ndarray,
+    grow_threshold_factor: float = 1.08,
+    min_focus_mean_ratio: float = 1.25,
+    max_focus_frac_of_cell: float = 0.4,
+    merge_nearby_px: float = 11.0,
+    foci_scope: str = "intracellular",
+) -> List[Dict[str, Any]]:
+    """
+    Cell-first, no global preprocessing: for each cell get mean FI, find max pixel, grow region
+    (neighbors with intensity >= cell_mean * grow_threshold_factor) so the boundary is "clearly
+    elevated" and we don't absorb most of the cell. Keep region only if focus mean is clearly
+    above cell mean and region is not most of the cell. Returns list of peak dicts.
+    foci_scope: "intracellular" (default), "extracellular", or "both"; only intracellular is implemented.
+    """
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or raw.size == 0 or labeled_mask is None or raw.shape != labeled_mask.shape:
+        return []
+    if foci_scope not in ("intracellular", "extracellular", "both"):
+        foci_scope = "intracellular"
+    if foci_scope != "intracellular":
+        # Placeholder for future extracellular/both logic
+        pass
+    h, w = raw.shape
+    frame_median = float(np.median(raw))
+    if frame_median <= 0:
+        frame_median = 1e-10
+    all_peaks: List[Dict[str, Any]] = []
+    for lab in np.unique(labeled_mask):
+        if lab == 0:
+            continue
+        cell_mask = (labeled_mask == lab)
+        cell_area_px = int(np.sum(cell_mask))
+        if cell_area_px < 3:
+            continue
+        cell_mean = float(np.mean(raw[cell_mask]))
+        if not np.isfinite(cell_mean) or cell_mean <= 0:
+            continue
+        # Grow only into pixels >= cell_mean * grow_threshold_factor so we don't over-grow into cytoplasm
+        grow_thresh = cell_mean * max(1.0, float(grow_threshold_factor))
+        exclude = np.zeros_like(cell_mask, dtype=bool)
+        while True:
+            candidate = np.where(cell_mask & ~exclude)
+            if not candidate[0].size:
+                break
+            vals = raw[candidate[0], candidate[1]]
+            idx_max = np.argmax(vals)
+            sy, sx = int(candidate[0][idx_max]), int(candidate[1][idx_max])
+            peak_val = float(vals[idx_max])
+            if peak_val < grow_thresh:
+                break
+            focus_mask = _region_grow_above_threshold(raw, cell_mask, sy, sx, grow_thresh)
+            if not np.any(focus_mask):
+                exclude[sy, sx] = True
+                continue
+            focus_size = int(np.sum(focus_mask))
+            focus_mean = float(np.mean(raw[focus_mask]))
+            focus_max = float(np.max(raw[focus_mask]))
+            if focus_mean < cell_mean * min_focus_mean_ratio:
+                exclude |= focus_mask
+                continue
+            if max_focus_frac_of_cell < 1.0 and focus_size > max_focus_frac_of_cell * cell_area_px:
+                exclude |= focus_mask
+                continue
+            rel = focus_mean / frame_median
+            all_peaks.append({
+                "y": sy,
+                "x": sx,
+                "intensity": focus_max,
+                "size_px": focus_size,
+                "mean_intensity": focus_mean,
+                "rel_intensity": rel,
+            })
+            exclude |= focus_mask
+    if merge_nearby_px > 0 and len(all_peaks) > 1:
+        all_peaks = _merge_nearby_peaks(all_peaks, merge_distance_px=merge_nearby_px)
+    return all_peaks
+
+
+def detect_peaks_skimage_auto(
+    image: np.ndarray,
+    min_distance: int = 2,
+    labeled_mask: Optional[np.ndarray] = None,
+    use_preprocessing: bool = True,
+    min_rel_vs_cell: float = 1.0,
+    min_rel_uniform_cell: float = 1.45,
+    max_focus_frac_of_cell: float = 0.4,
+    large_blob_min_px: int = 12,
+    merge_nearby_px: float = 11.0,
+    percentile_uniform: float = 92.0,
+    percentile_heterogeneous: float = 85.0,
+    percentile_large_blob: float = 80.0,
+    z_score_min: float = 1.4,
+) -> List[Dict[str, Any]]:
+    """
+    Fully per-cell, data-driven foci detection. No fixed multipliers, no frame-level intensity cut.
+    (1) Get candidates (low bar: 0.5*img_median for peak_local_max only).
+    (2) Per-cell gate: keep peak only if (peak >= cell_mean * min_rel_vs_cell);
+        in uniform cells also require peak >= cell_mean * min_rel_uniform_cell (stricter bump to avoid homogeneous cytoplasm as "foci");
+        reject if focus blob area > max_focus_frac_of_cell of cell area (foci must be focal, not most of the cell);
+        and ((peak >= cell percentile) OR (peak >= cell_mean + z_score_min*cell_std)). Drop peaks outside cells.
+    (3) Uniform cells only: drop peaks in the bottom 25% by score within that cell.
+    (4) Merge nearby peaks so foci do not overlap (merge_nearby_px > 2*blob radius).
+    Only global step: initial peak detection threshold (0.5*img_median); all decisions are per-cell.
+    """
+    # Get many candidates with low bar (no frame-median filter; per-cell gate does the work)
+    candidates = detect_peaks_skimage(
+        image,
+        min_rel=None,
+        min_distance=min_distance,
+        min_size=1,
+        max_size=None,
+        min_peak_raw=None,
+        min_focus_mean=None,
+        use_preprocessing=use_preprocessing,
+        labeled_mask=labeled_mask,
+    )
+    if not candidates:
+        return []
+
+    # Per-cell gate: min_rel_vs_cell, in uniform cells min_rel_uniform_cell, max focus fraction, then percentile or z-score
+    if labeled_mask is not None and labeled_mask.size > 0:
+        h, w = labeled_mask.shape
+        cov_map = _cell_cov_map(image, labeled_mask)
+        cell_mean_map = _cell_mean_map(image, labeled_mask)
+        cell_area_map = _cell_area_map(labeled_mask)
+        median_cov = float(np.median(list(cov_map.values()))) if cov_map else 0.0
+        thresh_map = _cell_foci_thresholds(
+            image, labeled_mask, cov_map, median_cov,
+            percentile_uniform, percentile_heterogeneous, percentile_large_blob,
+        )
+        filtered = []
+        for p in candidates:
+            yi, xi = int(p.get("y", 0)), int(p.get("x", 0))
+            if yi < 0 or yi >= h or xi < 0 or xi >= w:
+                continue
+            lab = int(labeled_mask[yi, xi])
+            if lab == 0 or lab not in thresh_map:
+                continue
+            thresh_std, thresh_large = thresh_map[lab]
+            peak_int = float(p.get("intensity", 0) or 0)
+            size_px = int(p.get("size_px", 0) or 0)
+            cell_mean = cell_mean_map.get(lab) if cell_mean_map else None
+            cell_area_px = cell_area_map.get(lab) if cell_area_map else None
+            cell_cov_val = cov_map.get(lab) if cov_map else None
+            is_uniform = cell_cov_val is not None and median_cov > 0 and cell_cov_val < median_cov
+            # Foci must be focal: reject if blob is most of the cell
+            if cell_area_px is not None and cell_area_px > 0 and max_focus_frac_of_cell < 1.0:
+                if size_px > max_focus_frac_of_cell * cell_area_px:
+                    continue
+            # Per-cell "not below background": peak >= min_rel_vs_cell * cell_mean
+            if cell_mean is not None and cell_mean > 0 and peak_int < cell_mean * min_rel_vs_cell:
+                continue
+            # In uniform cells require a clear bump (e.g. 1.45× mean) so homogeneous cytoplasm is not called a focus
+            if is_uniform and cell_mean is not None and cell_mean > 0 and peak_int < cell_mean * min_rel_uniform_cell:
+                continue
+            # Use more lenient (lower) threshold for large/diffuse blobs
+            if size_px >= large_blob_min_px and thresh_large is not None:
+                thresh = min(thresh_std, thresh_large) if thresh_std is not None else thresh_large
+            else:
+                thresh = thresh_std
+            if thresh is None:
+                continue
+            passes_pct = peak_int >= thresh
+            cell_std = (cell_cov_val * cell_mean) if (cell_cov_val is not None and cell_mean is not None and cell_mean > 0) else None
+            passes_z = (
+                z_score_min > 0
+                and cell_std is not None
+                and cell_std > 0
+                and peak_int >= cell_mean + z_score_min * cell_std
+            )
+            if passes_pct or passes_z:
+                filtered.append(p)
+        candidates = filtered
+        if len(candidates) <= 1:
+            return _merge_nearby_peaks(candidates, merge_nearby_px) if merge_nearby_px > 0 and len(candidates) > 1 else candidates
+
+    # Score per candidate (rel * log1p(size)); used only for per-cell pruning in uniform cells
+    rel = np.array([float(p.get("rel_intensity", 0) or 0) for p in candidates], dtype=np.float64)
+    sz = np.array([float(p.get("size_px", 1) or 1) for p in candidates], dtype=np.float64)
+    rel = np.clip(rel, 1e-6, None)
+    sz = np.clip(sz, 0.5, None)
+    score = rel * np.log1p(sz)
+    # Fully per-cell: heterogeneous cells keep all; uniform cells drop bottom 25% by score within that cell only
+    if labeled_mask is None or labeled_mask.size == 0:
+        result = candidates
+    else:
+        h, w = labeled_mask.shape
+        cov_map = _cell_cov_map(image, labeled_mask)
+        if not cov_map:
+            result = candidates
+        else:
+            cov_values = np.array(list(cov_map.values()), dtype=np.float64)
+            median_cov = float(np.median(cov_values))
+            # Group candidate indices by cell label
+            cell_to_indices: Dict[int, List[int]] = {}
+            for i, p in enumerate(candidates):
+                yi, xi = int(p.get("y", 0)), int(p.get("x", 0))
+                if 0 <= yi < h and 0 <= xi < w:
+                    lab = int(labeled_mask[yi, xi])
+                    if lab != 0:
+                        cell_to_indices.setdefault(lab, []).append(i)
+            keep = np.ones(len(candidates), dtype=bool)
+            for lab, indices in cell_to_indices.items():
+                if not indices:
+                    continue
+                cell_cov = cov_map.get(lab)
+                if cell_cov is None:
+                    continue
+                if cell_cov >= median_cov:
+                    continue  # heterogeneous: keep all (no pruning)
+                # uniform cell: drop bottom 25% by score within this cell
+                cell_scores = score[indices]
+                if len(cell_scores) < 2:
+                    continue
+                score_25_cell = float(np.percentile(cell_scores, 25))
+                for idx in indices:
+                    if score[idx] < score_25_cell:
+                        keep[idx] = False
+            result = [p for i, p in enumerate(candidates) if keep[i]]
+    if merge_nearby_px > 0 and len(result) > 1:
+        result = _merge_nearby_peaks(result, merge_distance_px=merge_nearby_px)
+    return result
+
+
+def detect_peaks_spotiflow(
+    image: np.ndarray,
+    model_name: str = "general",
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Optional: detect spots using Spotiflow (deep learning). Returns list of dicts
+    with y, x, intensity, size_px, mean_intensity, rel_intensity, or None if spotiflow unavailable.
+    """
+    try:
+        from spotiflow.model import Spotiflow
+    except ImportError:
+        return None
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or raw.size == 0:
+        return []
+    raw_median = float(np.median(raw))
+    if raw_median <= 0:
+        raw_median = 1e-10
+    try:
+        model = Spotiflow.from_pretrained(model_name)
+        spots, _ = model.predict(raw)
+    except Exception:
+        return None
+    if spots is None or getattr(spots, "size", 0) == 0:
+        return []
+    spots = np.asarray(spots)
+    if spots.ndim != 2 or spots.shape[1] < 2:
+        return []
+    peaks = []
+    h, w = raw.shape
+    for i in range(spots.shape[0]):
+        # spots are typically (y, x) or (x, y); Spotiflow doc often (n_spots, 2) row,col
+        yy, xx = int(round(spots[i, 0])), int(round(spots[i, 1]))
+        if 0 <= yy < h and 0 <= xx < w:
+            intensity = float(raw[yy, xx])
+            rel = intensity / raw_median
+            peaks.append({
+                "y": yy,
+                "x": xx,
+                "intensity": intensity,
+                "size_px": 1,
+                "mean_intensity": intensity,
+                "rel_intensity": rel,
+            })
+    return peaks

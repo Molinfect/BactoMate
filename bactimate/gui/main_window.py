@@ -226,6 +226,11 @@ class MainWindow(QMainWindow):
         status_title.setStyleSheet("font-weight: bold; color: #4a9eff;")
         status_title.setToolTip("Activity log from all tabs: TIFF conversion, Omnipose/U-Net segmentation, Analyze Masks, Tracking, Video, etc.")
         left_log_layout.addWidget(status_title)
+        self.status_message = QLabel("")
+        self.status_message.setStyleSheet("color: #7F8C8D; font-size: 10pt;")
+        self.status_message.setVisible(False)
+        self.status_message.setWordWrap(True)
+        left_log_layout.addWidget(self.status_message)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -442,7 +447,7 @@ class MainWindow(QMainWindow):
                 tab.set_session_params(tab_data)
 
     def run_workflow_from_session(self, log_data: dict[str, Any]) -> None:
-        """Apply session params from log (FI, z-stack, foci, model, filters, etc.); run full pipeline (conversion → segment → analyze → tracking) on the current TIFF Conversion path only. That path is the new file/folder; downstream steps use outputs from the previous step (Tif_files → _segmentation_omni → analyze → tracking). So you can run the same analysis type from a session on a different file or folder."""
+        """Apply session params from log (FI, z-stack, foci, model, filters, etc.); run full pipeline (conversion → segment → analyze → tracking) on the current TIFF Conversion path only. That path is the new file/folder; downstream steps use outputs from the previous step (Tif_files → _segmentation_<model> → analyze → tracking). So you can run the same analysis type from a session on a different file or folder."""
         tabs_data = log_data.get("tabs", log_data)
         if not isinstance(tabs_data, dict):
             QMessageBox.warning(self, "Re-run analysis", "Session log has no tab data.")
@@ -476,6 +481,10 @@ class MainWindow(QMainWindow):
             )
             if supported and hasattr(nd2_tab, "load_folder_info"):
                 nd2_tab.load_folder_info(seed_path, supported)
+        # Re-apply FI/Foci (and other channel) options so they apply to the new file's checkboxes (load_file_info rebuilds them)
+        nd2_data = tabs_data.get("nd2", {})
+        if isinstance(nd2_data, dict) and hasattr(nd2_tab, "apply_channel_options_from_session"):
+            nd2_tab.apply_channel_options_from_session(nd2_data)
         # Only run steps that were actually performed in the session that produced this log
         order = ("nd2", "segmentation", "analyze_masks", "tracking")
         steps = []
@@ -521,11 +530,15 @@ class MainWindow(QMainWindow):
             return base / "Tif_files"
 
         def _segment_output_path(segment_input_path: str) -> Path:
-            # When segment input is Tif_files (or Tif_*), masks go to _segmentation_omni
+            # When segment input is Tif_files (or Tif_*), masks go to _segmentation_<model> (e.g. _segmentation_bact_phase_omni)
             folder = Path(segment_input_path)
-            if folder.name.startswith("Tif_"):
-                return folder / "_segmentation_omni"
-            return folder / "_segmentation_omni"
+            omnipose_tab = getattr(self, "omnipose_seg_tab", None)
+            folder_name = (
+                omnipose_tab.get_segmentation_output_folder_name()
+                if (omnipose_tab and hasattr(omnipose_tab, "get_segmentation_output_folder_name"))
+                else "_segmentation_omni"
+            )
+            return folder / folder_name
 
         def on_step_done(success: bool) -> None:
             idx = self._workflow_replay_index
@@ -769,6 +782,13 @@ class MainWindow(QMainWindow):
         # If we stripped everything (line was only timestamp/[INFO]), skip it
         return s if s else ""
 
+    def set_status_message(self, text: str) -> None:
+        """Set the one-line status message above the log (e.g. 'Omnipose: file 3 of 11 — image.tif'). Empty string hides it."""
+        if not hasattr(self, "status_message"):
+            return
+        self.status_message.setText((text or "").strip())
+        self.status_message.setVisible(bool((text or "").strip()))
+
     def log_output(self, message: str) -> None:
         # Normalize each line for display: strip log prefixes, condense tqdm
         lines = message.split("\n")
@@ -797,6 +817,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
+            self.set_status_message("")
         elif any(
             keyword in message_lower
             for keyword in [

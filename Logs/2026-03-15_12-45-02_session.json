@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-11 17:46:58",
+  "timestamp": "2026-03-15 12:45:02",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
@@ -14,7 +14,7 @@
       "performed": false
     },
     "segmentation": {
-      "model": "Cellpose-SAM",
+      "model": "bact_phase_omni",
       "diameter": 30.0,
       "flow_threshold": 0.4,
       "mask_threshold": 0.0,
@@ -22,7 +22,6 @@
       "cluster": false,
       "create_overlay": true,
       "trained_models_this_session": [],
-      "file_path": "/Users/philipppopp/Desktop/Test_data/2_FI/Tif_files/EM13748_AnTC_004_Phase60X.tif",
       "omnipose_pretrained": "bact_phase_omni",
       "omnipose_n_epochs": 50,
       "omnipose_lr": 0.01,
@@ -32,7 +31,8 @@
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
       "omnipose_use_tiled": true,
-      "performed": false
+      "performed": false,
+      "segment_filename_filter": ""
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -44,7 +44,7 @@
       "unet_model_name": ""
     },
     "analyze_masks": {
-      "pixel_size": 0.107,
+      "pixel_size": 0.108,
       "min_aspect_ratio": 1.5,
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
@@ -59,20 +59,22 @@
       "export_csv": false,
       "exclude_border": false,
       "create_combined_summary": false,
-      "analyze_fi": false,
+      "analyze_fi": true,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
       "fi_contour_thickness": 1,
-      "run_foci": false,
-      "foci_min_rel": 2.0,
+      "run_foci": true,
+      "foci_min_rel": 1.4999999999999996,
       "foci_min_rel_mode": "per cell",
       "foci_min_rel_cell": 2.0,
       "foci_min_separation": 2,
-      "foci_min_area_um2": 0.2,
-      "foci_max_area_um2": 0.8,
+      "foci_min_area_um2": 0.1,
+      "foci_max_area_um2": 0.4,
       "foci_min_peak_raw": 0.0,
       "foci_min_focus_mean": 0.0,
       "foci_exclude_outside_cells": false,
+      "foci_detection_mode": 0,
+      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/Tif_files/_segmentation_cellpose_sam/",
       "performed": false
     },
     "tracking": {
@@ -81,7 +83,7 @@
       "use_gpu": true,
       "create_vis": true,
       "batch": false,
-      "filter_pixel_size": 0.107,
+      "filter_pixel_size": 0.108,
       "filter_time_per_frame": 1.0,
       "filter_time_per_frame_unit": "min",
       "performed": false

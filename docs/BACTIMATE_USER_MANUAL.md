@@ -425,7 +425,7 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 ### 5.1 Mask File/Folder input
 
-- **Group:** “Mask File/Folder” (drag-and-drop). Placeholder: “Select a mask TIFF file or folder... (or drag and drop)”. Browse File / Browse Folder set the path. Accepted: single TIFF or folder of mask TIFFs. You can select the _segmentation_omni or _segmentation_unet folder; overlays/ and *_filter_visualization.tif there are ignored.
+- **Group:** “Mask File/Folder” (drag-and-drop). Placeholder: “Select a mask TIFF file or folder... (or drag and drop)”. Browse File / Browse Folder set the path. Accepted: single TIFF or folder of mask TIFFs. You can select a segmentation folder (e.g. _segmentation_bact_phase_omni, _segmentation_unet); overlays/ and *_filter_visualization.tif there are ignored.
 
 ### 5.2 Combine group
 
@@ -479,11 +479,12 @@ When **Analyze FI** is enabled, an optional **Run foci analysis** check box is a
 
 **Foci sheet columns:** foci_id, cell_id, frame, channel_name, y, x, intensity, **Area (px)** (connected pixel count above 80% of peak, within same cell), **Area (µm²)** (Area (px) × pixel_size²; pixel size from metadata or tab setting), **Mean intensity (focus blob)**, **Rel intensity (peak/frame median)**, in_cell.
 
-The **Per-Cell Data** sheet (when “Include detailed per-cell data” is on) gets: Number of Foci, Foci Mean Intensity, Foci Total Intensity, Foci Max Intensity, **Foci Mean Area (px)**, Foci Total Area (px), and **Foci Mean Intensity Ratio** (foci mean intensity ÷ whole-cell mean FI intensity; only when both FI and Run foci are enabled).
+The **Per-Cell Data** sheet (when “Include detailed per-cell data” is on) gets: Number of Foci, Foci Mean Intensity, Foci Total Intensity, Foci Max Intensity, **Foci Mean Area (px)**, Foci Total Area (px), and **Foci Mean Intensity Ratio** (foci mean intensity ÷ mean of rest of cell; only when both FI and Run foci are enabled).
 
 - **Run foci analysis:** Check box; default **unchecked**. Enabled only when Analyze FI is on. Detects foci in the FI channel per frame; adds foci count and Foci sheet to Excel.
+- **Detection:** Dropdown with three modes. **Manual parameters** (default): cell-first — we start from the mask and each cell; inside each cell we find local maxima, build the focus blob (connected pixels ≥ 80% of peak, same cell), then apply your filters (min peak, min/max area, min focus mean). The per-cell factor (e.g. 1.6) compares the **focus blob mean** to the **mean of the rest of the cell** (cell minus focus); a focus is kept only if focus mean ≥ factor × rest-of-cell mean; the focus never contributes to that baseline. **Auto-detect (data-driven):** cell-first, no manual thresholds; region-growing from each cell's brightest pixel. **Spotiflow (deep learning):** optional; uses the Spotiflow neural network for threshold-free detection; very robust but requires the `spotiflow` package (and preferably a GPU); if Spotiflow is not installed or fails, the app falls back to Auto-detect.
 - **Exclude foci outside / rejected cells:** Check box; default **unchecked**. When checked, only foci inside **accepted** cells are included; when unchecked, all detected foci are included.
-- **Min relative intensity:** Double spin [0.5, 100]; default 2.0. Mode: **per frame** / **per cell** / **both**. **Min separation (px):** Spin [1, 50]; default 2. **Min area (µm²), Max area (µm²):** Double spin, 3 decimals; min [0.001, 6.0] default 0.200, max [0, 6.0] default 0.800 (0 = no maximum). Values are converted to pixels using Pixel Size (µm) for detection. **Min peak (raw), Min focus mean:** Optional brightness filters (0 = off). **Tip:** If you see fewer foci than expected, try lowering Min separation (e.g. 1 px), Min relative intensity, or Min area (e.g. 0.001 µm²).
+- **Min relative intensity** (and related sliders): Apply only when **Detection** is **Manual parameters**. Double spin [0.5, 100]; default 2.0. Mode: **per frame** / **per cell** / **both**. In **per cell** (and **both**), the factor compares **(focus blob mean)** to **(mean of cell excluding focus)**; a focus is kept only if focus blob mean ≥ factor × rest-of-cell mean. **Min separation (px):** Spin [1, 50]; default 2 (also used as min distance in Auto-detect). **Min area (µm²), Max area (µm²):** Double spin, 3 decimals; min [0.001, 6.0] default 0.200, max [0, 6.0] default 0.800 (0 = no maximum). **Min peak (raw), Min focus mean:** Optional brightness filters (0 = off). **Tip:** If you see fewer foci than expected, try lowering Min separation (e.g. 1 px), Min relative intensity, or Min area (e.g. 0.001 µm²).
 
 **Naming for foci:** When using **Match FI by name**, the app also looks for files with **"_foci"** in the name (e.g. `stem_foci.tif`). In **TIFF Conversion**, tick **Foci** for a channel to save it with `_foci` in the filename. The feedback list shows which mask files will use which _foci file(s).
 
@@ -493,7 +494,7 @@ This section gives a comprehensive explanation of how foci analysis works and wh
 
 **What is foci analysis?**
 
-Foci analysis detects **bright spots** (foci) in the fluorescence intensity (FI) channel of your images. It runs per frame: for each frame, the FI image is preprocessed (smoothing, background reduction, sharpening), local intensity maxima (peaks) are found, and each peak is characterized by its raw intensity at the peak pixel, the size and mean intensity of a connected region around the peak (pixels with intensity ≥ 80% of the peak value, restricted to the same cell as the peak), and a relative intensity (peak / frame median). Peaks are then filtered by your settings (min/max area in µm², min separation, min relative intensity in per-frame or per-cell mode, optional min peak raw and min focus mean) and assigned to cells via the segmentation mask. Only foci that pass all filters are written to the Excel and counted in Per-Cell Data.
+Foci analysis detects **bright spots** (foci) in the fluorescence intensity (FI) channel of your images. It runs per frame. In **Manual** mode: detection is **cell-first** — we start from the mask and each cell; inside each cell we find local maxima (no global frame scan), build the focus blob (connected pixels ≥ 80% of peak, same cell), then apply your filters (min peak, min/max area, min focus mean). In **per cell** (or **both**) mode, a focus is kept only if **(focus blob mean) / (mean of cell excluding focus)** ≥ your factor; the focus never contributes to that baseline. In **Auto-detect** mode, detection is also cell-first (region-growing from each cell's brightest pixel). In **Spotiflow** mode (optional dependency), a deep learning model predicts spot positions; results are then assigned to cells. Only foci that pass the chosen pipeline are written to the Excel and counted in Per-Cell Data.
 
 **How focus “size” and “area” are defined**
 
@@ -691,16 +692,16 @@ This section walks through **one concrete workflow**: an ND2 file with one phase
 **2. Omnipose Segment tab**
 
 - **You:** Set path to the folder (e.g. `Tif_files/`); choose model (e.g. bact_phase_omni), diameter, options; enable overlay if desired; click **Process File or Folder**.
-- **BactiMate:** Writes masks as `{stem}_masks.tif` (and optional overlays in `overlays/`) into e.g. `Tif_files/_segmentation_omni/`. Only the phase channel is segmented; FI TIFFs stay in the parent folder. Result: one mask file per condition (e.g. `EM13748_AnTC_003_Phase60X_masks.tif`) and two FI TIFFs in `Tif_files/`.
+- **BactiMate:** Writes masks as `{stem}_masks.tif` (and optional overlays in `overlays/`) into a model-named subfolder, e.g. `Tif_files/_segmentation_bact_phase_omni/` (or `_segmentation_bact_fluor_omni`, `_segmentation_cellpose_sam`, etc.). Only the phase channel is segmented; FI TIFFs stay in the parent folder. Result: one mask file per condition (e.g. `EM13748_AnTC_003_Phase60X_masks.tif`) and two FI TIFFs in `Tif_files/`.
 
 **3. Analyze Masks tab (FI by name)**
 
-- **You:** Set path to the **mask folder** (e.g. `Tif_files/_segmentation_omni`). Enable **Analyze FI** and leave **Match FI by name (one per mask)** selected (default). The feedback list shows which mask files will get which FI file(s) (or “no FI found”). Set pixel size and filters; optionally “Include detailed per-cell data” and “Create combined summary”. Click **Analyze Masks** and select the mask file(s) in the dialog.
+- **You:** Set path to the **mask folder** (e.g. `Tif_files/_segmentation_bact_phase_omni`). Enable **Analyze FI** and leave **Match FI by name (one per mask)** selected (default). The feedback list shows which mask files will get which FI file(s) (or “no FI found”). Set pixel size and filters; optionally “Include detailed per-cell data” and “Create combined summary”. Click **Analyze Masks** and select the mask file(s) in the dialog.
 - **BactiMate:** For each mask `{stem}_masks.tif`, finds in the **parent** of the mask folder: (1) phase: `{stem}.tif` or `{base}.tif`; (2) FI: `{stem}_fi.tif` or `{stem}_fi_*.tif` / `{base}_fi.tif` or `{base}_fi_*.tif`. Runs one morphology-only task (phase) plus one per FI channel (e.g. 3 tasks: phase + GFP + mScarlet). Merges all runs for the same mask into **one Excel** per mask in **`_analysis/`** (e.g. `Tif_files/_analysis/EM13748_AnTC_003_Phase60X_analysis.xlsx`) with Summary (total area, cell count per frame; **column G = Logs**: mask → TIFF pairs and match count) and optional Per-Cell Data (morphology + Mean FI Intensity per channel). Per-channel Excel files are removed; only the merged file remains. If “Create combined summary” is checked, also writes e.g. `Tif_files/_analysis/Tif_files_combined_summary.xlsx`.
 
 **Resulting layout (example)**
 
-- `Tif_files/` — phase and FI TIFFs; `_segmentation_omni/` with `*_masks.tif` and `overlays/`; `_analysis/` with one merged Excel per mask and optional combined summary. Logs in each Excel Summary sheet, column G.
+- `Tif_files/` — phase and FI TIFFs; `_segmentation_<model>/` (e.g. `_segmentation_bact_phase_omni/`) with `*_masks.tif` and `overlays/`; `_analysis/` with one merged Excel per mask and optional combined summary. Logs in each Excel Summary sheet, column G.
 
 **Naming rules to remember**
 
@@ -844,7 +845,7 @@ See Section 5.3 for full text; each describes the morphological filter (length/w
 Min/Max Area (µm²), Min/Max Width (µm), Min Length (µm): 0 means no limit; otherwise objects outside the range are excluded. Info texts describe filtering of undersized/oversized and too-narrow/too-wide/too-short objects.
 
 **Analyze Masks — Run foci (Section 5.6a)**  
-Detect foci (bright spots) in the FI channel per frame; add foci count and a Foci sheet to Excel. Foci sheet columns: foci_id, cell_id, frame, channel_name, y, x, intensity, Area (px), Area (µm²), Mean intensity (focus blob), Rel intensity (peak/frame median), in_cell. Area (µm²) uses the pixel size from metadata or the tab setting.
+Detect foci (bright spots) in the FI channel per frame; add foci count and a Foci sheet to Excel. Manual detection is cell-first (per-cell peaks and blob); per-cell factor compares focus blob mean to mean of cell excluding focus. Foci sheet columns: foci_id, cell_id, frame, channel_name, y, x, intensity, Area (px), Area (µm²), Mean intensity (focus blob), Rel intensity (peak/frame median), in_cell. Area (µm²) uses the pixel size from metadata or the tab setting.
 
 **Tracking — Model (Section 6.2)**  
 “Pretrained Trackastra model. general_2d: General-purpose 2D, fast. general_2d_w_SAM2_features: Enhanced with SAM2, better for some data (e.g. bacteria), slower. Note: Trackastra won the 7th Cell Tracking Challenge (ISBI 2024).”

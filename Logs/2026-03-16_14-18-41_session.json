@@ -1,20 +1,41 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-09 11:43:11",
+  "timestamp": "2026-03-16 14:18:41",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
-      "max_frames": 100,
+      "max_frames": 83,
       "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
-      "bleach_method": 0,
-      "performed": false
+      "bleach_method": 3,
+      "bleach_fluorescence_channels": [
+        false,
+        false,
+        false
+      ],
+      "fi_channels": [
+        false,
+        false,
+        false
+      ],
+      "foci_channels": [
+        true,
+        true,
+        false
+      ],
+      "zproject_channels": [
+        false,
+        false,
+        false
+      ],
+      "file_path": "/Users/philipppopp/Desktop/2018-06-28 TMB5569_KlonI_EK0017ct_xy5_1.nd2",
+      "performed": true
     },
     "segmentation": {
-      "model": "bact_phase_omni",
+      "model": "Cellpose-SAM",
       "diameter": 30.0,
       "flow_threshold": 0.4,
       "mask_threshold": 0.0,
@@ -22,6 +43,7 @@
       "cluster": false,
       "create_overlay": true,
       "trained_models_this_session": [],
+      "file_path": "/Users/philipppopp/Desktop/Tif_files/",
       "omnipose_pretrained": "bact_phase_omni",
       "omnipose_n_epochs": 50,
       "omnipose_lr": 0.01,
@@ -31,7 +53,8 @@
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
       "omnipose_use_tiled": true,
-      "performed": false
+      "performed": true,
+      "segment_filename_filter": "phase"
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -43,7 +66,7 @@
       "unet_model_name": ""
     },
     "analyze_masks": {
-      "pixel_size": 0.108,
+      "pixel_size": 0.065,
       "min_aspect_ratio": 1.5,
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
@@ -67,11 +90,12 @@
       "foci_min_rel_mode": "per cell",
       "foci_min_rel_cell": 2.0,
       "foci_min_separation": 2,
-      "foci_min_area_um2": 0.2,
-      "foci_max_area_um2": 0.8,
+      "foci_min_area_um2": 0.1,
+      "foci_max_area_um2": 0.4,
       "foci_min_peak_raw": 0.0,
       "foci_min_focus_mean": 0.0,
       "foci_exclude_outside_cells": false,
+      "foci_detection_mode": 0,
       "performed": false
     },
     "tracking": {
@@ -80,8 +104,8 @@
       "use_gpu": true,
       "create_vis": true,
       "batch": false,
-      "filter_pixel_size": 0.108,
-      "filter_time_per_frame": 1.0,
+      "filter_pixel_size": 0.065,
+      "filter_time_per_frame": 15.2,
       "filter_time_per_frame_unit": "min",
       "performed": false
     },

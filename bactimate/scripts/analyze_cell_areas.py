@@ -30,10 +30,21 @@ warnings.filterwarnings('ignore')
 SCRIPT_LOG = logging.getLogger(__name__)
 
 try:
-    from bactimate.modules.foci_utils import detect_peaks_skimage, assign_peaks_to_cells
+    from bactimate.modules.foci_utils import (
+        detect_peaks_skimage,
+        detect_peaks_skimage_auto,
+        detect_peaks_cell_first_region_grow,
+        detect_peaks_spotiflow,
+        assign_peaks_to_cells,
+        get_focus_blob_mask,
+    )
 except ImportError:
     detect_peaks_skimage = None
+    detect_peaks_skimage_auto = None
+    detect_peaks_cell_first_region_grow = None
+    detect_peaks_spotiflow = None
     assign_peaks_to_cells = None
+    get_focus_blob_mask = None
 
 try:
     from bactimate.modules.validation import paths_exist, mask_fi_spatial_shape_match
@@ -43,7 +54,9 @@ except ImportError:
 
 
 def _setup_script_logging(log_to_file: bool = True) -> None:
-    """Configure logging for this script so output goes to stdout (for GUI capture) and optionally to a log file."""
+    """Configure logging for this script: stdout (for GUI capture). When run from the GUI, the script logger
+    propagates to the BactiMate logger, so output also goes to bactimate_gui_*.log. When run from CLI without
+    the GUI, we do not add a separate analyze_masks.log; use stdout or the caller's logging."""
     log = SCRIPT_LOG
     if log.handlers:
         return
@@ -52,16 +65,8 @@ def _setup_script_logging(log_to_file: bool = True) -> None:
     out = logging.StreamHandler(sys.stdout)
     out.setFormatter(fmt)
     log.addHandler(out)
-    if log_to_file:
-        try:
-            from bactimate.gui.constants import LOGS_DIR
-            log_path = LOGS_DIR / "analyze_masks.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            fh = logging.FileHandler(log_path, encoding="utf-8", mode="a")
-            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
-            log.addHandler(fh)
-        except Exception:
-            pass
+    # Do not add a separate analyze_masks.log: when run from GUI, output goes to bactimate_gui_*.log via
+    # propagation to the "bactimate" logger; when run from CLI, stdout is sufficient.
 
 
 def calculate_cell_properties(mask, pixel_size=0.108, exclude_border=False):
@@ -340,7 +345,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   min_area_um2=None, max_area_um2=None, min_width_um=None, max_width_um=None, min_length_um=None,
                   remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True,
                   exclude_border=False,
-                  run_foci=False, foci_min_rel=2.0, foci_min_rel_mode="per_cell", foci_min_rel_cell=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
+                  run_foci=False, foci_detection_mode=0, foci_min_rel=2.0, foci_min_rel_mode="per_cell", foci_min_rel_cell=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
                   foci_min_peak_raw=0, foci_min_focus_mean=0,
                   foci_exclude_outside_cells=False,
                   fi_channel_name=None):
@@ -528,67 +533,91 @@ def analyze_masks(masks_path, pixel_size=0.108,
             for cell in filtered:
                 cell.setdefault('foci_count', 0)
                 cell.setdefault('foci_ids', [])
-        if (run_foci and fi_images is not None and detect_peaks_skimage is not None and assign_peaks_to_cells is not None):
+        if (run_foci and fi_images is not None and assign_peaks_to_cells is not None):
             if fi_image.shape[:2] != mask_cleaned.shape[:2]:
                 SCRIPT_LOG.warning("FI image shape %s != mask shape %s, skipping foci for frame %s", fi_image.shape[:2], mask_cleaned.shape[:2], frame_idx + 1)
             else:
-                mode = (foci_min_rel_mode or "per_cell").strip().lower()
-                use_per_frame = mode in ("per_frame", "both")
-                use_per_cell = mode in ("per_cell", "both")
-                cell_factor = float(foci_min_rel_cell) if use_per_cell and mode == "both" else (float(foci_min_rel) if use_per_cell else None)
-                peaks = detect_peaks_skimage(
-                    fi_image,
-                    min_rel=foci_min_rel if use_per_frame else None,
-                    min_distance=foci_min_separation,
-                    min_size=foci_min_size,
-                    max_size=foci_max_size,
-                    min_peak_raw=foci_min_peak_raw if foci_min_peak_raw and float(foci_min_peak_raw) > 0 else None,
-                    min_focus_mean=foci_min_focus_mean if foci_min_focus_mean and float(foci_min_focus_mean) > 0 else None,
-                    labeled_mask=mask_cleaned,
-                )
-                foci_rows, cell_foci_ids = assign_peaks_to_cells(
-                    peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx
-                )
-                if use_per_cell and cell_factor is not None and cell_factor > 0 and filtered:
-                    # Per-cell filter: keep only foci with (focus intensity / cell mean FI) >= cell_factor.
-                    # Cell mean FI = mean of ALL pixels inside the cell mask (whole segmentation), so dim
-                    # regions (edges, poles) pull the mean down; foci can pass the ratio even if max image value is modest.
-                    label_to_mean_fi = {c['label']: c.get('mean_fi') for c in filtered if c.get('mean_fi') is not None and np.isfinite(c.get('mean_fi')) and c.get('mean_fi') > 0}
-                    new_foci_rows = []
+                # foci_detection_mode: 0=manual, 1=auto, 2=spotiflow
+                peaks = None
+                use_per_cell = False
+                cell_factor = None
+                if foci_detection_mode == 2 and detect_peaks_spotiflow is not None:
+                    peaks = detect_peaks_spotiflow(fi_image, model_name="general")
+                    if peaks is None and SCRIPT_LOG:
+                        SCRIPT_LOG.info("Spotiflow not available or failed, using Auto-detect for foci.")
+                if peaks is None and foci_detection_mode in (1, 2) and detect_peaks_cell_first_region_grow is not None:
+                    peaks = detect_peaks_cell_first_region_grow(
+                        fi_image,
+                        labeled_mask=mask_cleaned,
+                    )
+                elif peaks is None and detect_peaks_skimage is not None:
+                    mode = (foci_min_rel_mode or "per_cell").strip().lower()
+                    use_per_frame = mode in ("per_frame", "both")
+                    use_per_cell = mode in ("per_cell", "both")
+                    cell_factor = float(foci_min_rel_cell) if use_per_cell and mode == "both" else (float(foci_min_rel) if use_per_cell else None)
+                    peaks = detect_peaks_skimage(
+                        fi_image,
+                        min_rel=foci_min_rel if use_per_frame else None,
+                        min_distance=foci_min_separation,
+                        min_size=foci_min_size,
+                        max_size=foci_max_size,
+                        min_peak_raw=foci_min_peak_raw if foci_min_peak_raw and float(foci_min_peak_raw) > 0 else None,
+                        min_focus_mean=foci_min_focus_mean if foci_min_focus_mean and float(foci_min_focus_mean) > 0 else None,
+                        labeled_mask=mask_cleaned,
+                    )
+                if peaks is not None:
+                    foci_rows, cell_foci_ids = assign_peaks_to_cells(
+                        peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx
+                    )
+                    if foci_detection_mode == 0 and use_per_cell and cell_factor is not None and cell_factor > 0 and filtered and get_focus_blob_mask is not None:
+                        # Per-cell filter: keep only foci where (focus blob mean) / (mean of cell excluding focus) >= cell_factor.
+                        fi_flat = np.asarray(fi_image, dtype=np.float64)
+                        if fi_flat.ndim > 2:
+                            fi_flat = fi_flat[:, :, 0] if fi_flat.shape[2] < 10 else fi_flat[0, :, :]
+                        new_foci_rows = []
+                        for row in foci_rows:
+                            if not row.get('in_cell') or row.get('cell_id') is None:
+                                new_foci_rows.append(row)
+                                continue
+                            cell_id = row['cell_id']
+                            yi, xi = int(row.get('y', 0)), int(row.get('x', 0))
+                            blob_mask = get_focus_blob_mask(
+                                fi_flat, yi, xi,
+                                threshold_frac=0.8, max_radius=5,
+                                labeled_mask=mask_cleaned,
+                            )
+                            rest_of_cell = (mask_cleaned == cell_id) & ~blob_mask
+                            n_rest = int(np.sum(rest_of_cell))
+                            if n_rest == 0:
+                                continue
+                            rest_mean = float(np.mean(fi_flat[rest_of_cell]))
+                            if not np.isfinite(rest_mean) or rest_mean <= 0:
+                                continue
+                            focus_mean = row.get('mean_intensity')
+                            if focus_mean is None or not np.isfinite(focus_mean):
+                                continue
+                            ratio = float(focus_mean) / rest_mean
+                            if ratio >= cell_factor:
+                                new_foci_rows.append(row)
+                        foci_rows = new_foci_rows
+                        cell_foci_ids = {}
+                        for row in foci_rows:
+                            if row.get('in_cell') and row.get('cell_id') is not None:
+                                key = (row['cell_id'], frame_idx)
+                                cell_foci_ids.setdefault(key, []).append(row['foci_id'])
+                    # Attach foci count and foci_ids to each cell (key by label, frame_idx)
+                    for cell in filtered:
+                        key = (cell['label'], frame_idx)
+                        ids = cell_foci_ids.get(key, [])
+                        cell['foci_count'] = len(ids)
+                        cell['foci_ids'] = ids
                     for row in foci_rows:
-                        if not row.get('in_cell') or row.get('cell_id') is None:
-                            new_foci_rows.append(row)
-                            continue
-                        cell_id = row['cell_id']
-                        mean_fi = label_to_mean_fi.get(cell_id)
-                        if mean_fi is None or mean_fi <= 0:
-                            continue
-                        intensity = row.get('intensity')
-                        if intensity is None or not np.isfinite(intensity):
-                            continue
-                        ratio = float(intensity) / float(mean_fi)
-                        if ratio >= cell_factor:
-                            new_foci_rows.append(row)
-                    foci_rows = new_foci_rows
-                    # Rebuild cell_foci_ids from kept rows only
-                    cell_foci_ids = {}
-                    for row in foci_rows:
-                        if row.get('in_cell') and row.get('cell_id') is not None:
-                            key = (row['cell_id'], frame_idx)
-                            cell_foci_ids.setdefault(key, []).append(row['foci_id'])
-                # Attach foci count and foci_ids to each cell (key by label, frame_idx)
-                for cell in filtered:
-                    key = (cell['label'], frame_idx)
-                    ids = cell_foci_ids.get(key, [])
-                    cell['foci_count'] = len(ids)
-                    cell['foci_ids'] = ids
-                for row in foci_rows:
-                    if foci_exclude_outside_cells:
-                        if not row.get('in_cell', False) or row.get('cell_id') not in accepted_labels:
-                            continue
-                    r = row.copy()
-                    r['channel_name'] = fi_channel_name or 'FI'
-                    foci_table.append(r)
+                        if foci_exclude_outside_cells:
+                            if not row.get('in_cell', False) or row.get('cell_id') not in accepted_labels:
+                                continue
+                        r = row.copy()
+                        r['channel_name'] = fi_channel_name or 'FI'
+                        foci_table.append(r)
         
         # Determine rejected labels
         rejected_labels = all_labels - accepted_labels
@@ -1189,8 +1218,9 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
     # Rename columns for clarity
     df_main.columns = ['Frame', 'Total Cell Area (µm²)', 'Total Cell Area (Relative)', 'Number of Cells']
     
-    # Per-cell foci aggregates from foci_table (frame in foci_table is 0-based; we use 1-based to match Summary/Per-Cell)
+    # Per-cell foci aggregates and per-focus lists from foci_table (frame in foci_table is 0-based; we use 1-based to match Summary/Per-Cell)
     foci_per_cell_agg = {}
+    foci_per_cell_list = {}  # (frame_1based, cell_id) -> list of {foci_id, mean_intensity, size_px} in foci_id order
     if foci_table and len(foci_table) > 0:
         for r in foci_table:
             if not r.get('in_cell') or r.get('cell_id') is None:
@@ -1199,11 +1229,21 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
             key = (frame_1based, r['cell_id'])
             intensity = r.get('intensity')
             size_px = r.get('size_px', 1)
+            mean_int = r.get('mean_intensity')
             if key not in foci_per_cell_agg:
                 foci_per_cell_agg[key] = {'intensities': [], 'sizes': []}
+                foci_per_cell_list[key] = []
             if intensity is not None and (isinstance(intensity, (int, float)) and np.isfinite(intensity)):
                 foci_per_cell_agg[key]['intensities'].append(float(intensity))
             foci_per_cell_agg[key]['sizes'].append(size_px if size_px is not None else 1)
+            rel_int = r.get('rel_intensity')
+            foci_per_cell_list[key].append({
+                'foci_id': r.get('foci_id'),
+                'intensity': intensity if intensity is not None and np.isfinite(intensity) else np.nan,
+                'mean_intensity': mean_int if mean_int is not None and np.isfinite(mean_int) else np.nan,
+                'rel_intensity': rel_int if rel_int is not None and np.isfinite(rel_int) else np.nan,
+                'size_px': size_px if size_px is not None else 1,
+            })
         for k, v in foci_per_cell_agg.items():
             intensities = v['intensities']
             sizes = v['sizes']
@@ -1212,6 +1252,9 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
             v['max_intensity'] = np.max(intensities) if intensities else np.nan
             v['mean_size_px'] = np.mean(sizes) if sizes else np.nan
             v['total_area_px'] = np.sum(sizes) if sizes else np.nan
+        # Sort per-cell focus lists by foci_id so order matches foci_ids column
+        for k in foci_per_cell_list:
+            foci_per_cell_list[k].sort(key=lambda x: (x['foci_id'] is None, x['foci_id'] or 0))
     
     # Add Summary sheet foci columns when run_foci was on
     if foci_table and len(foci_table) > 0:
@@ -1275,9 +1318,10 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                         row[foci_count_col] = cell['foci_count']
                     if 'foci_ids' in cell:
                         row[foci_ids_col] = ','.join(map(str, cell['foci_ids'])) if cell['foci_ids'] else ''
-                    # Foci intensity/size aggregates (when run_foci was on)
+                    # Foci intensity/size aggregates and per-focus value lists (when run_foci was on)
                     cell_id = cell.get('cell_id', cell.get('label'))
                     agg_key = (frame_num, cell_id) if cell_id is not None else None
+                    ps = float(pixel_size) if pixel_size and pixel_size > 0 else 0.108
                     if agg_key and agg_key in foci_per_cell_agg:
                         agg = foci_per_cell_agg[agg_key]
                         row['Foci Mean Intensity'] = agg['mean_intensity']
@@ -1292,6 +1336,48 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                             foci_mean = agg.get('mean_intensity')
                             if foci_mean is not None and np.isfinite(foci_mean):
                                 row['Foci Mean Intensity Ratio'] = float(foci_mean) / fi_val
+                        # Per-focus values (value1, value2, ...) in same order as foci_ids — every foci stat as list
+                        if agg_key in foci_per_cell_list and cell.get('foci_ids'):
+                            foci_list = foci_per_cell_list[agg_key]
+                            by_id = {f['foci_id']: f for f in foci_list if f.get('foci_id') is not None}
+                            mean_fi = cell.get('mean_fi')
+                            fi_val = float(mean_fi) if mean_fi is not None and isinstance(mean_fi, (int, float)) and np.isfinite(mean_fi) and mean_fi > 0 else None
+                            peak_vals = []
+                            mean_vals = []
+                            area_px_vals = []
+                            area_um2_vals = []
+                            rel_vals = []
+                            ratio_vals = []
+                            for fid in cell['foci_ids']:
+                                f = by_id.get(fid)
+                                if f is not None:
+                                    peak = f.get('intensity')
+                                    peak_vals.append(f"{peak:.4g}" if peak is not None and np.isfinite(peak) else "")
+                                    mi = f.get('mean_intensity')
+                                    mean_vals.append(f"{mi:.4g}" if mi is not None and np.isfinite(mi) else "")
+                                    sx = f.get('size_px') or 1
+                                    area_px_vals.append(f"{sx:.4g}")
+                                    area_um2 = sx * (ps ** 2)
+                                    area_um2_vals.append(f"{area_um2:.4g}")
+                                    ri = f.get('rel_intensity')
+                                    rel_vals.append(f"{ri:.4g}" if ri is not None and np.isfinite(ri) else "")
+                                    if fi_val and mi is not None and np.isfinite(mi):
+                                        ratio_vals.append(f"{mi / fi_val:.4g}")
+                                    else:
+                                        ratio_vals.append("")
+                                else:
+                                    peak_vals.append("")
+                                    mean_vals.append("")
+                                    area_px_vals.append("")
+                                    area_um2_vals.append("")
+                                    rel_vals.append("")
+                                    ratio_vals.append("")
+                            row['Foci intensities (peak)'] = ", ".join(peak_vals) if peak_vals else ""
+                            row['Foci mean intensities'] = ", ".join(mean_vals) if mean_vals else ""
+                            row['Foci areas (px)'] = ", ".join(area_px_vals) if area_px_vals else ""
+                            row['Foci areas (µm²)'] = ", ".join(area_um2_vals) if area_um2_vals else ""
+                            row['Foci rel intensities'] = ", ".join(rel_vals) if rel_vals else ""
+                            row['Foci mean intensity ratios'] = ", ".join(ratio_vals) if ratio_vals else ""
                     detailed_rows.append(row)
             
             if detailed_rows:
@@ -1398,6 +1484,8 @@ Examples:
     # Foci analysis
     parser.add_argument('--run-foci', action='store_true',
                        help='Run foci detection on the FI channel and add foci count and Foci sheet')
+    parser.add_argument('--foci-detection-mode', type=int, default=0, choices=[0, 1, 2],
+                       help='0=manual (use foci-min-rel etc.), 1=auto (data-driven), 2=Spotiflow deep learning (default: 0)')
     parser.add_argument('--foci-min-rel', type=float, default=2.0,
                        help='Min relative intensity factor for foci (default: 2.0)')
     parser.add_argument('--foci-min-rel-mode', type=str, default='per_cell', choices=['per_frame', 'per_cell', 'both'],
@@ -1478,6 +1566,7 @@ Examples:
         fi_do_contour=not args.no_fi_contour,
         exclude_border=args.exclude_border,
         run_foci=args.run_foci,
+        foci_detection_mode=getattr(args, 'foci_detection_mode', 0),
         foci_min_rel=args.foci_min_rel,
         foci_min_rel_mode=getattr(args, 'foci_min_rel_mode', 'per_cell'),
         foci_min_rel_cell=getattr(args, 'foci_min_rel_cell', 2.0),

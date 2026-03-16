@@ -1,27 +1,45 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-11 18:32:35",
+  "timestamp": "2026-03-13 22:23:20",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
-      "max_frames": 100,
+      "max_frames": 1,
       "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
-      "performed": false
+      "bleach_fluorescence_channels": [
+        false,
+        false
+      ],
+      "fi_channels": [
+        false,
+        false
+      ],
+      "foci_channels": [
+        false,
+        false
+      ],
+      "zproject_channels": [
+        false,
+        false
+      ],
+      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/",
+      "performed": true
     },
     "segmentation": {
-      "model": "bact_phase_omni",
+      "model": "Cellpose-SAM",
       "diameter": 30.0,
       "flow_threshold": 0.4,
       "mask_threshold": 0.0,
       "use_gpu": true,
       "cluster": false,
-      "create_overlay": true,
+      "create_overlay": false,
       "trained_models_this_session": [],
+      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/Tif_files",
       "omnipose_pretrained": "bact_phase_omni",
       "omnipose_n_epochs": 50,
       "omnipose_lr": 0.01,
@@ -31,7 +49,8 @@
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
       "omnipose_use_tiled": true,
-      "performed": false
+      "performed": true,
+      "segment_filename_filter": "phase"
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -48,31 +67,32 @@
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
       "min_solidity": 0.7,
-      "min_area": 0.0,
+      "min_area": 2.0,
       "max_area": 0.0,
       "min_width": 0.0,
       "max_width": 0.0,
       "min_length": 0.0,
       "detailed": true,
-      "create_vis": true,
+      "create_vis": false,
       "export_csv": false,
-      "exclude_border": false,
-      "create_combined_summary": false,
-      "analyze_fi": false,
+      "exclude_border": true,
+      "create_combined_summary": true,
+      "analyze_fi": true,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
       "fi_contour_thickness": 1,
-      "run_foci": false,
-      "foci_min_rel": 2.0,
+      "run_foci": true,
+      "foci_min_rel": 1.5,
       "foci_min_rel_mode": "per cell",
       "foci_min_rel_cell": 2.0,
       "foci_min_separation": 2,
-      "foci_min_area_um2": 0.2,
+      "foci_min_area_um2": 0.01,
       "foci_max_area_um2": 0.8,
       "foci_min_peak_raw": 0.0,
       "foci_min_focus_mean": 0.0,
-      "foci_exclude_outside_cells": false,
-      "performed": false
+      "foci_exclude_outside_cells": true,
+      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/Tif_files/_segmentation_cellpose_sam",
+      "performed": true
     },
     "tracking": {
       "model": "general_2d",

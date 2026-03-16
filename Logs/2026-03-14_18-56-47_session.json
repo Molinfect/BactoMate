@@ -1,34 +1,17 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-09 07:53:10",
+  "timestamp": "2026-03-14 18:56:47",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
-      "max_frames": 2,
+      "max_frames": 100,
       "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
-      "bleach_fluorescence_channels": [
-        false,
-        false
-      ],
-      "fi_channels": [
-        true,
-        false
-      ],
-      "foci_channels": [
-        true,
-        false
-      ],
-      "zproject_channels": [
-        false,
-        false
-      ],
-      "file_path": "/Users/philipppopp/Desktop/2026-03-08/200min_examples/19765_MOI5_002-2.tif",
-      "performed": true
+      "performed": false
     },
     "segmentation": {
       "model": "bact_phase_omni",
@@ -39,7 +22,6 @@
       "cluster": false,
       "create_overlay": true,
       "trained_models_this_session": [],
-      "file_path": "/Users/philipppopp/Desktop/2026-03-08/200min_I/Tif_files/",
       "omnipose_pretrained": "bact_phase_omni",
       "omnipose_n_epochs": 50,
       "omnipose_lr": 0.01,
@@ -49,7 +31,8 @@
       "omnipose_save_each": 0,
       "omnipose_use_gpu": true,
       "omnipose_use_tiled": true,
-      "performed": true
+      "performed": false,
+      "segment_filename_filter": ""
     },
     "unet_segment": {
       "unet_epochs": 50,
@@ -72,26 +55,27 @@
       "max_width": 0.0,
       "min_length": 0.0,
       "detailed": true,
-      "create_vis": false,
+      "create_vis": true,
       "export_csv": false,
-      "exclude_border": true,
-      "create_combined_summary": true,
+      "exclude_border": false,
+      "create_combined_summary": false,
       "analyze_fi": true,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
       "fi_contour_thickness": 1,
       "run_foci": true,
-      "foci_min_rel": 1.5,
+      "foci_min_rel": 2.0,
       "foci_min_rel_mode": "per cell",
       "foci_min_rel_cell": 2.0,
       "foci_min_separation": 2,
-      "foci_min_area_um2": 0.05,
-      "foci_max_area_um2": 0.5,
-      "foci_min_peak_raw": 1500.0,
+      "foci_min_area_um2": 0.2,
+      "foci_max_area_um2": 0.8,
+      "foci_min_peak_raw": 0.0,
       "foci_min_focus_mean": 0.0,
       "foci_exclude_outside_cells": false,
-      "file_path": "/Users/philipppopp/Desktop/2026-03-08/200min_I/Tif_files/_segmentation_omni/",
-      "performed": true
+      "foci_detection_mode": 1,
+      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/Tif_files/_segmentation_cellpose_sam/",
+      "performed": false
     },
     "tracking": {
       "model": "general_2d",

@@ -211,6 +211,7 @@ class OmniposeSegTab(QWidget):
         self.parent_window = parent
         self._trained_models_this_session: list[str] = []  # for session log when user trains a model
         self._performed_this_session = False  # True if user ran segmentation this session (for Re-run only same steps)
+        self._segment_filename_filter = ""  # e.g. "phase" to select all TIF files containing "phase"; saved in session for Re-run
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -1392,6 +1393,22 @@ class OmniposeSegTab(QWidget):
             pass
         return (None, None)
 
+    def _get_omnipose_segmentation_folder_name(self) -> str:
+        """Return the segmentation output folder name from the current model (e.g. _segmentation_bact_phase_omni, _segmentation_cellpose_sam)."""
+        display = self.model_combo.currentText() or ""
+        model_type, pretrained_path = self._resolve_model_selection(display)
+        if pretrained_path is not None:
+            slug = pretrained_path.stem
+        else:
+            slug = (model_type or display).strip()
+        # Filesystem-safe: lowercase, only alphanumeric and underscore
+        slug = re.sub(r"[^a-z0-9_]", "_", slug.lower()).strip("_") if slug else "omni"
+        return f"_segmentation_{slug}"
+
+    def get_segmentation_output_folder_name(self) -> str:
+        """Public: return folder name for Re-run / main window (e.g. _segmentation_bact_phase_omni)."""
+        return self._get_omnipose_segmentation_folder_name()
+
     def reset_segmentation_defaults(self):
         """Reset all segmentation parameters to their default values (model + diameter/flow/mask for that model)."""
         # Set default model, fallback to first available if bact_phase_omni not available
@@ -1448,6 +1465,7 @@ class OmniposeSegTab(QWidget):
             out_omni["omnipose_use_tiled"] = self.omnipose_use_tiled_cb.isChecked()
             out.update(out_omni)
         out["performed"] = getattr(self, "_performed_this_session", False)
+        out["segment_filename_filter"] = getattr(self, "_segment_filename_filter", "") or ""
         return out
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -1483,6 +1501,8 @@ class OmniposeSegTab(QWidget):
             self.file_path.setText(str(data["file_path"]).strip())
         if "performed" in data:
             self._performed_this_session = bool(data["performed"])
+        if "segment_filename_filter" in data and data["segment_filename_filter"] is not None:
+            self._segment_filename_filter = str(data["segment_filename_filter"]).strip() or ""
 
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
@@ -3565,10 +3585,10 @@ class OmniposeSegTab(QWidget):
             script_path = script_path_str
             input_file = Path(self.file_path.text())
             
-            # When input is in any Tif_* folder (Tif_files, Tif_files2, Tif_1-3, ...), save masks in that folder's _segmentation_omni subfolder
+            # When input is in any Tif_* folder (Tif_files, Tif_files2, Tif_1-3, ...), save masks in that folder's _segmentation_<model> subfolder
             base_dir = input_file.parent
             if base_dir.name.startswith('Tif_'):
-                output_dir = base_dir / "_segmentation_omni"
+                output_dir = base_dir / self._get_omnipose_segmentation_folder_name()
             else:
                 output_dir = base_dir / f"{input_file.stem}_omnipose_segmentation"
             
@@ -3622,14 +3642,19 @@ class OmniposeSegTab(QWidget):
                                   "Please select a folder containing TIFF files to process.")
                 return
             
-            # Show file selection dialog
-            selected_files = show_file_selection_dialog(
+            # Show file selection dialog (pass saved filter so Re-run applies same selection)
+            result = show_file_selection_dialog(
                 self,
                 tiff_files,
                 title="Select Files for Segmentation",
-                message=f"Select files to process (all {len(tiff_files)} files selected by default):"
+                message=f"Select files to process (all {len(tiff_files)} files selected by default):",
+                initial_filename_filter=getattr(self, "_segment_filename_filter", "") or "",
+                return_filename_filter=True,
             )
-            
+            selected_files, filter_used = result if isinstance(result, tuple) else (result, "")
+            if filter_used is not None:
+                self._segment_filename_filter = filter_used or ""
+
             if selected_files is None:
                 # User cancelled or no files selected
                 return
@@ -3649,28 +3674,34 @@ class OmniposeSegTab(QWidget):
             # Track progress within current file (for batch/frame progress)
             self.current_file_progress = 0.0  # 0.0 to 1.0
             
-            # Show progress bar
+            # Show progress bar and status line (file X of N — name)
+            n_files = len(selected_files)
+            first_name = Path(selected_files[0]).name if selected_files else "…"
             self.parent_window.progress_bar.setVisible(True)
             self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range for percentage display
             self.parent_window.progress_bar.setValue(0)
-            
+            if hasattr(self.parent_window, "set_status_message"):
+                self.parent_window.set_status_message(f"Omnipose: file 1 of {n_files} — {first_name}")
             self.process_btn.setEnabled(False)
-            self.process_btn.setText(f"Processing... (0/{len(selected_files)})")
+            self.process_btn.setText(f"Processing... (0/{n_files})")
             self.cancel_btn.setVisible(True)
             self.cancel_btn.setEnabled(True)
             self.parent_window.log_output(f"Starting batch folder processing: {len(selected_files)} file(s) selected from {self.file_path.text()}\n")
             
-            # When folder is any Tif_* (Tif_files, Tif_1-3, ...), masks go into _segmentation_omni; else one subfolder per file
-            self._last_output_dir = (folder / "_segmentation_omni") if folder.name.startswith('Tif_') else folder
+            # When folder is any Tif_* (Tif_files, Tif_1-3, ...), masks go into _segmentation_<model>; else one subfolder per file
+            self._last_output_dir = (folder / self._get_omnipose_segmentation_folder_name()) if folder.name.startswith('Tif_') else folder
             # Process first file
             self._process_next_segmentation_file(script_path)
             return  # Early return, processing continues in _process_next_segmentation_file
         
-        # Show progress bar
+        # Show progress bar and status (single file)
         self.parent_window.progress_bar.setVisible(True)
         self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range for percentage display
         self.parent_window.progress_bar.setValue(0)
-        
+        if hasattr(self.parent_window, "set_status_message"):
+            input_path = Path(self.file_path.text()) if self.file_path.text() else None
+            name = input_path.name if input_path else "…"
+            self.parent_window.set_status_message(f"Omnipose: {name}")
         # Store reference to prevent garbage collection
         self.worker = WorkerThread(script_path, cmd_args, parent=self)
         self.worker.finished.connect(self.on_finished)
@@ -3690,12 +3721,15 @@ class OmniposeSegTab(QWidget):
             else:
                 self.process_btn.setText("Process File")
             self.parent_window.progress_bar.setVisible(False)
+            if hasattr(self.parent_window, "set_status_message"):
+                self.parent_window.set_status_message("")
             self.parent_window.log_output(f"\n✓ Segmentation complete for all {len(self.folder_files)} file(s)!\n")
             self._performed_this_session = True
             self.workflow_step_finished.emit(True)
             msg = QMessageBox(self)
             msg.setWindowTitle("Processing Complete")
-            out_desc = "Output: _segmentation_omni folder (one mask file per image)." if (self.folder_files and Path(self.folder_files[0]).parent.name.startswith('Tif_')) else "Output: one _omnipose_segmentation subfolder per file (masks and overlay)."
+            seg_folder = self._get_omnipose_segmentation_folder_name()
+            out_desc = f"Output: {seg_folder} folder (one mask file per image)." if (self.folder_files and Path(self.folder_files[0]).parent.name.startswith('Tif_')) else "Output: one _omnipose_segmentation subfolder per file (masks and overlay)."
             msg.setText(
                 f"Successfully processed {len(self.folder_files)} file(s).\n\n"
                 f"{out_desc}"
@@ -3711,10 +3745,10 @@ class OmniposeSegTab(QWidget):
         tiff_file = self.folder_files[self.current_file_index]
         self.parent_window.log_output(f"\nProcessing file {self.current_file_index + 1}/{len(self.folder_files)}: {tiff_file.name}\n")
         
-        # When folder is any Tif_* (Tif_files, Tif_1-3, ...), all masks go into that folder's _segmentation_omni subfolder
+        # When folder is any Tif_* (Tif_files, Tif_1-3, ...), all masks go into that folder's _segmentation_<model> subfolder
         base_dir = tiff_file.parent
         if base_dir.name.startswith('Tif_'):
-            output_dir = base_dir / "_segmentation_omni"
+            output_dir = base_dir / self._get_omnipose_segmentation_folder_name()
         else:
             output_dir = base_dir / f"{tiff_file.stem}_omnipose_segmentation"
         
@@ -3746,10 +3780,13 @@ class OmniposeSegTab(QWidget):
         # Reset current file progress when starting a new file
         self.current_file_progress = 0.0
         
-        # Update progress bar to show file start
-        file_progress = int((self.current_file_index / len(self.folder_files)) * 100)
+        # Update progress bar and status line (file X of N — current filename)
+        n_files = len(self.folder_files)
+        file_progress = int((self.current_file_index / n_files) * 100)
         self.parent_window.progress_bar.setValue(file_progress)
-        self.process_btn.setText(f"Processing... ({self.current_file_index + 1}/{len(self.folder_files)})")
+        self.process_btn.setText(f"Processing... ({self.current_file_index + 1}/{n_files})")
+        if hasattr(self.parent_window, "set_status_message"):
+            self.parent_window.set_status_message(f"Omnipose: file {self.current_file_index + 1} of {n_files} — {tiff_file.name}")
         
         # Store reference to prevent garbage collection
         self.worker = WorkerThread(script_path, cmd_args, parent=self)
@@ -3788,6 +3825,8 @@ class OmniposeSegTab(QWidget):
             self.process_btn.setEnabled(True)
             self.process_btn.setText("Process All Files in Folder" if self._is_folder_mode() else "Process File")
             self.parent_window.progress_bar.setVisible(False)
+            if hasattr(self.parent_window, "set_status_message"):
+                self.parent_window.set_status_message("")
             self.parent_window.log_output("Processing cancelled.\n")
             return
         
@@ -3901,8 +3940,10 @@ class OmniposeSegTab(QWidget):
         if hasattr(self, 'worker'):
             self.worker.wait()  # Wait for thread to finish
             self.worker = None
-        # Hide progress bar
+        # Hide progress bar and clear status line
         self.parent_window.progress_bar.setVisible(False)
+        if hasattr(self.parent_window, "set_status_message"):
+            self.parent_window.set_status_message("")
         if success:
             if is_folder:
                 self.parent_window.log_output("✓ Folder processed successfully!\n")
