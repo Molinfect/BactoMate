@@ -170,7 +170,7 @@ class MainWindow(QMainWindow):
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
         title_bar_layout.addWidget(logo_label)
 
-        title_text = QLabel("BactiMate - your mate for bacteria time-lapse data")
+        title_text = QLabel("BactiMate - your mate for bacteria microscopy data")
         title_text.setStyleSheet(
             "QLabel {"
             "font-size: 20pt;"

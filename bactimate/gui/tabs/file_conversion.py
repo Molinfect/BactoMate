@@ -1594,24 +1594,72 @@ class ND2ConversionTab(QWidget):
         
         file_path_obj = Path(self.file_path.text())
         
-        # When path is a folder: use the first supported file for preview (same as conversion defaults). No "select a file" dialog.
+        # When path is a folder: list only files in this folder (no subfolders) and let user choose one to preview.
         if file_path_obj.is_dir():
             folder = file_path_obj
             supported_files = sorted(
-                list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
-                list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
-                list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
-                list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
-                list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
+                p for p in (
+                    list(folder.glob("*.nd2")) + list(folder.glob("*.ND2")) +
+                    list(folder.glob("*.lif")) + list(folder.glob("*.LIF")) +
+                    list(folder.glob("*.czi")) + list(folder.glob("*.CZI")) +
+                    list(folder.glob("*.tif")) + list(folder.glob("*.tiff")) +
+                    list(folder.glob("*.TIF")) + list(folder.glob("*.TIFF"))
+                )
+                if p.is_file()
             )
             if not supported_files:
                 QMessageBox.warning(self, "No Files Found",
-                                    "No supported microscopy files (ND2, LIF, CZI, TIFF) found in the selected folder.")
+                                    "No supported microscopy files (ND2, LIF, CZI, TIFF) found in the selected folder.\n"
+                                    "Only files directly in this folder are listed (not inside subfolders).")
                 return
-            first_file = supported_files[0]
+            if len(supported_files) == 1:
+                selected_file = supported_files[0]
+            else:
+                file_dialog = QDialog(self)
+                file_dialog.setWindowTitle("Select file to preview")
+                file_dialog.setMinimumSize(500, 400)
+                layout = QVBoxLayout()
+                label = QLabel("Files in folder (select one to preview; subfolders are not listed):")
+                label.setStyleSheet("color: #ffffff; font-size: 11pt; padding: 10px;")
+                label.setWordWrap(True)
+                layout.addWidget(label)
+                file_list = QListWidget()
+                file_list.setStyleSheet(
+                    "QListWidget { background-color: #2b2b2b; color: #ffffff; font-size: 11pt; "
+                    "border: 1px solid #555555; border-radius: 4px; padding: 5px; }"
+                    "QListWidget::item { padding: 8px; border-bottom: 1px solid #3a3a3a; }"
+                    "QListWidget::item:selected { background-color: #5D6D7E; color: #ffffff; }"
+                    "QListWidget::item:hover { background-color: #3a3a3a; }"
+                )
+                for p in supported_files:
+                    file_list.addItem(p.name)
+                file_list.setCurrentRow(0)
+
+                def on_double_click():
+                    file_dialog.accept()
+
+                file_list.itemDoubleClicked.connect(on_double_click)
+                layout.addWidget(file_list)
+                btn_layout = QHBoxLayout()
+                btn_layout.addStretch()
+                cancel_btn = QPushButton("Cancel")
+                cancel_btn.clicked.connect(file_dialog.reject)
+                ok_btn = QPushButton("Preview")
+                ok_btn.clicked.connect(file_dialog.accept)
+                btn_layout.addWidget(cancel_btn)
+                btn_layout.addWidget(ok_btn)
+                layout.addLayout(btn_layout)
+                file_dialog.setLayout(layout)
+                if file_dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
+                idx = file_list.currentRow()
+                if idx < 0 or idx >= len(supported_files):
+                    return
+                selected_file = supported_files[idx]
+
             original_path = self.file_path.text()
-            self.file_path.setText(str(first_file))
-            self.load_file_info(str(first_file))
+            self.file_path.setText(str(selected_file))
+            self.load_file_info(str(selected_file))
             if self.file_info:
                 file_type = self.file_info.get("file_type", "nd2")
                 if file_type == "nd2":
