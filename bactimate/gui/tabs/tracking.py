@@ -72,22 +72,13 @@ class TrackingTab(QWidget):
         tracking_group = self._build_tracking_params()
         scroll_layout.addWidget(tracking_group)
 
-        self.process_btn = QPushButton("Run Tracking")
-        self.process_btn.setEnabled(False)
-        self.process_btn.clicked.connect(self.run_tracking)
-        scroll_layout.addWidget(self.process_btn)
-
         self._build_preview_section(scroll_layout)
 
         self.file_path.textChanged.connect(self._update_tracking_button_state)
-        self.file_path.textChanged.connect(self._update_export_filtered_button_state)
         self.file_path.textChanged.connect(self._update_filter_ranges_from_trajectory)
-        self.preview_path.textChanged.connect(self._update_preview_button_state)
-        self.preview_path.textChanged.connect(self._update_export_filtered_button_state)
-        self.preview_path.textChanged.connect(self._update_filter_ranges_from_trajectory)
-        self.batch_cb.toggled.connect(self._update_tracking_button_state)
+        self.file_path.textChanged.connect(self._update_open_results_button_state)
         self._update_tracking_button_state()
-        self._update_export_filtered_button_state()
+        self._update_open_results_button_state()
         QTimer.singleShot(0, self._update_filter_ranges_from_trajectory)
 
         scroll_widget.setLayout(scroll_layout)
@@ -96,8 +87,16 @@ class TrackingTab(QWidget):
         layout.addWidget(scroll)
         self.setLayout(layout)
 
+    def _main_window(self) -> QWidget:
+        """Return the main window so dialogs parent to it (avoids second dock/taskbar icon)."""
+        if hasattr(self, "window") and callable(self.window):
+            w = self.window()
+            if w is not None:
+                return w
+        return getattr(self, "parent_window", self)
+
     def _build_input_groups(self, scroll_layout: QVBoxLayout) -> None:
-        """Build Path group only (mask file or folder). Original/Excel are resolved automatically."""
+        """Build Run tracking subsection: path row + action buttons."""
         file_font = QFont()
         file_font.setPointSize(11)
         size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -107,14 +106,15 @@ class TrackingTab(QWidget):
             parent=self,
             on_drop_callback=self.handle_dropped_path
         )
+        group_layout = QVBoxLayout()
+
         path_layout = QHBoxLayout()
         path_layout.addWidget(QLabel("Path:"))
         path_layout.addWidget(create_info_icon(
             "Path to a mask TIFF file or folder of mask TIFFs to track.\n\n"
-            "Single file: leave Batch unchecked and select a mask TIFF (Browse File).\n"
-            "Folder: check Batch in Tracking Parameters and select a folder (e.g. _segmentation_bact_phase_omni, _segmentation_unet); "
-            "tracking runs for each mask in the folder (one or more).\n\n"
-            "Outputs are always written to a _tracking folder at the same level as the segmentation folder.",
+            "Single file: select a mask TIFF (Browse File). Folder: select a folder (e.g. _segmentation_bact_phase_omni); "
+            "tracking runs for each mask in the folder.\n\n"
+            "Full runs write to _tracking/{stem}_tracking/. Preview runs write to _preview/{stem}_n{N}/ (same base dir).",
             self,
         ))
         self.file_path = QLineEdit()
@@ -131,57 +131,61 @@ class TrackingTab(QWidget):
         path_layout.addWidget(self.file_path, 1)
         path_layout.addWidget(file_btn, 0)
         path_layout.addWidget(folder_btn, 0)
-        path_group.setLayout(path_layout)
+        group_layout.addLayout(path_layout)
+
+        run_row = QHBoxLayout()
+        run_row.setSpacing(8)
+        btn_expanding = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.preview_btn = QPushButton("Preview tracking")
+        self.preview_btn.setEnabled(False)
+        self.preview_btn.setSizePolicy(btn_expanding)
+        self.preview_btn.setMinimumHeight(32)
+        self.preview_btn.clicked.connect(lambda: self._run_tracking_with_action("preview"))
+        self.movement_btn = QPushButton("Run tracking (movement)")
+        self.movement_btn.setEnabled(False)
+        self.movement_btn.setSizePolicy(btn_expanding)
+        self.movement_btn.setMinimumHeight(32)
+        self.movement_btn.clicked.connect(lambda: self._run_tracking_with_action("movement"))
+        self.lineage_btn = QPushButton("Run lineage tracking")
+        self.lineage_btn.setEnabled(False)
+        self.lineage_btn.setSizePolicy(btn_expanding)
+        self.lineage_btn.setMinimumHeight(32)
+        self.lineage_btn.clicked.connect(lambda: self._run_tracking_with_action("lineage"))
+        run_row.addWidget(self.preview_btn, 1)
+        run_row.addWidget(self.movement_btn, 1)
+        run_row.addWidget(self.lineage_btn, 1)
+        run_info = create_info_icon(
+            "Preview: first N frames only (see Tracking Parameters). Writes under _preview/ (not _tracking) so full runs stay separate. "
+            "A trajectory viewer opens when a *_trajectories.tif is produced (Create visualization + phase image).\n\n"
+            "Run tracking (movement): full sequence -> _tracking/{stem}_tracking/.\n\n"
+            "Run lineage tracking: same Trackastra pass plus lineage CSV/XLSX/TIF; greedy_nodiv switches to greedy.",
+            self,
+            compact=True,
+        )
+        run_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        run_row.addWidget(run_info, 0)
+        group_layout.addLayout(run_row)
+
+        path_group.setLayout(group_layout)
         scroll_layout.addWidget(path_group)
 
     def _build_preview_section(self, scroll_layout: QVBoxLayout) -> None:
-        """Build Preview trajectories subsection: path, Browse File/Folder, then button."""
-        preview_group = DragDropGroupBox(
-            "Preview trajectories",
-            parent=self,
-            on_drop_callback=self._handle_dropped_preview_path,
-        )
-        preview_layout = QHBoxLayout()
-        preview_layout.addWidget(QLabel("Path:"))
-        preview_layout.addWidget(create_info_icon(
-            "Path to a folder or to a single *_trajectories.tif file.\n\n"
-            "Click 'Preview trajectories' to open the file; if multiple files are found, you can choose which one to view.",
-            self,
-        ))
-        self.preview_path = QLineEdit()
-        self.preview_path.setPlaceholderText("Select folder or trajectory file... (or drag and drop)")
-        self.preview_path.setMinimumWidth(500)
-        preview_font = QFont()
-        preview_font.setPointSize(11)
-        self.preview_path.setFont(preview_font)
-        size_policy = QSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
-        self.preview_path.setSizePolicy(size_policy)
-        preview_file_btn = QPushButton("Browse File...")
-        preview_file_btn.setFixedWidth(120)
-        preview_file_btn.clicked.connect(self.select_preview_file)
-        preview_folder_btn = QPushButton("Browse Folder...")
-        preview_folder_btn.setFixedWidth(130)
-        preview_folder_btn.clicked.connect(self.select_preview_folder)
-        preview_layout.addWidget(self.preview_path, 1)
-        preview_layout.addWidget(preview_file_btn, 0)
-        preview_layout.addWidget(preview_folder_btn, 0)
-        preview_group.setLayout(preview_layout)
-        scroll_layout.addWidget(preview_group)
-
-        preview_btn_row = QHBoxLayout()
-        self.preview_btn = QPushButton("Preview trajectories")
-        self.preview_btn.setEnabled(False)
-        self.preview_btn.clicked.connect(self.preview_trajectories)
-        preview_btn_row.addWidget(self.preview_btn, 1)
-        preview_btn_row.addStretch()
-        preview_btn_row.addWidget(create_info_icon(
-            "Find *_trajectories.tif at the path above; if multiple, you can choose which to view. "
-            "Calibration (pixel size and time per frame) is auto-filled from TIFF metadata when available.",
-            self,
-        ))
-        scroll_layout.addLayout(preview_btn_row)
-
+        """Build Filter tracks first, then View results below it."""
         self._build_filter_tracks_section(scroll_layout)
+
+        view_group = QGroupBox("View results")
+        view_layout = QHBoxLayout()
+        self.open_results_btn = QPushButton("Open trajectory results")
+        self.open_results_btn.setEnabled(False)
+        self.open_results_btn.clicked.connect(self._open_trajectory_results)
+        view_layout.addWidget(self.open_results_btn, 1)
+        view_layout.addWidget(create_info_icon(
+            "Open existing *_trajectories.tif from _tracking or _preview outputs for the current Path. "
+            "If multiple files exist, you can choose which to view. Calibration is filled from TIFF metadata when available.",
+            self,
+        ))
+        view_group.setLayout(view_layout)
+        scroll_layout.addWidget(view_group)
 
     def _build_filter_tracks_section(self, scroll_layout: QVBoxLayout) -> None:
         """Build Filter tracks subsection: calibration row + 2-column grid so filters fill horizontal space; (?) next to each spin set."""
@@ -359,20 +363,6 @@ class TrackingTab(QWidget):
         filter_group.setLayout(grid)
         scroll_layout.addWidget(filter_group)
 
-        export_row = QHBoxLayout()
-        self.export_filtered_btn = QPushButton("Run Tracking with filters")
-        self.export_filtered_btn.clicked.connect(self._run_export_filtered_tracks)
-        export_row.addWidget(self.export_filtered_btn, 1)
-        export_row.addStretch()
-        export_row.addWidget(create_info_icon(
-            "Find all *_trajectories.tif files (from Preview path or Tracking path), let you select which to process, "
-            "then apply the current filter settings and write one Excel per file with one row per track that passes the filters. "
-            "Columns: Cell_ID (if from analysis), TrackID, length, duration (frames and min), displacement, path length, "
-            "mean speed, straight-line speed, straightness, first/last frame.",
-            self,
-        ))
-        scroll_layout.addLayout(export_row)
-
     def _get_filter_params(self) -> dict[str, Any]:
         """Current calibration and filter parameters from widgets for track filtering.
         Time per frame is converted to minutes using the unit combo."""
@@ -403,8 +393,9 @@ class TrackingTab(QWidget):
         return params
 
     def _build_tracking_params(self) -> QGroupBox:
-        """Build the Tracking Parameters group: one row with Model, Mode, and all checkboxes + info icons."""
+        """Build the Tracking Parameters group: model/mode/preview-N/create-vis on one row."""
         tracking_group = QGroupBox("Tracking Parameters")
+        outer = QVBoxLayout()
         row = QHBoxLayout()
 
         model_layout = QHBoxLayout()
@@ -445,25 +436,21 @@ class TrackingTab(QWidget):
             "Linking mode for connecting cells across time frames.\n\n"
             "Default: 'greedy'\n"
             "Source: Trackastra linking algorithms (https://github.com/weigertlab/trackastra)\n\n"
+            "Divisions (lineage): greedy and ilp both allow splitting events. greedy_nodiv forbids divisions — "
+            "Run lineage tracking will auto-switch it to greedy. ilp can be more accurate on difficult division "
+            "topology but is slower and needs an ILP solver (Gurobi or SCIP).\n\n"
             "Available modes:\n"
             "- greedy: Greedy linking with division support (recommended)\n"
-            "  • Fast algorithm, no additional dependencies\n"
-            "  • Handles cell divisions (splitting)\n"
-            "  • Good for most tracking scenarios\n"
-            "  • Best balance of speed and accuracy\n\n"
-            "- greedy_nodiv: Greedy linking without division support\n"
-            "  • Fast algorithm, no additional dependencies\n"
-            "  • Cells cannot split (no division tracking)\n"
-            "  • Use when cells don't divide or you want faster processing\n"
-            "  • Simpler tracking logic\n\n"
-            "- ilp: Integer Linear Programming (optimal linking)\n"
-            "  • More accurate than greedy methods\n"
-            "  • Solves global optimization problem\n"
-            "  • Slower than greedy methods\n"
-            "  • Requires additional dependencies (motile, Gurobi or SCIP solver)\n"
-            "  • Best for challenging cases where accuracy is critical\n"
-            "  • Note: Academic Gurobi licenses are free\n\n"
-            "Tip: Start with 'greedy' for most cases. Use 'ilp' if you need maximum accuracy.",
+            "  • Fast, no extra solver\n"
+            "  • Handles cell divisions\n\n"
+            "- greedy_nodiv: Greedy without divisions\n"
+            "  • Faster / simpler when cells do not divide\n"
+            "  • Not used for lineage exports (auto-switched)\n\n"
+            "- ilp: Integer Linear Programming (global linking)\n"
+            "  • Often best accuracy for hard cases\n"
+            "  • Slower; needs motile + Gurobi or SCIP\n"
+            "  • Academic Gurobi licenses are free\n\n"
+            "Tip: Start with greedy; try ilp if greedy lineage looks wrong.",
             parent_widget=self
         )
         mode_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -472,54 +459,47 @@ class TrackingTab(QWidget):
         mode_layout.addWidget(mode_info_icon)
         row.addLayout(mode_layout)
 
-        gpu_layout = QHBoxLayout()
-        self.use_gpu_cb = QCheckBox("Use GPU")
-        self.use_gpu_cb.setChecked(True)
-        gpu_info_icon = create_info_icon(
-            "Use GPU acceleration for tracking (CUDA or Apple Silicon MPS).\n\n"
-            "Default: Checked. Uncheck to force CPU (slower).\n"
-            "Falls back to CPU if GPU is not available or fails.",
-            parent_widget=self,
+        preview_layout = QHBoxLayout()
+        preview_layout.addWidget(QLabel("Preview frames:"))
+        self.preview_n_spin = QSpinBox()
+        self.preview_n_spin.setRange(1, 999_999)
+        self.preview_n_spin.setValue(20)
+        self.preview_n_spin.setFixedWidth(88)
+        self.preview_n_spin.setToolTip(
+            "Preview tracking uses only the first N frames. Outputs go to _preview/ (see Run row help)."
         )
-        gpu_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        gpu_layout.addWidget(self.use_gpu_cb)
-        gpu_layout.addWidget(gpu_info_icon)
-        row.addLayout(gpu_layout)
+        preview_n_info = create_info_icon(
+            "Used by Preview tracking only: Trackastra runs on the first N frames. "
+            "Results are written under _preview/{stem}_n{N}/ (not under _tracking). "
+            "Divisions after frame N−1 are invisible in preview.",
+            self,
+            compact=True,
+        )
+        preview_n_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        preview_layout.addWidget(self.preview_n_spin)
+        preview_layout.addWidget(preview_n_info)
+        row.addLayout(preview_layout)
 
         create_vis_layout = QHBoxLayout()
         self.create_vis_cb = QCheckBox("Create visualization")
         self.create_vis_cb.setChecked(True)
         create_vis_info = create_info_icon(
             "When checked, trajectory overlay and visualization are created if an original TIF aligned to the mask is found (e.g. same name in the folder).\n\n"
-            "Output is saved in the _tracking folder (e.g. *_trajectories.tif). Uncheck to skip visualization (faster).",
+            "Output is saved next to other tracking results (e.g. *_trajectories.tif under _tracking/ or _preview/). Uncheck to skip visualization (faster).",
             parent_widget=self,
         )
         create_vis_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         create_vis_layout.addWidget(self.create_vis_cb)
         create_vis_layout.addWidget(create_vis_info)
         row.addLayout(create_vis_layout)
-
-        batch_layout = QHBoxLayout()
-        self.batch_cb = QCheckBox("Batch")
-        self.batch_cb.setChecked(False)
-        batch_info = create_info_icon(
-            "When checked, Path must be a folder; tracking runs for each mask in that folder (one or more).\n\n"
-            "When unchecked, Path must be a single mask file (single-file tracking). Auto-ticked when Path is a folder.",
-            parent_widget=self,
-        )
-        batch_info.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        batch_layout.addWidget(self.batch_cb)
-        batch_layout.addWidget(batch_info)
-        row.addLayout(batch_layout)
         row.addStretch()
+        outer.addLayout(row)
 
-        tracking_group.setLayout(row)
+        tracking_group.setLayout(outer)
         return tracking_group
 
     def _resolve_device(self) -> str:
-        """Resolve device from Use GPU checkbox: 'cuda' or 'mps' if checked and available, else 'cpu'."""
-        if not self.use_gpu_cb.isChecked():
-            return "cpu"
+        """Prefer CUDA, then Apple MPS, else CPU (no user toggle)."""
         try:
             import torch
             if torch.cuda.is_available():
@@ -531,7 +511,7 @@ class TrackingTab(QWidget):
         return "cpu"
 
     def _get_trajectory_files(self) -> list[Path]:
-        """Return list of existing *_trajectories.tif paths under the current Path's _tracking output."""
+        """Return existing *_trajectories.tif under _tracking and _preview for the current Path."""
         raw = self.file_path.text() and self.file_path.text().strip()
         if not raw:
             return []
@@ -539,25 +519,31 @@ class TrackingTab(QWidget):
         if not p.exists():
             return []
         if p.is_file():
-            out_dir = self._tracking_output_dir(p)
-            traj = out_dir / f"{p.stem}_trajectories.tif"
-            return [traj] if traj.exists() else []
-        # Folder: find all _tracking/*/*_trajectories.tif
+            base_dir = base_dir_for_mask(p)
+            stem = p.stem
+            found: list[Path] = []
+            for folder_name in ("_tracking", "_preview"):
+                root = base_dir / folder_name
+                if not root.is_dir():
+                    continue
+                for sub in root.iterdir():
+                    if sub.is_dir():
+                        t = sub / f"{stem}_trajectories.tif"
+                        if t.is_file():
+                            found.append(t)
+            return sorted(found)
         base = p.parent if p.name.startswith("_segmentation") else p
-        tracking_base = base / "_tracking"
-        if not tracking_base.is_dir():
-            return []
-        return sorted(tracking_base.glob("*/*_trajectories.tif"))
+        found: list[Path] = []
+        for folder_name in ("_tracking", "_preview"):
+            root = base / folder_name
+            if root.is_dir():
+                found.extend(sorted(root.glob("*/*_trajectories.tif")))
+        return sorted(set(found))
 
     def _get_one_trajectory_path(self) -> Optional[Path]:
-        """Return one trajectory file path from preview path or tracking path, or None."""
-        preview = self._get_preview_tracked_files()
-        if preview:
-            return preview[0]
+        """Return one trajectory file path from the current Path's _tracking output, or None."""
         tracking = self._get_trajectory_files()
-        if tracking:
-            return tracking[0]
-        return None
+        return tracking[0] if tracking else None
 
     def _get_trajectory_frame_count(self, path: Path) -> Optional[int]:
         """Return number of frames in a trajectory TIFF, or None if unreadable."""
@@ -601,39 +587,63 @@ class TrackingTab(QWidget):
             self.filter_time_per_frame_unit.setCurrentText("min")
 
     def _update_tracking_button_state(self):
-        """Enable Run when path matches Batch mode (file vs folder). Auto-tick Batch when path is folder."""
+        """Enable run buttons when path is a valid file or folder; adjust batch button labels."""
         raw = self.file_path.text() and self.file_path.text().strip()
+        btns = (getattr(self, "preview_btn", None), getattr(self, "movement_btn", None), getattr(self, "lineage_btn", None))
         if not raw:
-            if hasattr(self, "process_btn"):
-                self.process_btn.setEnabled(False)
+            for b in btns:
+                if b is not None:
+                    b.setEnabled(False)
+            if getattr(self, "preview_btn", None):
+                self.preview_btn.setText("Preview tracking")
+            if getattr(self, "movement_btn", None):
+                self.movement_btn.setText("Run tracking")
+            if getattr(self, "lineage_btn", None):
+                self.lineage_btn.setText("Run lineage tracking")
             return
-        p = Path(raw)
-        # Auto-tick Batch when path is a folder, untick when path is a file
-        if p.exists() and hasattr(self, "batch_cb"):
-            if p.is_dir():
-                self.batch_cb.setChecked(True)
-            elif p.is_file():
-                self.batch_cb.setChecked(False)
-        batch = getattr(self, "batch_cb", None) and self.batch_cb.isChecked()
-        if hasattr(self, "process_btn"):
-            if batch:
-                self.process_btn.setEnabled(p.exists() and p.is_dir())
-            else:
-                self.process_btn.setEnabled(p.exists() and p.is_file())
+        p = Path(raw).resolve()
+        if not p.exists():
+            for b in btns:
+                if b is not None:
+                    b.setEnabled(False)
+            if getattr(self, "preview_btn", None):
+                self.preview_btn.setText("Preview tracking")
+            if getattr(self, "movement_btn", None):
+                self.movement_btn.setText("Run tracking (movement)")
+            if getattr(self, "lineage_btn", None):
+                self.lineage_btn.setText("Run lineage tracking")
+            return
+        if p.is_file():
+            for b in btns:
+                if b is not None:
+                    b.setEnabled(True)
+            if getattr(self, "preview_btn", None):
+                self.preview_btn.setText("Preview tracking")
+            if getattr(self, "movement_btn", None):
+                self.movement_btn.setText("Run tracking (movement)")
+            if getattr(self, "lineage_btn", None):
+                self.lineage_btn.setText("Run lineage tracking")
+        else:
+            mask_files = self._collect_mask_files(p)
+            n = len(mask_files)
+            ok = n > 0
+            for b in btns:
+                if b is not None:
+                    b.setEnabled(ok)
+            if getattr(self, "movement_btn", None):
+                self.movement_btn.setText(
+                    f"Run tracking (movement) — {n} file(s)" if ok else "Run tracking (movement)"
+                )
+            if getattr(self, "preview_btn", None):
+                self.preview_btn.setText(f"Preview tracking — {n} file(s)" if ok else "Preview tracking")
+            if getattr(self, "lineage_btn", None):
+                self.lineage_btn.setText(f"Run lineage — {n} file(s)" if ok else "Run lineage tracking")
 
-    def _update_preview_button_state(self) -> None:
-        """Enable Preview trajectories when the preview path is non-empty."""
-        if not hasattr(self, "preview_btn"):
+    def _update_open_results_button_state(self) -> None:
+        """Enable Open trajectory results when trajectory files exist under the current Path."""
+        if not hasattr(self, "open_results_btn"):
             return
-        raw = self.preview_path.text() and self.preview_path.text().strip()
-        self.preview_btn.setEnabled(bool(raw))
-
-    def _update_export_filtered_button_state(self) -> None:
-        """Enable Run Tracking with filters when any trajectory files are found (preview or main path)."""
-        if not hasattr(self, "export_filtered_btn"):
-            return
-        has_files = bool(self._get_preview_tracked_files() or self._get_trajectory_files())
-        self.export_filtered_btn.setEnabled(has_files)
+        self.open_results_btn.setEnabled(bool(self._get_trajectory_files()))
 
     def select_mask_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -652,67 +662,6 @@ class TrackingTab(QWidget):
         if folder_path:
             self.file_path.setText(folder_path)
             self._update_tracking_button_state()
-
-    def _get_preview_tracked_files(self) -> list[Path]:
-        """Find *_trajectories.tif under the preview path (file or folder)."""
-        raw = self.preview_path.text() and self.preview_path.text().strip()
-        if not raw:
-            return []
-        p = Path(raw).resolve()
-        if not p.exists():
-            return []
-        if p.is_file():
-            if p.name.endswith("_trajectories.tif"):
-                return [p]
-            # Search same directory and one level down
-            parent = p.parent
-            found = list(parent.glob("*_trajectories.tif"))
-            for sub in parent.iterdir():
-                if sub.is_dir():
-                    found.extend(sub.glob("*_trajectories.tif"))
-            return sorted(set(found))
-        # Folder: search in folder and two levels down (e.g. _tracking and _tracking/*_tracking/)
-        found = list(p.glob("*_trajectories.tif"))
-        for sub in p.iterdir():
-            if sub.is_dir():
-                found.extend(sub.glob("*_trajectories.tif"))
-                for sub2 in sub.iterdir():
-                    if sub2.is_dir():
-                        found.extend(sub2.glob("*_trajectories.tif"))
-        return sorted(set(found))
-
-    def select_preview_file(self) -> None:
-        """Browse for a single *_trajectories.tif file."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select trajectories file to preview", get_default_browse_dir(),
-            "Trajectories TIFF (*_trajectories.tif);;TIFF (*.tif *.tiff);;All (*)"
-        )
-        if path:
-            self.preview_path.setText(path)
-            self._update_preview_button_state()
-
-    def select_preview_folder(self) -> None:
-        """Browse for a folder containing *_trajectories.tif files."""
-        folder_path = QFileDialog.getExistingDirectory(
-            self, "Select folder containing trajectory files", get_default_browse_dir()
-        )
-        if folder_path:
-            self.preview_path.setText(folder_path)
-            self._update_preview_button_state()
-
-    def _handle_dropped_preview_path(self, dropped_path: str) -> None:
-        """Handle dropped file or folder on the Preview path group."""
-        path_obj = Path(dropped_path)
-        if path_obj.is_file() and path_obj.suffix.lower() in (".tif", ".tiff"):
-            self.preview_path.setText(dropped_path)
-        elif path_obj.is_dir():
-            self.preview_path.setText(dropped_path)
-        else:
-            QMessageBox.warning(
-                self, "Invalid Drop",
-                "Please drop a TIFF file or a folder for the preview path."
-            )
-        self._update_preview_button_state()
 
     def handle_dropped_path(self, dropped_path: str) -> None:
         """Handle dropped file or folder path for tracking tab."""
@@ -736,10 +685,41 @@ class TrackingTab(QWidget):
         return p.exists() and p.is_dir()
 
     @staticmethod
-    def _tracking_output_dir(mask_path: Path) -> Path:
-        """Compute output directory for tracking: base_dir / _tracking / {stem}_tracking."""
+    def _tracking_output_dir(
+        mask_path: Path,
+        track_action: str = "movement",
+        preview_frame_limit: Optional[int] = None,
+    ) -> Path:
+        """Full runs: ``_tracking/{stem}_tracking``. Preview: ``_preview/{stem}_n{N}`` (no _tracking folder)."""
         base = base_dir_for_mask(mask_path)
-        return base / "_tracking" / f"{mask_path.stem}_tracking"
+        stem = mask_path.stem
+        if track_action == "preview" and preview_frame_limit is not None and int(preview_frame_limit) > 0:
+            return base / "_preview" / f"{stem}_n{int(preview_frame_limit)}"
+        return base / "_tracking" / f"{stem}_tracking"
+
+    def _ensure_lineage_linking_mode(self) -> None:
+        """greedy_nodiv cannot represent divisions; switch to greedy and notify."""
+        if self.mode_combo.currentText() != "greedy_nodiv":
+            return
+        self.mode_combo.setCurrentText("greedy")
+        QMessageBox.information(
+            self._main_window(),
+            "Lineage tracking",
+            "greedy_nodiv does not model cell divisions. Mode was switched to greedy for this run.\n\n"
+            "Both greedy and ilp support divisions; ilp is often more accurate on difficult lineages but is slower "
+            "and needs an ILP solver (e.g. Gurobi or SCIP).",
+        )
+
+    def _set_run_buttons_busy(self, busy: bool, movement_progress: Optional[str] = None) -> None:
+        """Disable all run buttons while a worker runs; optionally show progress on movement button."""
+        for b in (getattr(self, "preview_btn", None), getattr(self, "movement_btn", None), getattr(self, "lineage_btn", None)):
+            if b is None:
+                continue
+            b.setEnabled(not busy)
+        if busy and movement_progress and getattr(self, "movement_btn", None):
+            self.movement_btn.setText(movement_progress)
+        elif not busy:
+            self._update_tracking_button_state()
 
     @staticmethod
     def _collect_mask_files(folder: Path) -> list[Path]:
@@ -1040,47 +1020,38 @@ class TrackingTab(QWidget):
             visualization[frame_idx] = vis_frame
         return visualization
 
-    def run_tracking(self):
-        # Expand Status & Session logs so the user can see progress during long-running tracking
-        if hasattr(self.parent_window, "expand_status_log"):
-            self.parent_window.expand_status_log()
+    def run_tracking(self) -> None:
+        """Workflow / session replay: full movement tracking (same as Run tracking (movement))."""
+        self._run_tracking_with_action("movement")
+
+    def _run_tracking_with_action(self, track_action: str) -> None:
+        if track_action == "lineage":
+            self._ensure_lineage_linking_mode()
+        frame_limit = int(self.preview_n_spin.value()) if track_action == "preview" else None
+
         if not self.file_path.text() or not self.file_path.text().strip():
-            QMessageBox.warning(self, "Missing Input", "Please select a mask file or folder.")
+            QMessageBox.warning(self._main_window(), "Missing Input", "Please select a mask file or folder.")
             return
 
         path = Path(self.file_path.text()).resolve()
         if not path.exists():
-            QMessageBox.warning(self, "Not Found", f"Path not found:\n{path}")
+            QMessageBox.warning(self._main_window(), "Not Found", f"Path not found:\n{path}")
             return
 
-        batch = self.batch_cb.isChecked()
-        if path.is_dir() and not batch:
-            QMessageBox.warning(
-                self, "Batch Required",
-                "Path is a folder. Check 'Batch' in Tracking Parameters to run tracking on the mask(s) in the folder."
-            )
-            return
-        if path.is_file() and batch:
-            QMessageBox.warning(
-                self, "Single File",
-                "Path is a file. Uncheck 'Batch' in Tracking Parameters for single-file tracking."
-            )
-            return
-
-        # Build list of mask files (one for single-file, many for folder) and show selection dialog
+        # Build list of mask files (one for single file, many for folder) and show selection dialog
         if path.is_file():
             mask_files = [path]
         else:
             mask_files = self._collect_mask_files(path)
             if not mask_files:
                 QMessageBox.warning(
-                    self, "No Mask Files Found",
+                    self._main_window(), "No Mask Files Found",
                     "No mask TIFF files found in the selected folder.\n\n"
                     "Please select a folder containing *_masks.tif (or similar) files."
                 )
                 return
         selected = show_file_selection_dialog(
-            self,
+            self._main_window(),
             mask_files,
             title="Select Mask Files for Tracking",
             message=f"Select mask files to track (all {len(mask_files)} selected by default):",
@@ -1089,13 +1060,14 @@ class TrackingTab(QWidget):
             self.parent_window.log_output("Tracking cancelled (no mask files selected).\n")
             return
         if len(selected) == 0:
-            QMessageBox.warning(self, "No Files Selected", "Please select at least one mask file to track.")
+            QMessageBox.warning(self._main_window(), "No Files Selected", "Please select at least one mask file to track.")
             return
 
         if len(selected) == 1:
             # Single-file tracking
             mask_file = selected[0].resolve()
-            output_dir = self._tracking_output_dir(mask_file)
+            preview_n = frame_limit if track_action == "preview" else None
+            output_dir = self._tracking_output_dir(mask_file, track_action, preview_n)
             base_dir = base_dir_for_mask(mask_file)
             original_path = self._resolve_original_for_mask(mask_file) if self.create_vis_cb.isChecked() else None
             original_file = str(original_path) if original_path else None
@@ -1104,16 +1076,19 @@ class TrackingTab(QWidget):
             model_name = self.model_combo.currentText()
             mode = self.mode_combo.currentText()
             device = self._resolve_device()
-            # Device check and single worker block follows below (after the batch block)
-            self._run_single_tracking(mask_file, output_dir, original_file, excel_file, model_name, mode, device)
+            self._run_single_tracking(
+                mask_file, output_dir, original_file, excel_file, model_name, mode, device,
+                track_action=track_action, frame_limit=frame_limit,
+            )
             return
 
         # Batch: multiple files selected
         tasks = []
+        preview_n = frame_limit if track_action == "preview" else None
         for mask_path in selected:
             mask_path = mask_path.resolve()
             base_dir = base_dir_for_mask(mask_path)
-            output_dir = self._tracking_output_dir(mask_path)
+            output_dir = self._tracking_output_dir(mask_path, track_action, preview_n)
             original_path = self._resolve_original_for_mask(mask_path) if self.create_vis_cb.isChecked() else None
             excel_path = find_analysis_excel_for_mask(mask_path, base_dir)
             tasks.append((mask_path, original_path, excel_path, output_dir))
@@ -1132,45 +1107,42 @@ class TrackingTab(QWidget):
                     debug_info.append("✗ CUDA is not available")
                     error_msg = "\n".join(debug_info) + "\n\nCUDA GPU is not available. Continue with CPU?"
                     reply = QMessageBox.question(
-                        self, "CUDA Not Available", error_msg,
+                        self._main_window(), "CUDA Not Available", error_msg,
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.Yes,
                     )
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = "cpu"
-                    self.use_gpu_cb.setChecked(False)
                 # else: CUDA ok, continue
             except ImportError:
-                QMessageBox.warning(self, "PyTorch Not Found", "PyTorch required for CUDA. Switching to CPU.")
+                QMessageBox.warning(self._main_window(), "PyTorch Not Found", "PyTorch required for CUDA. Switching to CPU.")
                 device = "cpu"
-                self.use_gpu_cb.setChecked(False)
         elif device == "mps":
             try:
                 import torch
                 if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
                     error_msg = "MPS (Apple Silicon GPU) is not available. Continue with CPU?"
                     reply = QMessageBox.question(
-                        self, "MPS Not Available", error_msg,
+                        self._main_window(), "MPS Not Available", error_msg,
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                         QMessageBox.StandardButton.Yes,
                     )
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = "cpu"
-                    self.use_gpu_cb.setChecked(False)
             except ImportError:
-                QMessageBox.warning(self, "PyTorch Not Found", "PyTorch required for MPS. Switching to CPU.")
+                QMessageBox.warning(self._main_window(), "PyTorch Not Found", "PyTorch required for MPS. Switching to CPU.")
                 device = "cpu"
-                self.use_gpu_cb.setChecked(False)
         self.folder_tracking_tasks = tasks
         self.folder_tracking_results = []
         self.current_task_index = 0
         self._batch_model_name = model_name
         self._batch_mode = mode
         self._batch_device = device
-        self.process_btn.setEnabled(False)
-        self.process_btn.setText(f"Tracking... (0/{len(tasks)})")
+        self._batch_track_action = track_action
+        self._batch_frame_limit = frame_limit
+        self._set_run_buttons_busy(True, f"Tracking... (0/{len(tasks)})")
         self.parent_window.progress_bar.setVisible(True)
         self.parent_window.progress_bar.setRange(0, 100)
         self.parent_window.progress_bar.setValue(0)
@@ -1187,6 +1159,8 @@ class TrackingTab(QWidget):
         model_name: str,
         mode: str,
         device: str,
+        track_action: str = "movement",
+        frame_limit: Optional[int] = None,
     ) -> None:
         """Run device check and start tracking worker for a single mask file."""
         # Check device availability with detailed debugging
@@ -1235,7 +1209,6 @@ class TrackingTab(QWidget):
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = 'cpu'
-                    self.use_gpu_cb.setChecked(False)
                     self.parent_window.log_output("\n".join(debug_info) + "\n")
                 else:
                     # CUDA is available, get detailed info
@@ -1294,7 +1267,6 @@ class TrackingTab(QWidget):
                         if reply == QMessageBox.StandardButton.No:
                             return
                         device = 'cpu'
-                        self.use_gpu_cb.setChecked(False)
                         self.parent_window.log_output("\n".join(debug_info) + "\n")
                         
             except ImportError:
@@ -1305,11 +1277,10 @@ class TrackingTab(QWidget):
                 error_msg += "\nFor CUDA support: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
                 
                 QMessageBox.warning(
-                    self, "PyTorch Not Found",
+                    self._main_window(), "PyTorch Not Found",
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
             except Exception as e:
                 import traceback
@@ -1318,11 +1289,10 @@ class TrackingTab(QWidget):
                 error_msg = "\n".join(debug_info)
                 
                 QMessageBox.warning(
-                    self, "CUDA Check Error",
+                    self._main_window(), "CUDA Check Error",
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
         elif device == 'mps':
             # Check MPS (Apple Silicon) availability
@@ -1351,7 +1321,7 @@ class TrackingTab(QWidget):
                         error_msg += "\n- macOS version too old (needs macOS 12.3+)"
                         
                         reply = QMessageBox.question(
-                            self, "MPS Not Available",
+                            self._main_window(), "MPS Not Available",
                             error_msg + "\n\nWould you like to continue with CPU mode?",
                             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                             QMessageBox.StandardButton.Yes
@@ -1359,7 +1329,6 @@ class TrackingTab(QWidget):
                         if reply == QMessageBox.StandardButton.No:
                             return
                         device = 'cpu'
-                        self.use_gpu_cb.setChecked(False)
                         self.parent_window.log_output("\n".join(debug_info) + "\n")
                     else:
                         # MPS is available, test it
@@ -1402,7 +1371,7 @@ class TrackingTab(QWidget):
                             error_msg += "\n- Memory allocation issues"
                             
                             reply = QMessageBox.question(
-                                self, "MPS Error",
+                                self._main_window(), "MPS Error",
                                 error_msg + "\n\nWould you like to continue with CPU mode?",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.Yes
@@ -1410,7 +1379,6 @@ class TrackingTab(QWidget):
                             if reply == QMessageBox.StandardButton.No:
                                 return
                             device = 'cpu'
-                            self.use_gpu_cb.setChecked(False)
                             self.parent_window.log_output("\n".join(debug_info) + "\n")
                 else:
                     debug_info.append("✗ MPS backend not available in this PyTorch version")
@@ -1427,7 +1395,6 @@ class TrackingTab(QWidget):
                     if reply == QMessageBox.StandardButton.No:
                         return
                     device = 'cpu'
-                    self.use_gpu_cb.setChecked(False)
                     self.parent_window.log_output("\n".join(debug_info) + "\n")
                     
             except ImportError:
@@ -1440,7 +1407,6 @@ class TrackingTab(QWidget):
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
             except Exception as e:
                 import traceback
@@ -1453,16 +1419,19 @@ class TrackingTab(QWidget):
                     error_msg + "\n\nSwitching to CPU mode."
                 )
                 device = 'cpu'
-                self.use_gpu_cb.setChecked(False)
                 self.parent_window.log_output("\n".join(debug_info) + "\n")
         
         # Store for completion popup "Open output folder"
         self._last_tracking_output_dir = output_dir
+        self._last_track_action = track_action
+        self._set_run_buttons_busy(True)
         # Create worker thread (output_dir = base / _tracking / {stem}_tracking)
         self.worker = TrackingWorker(
             mask_file, original_file, excel_file,
             model_name, mode, device, self,
             output_dir=output_dir,
+            track_action=track_action,
+            frame_limit=frame_limit,
         )
         self.worker.finished.connect(self.on_tracking_finished)
         self.worker.start()
@@ -1486,14 +1455,35 @@ class TrackingTab(QWidget):
         if message:
             self.parent_window.log_output(f"[{value}%] {message}\n")
     
+    def _maybe_auto_open_preview_window(self, out_path: Path) -> None:
+        """After a successful Preview run, open the trajectory viewer if a TIFF was written."""
+        if not out_path.is_dir():
+            return
+        traj_files = sorted(out_path.glob("*_trajectories.tif"))
+        if not traj_files:
+            self.parent_window.log_output(
+                "Preview: no *_trajectories.tif (enable Create visualization and ensure the phase/original stack is found).\n"
+            )
+            return
+        self._open_trajectory_preview_window(traj_files[0], index=0)
+
     def on_tracking_finished(self, success, message):
         self.parent_window.progress_bar.setValue(100)
         if success:
             self.parent_window.log_output("✓ Tracking completed successfully!\n")
-            # Completion popup (unified with Omnipose, Analyze Masks, etc.)
+            # Export filtered tracks for the output we just produced (single Run = one output dir)
             out_dir = getattr(self, "_last_tracking_output_dir", None)
+            if out_dir is not None:
+                out_path = Path(out_dir)
+                if out_path.is_dir():
+                    traj_files = sorted(out_path.glob("*_trajectories.tif"))
+                    if traj_files:
+                        self._export_filtered_tracks_for_paths(traj_files, silent=True)
+            if getattr(self, "_last_track_action", None) == "preview" and out_dir:
+                self._maybe_auto_open_preview_window(Path(out_dir))
+            # Completion popup (unified with Omnipose, Analyze Masks, etc.)
             if out_dir is not None and Path(out_dir).exists():
-                msg = QMessageBox(self)
+                msg = QMessageBox(self._main_window())
                 msg.setWindowTitle("Tracking Complete")
                 msg.setText("Tracking completed successfully.")
                 msg.setIcon(QMessageBox.Icon.Information)
@@ -1505,12 +1495,13 @@ class TrackingTab(QWidget):
                     from PyQt6.QtGui import QDesktopServices
                     QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_dir)))
             else:
-                QMessageBox.information(self, "Tracking Complete", "Tracking completed successfully.")
+                QMessageBox.information(self._main_window(), "Tracking Complete", "Tracking completed successfully.")
         else:
-            QMessageBox.critical(self, "Error", f"Tracking failed:\n{message}")
+            QMessageBox.critical(self._main_window(), "Error", f"Tracking failed:\n{message}")
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
         self._update_tracking_button_state()
+        self._update_open_results_button_state()
         if success:
             self._performed_this_session = True
         self.workflow_step_finished.emit(success)
@@ -1522,8 +1513,7 @@ class TrackingTab(QWidget):
             # Batch complete
             n_ok = sum(1 for r in getattr(self, "folder_tracking_results", []) if r)
             n_fail = len(tasks) - n_ok
-            self.process_btn.setEnabled(True)
-            self.process_btn.setText("Run Tracking")
+            self._set_run_buttons_busy(False)
             self.parent_window.progress_bar.setVisible(False)
             self.parent_window.log_output(
                 f"\n✓ Batch tracking complete: {n_ok}/{len(tasks)} succeeded."
@@ -1531,13 +1521,31 @@ class TrackingTab(QWidget):
             )
             self._performed_this_session = True
             self.workflow_step_finished.emit(True)
+            # Export filtered tracks for all outputs we just produced
+            all_traj = []
+            for t in tasks:
+                if len(t) > 3:
+                    od = Path(t[3])
+                    if od.is_dir():
+                        all_traj.extend(sorted(od.glob("*_trajectories.tif")))
+            if all_traj:
+                self._export_filtered_tracks_for_paths(all_traj, silent=True)
+            if getattr(self, "_batch_track_action", None) == "preview" and n_ok > 0:
+                results = getattr(self, "folder_tracking_results", [])
+                for i, t in enumerate(tasks):
+                    if i < len(results) and results[i] and len(t) > 3:
+                        od = Path(t[3])
+                        trajs = sorted(od.glob("*_trajectories.tif"))
+                        if trajs:
+                            self._open_trajectory_preview_window(trajs[0], index=0)
+                            break
             msg = f"Completed: {n_ok}/{len(tasks)} file(s) tracked successfully."
             if n_fail:
                 msg += f"\n{n_fail} file(s) failed — see Log for errors."
             # Unified: always offer "Open output folder" (first task's output dir)
             first_output = Path(tasks[0][3]) if tasks and len(tasks[0]) > 3 else None
             if first_output is not None and first_output.exists():
-                dlg = QMessageBox(self)
+                dlg = QMessageBox(self._main_window())
                 dlg.setWindowTitle("Batch Tracking Complete")
                 dlg.setText(msg)
                 dlg.setIcon(QMessageBox.Icon.Information)
@@ -1549,8 +1557,9 @@ class TrackingTab(QWidget):
                     from PyQt6.QtGui import QDesktopServices
                     QDesktopServices.openUrl(QUrl.fromLocalFile(str(first_output)))
             else:
-                QMessageBox.information(self, "Batch Tracking Complete", msg)
+                QMessageBox.information(self._main_window(), "Batch Tracking Complete", msg)
             self._update_tracking_button_state()
+            self._update_open_results_button_state()
             return
         mask_path, original_path, excel_path, output_dir = tasks[self.current_task_index]
         model_name = getattr(self, "_batch_model_name", self.model_combo.currentText())
@@ -1571,6 +1580,8 @@ class TrackingTab(QWidget):
             mask_path, original_file, excel_file,
             model_name, mode, device, self,
             output_dir=output_dir,
+            track_action=getattr(self, "_batch_track_action", "movement"),
+            frame_limit=getattr(self, "_batch_frame_limit", None),
         )
         self.worker.finished.connect(self.on_tracking_task_finished)
         self.worker.progress.connect(self._on_batch_tracking_progress)
@@ -1595,69 +1606,50 @@ class TrackingTab(QWidget):
             self.parent_window.log_output(f"✗ Failed: {message}\n")
         self.current_task_index += 1
         n = len(self.folder_tracking_tasks)
-        self.process_btn.setText(f"Tracking... ({self.current_task_index}/{n})")
+        if getattr(self, "movement_btn", None):
+            self.movement_btn.setText(f"Tracking... ({self.current_task_index}/{n})")
         self.parent_window.progress_bar.setValue(int(self.current_task_index / n * 100))
         self._process_next_tracking_task()
 
-    def preview_trajectories(self) -> None:
-        """Find *_trajectories.tif at preview path; if multiple, show selection; open chosen file."""
-        files = self._get_preview_tracked_files()
+    def _open_trajectory_results(self) -> None:
+        """Open trajectory viewer for *_trajectories.tif from the current Path's _tracking output."""
+        files = self._get_trajectory_files()
         if not files:
             QMessageBox.warning(
-                self, "No files found",
-                "No *_trajectories.tif files found at the given path.\n\n"
-                "Set the Preview path to a folder or file and try again."
+                self._main_window(), "No results",
+                "No *_trajectories.tif files found for the current Path.\n\n"
+                "Run tracking first, or set Path to a folder that contains _tracking output."
             )
             return
-        parent = self.window() if hasattr(self, "window") and callable(self.window) else self
         selected = show_file_selection_dialog(
-            parent,
+            self._main_window(),
             files,
             title="Select file to view",
             message="Select which trajectory file to view:",
         )
         if selected is None or not selected:
             return
-        # Open one preview window per selected file (all non-modal, slightly offset so multiple are visible)
         for i, traj_path in enumerate(selected):
             self._open_trajectory_preview_window(traj_path, index=i)
 
-    def _run_export_filtered_tracks(self) -> None:
-        """Find trajectory files, let user select which to process, apply current filters and export Excel per file."""
-        files = self._get_preview_tracked_files()
-        if not files:
-            files = self._get_trajectory_files()
-        if not files:
-            QMessageBox.warning(
-                self,
-                "No trajectory files",
-                "No *_trajectories.tif files found.\n\n"
-                "Set the Preview path (folder or file) or the main Tracking path (folder with _tracking output), then try again."
-            )
-            return
-        parent = self.window() if hasattr(self, "window") and callable(self.window) else self
-        selected = show_file_selection_dialog(
-            parent,
-            files,
-            title="Export filtered tracks",
-            message="Select which trajectory files to export (filtered track data will be written as Excel):",
-        )
-        if selected is None or not selected:
-            return
-        n_files = len(selected)
-        if hasattr(self.parent_window, "expand_status_log"):
-            self.parent_window.expand_status_log()
-        self.parent_window.progress_bar.setVisible(True)
-        self.parent_window.progress_bar.setRange(0, max(1, n_files))
-        self.parent_window.progress_bar.setValue(0)
+    def _export_filtered_tracks_for_paths(self, traj_paths: list[Path], silent: bool = False) -> int:
+        """Export filtered track Excel for each trajectory path. Returns number of files written. If silent, no progress UI or final message."""
+        if not traj_paths:
+            return 0
+        n_files = len(traj_paths)
+        if not silent:
+            self.parent_window.progress_bar.setVisible(True)
+            self.parent_window.progress_bar.setRange(0, max(1, n_files))
+            self.parent_window.progress_bar.setValue(0)
         self.parent_window.log_output(f"Exporting filtered tracks ({n_files} file(s))...\n")
         params = self._get_filter_params()
         pixel_size = params["pixel_size"]
         time_per_frame = params["time_per_frame"]
         done = 0
         errors = []
-        for idx, traj_path in enumerate(selected):
-            self.parent_window.progress_bar.setValue(idx)
+        for idx, traj_path in enumerate(traj_paths):
+            if not silent:
+                self.parent_window.progress_bar.setValue(idx)
             self.parent_window.log_output(f"  [{idx + 1}/{n_files}] {traj_path.name}\n")
             QApplication.processEvents()
             out_dir = traj_path.parent
@@ -1726,15 +1718,18 @@ class TrackingTab(QWidget):
                         self.parent_window.log_output(f"✓ Exported {len(export_df)} tracks to {out_excel.name}\n")
                 except Exception as e:
                     errors.append(f"{traj_path.name}: could not write Excel ({e})")
-        self.parent_window.progress_bar.setValue(n_files)
+        if not silent:
+            self.parent_window.progress_bar.setValue(n_files)
+            QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
         self.parent_window.log_output(f"✓ Export complete: {done}/{n_files} file(s) written.\n")
-        QTimer.singleShot(2000, lambda: self.parent_window.progress_bar.setVisible(False))
-        msg = f"Exported {done} file(s)."
-        if errors:
-            msg += "\n\nErrors:\n" + "\n".join(errors[:15])
-            if len(errors) > 15:
-                msg += f"\n... and {len(errors) - 15} more."
-        QMessageBox.information(self, "Export filtered tracks", msg)
+        if not silent:
+            msg = f"Exported {done} file(s)."
+            if errors:
+                msg += "\n\nErrors:\n" + "\n".join(errors[:15])
+                if len(errors) > 15:
+                    msg += f"\n... and {len(errors) - 15} more."
+            QMessageBox.information(self._main_window(), "Export filtered tracks", msg)
+        return done
 
     def _open_trajectory_preview_window(self, traj_path: Path, index: int = 0) -> None:
         """Open a single non-modal preview window for one *_trajectories.tif; supports Re-apply with current settings."""
@@ -1742,7 +1737,7 @@ class TrackingTab(QWidget):
             stack = safe_imread(str(traj_path))
         except Exception as e:
             QMessageBox.critical(
-                self, "Load Error",
+                self._main_window(), "Load Error",
                 f"Could not load trajectories file:\n{traj_path}\n\n{str(e)}"
             )
             return
@@ -1769,7 +1764,7 @@ class TrackingTab(QWidget):
             frames_rgb = np.array(frames_rgb, dtype=np.uint8)
         else:
             QMessageBox.warning(
-                self, "Preview",
+                self._main_window(), "Preview",
                 f"Expected 3D (T, Y, X) or 4D overlay, got {stack.ndim} dimensions."
             )
             return
@@ -1781,9 +1776,8 @@ class TrackingTab(QWidget):
             self.filter_time_per_frame.setValue(tp)
             if hasattr(self, "filter_time_per_frame_unit"):
                 self.filter_time_per_frame_unit.setCurrentText("min")
-        main_win = self.window() if hasattr(self, "window") and callable(self.window) else self
         dialog = TrajectoryPreviewDialog(
-            self, traj_path, frames_rgb, tracks_csv, original_path, index=index, parent=main_win
+            self, traj_path, frames_rgb, tracks_csv, original_path, index=index, parent=self._main_window()
         )
         dialog.show()
 
@@ -1792,9 +1786,8 @@ class TrackingTab(QWidget):
         d = get_from_widgets([
             ("model", self.model_combo),
             ("mode", self.mode_combo),
-            ("use_gpu", self.use_gpu_cb),
             ("create_vis", self.create_vis_cb),
-            ("batch", self.batch_cb),
+            ("preview_n", self.preview_n_spin),
             ("filter_pixel_size", self.filter_pixel_size),
             ("filter_time_per_frame", self.filter_time_per_frame),
             ("filter_time_per_frame_unit", self.filter_time_per_frame_unit),
@@ -1810,9 +1803,8 @@ class TrackingTab(QWidget):
         apply_to_widgets(data, [
             ("model", self.model_combo),
             ("mode", self.mode_combo),
-            ("use_gpu", self.use_gpu_cb),
             ("create_vis", self.create_vis_cb),
-            ("batch", self.batch_cb),
+            ("preview_n", self.preview_n_spin),
             ("filter_pixel_size", self.filter_pixel_size),
             ("filter_time_per_frame", self.filter_time_per_frame),
             ("filter_time_per_frame_unit", self.filter_time_per_frame_unit),
@@ -1932,11 +1924,11 @@ class TrajectoryPreviewDialog(QDialog):
         try:
             tracks_df = pd.read_csv(self._tracks_csv)
         except Exception as e:
-            QMessageBox.critical(self, "Load error", f"Could not read tracks CSV:\n{e}")
+            QMessageBox.critical(self._main_window(), "Load error", f"Could not read tracks CSV:\n{e}")
             return
         for col in ("track_id", "frame", "y", "x"):
             if col not in tracks_df.columns:
-                QMessageBox.warning(self, "Invalid CSV", f"Missing column: {col}")
+                QMessageBox.warning(self._main_window(), "Invalid CSV", f"Missing column: {col}")
                 return
         params = self._tab._get_filter_params()
         pixel_size = params["pixel_size"]
@@ -1949,7 +1941,7 @@ class TrajectoryPreviewDialog(QDialog):
         try:
             images = safe_imread(str(self._original_path))
         except Exception as e:
-            QMessageBox.critical(self, "Load error", f"Could not load original stack:\n{e}")
+            QMessageBox.critical(self._main_window(), "Load error", f"Could not load original stack:\n{e}")
             return
         if images.ndim != 3:
             return

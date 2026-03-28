@@ -41,12 +41,17 @@ from typing import Optional
 
 def ensure_builtin_model_cached(model_type: str) -> Optional[Path]:
     """
-    Ensure a built-in Omnipose model is downloaded and cached. Calls cellpose_omni's
-    model_path(model_type, 0, True), which downloads the model if not present.
-    Returns the path to the cached file, or None on failure.
+    Ensure a built-in Omnipose model is available and mirrored into BactiMate's
+    omnipose_pretrained cache (see bactimate.gui.omnipose_pretrained_cache).
+    Falls back to cellpose_omni's default cache only if mirroring fails.
     """
     if not model_type:
         return None
+    try:
+        from bactimate.gui.omnipose_pretrained_cache import ensure_builtin_in_bactimate_cache
+        return ensure_builtin_in_bactimate_cache(model_type, model_index=0)
+    except Exception:
+        pass
     try:
         from cellpose_omni.models import model_path
         p = model_path(model_type, 0, True)
@@ -90,6 +95,13 @@ def get_checkable_model_path(
     if user_path is not None and user_path.resolve().is_file():
         return user_path.resolve()
     if model_type:
+        try:
+            from bactimate.gui.omnipose_pretrained_cache import try_get_bactimate_cached_builtin
+            b = try_get_bactimate_cached_builtin(model_type, model_index=0)
+            if b is not None:
+                return b
+        except Exception:
+            pass
         if ensure_builtin_cached:
             path = ensure_builtin_model_cached(model_type)
             if path is not None:

@@ -70,3 +70,4 @@ tensorflow>=2.12.0,<2.17.0
 
 # Spotiflow: deep-learning foci detection (Analyze Masks → Run foci → Detection: Spotiflow). Uses PyTorch; GPU recommended for speed.
 spotiflow>=0.6.0,<1.0.0
+

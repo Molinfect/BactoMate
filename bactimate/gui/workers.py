@@ -9,12 +9,15 @@ import sys
 import threading
 import time
 import traceback
+from collections import defaultdict
 from pathlib import Path
+from typing import Any, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactimate.gui.log_config import get_logger, log_exception, write_crash_log
 from bactimate.gui.paths import get_app_root, get_python_executable_for_subprocess
+from bactimate.modules.label_render import draw_hq_labels
 
 
 class _TrackingLogHandler(logging.Handler):
@@ -292,7 +295,19 @@ class TrackingWorker(QThread):
     finished = pyqtSignal(bool, str)
     progress = pyqtSignal(int, str)  # progress percentage, status message
     
-    def __init__(self, mask_file, original_file, excel_file, model_name, mode, device, parent=None, output_dir=None):
+    def __init__(
+        self,
+        mask_file,
+        original_file,
+        excel_file,
+        model_name,
+        mode,
+        device,
+        parent=None,
+        output_dir=None,
+        track_action: str = "movement",
+        frame_limit: Optional[int] = None,
+    ):
         super().__init__(parent)
         self.mask_file = mask_file
         self.original_file = original_file
@@ -301,6 +316,8 @@ class TrackingWorker(QThread):
         self.mode = mode
         self.device = device
         self.output_dir = Path(output_dir) if output_dir else None
+        self.track_action = track_action  # "preview" | "movement" | "lineage"
+        self.frame_limit = frame_limit
 
     def run(self) -> None:
         # Initialize debug output list
@@ -358,6 +375,16 @@ class TrackingWorker(QThread):
                 imgs = masks.astype(np.float32)
                 debug_output.append("✓ Created dummy images from masks")
                 self.progress.emit(20, "Images ready")
+
+            full_T = int(masks.shape[0])
+            if self.frame_limit is not None and int(self.frame_limit) > 0:
+                n_use = min(int(self.frame_limit), full_T)
+                if n_use < full_T:
+                    masks = masks[:n_use]
+                    imgs = imgs[:n_use]
+                    debug_output.append(
+                        f"Frame limit ({self.track_action}): using first {n_use} of {full_T} frames"
+                    )
             
             # Load Excel data if provided
             cell_data = None
@@ -436,7 +463,13 @@ class TrackingWorker(QThread):
                 return
             
             # Run tracking with detailed debugging
-            debug_output.append(f"\nStarting tracking with mode: {self.mode}")
+            link_mode = self.mode
+            if self.track_action == "lineage" and link_mode == "greedy_nodiv":
+                link_mode = "greedy"
+                debug_output.append(
+                    "Lineage run: greedy_nodiv cannot represent divisions — using greedy linking for model.track()."
+                )
+            debug_output.append(f"\nStarting tracking with mode: {link_mode}")
             debug_output.append(f"Input shapes - Images: {imgs.shape}, Masks: {masks.shape}")
             
             try:
@@ -466,7 +499,7 @@ class TrackingWorker(QThread):
                 result_holder = [None, None, None]  # track_graph, masks_tracked, exception
                 def run_track():
                     try:
-                        g, m = model.track(imgs, masks, mode=self.mode)
+                        g, m = model.track(imgs, masks, mode=link_mode)
                         result_holder[0], result_holder[1] = g, m
                     except Exception as e:
                         result_holder[2] = e
@@ -616,6 +649,7 @@ class TrackingWorker(QThread):
             debug_output.append("\nExtracting track information from graph...")
             
             # Method 1: Use graph_to_napari_tracks to get proper track data
+            napari_graph = None
             try:
                 napari_tracks, napari_graph, _ = graph_to_napari_tracks(track_graph)
                 debug_output.append(f"✓ Extracted {len(napari_tracks)} track points from graph")
@@ -721,21 +755,20 @@ class TrackingWorker(QThread):
             tifffile.imwrite(str(masks_tracked_file), masks_tracked, metadata=_meta, imagej=True)
             debug_output.append(f"✓ Saved tracked masks to: {masks_tracked_file}")
             
-            # Create overlay with track IDs (consistent CellIDs across all outputs)
+            # Create overlay frames with track IDs in memory only (used as base for trajectories)
             overlay_array = None
             if self.original_file:
                 self.progress.emit(87, "Creating overlay with track IDs...")
-                debug_output.append("\nCreating overlay with track IDs...")
+                debug_output.append("\nCreating in-memory overlay with track IDs...")
                 try:
-                    overlay_file = output_dir / f"{Path(self.mask_file).stem}_overlay_tracked.tif"
                     def overlay_progress(frame_idx, total, _msg=None):
                         pct = 87 + int((frame_idx + 1) / max(total, 1) * 2)  # 87–89%
                         msg = f"Creating overlay: {frame_idx + 1}/{total}"
                         self.progress.emit(pct, msg)
                     overlay_array = self._create_overlay_with_track_ids(
-                        imgs, masks_tracked, overlay_file, progress_callback=overlay_progress
+                        imgs, masks_tracked, output_path=None, progress_callback=overlay_progress
                     )
-                    debug_output.append(f"✓ Saved tracked overlay to: {overlay_file}")
+                    debug_output.append("✓ Prepared tracked overlay frames (not saved separately)")
                 except Exception as e:
                     import traceback
                     debug_output.append(f"⚠ Could not create tracked overlay: {str(e)}")
@@ -763,6 +796,46 @@ class TrackingWorker(QThread):
                     debug_output.append(f"⚠ Could not create trajectory visualization: {str(e)}")
                     debug_output.append(f"  {traceback.format_exc()}")
                     self.progress.emit(96, f"WARNING: Trajectory file was not created: {e}")
+            
+            if self.track_action == "lineage":
+                self.progress.emit(92, "Building lineage exports...")
+                stem = Path(self.mask_file).stem
+                try:
+                    edges_df = self._lineage_edges_dataframe(napari_graph, tracks_df)
+                    edges_path = output_dir / f"{stem}_lineage_edges.csv"
+                    edges_df.to_csv(edges_path, index=False)
+                    debug_output.append(f"✓ Saved lineage edges: {edges_path.name}")
+                    summary_df = self._lineage_per_track_summary(edges_df, tracks_df)
+                    lineage_xlsx = output_dir / f"{stem}_lineage_summary.xlsx"
+                    with pd.ExcelWriter(lineage_xlsx, engine="openpyxl") as writer:
+                        edges_df.to_excel(writer, sheet_name="Lineage edges", index=False)
+                        summary_df.to_excel(writer, sheet_name="Per-track summary", index=False)
+                    debug_output.append(f"✓ Saved lineage summary: {lineage_xlsx.name}")
+                    if self.original_file:
+                        try:
+                            founder_by_track = self._lineage_founder_map(edges_df, tracks_df)
+                            vis_lineage = output_dir / f"{stem}_lineage.tif"
+                            self._create_lineage_visualization(
+                                imgs,
+                                masks_tracked,
+                                tracks_df,
+                                edges_df,
+                                founder_by_track,
+                                vis_lineage,
+                                progress_callback=lambda pct, msg: self.progress.emit(
+                                    min(99, max(92, int(pct))), msg
+                                ),
+                                overlay_frames=overlay_array,
+                            )
+                            debug_output.append(f"✓ Saved lineage visualization: {vis_lineage.name}")
+                        except Exception as e:
+                            import traceback
+                            debug_output.append(f"⚠ Lineage visualization failed: {e}")
+                            debug_output.append(traceback.format_exc())
+                except Exception as e:
+                    import traceback
+                    debug_output.append(f"⚠ Lineage export failed: {e}")
+                    debug_output.append(traceback.format_exc())
             
             # Save in CTC format (Cell Tracking Challenge format)
             try:
@@ -1323,6 +1396,7 @@ class TrackingWorker(QThread):
                             vis_frame[mask_region, 1] = np.clip(vis_frame[mask_region, 1] * 0.5 + color[1] * 0.5, 0, 255)
                             vis_frame[mask_region, 2] = np.clip(vis_frame[mask_region, 2] * 0.5 + color[2] * 0.5, 0, 255)
                 
+                labels_to_draw = []
                 # Draw trajectories up to current frame (only for tracks visible in this frame)
                 # Pre-filter tracks to only those present in current frame for speed
                 if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns and 'y' in tracks_df.columns and 'x' in tracks_df.columns:
@@ -1434,40 +1508,25 @@ class TrackingWorker(QThread):
                                 # Draw colored center dot
                                 dot_mask = dist_sq <= dot_size**2
                                 vis_frame[y_outline_start:y_outline_end, x_outline_start:x_outline_end, :][dot_mask] = color
-                                
-                                # Try to add text label if PIL is available
-                                try:
-                                    from PIL import Image, ImageDraw, ImageFont
-                                    # Convert numpy array to PIL Image
-                                    pil_img = Image.fromarray(vis_frame)
-                                    draw = ImageDraw.Draw(pil_img)
-                                    
-                                    # Try to use a nice font, fallback to default if not available
-                                    try:
-                                        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
-                                    except:
-                                        try:
-                                            font = ImageFont.truetype("arial.ttf", 10)
-                                        except:
-                                            font = ImageFont.load_default()
-                                    
-                                    # Draw track ID text with shadow for readability
-                                    track_id_str = str(track_id_int)
-                                    text_x, text_y = x + dot_size + outline_size + 2, y - 5
-                                    
-                                    # Draw text shadow (black)
-                                    draw.text((text_x + 1, text_y + 1), track_id_str, fill=(0, 0, 0), font=font)
-                                    # Draw text (white)
-                                    draw.text((text_x, text_y), track_id_str, fill=(255, 255, 255), font=font)
-                                    
-                                    # Convert back to numpy array
-                                    vis_frame = np.array(pil_img)
-                                except ImportError:
-                                    # PIL not available, skip text rendering
-                                    pass
-                                except Exception:
-                                    # If text rendering fails for any reason, just continue without it
-                                    pass
+                                labels_to_draw.append(
+                                    (str(track_id_int), x + dot_size + outline_size + 2, y - 6)
+                                )
+
+                if labels_to_draw:
+                    try:
+                        from PIL import Image
+
+                        pil_img = Image.fromarray(vis_frame)
+                        pil_img = draw_hq_labels(
+                            pil_img,
+                            labels_to_draw,
+                            font_size=12,
+                            scale=2,
+                            stroke_width=2,
+                        )
+                        vis_frame = np.array(pil_img)
+                    except Exception:
+                        pass
                 
                 visualization[frame_idx] = vis_frame
             except Exception as e:
@@ -1511,7 +1570,7 @@ class TrackingWorker(QThread):
             tifffile.imwrite(str(output_path), visualization, metadata=meta if meta else {})
             debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (uncompressed)")
     
-    def _create_overlay_with_track_ids(self, images, masks_tracked, output_path, progress_callback=None):
+    def _create_overlay_with_track_ids(self, images, masks_tracked, output_path=None, progress_callback=None):
         """Create overlay visualization with track IDs as CellIDs (consistent with tracking visualization).
         If progress_callback(frame_idx, total, msg) is given, it is called each frame and tqdm is disabled."""
         import numpy as np
@@ -1546,7 +1605,7 @@ class TrackingWorker(QThread):
         
         # Try to import PIL for text rendering
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image
             from skimage.measure import regionprops
             PIL_AVAILABLE = True
         except ImportError:
@@ -1577,19 +1636,10 @@ class TrackingWorker(QThread):
                 try:
                     # Convert to PIL Image
                     pil_img = Image.fromarray(overlay)
-                    draw = ImageDraw.Draw(pil_img)
-                    
-                    # Try to use a nice font
-                    try:
-                        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
-                    except:
-                        try:
-                            font = ImageFont.truetype("arial.ttf", 10)
-                        except:
-                            font = ImageFont.load_default()
-                    
+
                     # Get cell centroids and track IDs
                     regions = regionprops(mask)
+                    labels_to_draw = []
                     for region in regions:
                         if region.label == 0:
                             continue
@@ -1598,16 +1648,17 @@ class TrackingWorker(QThread):
                         centroid_y, centroid_x = region.centroid
                         x, y = int(centroid_x), int(centroid_y)
                         
-                        # Draw track ID text with shadow for readability
                         track_id_str = str(region.label)
                         text_x, text_y = x + 2, y - 5
-                        
-                        # Draw text shadow (black)
-                        draw.text((text_x + 1, text_y + 1), track_id_str, fill=(0, 0, 0), font=font)
-                        # Draw text (white)
-                        draw.text((text_x, text_y), track_id_str, fill=(255, 255, 255), font=font)
-                    
-                    # Convert back to numpy array
+                        labels_to_draw.append((track_id_str, text_x, text_y))
+
+                    pil_img = draw_hq_labels(
+                        pil_img,
+                        labels_to_draw,
+                        font_size=12,
+                        scale=2,
+                        stroke_width=2,
+                    )
                     overlay = np.array(pil_img)
                 except Exception:
                     # If text rendering fails, continue without labels
@@ -1616,12 +1667,331 @@ class TrackingWorker(QThread):
             overlays.append(overlay)
         
         overlay_array = np.stack(overlays, axis=0)
-        T = overlay_array.shape[0]
+        if output_path is not None:
+            T = overlay_array.shape[0]
+            try:
+                from bactimate.modules.tiff_metadata import build_metadata_dict
+                ps = getattr(self, '_cal_ps', 0) or 0
+                tp = getattr(self, '_cal_tp', 0) or 0
+                # axes TYXC so metadata matches 4D RGB stack (T, H, W, 3); avoids tifffile "axes do not match shape" warning
+                meta = build_metadata_dict(
+                    pixel_size_um=ps if ps > 0 else None,
+                    time_per_frame_min=tp if tp > 0 else None,
+                    axes="TYXC",
+                    images=T,
+                    frames=T,
+                )
+                tifffile.imwrite(str(output_path), overlay_array, metadata=meta, compression='zlib')
+            except Exception:
+                tifffile.imwrite(str(output_path), overlay_array, compression='zlib')
+        return overlay_array
+
+    @staticmethod
+    def _lineage_edges_dataframe(napari_graph: Any, tracks_df) -> Any:
+        """Napari convention: graph[child_track_id] = [parent_track_id, ...]."""
+        import numpy as np
+        import pandas as pd
+
+        cols = ["parent_track_id", "daughter_track_id", "division_frame", "parent_last_frame"]
+        empty = pd.DataFrame(columns=cols)
+        if napari_graph is None or tracks_df is None or len(tracks_df) == 0:
+            return empty
+        if "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+            return empty
+        first_frame = tracks_df.groupby("track_id")["frame"].min()
+        rows = []
+        seen = set()
+        try:
+            items = list(napari_graph.items())
+        except Exception:
+            items = []
+        for child_raw, parents in items:
+            try:
+                child = int(child_raw)
+            except (TypeError, ValueError):
+                continue
+            if parents is None:
+                continue
+            if isinstance(parents, (int, np.integer)):
+                plist = [int(parents)]
+            else:
+                try:
+                    plist = [int(p) for p in parents if p is not None]
+                except (TypeError, ValueError):
+                    continue
+            for p in plist:
+                key = (p, child)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if child not in first_frame.index:
+                    continue
+                div_f = int(first_frame.loc[child])
+                pf = tracks_df.loc[tracks_df["track_id"] == p, "frame"]
+                before = pf[pf < div_f]
+                parent_last = int(before.max()) if len(before) > 0 else (int(pf.max()) if len(pf) > 0 else "")
+                rows.append(
+                    {
+                        "parent_track_id": p,
+                        "daughter_track_id": child,
+                        "division_frame": div_f,
+                        "parent_last_frame": parent_last,
+                    }
+                )
+        return pd.DataFrame(rows, columns=cols) if rows else empty
+
+    @staticmethod
+    def _lineage_founder_map(edges_df, tracks_df) -> dict[int, int]:
+        parent_of: dict[int, int] = {}
+        if edges_df is not None and len(edges_df) > 0:
+            for _, row in edges_df.iterrows():
+                parent_of[int(row["daughter_track_id"])] = int(row["parent_track_id"])
+        cache: dict[int, int] = {}
+
+        def founder(tid: int) -> int:
+            if tid in cache:
+                return cache[tid]
+            p = parent_of.get(tid)
+            if p is None:
+                cache[tid] = tid
+                return tid
+            f = founder(p)
+            cache[tid] = f
+            return f
+
+        out: dict[int, int] = {}
+        if tracks_df is not None and "track_id" in tracks_df.columns:
+            for t in tracks_df["track_id"].unique():
+                out[int(t)] = founder(int(t))
+        return out
+
+    def _lineage_per_track_summary(self, edges_df, tracks_df) -> Any:
+        import pandas as pd
+
+        parent_of: dict[int, int] = {}
+        children_of: dict[int, list[int]] = defaultdict(list)
+        if edges_df is not None and len(edges_df) > 0:
+            for _, row in edges_df.iterrows():
+                p, d = int(row["parent_track_id"]), int(row["daughter_track_id"])
+                parent_of[d] = p
+                children_of[p].append(d)
+
+        def subtree_depth(tid: int) -> int:
+            ch = children_of.get(tid, [])
+            if not ch:
+                return 0
+            return 1 + max(subtree_depth(c) for c in ch)
+
+        def generation(tid: int) -> int:
+            g = 0
+            t = tid
+            while t in parent_of:
+                t = parent_of[t]
+                g += 1
+            return g
+
+        founder_map = self._lineage_founder_map(edges_df, tracks_df)
+        rows = []
+        if tracks_df is not None and "track_id" in tracks_df.columns:
+            for tid in sorted(tracks_df["track_id"].unique()):
+                tid = int(tid)
+                cell_id = None
+                if "Cell_ID" in tracks_df.columns:
+                    sub = tracks_df.loc[tracks_df["track_id"] == tid, "Cell_ID"]
+                    if len(sub) > 0:
+                        v = sub.iloc[0]
+                        cell_id = None if pd.isna(v) else v
+                rows.append(
+                    {
+                        "track_id": tid,
+                        "founder_track_id": founder_map.get(tid, tid),
+                        "generation": generation(tid),
+                        "branch_depth": subtree_depth(tid),
+                        "Cell_ID": cell_id,
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def _create_lineage_visualization(
+        self,
+        images,
+        masks_tracked,
+        tracks_df,
+        edges_df,
+        founder_by_track: dict[int, int],
+        output_path: Path,
+        progress_callback=None,
+        overlay_frames=None,
+    ) -> None:
+        """RGB stack: founder-family colors, trajectories, division markers, track IDs (same style as trajectories)."""
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import tifffile
+
+        use_overlay_base = overlay_frames is not None and overlay_frames.ndim == 4
+        if use_overlay_base:
+            num_frames, height, width = overlay_frames.shape[0], overlay_frames.shape[1], overlay_frames.shape[2]
+            images_norm = None
+        else:
+            num_frames = images.shape[0]
+            height, width = images.shape[1], images.shape[2]
+            if progress_callback:
+                progress_callback(91, "Normalizing images (lineage)...")
+            img_min = images.min(axis=(1, 2), keepdims=True)
+            img_max = images.max(axis=(1, 2), keepdims=True)
+            img_range = img_max - img_min
+            img_range[img_range == 0] = 1
+            images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
+
+        unique_founders = sorted(set(founder_by_track.values()))
+        cmap = plt.get_cmap("tab20")
+        founder_rgb = {}
+        for i, fid in enumerate(unique_founders):
+            c = cmap((i % 20) / 20.0)
+            founder_rgb[int(fid)] = (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255))
+
+        track_colors = {}
+        for tid, f in founder_by_track.items():
+            track_colors[int(tid)] = founder_rgb.get(int(f), (180, 180, 180))
+
+        div_marks: list[tuple[int, int, int]] = []
+        if edges_df is not None and len(edges_df) > 0 and "y" in tracks_df.columns and "x" in tracks_df.columns:
+            for _, er in edges_df.iterrows():
+                df = int(er["division_frame"])
+                did = int(er["daughter_track_id"])
+                sub = tracks_df[(tracks_df["track_id"] == did) & (tracks_df["frame"] == df)]
+                if len(sub) == 0:
+                    sub = tracks_df[tracks_df["track_id"] == did].sort_values("frame").head(1)
+                    if len(sub) == 0:
+                        continue
+                    df = int(sub["frame"].iloc[0])
+                y = int(sub.iloc[0]["y"])
+                x = int(sub.iloc[0]["x"])
+                div_marks.append((df, y, x))
+
+        if "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+            return
+        unique_tracks = tracks_df["track_id"].unique()
+        visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
+
+        for frame_idx in range(num_frames):
+            if progress_callback:
+                progress_callback(
+                    90 + int((frame_idx + 1) / max(num_frames, 1) * 9),
+                    f"Lineage visualization: {frame_idx + 1}/{num_frames}",
+                )
+
+            if use_overlay_base:
+                vis_frame = np.ascontiguousarray(overlay_frames[frame_idx].copy())
+            else:
+                img = images_norm[frame_idx]
+                vis_frame = np.stack([img, img, img], axis=-1)
+                mask_frame = masks_tracked[frame_idx]
+                for track_id in unique_tracks:
+                    tid = int(track_id)
+                    if tid not in track_colors:
+                        continue
+                    color = track_colors[tid]
+                    region = mask_frame == tid
+                    vis_frame[region, 0] = np.clip(vis_frame[region, 0] * 0.5 + color[0] * 0.5, 0, 255).astype(np.uint8)
+                    vis_frame[region, 1] = np.clip(vis_frame[region, 1] * 0.5 + color[1] * 0.5, 0, 255).astype(np.uint8)
+                    vis_frame[region, 2] = np.clip(vis_frame[region, 2] * 0.5 + color[2] * 0.5, 0, 255).astype(np.uint8)
+
+            if "y" in tracks_df.columns and "x" in tracks_df.columns:
+                tracks_in_frame = tracks_df[
+                    (tracks_df["frame"] <= frame_idx) & (tracks_df["track_id"].isin(unique_tracks))
+                ]["track_id"].unique()
+                labels_to_draw = []
+                for track_id_int in tracks_in_frame:
+                    track_id_int = int(track_id_int)
+                    if track_id_int not in track_colors:
+                        continue
+                    track_points = tracks_df[
+                        (tracks_df["track_id"] == track_id_int) & (tracks_df["frame"] <= frame_idx)
+                    ]
+                    color = track_colors[track_id_int]
+                    if len(track_points) > 1:
+                        points = track_points[["y", "x"]].values.astype(int)
+                        points[:, 0] = np.clip(points[:, 0], 0, height - 1)
+                        points[:, 1] = np.clip(points[:, 1], 0, width - 1)
+                        for i in range(len(points) - 1):
+                            y1, x1 = points[i]
+                            y2, x2 = points[i + 1]
+                            dy, dx = abs(y2 - y1), abs(x2 - x1)
+                            if dx == 0 and dy == 0:
+                                continue
+                            max_steps = max(dx, dy)
+                            step_size = max(1, max_steps // 50) if max_steps > 50 else 1
+                            num_steps = max_steps // step_size + 1
+                            if dx > dy:
+                                x_coords = np.linspace(x1, x2, num_steps, dtype=int)
+                                y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
+                            else:
+                                y_coords = np.linspace(y1, y2, num_steps, dtype=int)
+                                x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
+                            y_coords = np.clip(y_coords, 1, height - 2)
+                            x_coords = np.clip(x_coords, 1, width - 2)
+                            for y, x in zip(y_coords, x_coords):
+                                ys, ye = y - 1, y + 2
+                                xs_, xe = x - 1, x + 2
+                                vis_frame[ys:ye, xs_:xe, 0] = (
+                                    vis_frame[ys:ye, xs_:xe, 0] * 0.3 + color[0] * 0.7
+                                ).astype(np.uint8)
+                                vis_frame[ys:ye, xs_:xe, 1] = (
+                                    vis_frame[ys:ye, xs_:xe, 1] * 0.3 + color[1] * 0.7
+                                ).astype(np.uint8)
+                                vis_frame[ys:ye, xs_:xe, 2] = (
+                                    vis_frame[ys:ye, xs_:xe, 2] * 0.3 + color[2] * 0.7
+                                ).astype(np.uint8)
+                    current_track = track_points[track_points["frame"] == frame_idx]
+                    if len(current_track) > 0:
+                        y = int(current_track.iloc[0]["y"])
+                        x = int(current_track.iloc[0]["x"])
+                        if 0 <= y < height and 0 <= x < width:
+                            dot_size = 5
+                            color = track_colors[track_id_int]
+                            y0 = max(0, y - dot_size)
+                            y1_ = min(height, y + dot_size + 1)
+                            x0 = max(0, x - dot_size)
+                            x1_ = min(width, x + dot_size + 1)
+                            vis_frame[y0:y1_, x0:x1_, :] = color
+                            labels_to_draw.append((str(track_id_int), x + dot_size + 2, y - 6))
+
+                if labels_to_draw:
+                    try:
+                        from PIL import Image
+
+                        pil_img = Image.fromarray(vis_frame)
+                        pil_img = draw_hq_labels(
+                            pil_img,
+                            labels_to_draw,
+                            font_size=12,
+                            scale=2,
+                            stroke_width=2,
+                        )
+                        vis_frame = np.array(pil_img)
+                    except Exception:
+                        pass
+
+            for df, y, x in div_marks:
+                if df != frame_idx or not (0 <= y < height and 0 <= x < width):
+                    continue
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                    yy, xx = y + dy, x + dx
+                    if 0 <= yy < height and 0 <= xx < width:
+                        vis_frame[yy, xx] = (0, 255, 100)
+
+            visualization[frame_idx] = vis_frame
+
+        if progress_callback:
+            progress_callback(99, "Saving lineage visualization...")
+        T = visualization.shape[0]
+        meta = None
         try:
             from bactimate.modules.tiff_metadata import build_metadata_dict
-            ps = getattr(self, '_cal_ps', 0) or 0
-            tp = getattr(self, '_cal_tp', 0) or 0
-            # axes TYXC so metadata matches 4D RGB stack (T, H, W, 3); avoids tifffile "axes do not match shape" warning
+
+            ps = getattr(self, "_cal_ps", 0) or 0
+            tp = getattr(self, "_cal_tp", 0) or 0
             meta = build_metadata_dict(
                 pixel_size_um=ps if ps > 0 else None,
                 time_per_frame_min=tp if tp > 0 else None,
@@ -1629,10 +1999,15 @@ class TrackingWorker(QThread):
                 images=T,
                 frames=T,
             )
-            tifffile.imwrite(str(output_path), overlay_array, metadata=meta, compression='zlib')
         except Exception:
-            tifffile.imwrite(str(output_path), overlay_array, compression='zlib')
-        return overlay_array
+            pass
+        try:
+            if meta:
+                tifffile.imwrite(str(output_path), visualization, metadata=meta, compression="zlib")
+            else:
+                tifffile.imwrite(str(output_path), visualization, compression="zlib")
+        except Exception:
+            tifffile.imwrite(str(output_path), visualization, metadata=meta if meta else {})
 
 
 class GrowthCurveVideoWorker(QThread):

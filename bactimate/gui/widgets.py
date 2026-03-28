@@ -127,31 +127,56 @@ class TooltipClickFilter(QObject):
         return False
 
 
-def create_info_icon(info_text, parent_widget=None):
-    """Create a small (?) info icon label that shows tooltip-style info on click"""
+def create_info_icon(info_text, parent_widget=None, *, compact: bool = False):
+    """Create a small (?) info icon label that shows tooltip-style info on click.
+    compact=True: smaller control for tight toolbars (e.g. tracking action row)."""
     info_label = QLabel("(?)")
     info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    info_label.setStyleSheet(
-        "QLabel {"
-        "color: #7F8C8D;"
-        "font-size: 8pt;"
-        "font-weight: 600;"
-        "text-decoration: none;"
-        "background-color: #2d2d2d;"
-        "border: 1px solid #4a4a4a;"
-        "border-radius: 6px;"
-        "padding: 0px 3px;"
-        "min-width: 14px;"
-        "min-height: 14px;"
-        "max-width: 14px;"
-        "max-height: 14px;"
-        "}"
-        "QLabel:hover {"
-        "color: #4a9eff;"
-        "background-color: #3a3a3a;"
-        "border: 1px solid #4a9eff;"
-        "}"
-    )
+    if compact:
+        style = (
+            "QLabel {"
+            "color: #7F8C8D;"
+            "font-size: 7pt;"
+            "font-weight: 600;"
+            "text-decoration: none;"
+            "background-color: #2d2d2d;"
+            "border: 1px solid #4a4a4a;"
+            "border-radius: 4px;"
+            "padding: 0px 2px;"
+            "min-width: 11px;"
+            "min-height: 11px;"
+            "max-width: 11px;"
+            "max-height: 11px;"
+            "}"
+            "QLabel:hover {"
+            "color: #4a9eff;"
+            "background-color: #3a3a3a;"
+            "border: 1px solid #4a9eff;"
+            "}"
+        )
+    else:
+        style = (
+            "QLabel {"
+            "color: #7F8C8D;"
+            "font-size: 8pt;"
+            "font-weight: 600;"
+            "text-decoration: none;"
+            "background-color: #2d2d2d;"
+            "border: 1px solid #4a4a4a;"
+            "border-radius: 6px;"
+            "padding: 0px 3px;"
+            "min-width: 14px;"
+            "min-height: 14px;"
+            "max-width: 14px;"
+            "max-height: 14px;"
+            "}"
+            "QLabel:hover {"
+            "color: #4a9eff;"
+            "background-color: #3a3a3a;"
+            "border: 1px solid #4a9eff;"
+            "}"
+        )
+    info_label.setStyleSheet(style)
     info_label.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def show_info(event):

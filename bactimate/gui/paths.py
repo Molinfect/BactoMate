@@ -156,6 +156,21 @@ def get_omnipose_user_models_dir() -> Path:
     return path
 
 
+def get_omnipose_pretrained_cache_dir() -> Path:
+    """
+    Directory where BactiMate mirrors built-in Omnipose checkpoints after first download.
+    Same layout as cellpose_omni's MODEL_DIR filenames (e.g. bact_phase_omnitorch_0).
+    - Installed: .../BactiMate/Models/omnipose_pretrained
+    - Dev/frozen: get_app_root() / "omnipose_pretrained"
+    """
+    if _is_installed():
+        path = _get_user_data_models_base() / "omnipose_pretrained"
+    else:
+        path = get_app_root() / "omnipose_pretrained"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def get_user_models_dir() -> Path:
     """Alias for get_omnipose_user_models_dir(). Prefer get_omnipose_user_models_dir() for clarity."""
     return get_omnipose_user_models_dir()

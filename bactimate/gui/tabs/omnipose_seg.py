@@ -1182,12 +1182,16 @@ class OmniposeSegTab(QWidget):
                     self.flow_threshold.setValue(f)
                     self.mask_threshold.setValue(m)
                     return
+                from bactimate.gui.omnipose_pretrained_cache import try_get_bactimate_cached_builtin
                 from cellpose_omni.models import MODEL_DIR
-                torch_str = "torch"
-                basename = f"{model_type}{torch_str}_0"
-                cache_model_file = Path(MODEL_DIR) / basename
-                if cache_model_file.exists():
-                    self.model_status_label.setText("✓ Cached")
+                basename = f"{model_type}torch_0"
+                bact_cached = try_get_bactimate_cached_builtin(model_type) is not None
+                cellpose_cached = (Path(MODEL_DIR) / basename).is_file()
+                if bact_cached:
+                    self.model_status_label.setText("✓ Cached (BactiMate)")
+                    self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
+                elif cellpose_cached:
+                    self.model_status_label.setText("✓ Cached (will copy to BactiMate on use)")
                     self.model_status_label.setStyleSheet("color: #4CAF50; font-size: 9pt;")
                 else:
                     self.model_status_label.setText("Will download on first use")
@@ -1948,26 +1952,36 @@ class OmniposeSegTab(QWidget):
             
             def find_model_file(model_type, model_index=0, use_torch=True):
                 """
-                Find model file in the default cache location.
-                Models are cached in ~/.cellpose/models and persist between sessions.
-                Returns the path to the model file if found, None otherwise.
+                Find model file: BactiMate omnipose_pretrained mirror first, then ~/.cellpose/models.
                 """
                 from pathlib import Path
+                from bactimate.gui.omnipose_pretrained_cache import try_get_bactimate_cached_builtin
                 from cellpose_omni.models import MODEL_DIR
-                
-                # Construct model filename
-                torch_str = 'torch' if use_torch else ''
-                basename = f'{model_type}{torch_str}_{model_index}'
-                
-                # Check default cache location
+
+                b = try_get_bactimate_cached_builtin(model_type, model_index)
+                if b is not None:
+                    return str(b)
+
+                torch_str = "torch" if use_torch else ""
+                basename = f"{model_type}{torch_str}_{model_index}"
                 cache_model_file = Path(MODEL_DIR) / basename
-                
-                if cache_model_file.exists():
+                if cache_model_file.is_file():
                     return str(cache_model_file)
-                
-                # Not found
                 return None
-            
+
+            def load_builtin_cellpose_from_find_cache(mt: str) -> bool:
+                """Load built-in weights from BactiMate or cellpose cache via pretrained_model path."""
+                mf = find_model_file(mt, 0, True)
+                if not mf or not os.path.isfile(mf):
+                    return False
+                pth = ensure_omni_in_model_path(Path(mf))
+                preview_dialog.model = models.Cellpose(
+                    gpu=current_use_gpu,
+                    pretrained_model=pth,
+                    omni=True,
+                )
+                return True
+
             def load_model():
                 """Load Omnipose model (only reloads if model type or GPU setting changed)."""
                 params = get_current_parameters()
@@ -2073,96 +2087,38 @@ class OmniposeSegTab(QWidget):
                             preview_dialog._last_use_gpu = current_use_gpu
                             set_loaded_status()
                             return True
-                        from cellpose_omni.models import model_path, MODEL_DIR
-                        from pathlib import Path
-                        expected_model_dir = PROJECT_ROOT / "models"
-                        if expected_model_dir.exists() and str(MODEL_DIR) != str(expected_model_dir):
-                            pass
-                        model_file = find_model_file(current_model_type, 0, True)
-                        
-                        if model_file and os.path.exists(model_file):
-                            # Model found in cache
-                            status_label.setText("Loading model from cache...")
-                            QApplication.processEvents()
-                        else:
-                            # Model not found - need to download
-                            status_label.setText("Downloading model (this may take a moment)...")
-                            QApplication.processEvents()
-                            # Call model_path - it will download if needed
-                            try:
-                                model_file = model_path(current_model_type, 0, True)
-                                # Verify the model was actually downloaded
-                                if not model_file or not os.path.exists(model_file):
-                                    # model_path returned a path but file doesn't exist - try to download explicitly
-                                    status_label.setText("Model not found, downloading...")
-                                    QApplication.processEvents()
-                                    # Force download by calling model_path again (it should download if file doesn't exist)
-                                    model_file = model_path(current_model_type, 0, True)
-                                    # Wait a moment for download to complete
-                                    import time
-                                    time.sleep(0.5)
-                                    # Verify again
-                                    if not model_file or not os.path.exists(model_file):
-                                        raise FileNotFoundError(f"Model file not found after download attempt: {model_file}")
-                                status_label.setText("Model downloaded, loading...")
-                                QApplication.processEvents()
-                            except HTTPError as http_err:
-                                # Handle 404 errors (model not found in repository)
-                                if http_err.code == 404:
-                                    # Check if model exists in cache
-                                    model_file = find_model_file(current_model_type, 0, True)
-                                    if model_file and os.path.exists(model_file):
-                                        status_label.setText("Using cached model (not in repo)...")
-                                        QApplication.processEvents()
-                                    else:
-                                        # Model not available - show helpful error
-                                        QMessageBox.warning(
-                                            preview_dialog,
-                                            "Model Not Available",
-                                            f"Model '{current_model_type}' is not available in the repository (404 error).\n\n"
-                                            f"Available Omnipose models:\n"
-                                            f"  • bact_phase_omni (recommended for bacteria)\n"
-                                            f"  • bact_fluor_omni\n"
-                                            f"  • bact_phase_affinity\n\n"
-                                            f"See: https://omnipose.readthedocs.io/models.html\n\n"
-                                            f"Please select a different model from the dropdown."
-                                        )
-                                        status_label.setText("Model not available")
-                                        return False
-                                else:
-                                    # Other HTTP errors - check local directory one more time
-                                    model_file = find_model_file(current_model_type, 0, True)
-                                    if model_file and os.path.exists(model_file):
-                                        status_label.setText("Download failed, using local/cached model...")
-                                        QApplication.processEvents()
-                                    else:
-                                        # Re-raise to be handled by outer exception handler
-                                        raise
-                            except Exception as download_err:
-                                # Check one more time if model exists (might have been downloaded in background)
-                                model_file = find_model_file(current_model_type, 0, True)
-                                if model_file and os.path.exists(model_file):
-                                    status_label.setText("Using model from cache...")
-                                    QApplication.processEvents()
-                                else:
-                                    # Re-raise to be handled by outer exception handler
-                                    raise
-                        
-                        # Final verification: ensure model file exists before loading
+                        from bactimate.gui.omnipose_pretrained_cache import ensure_builtin_in_bactimate_cache
+                        from bactimate.gui.omnipose_utils import ensure_omni_in_model_path
+                        status_label.setText("Loading model (BactiMate cache / download if needed)...")
+                        QApplication.processEvents()
+                        try:
+                            bcp = ensure_builtin_in_bactimate_cache(current_model_type)
+                            model_file = str(bcp)
+                        except Exception as download_err:
+                            get_logger().exception("Built-in Omnipose model resolve failed")
+                            QMessageBox.warning(
+                                preview_dialog,
+                                "Model load failed",
+                                f"Could not load model '{current_model_type}':\n{download_err}\n\n"
+                                f"Check your connection or try another built-in model.",
+                            )
+                            status_label.setText("Model load failed")
+                            return False
+
                         if not model_file or not os.path.exists(model_file):
                             raise FileNotFoundError(
                                 f"Model file not found: {model_file}\n\n"
                                 f"Model '{current_model_type}' may not be available or download failed.\n"
                                 f"Please check your internet connection and try again."
                             )
-                        
+
                         status_label.setText("Loading model...")
                         QApplication.processEvents()
-                        
+                        pretrained_p = ensure_omni_in_model_path(Path(model_file))
                         preview_dialog.model = models.Cellpose(
-                            gpu=current_use_gpu, 
-                            model_type=current_model_type, 
-                            omni=True
+                            gpu=current_use_gpu,
+                            pretrained_model=pretrained_p,
+                            omni=True,
                         )
                         # Debug: built-in model load (see Logs/bactimate_gui_*.log)
                         try:
@@ -2203,31 +2159,35 @@ class OmniposeSegTab(QWidget):
                                 except Exception:
                                     get_logger().debug("Could not remove incorrect model symlink", exc_info=True)
                             
-                            # Try to fix by clearing model cache and retrying
+                            # Try to fix by clearing BactiMate mirror + upstream cache and re-fetching
                             try:
-                                model_file = model_path(current_model_type, 0, True)
-                                if os.path.exists(model_file):
+                                from bactimate.gui.omnipose_pretrained_cache import (
+                                    clear_bactimate_builtin_cache_entry,
+                                    ensure_builtin_in_bactimate_cache,
+                                )
+                                from bactimate.gui.omnipose_utils import ensure_omni_in_model_path
+
+                                clear_bactimate_builtin_cache_entry(current_model_type)
+                                if model_file_path.is_file():
                                     status_label.setText("Fixing model architecture mismatch...")
                                     QApplication.processEvents()
-                                    # Backup the corrupted model
-                                    backup_file = model_file + ".corrupted"
+                                    backup_file = str(model_file_path) + ".corrupted"
                                     if os.path.exists(backup_file):
                                         os.remove(backup_file)
-                                    os.rename(model_file, backup_file)
-                                    # Retry loading model (will download if needed)
-                                    status_label.setText("Re-loading model...")
-                                    QApplication.processEvents()
-                                    preview_dialog.model = models.Cellpose(
-                                        gpu=current_use_gpu, 
-                                        model_type=current_model_type, 
-                                        omni=True
-                                    )
-                                    preview_dialog._last_model_key = current_key
-                                    preview_dialog._last_use_gpu = current_use_gpu
-                                    status_label.setText("Model reloaded successfully!")
-                                    QApplication.processEvents()
-                                else:
-                                    raise RuntimeError("Model file not found after clearing cache")
+                                    os.rename(model_file_path, backup_file)
+                                status_label.setText("Re-loading model...")
+                                QApplication.processEvents()
+                                bcp = ensure_builtin_in_bactimate_cache(current_model_type)
+                                pretrained_p = ensure_omni_in_model_path(bcp)
+                                preview_dialog.model = models.Cellpose(
+                                    gpu=current_use_gpu,
+                                    pretrained_model=pretrained_p,
+                                    omni=True,
+                                )
+                                preview_dialog._last_model_key = current_key
+                                preview_dialog._last_use_gpu = current_use_gpu
+                                status_label.setText("Model reloaded successfully!")
+                                QApplication.processEvents()
                             except Exception as retry_error:
                                 error_details = f"Original error: {error_msg}\nRetry error: {retry_error}"
                                 # Provide helpful error message
@@ -2281,11 +2241,8 @@ class OmniposeSegTab(QWidget):
                                 try:
                                     status_label.setText("Using cached model (not in repo)...")
                                     QApplication.processEvents()
-                                    preview_dialog.model = models.Cellpose(
-                                        gpu=current_use_gpu, 
-                                        model_type=current_model_type, 
-                                        omni=True
-                                    )
+                                    if not load_builtin_cellpose_from_find_cache(current_model_type):
+                                        raise RuntimeError("Could not load from cache path")
                                     preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Using cached model")
@@ -2331,11 +2288,8 @@ class OmniposeSegTab(QWidget):
                                 try:
                                     status_label.setText("Trying cached model...")
                                     QApplication.processEvents()
-                                    preview_dialog.model = models.Cellpose(
-                                        gpu=current_use_gpu, 
-                                        model_type=current_model_type, 
-                                        omni=True
-                                    )
+                                    if not load_builtin_cellpose_from_find_cache(current_model_type):
+                                        raise RuntimeError("Could not load from cache path")
                                     preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Using cached model")
@@ -2379,18 +2333,15 @@ class OmniposeSegTab(QWidget):
                         if "HTTP" in error_msg or "500" in error_msg or "connection" in error_msg.lower() or "network" in error_msg.lower() or "urllib" in error_msg.lower() or "download" in error_msg.lower():
                             # Check for model in local directory or cache without triggering another download
                             model_file = find_model_file(current_model_type, 0, True)
-                            cached_model_exists = (model_file is not None)
+                            cached_model_exists = model_file is not None and os.path.isfile(model_file)
                             
                             if cached_model_exists:
                                 # Try to use cached model even if download failed
                                 try:
                                     status_label.setText("Trying cached model...")
                                     QApplication.processEvents()
-                                    preview_dialog.model = models.Cellpose(
-                                        gpu=current_use_gpu, 
-                                        model_type=current_model_type, 
-                                        omni=True
-                                    )
+                                    if not load_builtin_cellpose_from_find_cache(current_model_type):
+                                        raise RuntimeError("Could not load from cache path")
                                     preview_dialog._last_model_key = current_key
                                     preview_dialog._last_use_gpu = current_use_gpu
                                     status_label.setText("Using cached model")

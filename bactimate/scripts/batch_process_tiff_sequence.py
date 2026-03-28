@@ -25,6 +25,8 @@ import tempfile
 import shutil
 from datetime import datetime
 
+from bactimate.modules.label_render import draw_hq_labels
+
 
 def _append_omni_debug(msg: str) -> None:
     """Append a timestamped line to BactiMate debug log if env BACTIMATE_OMNI_DEBUG_LOG is set (for Run button / batch path)."""
@@ -277,69 +279,15 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
         except Exception:
             pass
     else:
-        # Workaround for cellpose_omni bug: Cellpose doesn't pass model_type to CellposeModel
-        from cellpose_omni.models import model_path
-        try:
-            model_file = model_path(model_type, 0, True)
-            if os.path.exists(model_file):
-                print(f"Removing existing model file to ensure correct architecture...")
-                os.remove(model_file)
-        except HTTPError as e:
-            if e.code == 404:
-                print(f"\n⚠️  WARNING: Model '{model_type}' not found in GitHub repository (404 error).")
-                print(f"   This model may not be available in the Omnipose GitHub repository.")
-                print(f"   Trying to use cached model if available, or falling back to Cellpose server...")
-                # Check if model exists in cache (Path is imported at top of module)
-                from cellpose_omni.models import MODEL_DIR
-                torch_str = 'torch'
-                basename = f'{model_type}{torch_str}_0'
-                cache_model_file = Path(MODEL_DIR) / basename
-                if cache_model_file.exists():
-                    print(f"   Using cached model: {cache_model_file}")
-                    model_file = str(cache_model_file)
-                else:
-                    # Try to get model from original Cellpose server as fallback
-                    print(f"   Attempting to download from original Cellpose server...")
-                    # Temporarily restore original URL
-                    import cellpose_omni.models as models_module
-                    original_url = getattr(models_module, '_MODEL_URL', None)
-                    if original_url and 'github' in original_url:
-                        # Try original Cellpose server
-                        models_module._MODEL_URL = 'https://www.cellpose.org/models'
-                        try:
-                            model_file = model_path(model_type, 0, True)
-                            print(f"   ✓ Downloaded from Cellpose server")
-                        except Exception:
-                            raise RuntimeError(
-                                f"Model '{model_type}' is not available.\n\n"
-                                f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
-                                f"  - bact_phase_omni (recommended for bacteria)\n"
-                                f"  - bact_fluor_omni\n"
-                                f"  - cyto2_omni\n"
-                                f"  - worm_omni\n"
-                                f"  - plant_omni\n"
-                                f"  - bact_phase_affinity\n\n"
-                                f"Please select a different model or check if '{model_type}' exists in the repository."
-                            )
-                        finally:
-                            # Restore GitHub URL
-                            if original_url:
-                                models_module._MODEL_URL = original_url
-                    else:
-                        raise RuntimeError(
-                            f"Model '{model_type}' is not available in the repository.\n\n"
-                            f"Available Omnipose models (see https://omnipose.readthedocs.io/models.html):\n"
-                            f"  - bact_phase_omni (recommended for bacteria)\n"
-                            f"  - bact_fluor_omni\n"
-                            f"  - cyto2_omni\n"
-                            f"  - worm_omni\n"
-                            f"  - plant_omni\n"
-                            f"  - bact_phase_affinity"
-                        )
-            else:
-                raise
+        # Built-in Omnipose: mirror weights into BactiMate omnipose_pretrained cache, then load by path
+        # (avoids relying only on ~/.cellpose/models; same file naming as cellpose_omni).
+        from bactimate.gui.omnipose_pretrained_cache import ensure_builtin_in_bactimate_cache
+        from bactimate.gui.omnipose_utils import ensure_omni_in_model_path
 
-        model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
+        bact_checkpoint = ensure_builtin_in_bactimate_cache(model_type)
+        pretrained_for_loader = ensure_omni_in_model_path(bact_checkpoint)
+        print(f"\nBuilt-in Omnipose checkpoint (BactiMate cache): {bact_checkpoint}")
+        model = models.Cellpose(gpu=use_gpu, pretrained_model=pretrained_for_loader, omni=omni)
         try:
             if hasattr(model, 'cp'):
                 nchan = getattr(model.cp, 'nchan', None)
@@ -385,12 +333,24 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
                 raise RuntimeError("Architecture mismatch - need to recreate model")
     except RuntimeError as e:
         if "Architecture mismatch" in str(e) and not pretrained_model:
-            # Recreate model by deleting and trying again (built-in only)
-            from cellpose_omni.models import model_path
-            model_file = model_path(model_type, 0, True)
-            if os.path.exists(model_file):
-                os.remove(model_file)
-            model = models.Cellpose(gpu=use_gpu, model_type=model_type, omni=omni)
+            # Recreate built-in: clear BactiMate mirror + upstream file, re-download and reload by path
+            from bactimate.gui.omnipose_pretrained_cache import (
+                clear_bactimate_builtin_cache_entry,
+                ensure_builtin_in_bactimate_cache,
+            )
+            from bactimate.gui.omnipose_utils import ensure_omni_in_model_path
+            from cellpose_omni.models import MODEL_DIR
+
+            clear_bactimate_builtin_cache_entry(model_type)
+            upstream_file = Path(MODEL_DIR) / f"{model_type}torch_0"
+            if upstream_file.is_file():
+                try:
+                    upstream_file.unlink()
+                except OSError:
+                    pass
+            bact_checkpoint = ensure_builtin_in_bactimate_cache(model_type)
+            pretrained_for_loader = ensure_omni_in_model_path(bact_checkpoint)
+            model = models.Cellpose(gpu=use_gpu, pretrained_model=pretrained_for_loader, omni=omni)
     except RuntimeError as e:
         if "size mismatch" in str(e) and ("downsample" in str(e) or "output" in str(e)):
             print("\n" + "="*60)
@@ -402,6 +362,7 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
             # Generate correct model filename (keep full model name, add torch_0)
             model_filename = model_type + 'torch_0'
             print(f"  rm ~/.cellpose/models/{model_filename}")
+            print("  and delete the copy under BactiMate's omnipose_pretrained folder (see Log for path).")
             print("\nOr run the fix script:")
             print("  ./clear_models.sh")
             print("\nThen try again. The model will be re-downloaded with correct architecture.")
@@ -715,7 +676,7 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
     
     # Try to import PIL for text rendering
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image
         from skimage.measure import regionprops
         PIL_AVAILABLE = True
     except ImportError:
@@ -801,19 +762,10 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
                 
                 # Convert to PIL Image - explicitly specify mode to avoid issues
                 pil_img = Image.fromarray(overlay_contiguous, mode='RGB')
-                draw = ImageDraw.Draw(pil_img)
-                
-                # Try to use a nice font, fallback to default if not available
-                try:
-                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
-                except:
-                    try:
-                        font = ImageFont.truetype("arial.ttf", 10)
-                    except:
-                        font = ImageFont.load_default()
                 
                 # Get cell centroids and labels
                 regions = regionprops(mask)
+                labels_to_draw = []
                 for region in regions:
                     if region.label == 0:
                         continue
@@ -822,14 +774,17 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
                     centroid_y, centroid_x = region.centroid
                     x, y = int(centroid_x), int(centroid_y)
                     
-                    # Draw CellID text with shadow for readability
                     cell_id_str = str(region.label)
                     text_x, text_y = x + 2, y - 5
-                    
-                    # Draw text shadow (black)
-                    draw.text((text_x + 1, text_y + 1), cell_id_str, fill=(0, 0, 0), font=font)
-                    # Draw text (white)
-                    draw.text((text_x, text_y), cell_id_str, fill=(255, 255, 255), font=font)
+                    labels_to_draw.append((cell_id_str, text_x, text_y))
+
+                pil_img = draw_hq_labels(
+                    pil_img,
+                    labels_to_draw,
+                    font_size=12,
+                    scale=2,
+                    stroke_width=2,
+                )
                 
                 # Convert back to numpy array - ensure it's contiguous and correct shape
                 overlay = np.ascontiguousarray(np.array(pil_img), dtype=np.uint8)

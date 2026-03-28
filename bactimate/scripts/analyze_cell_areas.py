@@ -27,6 +27,8 @@ from skimage.segmentation import find_boundaries
 import warnings
 warnings.filterwarnings('ignore')
 
+from bactimate.modules.label_render import draw_hq_labels
+
 SCRIPT_LOG = logging.getLogger(__name__)
 
 try:
@@ -998,7 +1000,7 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
     
     # Try to import PIL for text rendering
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image
         PIL_AVAILABLE = True
     except ImportError:
         PIL_AVAILABLE = False
@@ -1050,20 +1052,11 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
             try:
                 # Convert to PIL Image
                 pil_img = Image.fromarray(visualization[frame_idx])
-                draw = ImageDraw.Draw(pil_img)
-                
-                # Try to use a nice font, fallback to default if not available
-                try:
-                    font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
-                except:
-                    try:
-                        font = ImageFont.truetype("arial.ttf", 10)
-                    except:
-                        font = ImageFont.load_default()
                 
                 # Get cell centroids and CellIDs (masks now have persistent CellIDs)
                 from skimage.measure import regionprops
                 regions = regionprops(mask)
+                labels_to_draw = []
                 for region in regions:
                     if region.label == 0:
                         continue
@@ -1072,16 +1065,17 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
                     centroid_y, centroid_x = region.centroid
                     x, y = int(centroid_x), int(centroid_y)
                     
-                    # Draw CellID text with shadow for readability (label is now persistent CellID)
                     cell_id_str = str(region.label)
                     text_x, text_y = x + 2, y - 5
-                    
-                    # Draw text shadow (black)
-                    draw.text((text_x + 1, text_y + 1), cell_id_str, fill=(0, 0, 0), font=font)
-                    # Draw text (white)
-                    draw.text((text_x, text_y), cell_id_str, fill=(255, 255, 255), font=font)
-                
-                # Convert back to numpy array
+                    labels_to_draw.append((cell_id_str, text_x, text_y))
+
+                pil_img = draw_hq_labels(
+                    pil_img,
+                    labels_to_draw,
+                    font_size=12,
+                    scale=2,
+                    stroke_width=2,
+                )
                 visualization[frame_idx] = np.array(pil_img)
             except Exception as e:
                 # If text rendering fails, continue without labels

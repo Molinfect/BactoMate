@@ -51,7 +51,13 @@ from bactimate.gui.tabs import (
     TrackingTab,
     UNetSegmentTab,
 )
-from bactimate.gui.paths import get_app_root, get_omnipose_user_models_dir, get_unet_models_dir, _running_from_app_bundle
+from bactimate.gui.paths import (
+    get_app_root,
+    get_omnipose_pretrained_cache_dir,
+    get_omnipose_user_models_dir,
+    get_unet_models_dir,
+    _running_from_app_bundle,
+)
 from bactimate.gui.styles import get_modern_stylesheet
 
 
@@ -126,6 +132,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("BactiMate")
         # Ensure user model dirs exist on first launch (dev: repo/omnipose_user_models, unet_user_models; installed: BactiMate/Models/...)
         get_omnipose_user_models_dir()
+        get_omnipose_pretrained_cache_dir()
         get_unet_models_dir()
         min_width, min_height = 1200, 700
         initial_width, initial_height = 1200, 800
@@ -170,7 +177,7 @@ class MainWindow(QMainWindow):
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter)
         title_bar_layout.addWidget(logo_label)
 
-        title_text = QLabel("BactiMate - your mate for bacteria microscopy data")
+        title_text = QLabel("BactiMate - an integrated platform for quantitative microscopy image analysis")
         title_text.setStyleSheet(
             "QLabel {"
             "font-size: 20pt;"
