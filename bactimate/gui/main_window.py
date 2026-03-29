@@ -210,7 +210,7 @@ class MainWindow(QMainWindow):
         self.analyze_tab = AnalyzeMasksTab(self)
         self.tracking_tab = TrackingTab(self)
         self.post_processing_tab = PostProcessingTab(self)
-        tabs.addTab(self.nd2_tab, "TIFF Conversion")
+        tabs.addTab(self.nd2_tab, "File Conversion")
         tabs.addTab(self.omnipose_seg_tab, "Omnipose Segment")
         tabs.addTab(self.unet_segment_tab, "U-NET Segment")
         tabs.addTab(self.analyze_tab, "Analyze Masks")
