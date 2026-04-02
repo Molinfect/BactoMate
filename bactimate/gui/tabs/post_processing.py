@@ -89,8 +89,8 @@ class PostProcessingTab(QWidget):
         video_layout = QVBoxLayout()
         file_folder_layout = QHBoxLayout()
         self.video_path = QLineEdit()
-        self.video_path.setPlaceholderText("Select TIFF file or folder containing TIFF sequence... (or drag and drop)")
-        self.video_path.setMinimumWidth(500)
+        self.video_path.setPlaceholderText("TIFF file, folder, or channel stacks (|)…")
+        self.video_path.setMinimumWidth(400)
         file_font = QFont()
         file_font.setPointSize(11)
         self.video_path.setFont(file_font)
@@ -102,9 +102,29 @@ class PostProcessingTab(QWidget):
         folder_btn = QPushButton("Browse Folder...")
         folder_btn.setFixedWidth(120)
         folder_btn.clicked.connect(self.select_video_folder)
-        file_folder_layout.addWidget(self.video_path, 0)
+        channels_btn = QPushButton("Browse channels…")
+        channels_btn.setFixedWidth(130)
+        channels_btn.setToolTip(
+            "Select one TIFF stack per fluorescence channel (same frame count and image size). "
+            "Channels are merged with color lookup tables (green, magenta, cyan, …)."
+        )
+        channels_btn.clicked.connect(self.select_video_multi_channel)
+        video_info_icon = create_info_icon(
+            "Video input options:\n\n"
+            "• Single TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (TCYX / T,C,H,W). "
+            "Multiple channels are composited with additive color LUTs (green, magenta, cyan, yellow, …).\n\n"
+            "• Folder: sorted *.tif sequence (grayscale).\n\n"
+            "• Browse channels: pick several single-channel TIFF stacks (one file per channel); "
+            "paths are joined with |. Same T×H×W required.\n\n"
+            "Tip: You can also paste multiple paths separated by | or one path per line.",
+            parent_widget=self,
+        )
+        video_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        file_folder_layout.addWidget(self.video_path, 1)
         file_folder_layout.addWidget(file_btn, 0)
         file_folder_layout.addWidget(folder_btn, 0)
+        file_folder_layout.addWidget(channels_btn, 0)
+        file_folder_layout.addWidget(video_info_icon, 0)
         video_layout.addLayout(file_folder_layout)
         video_group.setLayout(video_layout)
         return video_group
@@ -2231,6 +2251,28 @@ class PostProcessingTab(QWidget):
         )
         if folder_path:
             self.video_path.setText(folder_path)
+
+    def select_video_multi_channel(self):
+        """Select several single-channel TIFF stacks (one per channel); merged with LUTs in the worker."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select one TIFF per channel (same frame count and size)",
+            get_default_browse_dir(),
+            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
+        )
+        if paths:
+            self.video_path.setText("|".join(paths))
+
+    @staticmethod
+    def _parse_growth_curve_video_paths(text: str) -> list[Path]:
+        raw = (text or "").strip()
+        if not raw:
+            return []
+        if "\n" in raw:
+            return [Path(p.strip()) for p in raw.splitlines() if p.strip()]
+        if "|" in raw:
+            return [Path(p.strip()) for p in raw.split("|") if p.strip()]
+        return [Path(raw)]
     
     def handle_dropped_video_path(self, dropped_path):
         """Handle dropped file or folder path for growth curve video tab"""
@@ -2262,9 +2304,12 @@ class PostProcessingTab(QWidget):
             self.excel_path.setText(file_path)
     
     def _is_folder_mode(self):
-        """Check if video input is a folder"""
-        path = Path(self.video_path.text())
-        return path.exists() and path.is_dir()
+        """Check if video input is a single folder path (not multi-file)."""
+        paths = self._parse_growth_curve_video_paths(self.video_path.text())
+        if len(paths) != 1:
+            return False
+        p = paths[0]
+        return p.exists() and p.is_dir()
     
     def _get_available_models(self):
         """
@@ -2282,24 +2327,41 @@ class PostProcessingTab(QWidget):
             QMessageBox.warning(self, "Missing Input", "Please select both video input and Excel file.")
             return
         
-        video_path = Path(self.video_path.text())
+        video_paths = self._parse_growth_curve_video_paths(self.video_path.text())
         excel_path = Path(self.excel_path.text())
         
-        if not video_path.exists():
-            QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{video_path}")
+        if not video_paths:
+            QMessageBox.warning(self, "Missing Input", "Please set a TIFF file, folder, or channel paths.")
             return
+        if len(video_paths) > 1:
+            for vp in video_paths:
+                if not vp.is_file():
+                    QMessageBox.warning(
+                        self,
+                        "Invalid path",
+                        f"Multi-channel mode expects each path to be a file:\n{vp}",
+                    )
+                    return
+                if not vp.exists():
+                    QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{vp}")
+                    return
+            base_dir = video_paths[0].parent
+            input_stem = f"{video_paths[0].stem}_multi_{len(video_paths)}ch"
+        else:
+            video_path = video_paths[0]
+            if not video_path.exists():
+                QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{video_path}")
+                return
+            if video_path.is_file():
+                base_dir = video_path.parent
+                input_stem = video_path.stem
+            else:
+                base_dir = video_path
+                input_stem = video_path.name
         
         if not excel_path.exists():
             QMessageBox.warning(self, "File Not Found", f"Excel file not found:\n{excel_path}")
             return
-        
-        # Determine output directory (go up one level if input is in Tif_* or _segmentation folder)
-        if video_path.is_file():
-            base_dir = video_path.parent
-            input_stem = video_path.stem
-        else:
-            base_dir = video_path
-            input_stem = video_path.name
         
         # Go up one level if in segmentation or Tif_ folder (same logic as other tabs)
         if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
@@ -2331,7 +2393,7 @@ class PostProcessingTab(QWidget):
         self._last_video_output_dir = output_dir
         # Run in worker thread
         self.worker = GrowthCurveVideoWorker(
-            video_path,
+            video_paths,
             excel_path,
             output_dir,
             self.time_interval.value(),

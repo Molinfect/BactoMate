@@ -11,12 +11,18 @@ import time
 import traceback
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
+
+import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactimate.gui.log_config import get_logger, log_exception, write_crash_log
-from bactimate.gui.paths import get_app_root, get_python_executable_for_subprocess
+from bactimate.gui.paths import (
+    get_app_root,
+    get_python_executable_for_subprocess,
+    get_subprocess_pythonpath_root,
+)
 from bactimate.modules.label_render import draw_hq_labels
 
 
@@ -228,6 +234,12 @@ class WorkerThread(QThread):
                     return
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
+            # Scripts import ``bactimate.*``; subprocess does not inherit sys.path from the GUI.
+            pp_root = get_subprocess_pythonpath_root()
+            if env.get("PYTHONPATH"):
+                env["PYTHONPATH"] = pp_root + os.pathsep + env["PYTHONPATH"]
+            else:
+                env["PYTHONPATH"] = pp_root
             env["PYTHONUNBUFFERED"] = "1"
             env["TQDM_DISABLE"] = "1"
             # On Windows, subprocess uses cp1252 for stdout; script print() with ✓/✗ then raises
@@ -2010,14 +2022,220 @@ class TrackingWorker(QThread):
             tifffile.imwrite(str(output_path), visualization, metadata=meta if meta else {})
 
 
+def _read_tiff_series_array_and_axes(path: Path) -> tuple[np.ndarray, str]:
+    """Load first series from a TIFF; return (array, axes string)."""
+    import tifffile
+
+    with tifffile.TiffFile(str(path)) as tif:
+        s0 = tif.series[0]
+        arr = s0.asarray()
+        axes = getattr(s0, "axes", None) or ""
+    return arr, axes
+
+
+def _transpose_to_tcyx(arr: np.ndarray, axes: str) -> Optional[np.ndarray]:
+    """If axes is exactly T,C,Y,X (no Z) return array shaped (T, C, Y, X)."""
+    if arr.ndim != 4 or not axes or len(axes) != len(arr.shape):
+        return None
+    if "Z" in axes or set(axes) != {"T", "C", "Y", "X"}:
+        return None
+    d = {a: i for i, a in enumerate(axes)}
+    return np.transpose(arr, (d["T"], d["C"], d["Y"], d["X"]))
+
+
+def _heuristic_tchw(arr: np.ndarray) -> Optional[np.ndarray]:
+    """Guess (T, C, H, W) multi-channel stack from shape when axes are missing."""
+    if arr.ndim != 4:
+        return None
+    t, a, b, c = arr.shape
+    if 2 <= a <= 8 and a < b and a < c:
+        return arr
+    if 2 <= c <= 8 and c < b and c < t and c != 3:
+        return np.transpose(arr, (0, 3, 1, 2))
+    return None
+
+
+def _merge_tcyx_to_rgb_uint8(stack_tcyx: np.ndarray) -> np.ndarray:
+    """
+    Composite C fluorescence channels into RGB using black-to-color LUTs (additive blend).
+    stack_tcyx: (T, C, Y, X) numeric array.
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+
+    luts = [
+        LinearSegmentedColormap.from_list("fluo_g", [(0, 0, 0), (0.0, 1.0, 0.0)]),
+        LinearSegmentedColormap.from_list("fluo_m", [(0, 0, 0), (1.0, 0.0, 1.0)]),
+        LinearSegmentedColormap.from_list("fluo_c", [(0, 0, 0), (0.0, 1.0, 1.0)]),
+        LinearSegmentedColormap.from_list("fluo_y", [(0, 0, 0), (1.0, 1.0, 0.0)]),
+        LinearSegmentedColormap.from_list("fluo_r", [(0, 0, 0), (1.0, 0.2, 0.2)]),
+        LinearSegmentedColormap.from_list("fluo_o", [(0, 0, 0), (1.0, 0.55, 0.0)]),
+    ]
+    t, nc, h, w = stack_tcyx.shape
+    out = np.zeros((t, h, w, 3), dtype=np.float32)
+    scale = 1.0 / float(max(nc, 1))
+    for ti in range(t):
+        acc = np.zeros((h, w, 3), dtype=np.float32)
+        for ci in range(nc):
+            ch = stack_tcyx[ti, ci].astype(np.float32, copy=False)
+            p_lo, p_hi = np.percentile(ch, (1.5, 99.5))
+            if p_hi <= p_lo:
+                p_hi = p_lo + 1e-6
+            norm = np.clip((ch - p_lo) / (p_hi - p_lo), 0.0, 1.0)
+            cmap = luts[ci % len(luts)]
+            rgb = cmap(norm)[..., :3]
+            acc += rgb * scale
+        acc = np.clip(acc, 0.0, 1.0)
+        out[ti] = (acc * 255.0).astype(np.uint8)
+    return out
+
+
+def _grayscale_stack_to_rgb_uint8(frames_thw: np.ndarray) -> np.ndarray:
+    """(T, H, W) -> (T, H, W, 3) uint8."""
+    if frames_thw.ndim != 3:
+        raise ValueError(f"Expected grayscale stack (T,H,W), got shape {frames_thw.shape}")
+    t, h, w = frames_thw.shape
+    out = np.zeros((t, h, w, 3), dtype=np.uint8)
+    for i in range(t):
+        f = frames_thw[i]
+        if f.dtype != np.uint8:
+            f = ((f - f.min()) / (f.max() - f.min() + 1e-10) * 255.0).astype(np.uint8)
+        out[i] = np.stack([f, f, f], axis=-1)
+    return out
+
+
+def _normalize_frame_to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
+    if frame.dtype == np.uint8:
+        return frame
+    f = frame.astype(np.float32)
+    lo, hi = float(f.min()), float(f.max())
+    if hi <= lo:
+        return np.zeros(frame.shape[:2] + (3,), dtype=np.uint8)
+    g = ((f - lo) / (hi - lo) * 255.0).astype(np.uint8)
+    if g.ndim == 2:
+        return np.stack([g, g, g], axis=-1)
+    return g
+
+
+def _load_growth_curve_folder_rgb(folder: Path) -> np.ndarray:
+    """Sequence of TIFF files in a folder -> (T, H, W, 3) uint8."""
+    import tifffile
+
+    tiff_files = (
+        sorted(folder.glob("*.tif"))
+        + sorted(folder.glob("*.tiff"))
+        + sorted(folder.glob("*.TIF"))
+        + sorted(folder.glob("*.TIFF"))
+    )
+    if not tiff_files:
+        raise ValueError(f"No TIFF files found in folder: {folder}")
+    video_frames = []
+    for tiff_file in tiff_files:
+        frame = tifffile.imread(str(tiff_file))
+        if frame.ndim == 2:
+            video_frames.append(frame)
+        elif frame.ndim == 3:
+            video_frames.append(frame[0])
+        else:
+            video_frames.append(frame.reshape(-1, frame.shape[-2], frame.shape[-1])[0])
+    stack = np.array(video_frames)
+    return _grayscale_stack_to_rgb_uint8(stack)
+
+
+def _to_thw_single_channel_stack(arr: np.ndarray) -> np.ndarray:
+    """Normalize a single-channel TIFF stack to (T, H, W)."""
+    if arr.ndim == 2:
+        return arr[np.newaxis, ...]
+    if arr.ndim == 3:
+        return arr
+    if arr.ndim == 4:
+        t, a, b, c = arr.shape
+        if a <= 8 and a < b and a == 1:
+            return arr[:, 0, :, :]
+        if c <= 4 and c < b and c == 1:
+            return arr[:, :, :, 0]
+        raise ValueError(
+            "Each channel file must be a single-channel stack (T,H,W). "
+            "Use one multi-channel TIFF or split channels into separate files."
+        )
+    raise ValueError(f"Unsupported TIFF shape for channel file: {arr.shape}")
+
+
+def _load_growth_curve_multi_file_rgb(paths: Sequence[Path]) -> np.ndarray:
+    """Several TIFF stacks (one per channel), same T/H/W -> LUT merge -> (T, H, W, 3) uint8."""
+    stacks = []
+    for p in paths:
+        if not p.is_file():
+            raise ValueError(f"Not a file: {p}")
+        arr, _ = _read_tiff_series_array_and_axes(p)
+        stacks.append(_to_thw_single_channel_stack(arr))
+    t0 = stacks[0].shape[0]
+    h0, w0 = stacks[0].shape[1], stacks[0].shape[2]
+    for i, s in enumerate(stacks):
+        if s.shape[0] != t0 or s.shape[1] != h0 or s.shape[2] != w0:
+            raise ValueError(
+                "All channel TIFFs must have the same number of frames and image size.\n"
+                f"Expected ({t0}, {h0}, {w0}), got ({s.shape[0]}, {s.shape[1]}, {s.shape[2]}) for {paths[i]}."
+            )
+    tcyx = np.stack(stacks, axis=1)
+    return _merge_tcyx_to_rgb_uint8(tcyx)
+
+
+def _load_growth_curve_single_file_rgb(path: Path) -> np.ndarray:
+    """One TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (T,C,H,W) with merge."""
+    arr, axes = _read_tiff_series_array_and_axes(path)
+    tcyx = _transpose_to_tcyx(arr, axes)
+    if tcyx is None:
+        tcyx = _heuristic_tchw(arr)
+    if tcyx is not None and tcyx.shape[1] >= 2:
+        return _merge_tcyx_to_rgb_uint8(tcyx)
+    if arr.ndim == 4 and arr.shape[-1] == 3:
+        t, h, w, _ = arr.shape
+        out = np.zeros((t, h, w, 3), dtype=np.uint8)
+        for i in range(t):
+            out[i] = _normalize_frame_to_uint8_rgb(arr[i])
+        return out
+    if arr.ndim == 2:
+        g = arr
+        if g.dtype != np.uint8:
+            g = ((g - g.min()) / (g.max() - g.min() + 1e-10) * 255.0).astype(np.uint8)
+        rgb = np.stack([g, g, g], axis=-1)
+        return rgb[np.newaxis, ...]
+    if arr.ndim == 3:
+        return _grayscale_stack_to_rgb_uint8(arr)
+    if arr.ndim == 4 and arr.shape[-1] == 1:
+        return _grayscale_stack_to_rgb_uint8(arr[:, :, :, 0])
+    raise ValueError(f"Unsupported TIFF shape for growth curve video: {arr.shape} (axes={axes!r})")
+
+
+def load_growth_curve_video_frames_rgb(video_paths: Sequence[Path]) -> np.ndarray:
+    """
+    Load TIFF input(s) as (T, H, W, 3) uint8 for the growth-curve composer.
+
+    - One folder: sorted *.tif sequence (grayscale -> RGB).
+    - One file: grayscale stack, RGB (T,H,W,3), or multi-channel (T,C,H,W) merged with LUTs.
+    - Multiple files: one single-channel stack per file, same dimensions; merged with LUTs.
+    """
+    paths = [Path(p) for p in video_paths if str(p).strip()]
+    if not paths:
+        raise ValueError("No video path(s) provided.")
+    if len(paths) == 1:
+        p = paths[0]
+        if p.is_dir():
+            return _load_growth_curve_folder_rgb(p)
+        if p.is_file():
+            return _load_growth_curve_single_file_rgb(p)
+        raise ValueError(f"Path not found: {p}")
+    return _load_growth_curve_multi_file_rgb(paths)
+
+
 class GrowthCurveVideoWorker(QThread):
     """Worker thread for creating growth curve videos"""
     finished = pyqtSignal(bool, str)  # success, message
     progress = pyqtSignal(int, str)  # value, message
     
-    def __init__(self, video_path, excel_path, output_dir, time_interval, yaxis_min, yaxis_max, fps, formats, parent=None):
+    def __init__(self, video_paths, excel_path, output_dir, time_interval, yaxis_min, yaxis_max, fps, formats, parent=None):
         super().__init__(parent)
-        self.video_path = video_path
+        self.video_paths = list(video_paths)
         self.excel_path = excel_path
         self.output_dir = output_dir
         self.time_interval = time_interval
@@ -2054,30 +2272,11 @@ class GrowthCurveVideoWorker(QThread):
             
             self.progress.emit(10, "Loading video frames...")
             
-            # Load video frames
-            if self.video_path.is_file():
-                # Single multi-page TIFF file
-                video_frames = tifffile.imread(str(self.video_path))
-                if len(video_frames.shape) == 2:
-                    # Single frame, add time dimension
-                    video_frames = video_frames[np.newaxis, ...]
-            else:
-                # Folder with TIFF sequence
-                tiff_files = sorted(self.video_path.glob("*.tif")) + sorted(self.video_path.glob("*.tiff")) + \
-                            sorted(self.video_path.glob("*.TIF")) + sorted(self.video_path.glob("*.TIFF"))
-                if not tiff_files:
-                    self.finished.emit(False, f"No TIFF files found in folder: {self.video_path}")
-                    return
-                
-                video_frames = []
-                for tiff_file in tiff_files:
-                    frame = tifffile.imread(str(tiff_file))
-                    if len(frame.shape) == 2:
-                        video_frames.append(frame)
-                    else:
-                        # Multi-page, take first page
-                        video_frames.append(frame[0] if len(frame.shape) == 3 else frame)
-                video_frames = np.array(video_frames)
+            try:
+                video_frames = load_growth_curve_video_frames_rgb(self.video_paths)
+            except ValueError as e:
+                self.finished.emit(False, str(e))
+                return
             
             num_frames = min(len(video_frames), len(frames))
             video_frames = video_frames[:num_frames]
@@ -2087,11 +2286,8 @@ class GrowthCurveVideoWorker(QThread):
             
             self.progress.emit(20, f"Processing {num_frames} frames...")
             
-            # Get video dimensions
-            if len(video_frames.shape) == 3:
-                frame_height, frame_width = video_frames.shape[1], video_frames.shape[2]
-            else:
-                frame_height, frame_width = video_frames.shape[0], video_frames.shape[1]
+            # (T, H, W, 3) uint8 from loader
+            frame_height, frame_width = int(video_frames.shape[1]), int(video_frames.shape[2])
             
             # Graph and video share 50/50 of the space
             graph_width = frame_width  # Graph gets same width as video (50/50 split)
@@ -2110,17 +2306,9 @@ class GrowthCurveVideoWorker(QThread):
                     progress = 20 + int((frame_idx / num_frames) * 70)
                     self.progress.emit(progress, f"Processing frame {frame_idx + 1}/{num_frames}...")
                 
-                # Get current video frame
-                if len(video_frames.shape) == 3:
-                    video_frame = video_frames[frame_idx]
-                else:
-                    video_frame = video_frames
-                
-                # Normalize to 0-255 if needed
+                video_frame = video_frames[frame_idx]
                 if video_frame.dtype != np.uint8:
                     video_frame = ((video_frame - video_frame.min()) / (video_frame.max() - video_frame.min() + 1e-10) * 255).astype(np.uint8)
-                
-                # Convert to RGB if grayscale
                 if len(video_frame.shape) == 2:
                     video_frame = np.stack([video_frame] * 3, axis=-1)
                 elif video_frame.shape[2] == 1:

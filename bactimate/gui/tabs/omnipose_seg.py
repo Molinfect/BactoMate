@@ -119,6 +119,13 @@ SEGMENTATION_MODEL_DEFAULTS = {
 SEGMENTATION_DEFAULT_FALLBACK = (30.0, 0.4, 0.0)
 USER_MODEL_DEFAULTS = (30.0, 0.0, 0.0)  # diameter, flow, mask for user-trained models
 
+# Omnipose: mask_threshold is the distance-map cutoff (cellpose_omni eval).
+MASK_DISTANCE_OMNI_MIN = -20.0
+MASK_DISTANCE_OMNI_MAX = 1.0
+# Cellpose-SAM: UI "Mask thresh" maps to cellprob_threshold (logits ~ -6..+6; see Cellpose docs).
+MASK_CELLPROB_SAM_MIN = -6.0
+MASK_CELLPROB_SAM_MAX = 6.0
+
 
 class _OmniposeTrainWorker(QThread):
     """Runs Omnipose training subprocess in background so the GUI stays responsive."""
@@ -1113,10 +1120,11 @@ class OmniposeSegTab(QWidget):
         params_row.addWidget(self.flow_threshold)
         params_row.addSpacing(12)
         params_row.addWidget(QLabel("Mask thresh:"))
-        params_row.addWidget(create_info_icon(
-            "Distance/cell probability threshold. If 'No cell pixels found', try -1, -5, or -10; also set Flow to 0.",
+        self.mask_threshold_info = create_info_icon(
+            "Threshold for mask generation. Meaning depends on the selected model (see tooltip after choosing a model).",
             self,
-        ))
+        )
+        params_row.addWidget(self.mask_threshold_info)
         self.mask_threshold = QDoubleSpinBox()
         self.mask_threshold.setRange(-20.0, 1.0)
         self.mask_threshold.setValue(0.0)
@@ -1204,6 +1212,11 @@ class OmniposeSegTab(QWidget):
             except Exception:
                 get_logger().debug("Model availability check failed", exc_info=True)
                 self.model_status_label.setText("")
+            finally:
+                try:
+                    self._sync_mask_threshold_spinbox_for_model()
+                except Exception:
+                    get_logger().debug("Mask threshold spinbox sync failed", exc_info=True)
         self.model_combo.currentTextChanged.connect(check_model_availability)
         check_model_availability()
 
@@ -1397,6 +1410,35 @@ class OmniposeSegTab(QWidget):
             pass
         return (None, None)
 
+    def _sync_mask_threshold_spinbox_for_model(self) -> None:
+        """Omnipose uses distance-map thresholds (-20..1). Cellpose-SAM uses cellprob_threshold (~-6..6)."""
+        display = self.model_combo.currentText() or ""
+        model_type, _pretrained_path = self._resolve_model_selection(display)
+        v = float(self.mask_threshold.value())
+        if model_type == CELLPOSE_SAM_MODEL:
+            self.mask_threshold.setRange(MASK_CELLPROB_SAM_MIN, MASK_CELLPROB_SAM_MAX)
+            self.mask_threshold.setSingleStep(0.1)
+            v = max(MASK_CELLPROB_SAM_MIN, min(MASK_CELLPROB_SAM_MAX, v))
+            self.mask_threshold.setValue(v)
+            if getattr(self, "mask_threshold_info", None) is not None:
+                self.mask_threshold_info.setToolTip(
+                    "Cellpose-SAM: this value is passed as cellprob_threshold (logit scale, roughly -6 to +6; default 0).\n"
+                    "Lower values include more pixels in the dynamics step; higher values are stricter.\n"
+                    "This is not the same as Omnipose's distance-map threshold.\n\n"
+                    "If the app crashes when segmenting, try mask 0 and set environment variable "
+                    "OPENBLAS_NUM_THREADS=1 before launching BactiMate (known OpenBLAS/threading issue on some Macs)."
+                )
+        else:
+            self.mask_threshold.setRange(MASK_DISTANCE_OMNI_MIN, MASK_DISTANCE_OMNI_MAX)
+            self.mask_threshold.setSingleStep(0.5)
+            v = max(MASK_DISTANCE_OMNI_MIN, min(MASK_DISTANCE_OMNI_MAX, v))
+            self.mask_threshold.setValue(v)
+            if getattr(self, "mask_threshold_info", None) is not None:
+                self.mask_threshold_info.setToolTip(
+                    "Omnipose: distance-map threshold (mask_threshold). If 'No cell pixels found', try -1, -5, or -10; "
+                    "also set Flow to 0. User-trained .pth models use the same semantics."
+                )
+
     def _get_omnipose_segmentation_folder_name(self) -> str:
         """Return the segmentation output folder name from the current model (e.g. _segmentation_bact_phase_omni, _segmentation_cellpose_sam)."""
         display = self.model_combo.currentText() or ""
@@ -1434,7 +1476,11 @@ class OmniposeSegTab(QWidget):
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
-    
+        try:
+            self._sync_mask_threshold_spinbox_for_model()
+        except Exception:
+            pass
+
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
         out = get_from_widgets([
@@ -2143,7 +2189,6 @@ class OmniposeSegTab(QWidget):
                             # Check if there's a corrupted or wrong model file (e.g., cp3 symlinked as omni)
                             from cellpose_omni.models import model_path, MODEL_DIR
                             import os
-                            from pathlib import Path
                             expected_basename = f'{current_model_type}torch_0'
                             model_file_path = Path(MODEL_DIR) / expected_basename
                             
@@ -2505,6 +2550,10 @@ class OmniposeSegTab(QWidget):
                     mask, error_str = None, ""
                     try:
                         if self._is_cellpose_sam:
+                            # Reduce OpenBLAS multi-thread GEMM + PyTorch clashes (SIGSEGV past stack on some macOS setups).
+                            import os
+                            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+                            os.environ.setdefault("OMP_NUM_THREADS", "1")
                             img_3ch = _preview_to_three_channel(self._seg_frame)
                             result = self._model.eval(
                                 [img_3ch],
@@ -3484,8 +3533,13 @@ class OmniposeSegTab(QWidget):
         return (float(diameter), flow)
 
     def _get_effective_mask_threshold(self) -> float:
-        """Return mask_threshold to pass to model.eval(). Use UI value as-is (no special case for user models)."""
-        return float(self.mask_threshold.value())
+        """Return mask/cellprob threshold for model.eval(); clamp SAM to the documented logit range."""
+        display = self.model_combo.currentText() or ""
+        model_type, _ = self._resolve_model_selection(display)
+        v = float(self.mask_threshold.value())
+        if model_type == CELLPOSE_SAM_MODEL:
+            return max(MASK_CELLPROB_SAM_MIN, min(MASK_CELLPROB_SAM_MAX, v))
+        return v
 
     def _open_in_file_manager(self, path: Path) -> None:
         """Open the given path (file or directory) in the OS default file manager."""

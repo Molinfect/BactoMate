@@ -1195,7 +1195,9 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
     foci_table : list of dict, optional
         Foci rows (foci_id, cell_id, frame, channel_name, y, x, intensity, size_px, mean_intensity, rel_intensity, in_cell)
     fi_channel_name : str, optional
-        Channel name for foci count/foci_ids columns (e.g. GFP)
+        When set (from FI filename, e.g. GFP), Per-Cell FI/foci columns include this tag in the header
+        (e.g. ``Mean FI Intensity (whole cell) [GFP]``) so multi-channel batch runs are distinguishable.
+        Also used for foci count / foci_ids column prefixes (e.g. GFP_foci_count).
     export_csv : bool, optional
         If True, also write Summary, Per-Cell Data, and Foci (if present) as CSV files
         next to the Excel file (same stem with _summary.csv, _per_cell.csv, _foci.csv).
@@ -1281,6 +1283,12 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
             ch_name = fi_channel_name or 'FI'
             foci_count_col = f'{ch_name}_foci_count'
             foci_ids_col = f'foci_ids_{ch_name}'
+            ch_tag = (fi_channel_name or "").strip() or None
+
+            def _s(base: str) -> str:
+                """Suffix Per-Cell column names when a channel tag is known (multi-FI exports)."""
+                return f"{base} [{ch_tag}]" if ch_tag else base
+
             for frame_data in detailed_data:
                 frame_num = frame_data['frame']
                 for cell in frame_data['cells']:
@@ -1297,18 +1305,17 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                     }
                     # Add FI columns if available (contour metrics may be disabled)
                     if 'mean_fi' in cell:
-                        # With channel name (e.g. FI+foci): only whole-cell column (clearer for user)
-                        if fi_channel_name:
-                            row['Mean FI Intensity (whole cell)'] = cell['mean_fi']
+                        if ch_tag:
+                            row[_s('Mean FI Intensity (whole cell)')] = cell['mean_fi']
                         else:
                             row['Mean FI Intensity'] = cell['mean_fi']
                     if 'contour_fi' in cell:
-                        row['Contour FI Intensity'] = cell['contour_fi']
+                        row[_s('Contour FI Intensity')] = cell['contour_fi']
                     if 'fi_ratio' in cell:
-                        row['FI Ratio (Contour/Mean)'] = cell['fi_ratio']
+                        row[_s('FI Ratio (Contour/Mean)')] = cell['fi_ratio']
                     # Foci columns: count and IDs (existing)
                     if 'foci_count' in cell:
-                        row['Number of Foci'] = cell['foci_count']
+                        row[_s('Number of Foci')] = cell['foci_count']
                         row[foci_count_col] = cell['foci_count']
                     if 'foci_ids' in cell:
                         row[foci_ids_col] = ','.join(map(str, cell['foci_ids'])) if cell['foci_ids'] else ''
@@ -1318,18 +1325,18 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                     ps = float(pixel_size) if pixel_size and pixel_size > 0 else 0.108
                     if agg_key and agg_key in foci_per_cell_agg:
                         agg = foci_per_cell_agg[agg_key]
-                        row['Foci Mean Intensity'] = agg['mean_intensity']
-                        row['Foci Total Intensity'] = agg['sum_intensity']
-                        row['Foci Max Intensity'] = agg['max_intensity']
-                        row['Foci Mean Area (px)'] = agg['mean_size_px']
-                        row['Foci Total Area (px)'] = agg['total_area_px']
+                        row[_s('Foci Mean Intensity')] = agg['mean_intensity']
+                        row[_s('Foci Total Intensity')] = agg['sum_intensity']
+                        row[_s('Foci Max Intensity')] = agg['max_intensity']
+                        row[_s('Foci Mean Area (px)')] = agg['mean_size_px']
+                        row[_s('Foci Total Area (px)')] = agg['total_area_px']
                         # Foci mean intensity ratio to whole-cell mean FI (when both available)
                         mean_fi = cell.get('mean_fi')
                         if mean_fi is not None and isinstance(mean_fi, (int, float)) and np.isfinite(mean_fi) and mean_fi > 0:
                             fi_val = float(mean_fi)
                             foci_mean = agg.get('mean_intensity')
                             if foci_mean is not None and np.isfinite(foci_mean):
-                                row['Foci Mean Intensity Ratio'] = float(foci_mean) / fi_val
+                                row[_s('Foci Mean Intensity Ratio')] = float(foci_mean) / fi_val
                         # Per-focus values (value1, value2, ...) in same order as foci_ids — every foci stat as list
                         if agg_key in foci_per_cell_list and cell.get('foci_ids'):
                             foci_list = foci_per_cell_list[agg_key]
@@ -1366,12 +1373,12 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                                     area_um2_vals.append("")
                                     rel_vals.append("")
                                     ratio_vals.append("")
-                            row['Foci intensities (peak)'] = ", ".join(peak_vals) if peak_vals else ""
-                            row['Foci mean intensities'] = ", ".join(mean_vals) if mean_vals else ""
-                            row['Foci areas (px)'] = ", ".join(area_px_vals) if area_px_vals else ""
-                            row['Foci areas (µm²)'] = ", ".join(area_um2_vals) if area_um2_vals else ""
-                            row['Foci rel intensities'] = ", ".join(rel_vals) if rel_vals else ""
-                            row['Foci mean intensity ratios'] = ", ".join(ratio_vals) if ratio_vals else ""
+                            row[_s('Foci intensities (peak)')] = ", ".join(peak_vals) if peak_vals else ""
+                            row[_s('Foci mean intensities')] = ", ".join(mean_vals) if mean_vals else ""
+                            row[_s('Foci areas (px)')] = ", ".join(area_px_vals) if area_px_vals else ""
+                            row[_s('Foci areas (µm²)')] = ", ".join(area_um2_vals) if area_um2_vals else ""
+                            row[_s('Foci rel intensities')] = ", ".join(rel_vals) if rel_vals else ""
+                            row[_s('Foci mean intensity ratios')] = ", ".join(ratio_vals) if ratio_vals else ""
                     detailed_rows.append(row)
             
             if detailed_rows:
@@ -1394,7 +1401,14 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
             else:
                 df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell'])
             df_foci.to_excel(writer, sheet_name='Foci', index=False)
-    
+
+        try:
+            from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
+
+            autofit_openpyxl_workbook(writer.book)
+        except Exception:
+            pass
+
     # Optionally write CSV files (same stem as Excel)
     if export_csv:
         stem = output_path.stem  # e.g. "foo_analysis"
@@ -1650,7 +1664,7 @@ Examples:
         results, output_path,
         detailed_data if args.detailed else None,
         foci_table=foci_table if args.run_foci else None,
-        fi_channel_name=fi_channel_name if args.run_foci else None,
+        fi_channel_name=fi_channel_name if args.fi_image else None,
         export_csv=getattr(args, 'export_csv', False),
         pixel_size=args.pixel_size,
     )

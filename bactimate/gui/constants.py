@@ -23,7 +23,7 @@ BATCH_PROCESS_TIFF_SCRIPT = _pkg_batch_tiff if _pkg_batch_tiff.exists() else get
 
 # Tab (key, display label) in display order. Used for session gather/apply and session log overview.
 SESSION_TAB_KEYS = [
-    ("nd2", "TIFF Conversion"),
+    ("nd2", "File Conversion"),
     ("segmentation", "Omnipose Segment"),
     ("unet_segment", "U-NET Segment"),
     ("analyze_masks", "Analyze Masks"),

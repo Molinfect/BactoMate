@@ -1,16 +1,37 @@
 {
   "schema_version": 1,
-  "timestamp": "2026-03-14 13:19:53",
+  "timestamp": "2026-03-31 22:45:05",
   "tabs": {
     "nd2": {
       "frame_extract_mode": "First N frames",
-      "max_frames": 100,
+      "max_frames": 1,
       "single_frame": 1,
       "separate_channels": true,
       "max_z_projection": false,
       "drift_correct": false,
       "bleach_correct": false,
       "bleach_method": 0,
+      "bleach_fluorescence_channels": [
+        false,
+        false,
+        false
+      ],
+      "fi_channels": [
+        false,
+        false,
+        false
+      ],
+      "foci_channels": [
+        false,
+        false,
+        false
+      ],
+      "zproject_channels": [
+        false,
+        false,
+        false
+      ],
+      "file_path": "/Users/philipppopp/Desktop/Test_data/Maria/Hook_maleimide_immonustaining_003.nd2",
       "performed": false
     },
     "segmentation": {
@@ -49,40 +70,38 @@
       "max_aspect_ratio": 10.0,
       "min_eccentricity": 0.5,
       "min_solidity": 0.7,
-      "min_area": 2.0,
+      "min_area": 0.0,
       "max_area": 0.0,
       "min_width": 0.0,
       "max_width": 0.0,
       "min_length": 0.0,
       "detailed": true,
-      "create_vis": false,
+      "create_vis": true,
       "export_csv": false,
       "exclude_border": false,
-      "create_combined_summary": true,
-      "analyze_fi": true,
+      "create_combined_summary": false,
+      "analyze_fi": false,
       "fi_match_by_name": true,
       "analyze_fi_contour": false,
       "fi_contour_thickness": 1,
-      "run_foci": true,
+      "run_foci": false,
       "foci_min_rel": 2.0,
       "foci_min_rel_mode": "per cell",
       "foci_min_rel_cell": 2.0,
       "foci_min_separation": 2,
-      "foci_min_area_um2": 0.2,
-      "foci_max_area_um2": 0.8,
+      "foci_min_area_um2": 0.1,
+      "foci_max_area_um2": 0.4,
       "foci_min_peak_raw": 0.0,
       "foci_min_focus_mean": 0.0,
-      "foci_exclude_outside_cells": true,
-      "foci_detection_mode": 1,
-      "file_path": "/Users/philipppopp/Desktop/2026-03-13/Bas08-MCP_MOI-1/120 min/Tif_files/_segmentation_cellpose_sam/",
-      "performed": true
+      "foci_exclude_outside_cells": false,
+      "foci_detection_mode": 0,
+      "performed": false
     },
     "tracking": {
       "model": "general_2d",
       "mode": "greedy",
-      "use_gpu": true,
       "create_vis": true,
-      "batch": false,
+      "preview_n": 20,
       "filter_pixel_size": 0.108,
       "filter_time_per_frame": 1.0,
       "filter_time_per_frame_unit": "min",

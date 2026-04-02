@@ -37,6 +37,7 @@ def read_metadata_from_path(image_path: Optional[Path]) -> dict[str, Any]:
         "channel_filter_snippet": [],
         "bits_per_component": None,
         "dia_percent": None,  # DIA/phase condenser % when found in description (e.g. 50)
+        "nd2_axis_order": None,  # list of axis names matching ndarray shape (from nd2.ND2File.sizes)
     }
     if not image_path or not image_path.is_file():
         return out
@@ -174,6 +175,29 @@ def _read_tiff_metadata_into(path: Path, out: dict[str, Any]) -> None:
         pass
 
 
+def _nd2_reconcile_dims_from_shape(r: Any, out: dict[str, Any]) -> None:
+    """Set frame/channel/z counts from ND2 array shape + axis order (authoritative vs contents.frameCount)."""
+    try:
+        keys = tuple(r.sizes.keys())
+        shp = r.shape
+        if len(keys) != len(shp):
+            return
+        out["nd2_axis_order"] = list(keys)
+        for i, k in enumerate(keys):
+            if k == "T":
+                out["frame_count"] = int(shp[i])
+            elif k == "C":
+                out["channel_count"] = int(shp[i])
+            elif k == "Z":
+                out["z_count"] = int(shp[i])
+        # nd2 omits axes with size 1 from sizes — so T=1 acquisitions have no "T" key.
+        # Axis order is then e.g. Z,C,Y,X. contents.frameCount is sequence length (planes/loops), not timepoints.
+        if "T" not in keys:
+            out["frame_count"] = 1
+    except Exception:
+        pass
+
+
 def _read_nd2_metadata_into(path: Path, out: dict[str, Any]) -> None:
     """Fill out dict with full ND2 metadata (dimensions, pixel size, time, channels, wavelengths, objective, exposure, text_info)."""
     try:
@@ -189,8 +213,9 @@ def _read_nd2_metadata_into(path: Path, out: dict[str, Any]) -> None:
                 ps, tp = read_calibration_from_path(path)
                 out["pixel_size_um"] = ps if ps > 0 else None
                 out["time_per_frame_min"] = tp if tp > 0 else None
+                _nd2_reconcile_dims_from_shape(r, out)
                 return
-            # Contents
+            # Contents (may disagree with actual nd2 shape / axis order)
             contents = getattr(meta, "contents", None)
             if contents:
                 out["frame_count"] = getattr(contents, "frameCount", None)
@@ -299,6 +324,8 @@ def _read_nd2_metadata_into(path: Path, out: dict[str, Any]) -> None:
                                 out["dia_percent"] = dia_pct
                 except Exception:
                     pass
+            # Prefer r.shape axis sizes over contents.frameCount (fixes ND2 where metadata counts total planes vs T)
+            _nd2_reconcile_dims_from_shape(r, out)
     except Exception:
         pass
 
@@ -450,6 +477,16 @@ def format_metadata_for_display(meta: dict[str, Any]) -> str:
     cc = meta.get("channel_count")
     if cc is not None:
         lines.append(f"  Channel Count: {cc}")
+    zc = meta.get("z_count")
+    if zc is not None and int(zc) > 1:
+        lines.append(f"  Z slices: {zc}")
+    ao = meta.get("nd2_axis_order")
+    if ao:
+        lines.append(f"  ND2 axis order: {', '.join(ao)}")
+        if "T" not in ao:
+            lines.append(
+                "  Note: T axis omitted (single timepoint). Frame count above is timepoints, not NIS sequence length."
+            )
 
     # Per-channel block: name, wavelengths, exposure (per-channel or —), filter (per-channel or —)
     channel_exposure = meta.get("channel_exposure_ms") or []

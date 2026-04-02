@@ -104,6 +104,19 @@ def get_python_executable_for_subprocess() -> str:
     return sys.executable
 
 
+def get_subprocess_pythonpath_root() -> str:
+    """
+    Directory that must be on PYTHONPATH so a child Python process can ``import bactimate``
+    when running scripts by file path (e.g. batch_process_tiff_sequence.py).
+
+    In development this is the repository root (parent of the ``bactimate`` package).
+    When pip-installed it is ``site-packages`` (parent of the ``bactimate`` package dir).
+    """
+    import bactimate as _pkg
+
+    return str(Path(_pkg.__file__).resolve().parent.parent)
+
+
 def get_logs_dir() -> Path:
     """Directory for session logs (*_session.json) and GUI log (bactimate_gui_*.log). When running from .app, use Logs inside the app if writable."""
     if _is_installed():

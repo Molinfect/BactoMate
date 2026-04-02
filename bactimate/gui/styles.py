@@ -125,6 +125,35 @@ def get_modern_stylesheet() -> str:
             stop:0 #5a5a5a, stop:1 #4a4a4a);
     }
     
+    /* Analyze Masks: FI bar — label color matches QGroupBox::title (#4a9eff); font normal weight (not bold like default QPushButton) */
+    QPushButton#analyzeFiToggleButton {
+        font-weight: 400;
+        font-size: 11pt;
+    }
+    QPushButton#analyzeFiToggleButton[class="secondary"] {
+        color: #4a9eff;
+    }
+    QPushButton#analyzeFiToggleButton[class="secondary"]:hover {
+        color: #6aaeff;
+    }
+    /* When on, same primary button look as elsewhere; white text for contrast on blue */
+    QPushButton#analyzeFiToggleButton:checked {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #5a9eff, stop:1 #4a7fdd);
+        color: #ffffff;
+        font-weight: 600;
+    }
+    QPushButton#analyzeFiToggleButton:checked:hover {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #6aaeff, stop:1 #5a8fed);
+        color: #ffffff;
+    }
+    QPushButton#analyzeFiToggleButton:checked:pressed {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4a8eef, stop:1 #3a6fcd);
+        color: #ffffff;
+    }
+    
     /* ===== MODERN INPUT FIELDS ===== */
     QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
         background-color: #1f1f1f;

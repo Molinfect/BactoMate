@@ -12,8 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Tuple, Type
 
-from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QUrl
-from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices
+from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QTimer, QUrl
+from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
     QApplication,
     QGroupBox,
@@ -35,10 +35,8 @@ from PyQt6.QtWidgets import (
 from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
 from bactimate.gui.log_config import get_logger, log_exception, write_crash_log, write_gui_log_line
 from bactimate.gui.preferences import (
-    get_geometry,
     get_last_dir,
     get_state,
-    set_geometry,
     set_last_dir,
     set_state,
 )
@@ -92,6 +90,44 @@ def _set_macos_process_name(name: str) -> None:
         pass
 
 
+def _initial_window_dimensions(
+    min_w: int,
+    min_h: int,
+    preferred_w: int,
+    preferred_h: int,
+    screen_margin: int = 48,
+) -> tuple[int, int, int, int]:
+    """
+    Fit initial window size to the screen under the cursor (or primary screen).
+
+    Returns (effective_min_w, effective_min_h, initial_w, initial_h).
+    Preferred size can be larger than the old 700px-tall default on big monitors; it is
+    never larger than availableGeometry minus margin. Effective minimums are capped by
+    usable width/height so we do not force a minimum wider/taller than a small laptop screen.
+    """
+    app = QApplication.instance()
+    if app is None:
+        return (min_w, min_h, preferred_w, preferred_h)
+    screen = QGuiApplication.screenAt(QCursor.pos())
+    if screen is None:
+        screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        return (min_w, min_h, preferred_w, preferred_h)
+    avail = screen.availableGeometry()
+    uw = max(0, avail.width() - screen_margin)
+    uh = max(0, avail.height() - screen_margin)
+    # Do not require a minimum larger than what fits (avoids clipped chrome on 11" / low-res).
+    eff_min_w = min(min_w, uw)
+    eff_min_h = min(min_h, uh)
+    init_w = min(preferred_w, uw)
+    init_h = min(preferred_h, uh)
+    init_w = max(eff_min_w, init_w)
+    init_h = max(eff_min_h, init_h)
+    init_w = min(init_w, uw)
+    init_h = min(init_h, uh)
+    return (eff_min_w, eff_min_h, init_w, init_h)
+
+
 def _prune_old_session_logs(logs_dir: Path, keep_count: int) -> None:
     """Keep only the most recent keep_count session log files; delete older ones."""
     if keep_count <= 0 or not logs_dir.is_dir():
@@ -126,6 +162,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.shared_metadata = {"pixel_size": None, "time_per_frame_min": None}
+        self._log_panel_window_height_added = 0  # pixels added when log panel expanded (restored on collapse)
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -135,12 +172,17 @@ class MainWindow(QMainWindow):
         get_omnipose_pretrained_cache_dir()
         get_unet_models_dir()
         min_width, min_height = 1200, 700
-        initial_width, initial_height = 1200, 800
+        # Taller default on large displays; _initial_window_dimensions clamps to available screen.
+        preferred_width, preferred_height = 1200, 1100
         if sys.platform == "win32":
             # Extra width so 140px button min-width and tab content don't cause horizontal scrollbar
             min_width += 190
-            initial_width += 190
-        self.setMinimumSize(min_width, min_height)
+            preferred_width += 190
+        eff_min_w, eff_min_h, initial_width, initial_height = _initial_window_dimensions(
+            min_width, min_height, preferred_width, preferred_height
+        )
+        self.setMinimumSize(eff_min_w, eff_min_h)
+        # Window size/position always starts from defaults below (geometry is not restored from last session).
         self.resize(initial_width, initial_height)
         self._center_window()
 
@@ -282,15 +324,19 @@ class MainWindow(QMainWindow):
                 if not self._log_content or not log_group:
                     return
                 visible = self._log_content.isVisible()
-                self._log_content.setVisible(not visible)
-                log_group.setTitle("Status && Session logs  \u25B2" if visible else "Status && Session logs  \u25BC")
                 if visible:
+                    self._shrink_window_after_log_panel_collapse()
+                    self._log_content.setVisible(False)
+                    log_group.setTitle("Status && Session logs  \u25B2")
                     log_group.setFixedHeight(32)
                     log_group.setStyleSheet(_COLLAPSED_LINE_STYLE)
                 else:
+                    self._log_content.setVisible(True)
+                    log_group.setTitle("Status && Session logs  \u25BC")
                     log_group.setMinimumHeight(0)
                     log_group.setMaximumHeight(16777215)
                     log_group.setStyleSheet("")
+                    QTimer.singleShot(0, self._expand_window_for_log_panel)
             except Exception:
                 pass
 
@@ -332,6 +378,42 @@ class MainWindow(QMainWindow):
         self.log_output("Omnipose Batch Processing GUI started.\n")
         self.log_output("Select a tab and configure parameters to begin.\n\n")
 
+    def _expand_window_for_log_panel(self) -> None:
+        """After Status & Session logs is expanded, grow the main window so tabs are not squeezed (same idea as Analyze FI)."""
+        if not getattr(self, "_log_content", None) or not self._log_content.isVisible():
+            return
+        lg = getattr(self, "_log_group", None)
+        if lg is None:
+            return
+        self._log_panel_window_height_added = 0
+        QApplication.processEvents()
+        lg.updateGeometry()
+        for _ in range(3):
+            QApplication.processEvents()
+        bar_h = 32
+        content_h = max(lg.sizeHint().height(), lg.minimumSizeHint().height(), lg.height())
+        delta = content_h - bar_h
+        if delta < 2:
+            return
+        screen = self.screen()
+        avail = screen.availableGeometry() if screen else None
+        if avail is not None:
+            room = avail.bottom() - self.frameGeometry().bottom() - 16
+            delta = min(delta, max(0, room))
+        if delta < 2:
+            return
+        self.resize(self.width(), self.height() + delta)
+        self._log_panel_window_height_added = delta
+
+    def _shrink_window_after_log_panel_collapse(self) -> None:
+        """Restore main window height added when Status & Session logs is collapsed."""
+        added = getattr(self, "_log_panel_window_height_added", 0) or 0
+        self._log_panel_window_height_added = 0
+        if added <= 0:
+            return
+        new_h = max(self.minimumHeight(), self.height() - added)
+        self.resize(self.width(), new_h)
+
     def expand_status_log(self) -> None:
         """Expand the Status & Session logs panel if it is collapsed (e.g. when starting long-running tracking)."""
         if not getattr(self, "_log_content", None) or not getattr(self, "_log_group", None):
@@ -339,10 +421,11 @@ class MainWindow(QMainWindow):
         if self._log_content.isVisible():
             return
         self._log_content.setVisible(True)
-        self._log_group.setTitle("Status && Session logs  \u25B2")
+        self._log_group.setTitle("Status && Session logs  \u25BC")
         self._log_group.setMinimumHeight(0)
         self._log_group.setMaximumHeight(16777215)
         self._log_group.setStyleSheet("")
+        QTimer.singleShot(0, self._expand_window_for_log_panel)
 
     def closeEvent(self, event):
         # Wait for any running workers so we never destroy a QThread while it is running
@@ -387,17 +470,13 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _restore_geometry_and_state(self) -> None:
-        """Restore main window geometry and state from QSettings."""
-        geom = get_geometry()
-        if geom and not geom.isEmpty():
-            self.restoreGeometry(geom)
+        """Restore saved UI state (e.g. toolbars). Window size/position are not restored — each launch uses defaults + center."""
         state = get_state()
         if state and not state.isEmpty():
             self.restoreState(state)
 
     def _save_geometry_and_state(self) -> None:
-        """Save main window geometry and state to QSettings."""
-        set_geometry(self.saveGeometry())
+        """Save UI state to QSettings. Window geometry is not persisted so each session starts at the default size."""
         set_state(self.saveState())
 
     def get_last_dir_for_tab(self, key: str) -> str:
@@ -748,7 +827,8 @@ class MainWindow(QMainWindow):
         if screen is None:
             screen = QApplication.primaryScreen()
         if screen:
-            center_point = screen.geometry().center()
+            # Center in work area (excludes menu bar / dock) to match _initial_window_dimensions.
+            center_point = screen.availableGeometry().center()
             frame_geometry.moveCenter(center_point)
             self.move(frame_geometry.topLeft())
 

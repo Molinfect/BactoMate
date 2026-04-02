@@ -47,6 +47,73 @@ from bactimate.gui.widgets import DragDropGroupBox, create_info_icon, show_file_
 from bactimate.gui.workers import WorkerThread
 
 
+def _nd2_build_index(
+    axis_keys: tuple[str, ...],
+    t: int,
+    c: int,
+    z: int,
+    position: int = 0,
+) -> tuple:
+    """Index tuple for an ND2 ndarray where axis_keys matches ndarray.shape order (see nd2.ND2File.sizes)."""
+    idx: list = []
+    for k in axis_keys:
+        if k == "T":
+            idx.append(int(t))
+        elif k == "C":
+            idx.append(int(c))
+        elif k == "Z":
+            idx.append(int(z))
+        elif k == "P":
+            idx.append(int(position))
+        elif k in ("Y", "X", "S"):
+            idx.append(slice(None))
+        else:
+            idx.append(0)
+    return tuple(idx)
+
+
+def _nd2_slice_yx(
+    arr: np.ndarray,
+    axis_keys: tuple[str, ...],
+    t: int,
+    c: int,
+    z: int,
+    position: int = 0,
+) -> np.ndarray:
+    """Single-plane (Y, X) slice from ND2 4D/5D array."""
+    plane = np.asarray(arr[_nd2_build_index(axis_keys, t, c, z, position)])
+    if plane.ndim > 2:
+        plane = np.squeeze(plane)
+    return plane
+
+
+# Default auto-LUT for preview: percentile band on the current 2D frame (~full spread; tiny tail trim).
+_LUT_PREVIEW_AUTO_LO_PCT = 0.01
+_LUT_PREVIEW_AUTO_HI_PCT = 99.99
+
+
+def _nd2_best_z_for_channel(
+    arr: np.ndarray,
+    axis_keys: tuple[str, ...],
+    t: int,
+    c: int,
+    num_z: int,
+) -> int:
+    """Choose Z with strongest signal (99.5th percentile). Returns 0 if all slices are empty."""
+    if "Z" not in axis_keys or num_z <= 1:
+        return 0
+    best_z, best_score = 0, -1.0
+    for z in range(num_z):
+        plane = _nd2_slice_yx(arr, axis_keys, t, c, z)
+        if plane.size == 0:
+            continue
+        sc = float(np.percentile(plane, 99.5))
+        if sc > best_score:
+            best_score = sc
+            best_z = z
+    return best_z if best_score > 0 else 0
+
+
 class ND2ConversionTab(QWidget):
     """Tab for converting microscopy files (ND2, LIF, CZI) to TIFF with metadata extraction"""
     workflow_step_finished = pyqtSignal(bool)  # True = success; used for workflow replay chain
@@ -1709,6 +1776,7 @@ class ND2ConversionTab(QWidget):
     def _create_unified_preview_ui(
         self, preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
         bleach_apply=False, bleach_method='exponential', bleach_channel_indices=None,
+        nd2_axis_keys: Optional[tuple[str, ...]] = None,
     ):
         """Create unified preview UI with improved histogram layout (used by all file types).
         When bleach_apply is True, optional checkbox 'Show bleach correction' toggles live preview of correction.
@@ -1729,6 +1797,7 @@ class ND2ConversionTab(QWidget):
             all_frames = all_frames.copy()
         raw_frames = all_frames
         display_frames_ref = {'data': all_frames}  # update_frame reads from this; we can swap to corrected
+        preview_dialog.current_z = 0
 
         # Title (same style as Segmentation Preview)
         title_label = QLabel(f"Timepoint 1 of {num_time}  |  {Path(file_path).name}")
@@ -1763,6 +1832,24 @@ class ND2ConversionTab(QWidget):
             nav_layout.addWidget(channel_spin)
         else:
             channel_spin = None
+
+        z_spin = None
+        if num_z > 1 and nd2_axis_keys is not None and "Z" in nd2_axis_keys:
+            nav_layout.addWidget(QLabel("Z:"))
+            z_spin = QSpinBox()
+            z_spin.setRange(1, num_z)
+            z_spin.setValue(1)
+            z_spin.setToolTip(
+                f"Z-slice 1–{num_z}. ND2 axis order: {', '.join(nd2_axis_keys)}. "
+                "When you change channel, Z jumps to the slice with strongest signal if useful."
+            )
+            nav_layout.addWidget(z_spin)
+            zb0 = _nd2_best_z_for_channel(raw_frames, nd2_axis_keys, 0, 0, num_z)
+            z_spin.setValue(zb0 + 1)
+            preview_dialog.current_z = zb0
+
+        def current_z_display() -> int:
+            return z_spin.value() if z_spin is not None else 1
         
         # Show bleach correction in preview whenever there are multiple frames (so user can preview effect)
         show_bleach_check = None
@@ -1791,7 +1878,9 @@ class ND2ConversionTab(QWidget):
         nav_layout.addStretch()
         
         # Frame info label (will include View: Raw / View: Bleach corrected when we update it)
-        frame_info = QLabel(f"Timepoint 1 of {num_time} | Channel: 1 | Z-slice: 1")
+        frame_info = QLabel(
+            f"Timepoint 1 of {num_time} | Channel: 1 | Z-slice: {current_z_display()}"
+        )
         frame_info.setStyleSheet("font-weight: bold; color: #2196F3;")
         nav_layout.addWidget(frame_info)
         
@@ -2004,7 +2093,7 @@ class ND2ConversionTab(QWidget):
                     _showing_corrected = (display_frames_ref['data'] is not raw_frames)
                     _dn = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if _showing_corrected else None
                     _view_suffix = f" | View: Bleach corrected ({_dn})" if _showing_corrected else " | View: Raw"
-                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suffix}")
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: {current_z_display()} | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suffix}")
 
                     # Update histogram lines
                     if hist_vmin_line is not None:
@@ -2044,17 +2133,28 @@ class ND2ConversionTab(QWidget):
                 channel_idx = 0  # Default to first channel
             
             # Handle different frames_source shapes directly (more robust)
-            # ND2 files can have various shapes: (T, C, Z, Y, X), (T, C, Y, X), (T, Y, X), etc.
-            if len(frames_source.shape) == 5:  # TCZYX
-                # Extract frame, channel, and first Z-slice
-                if channel_idx < frames_source.shape[1]:
-                    frame = frames_source[frame_idx, channel_idx, 0, :, :]  # T=frame_idx, C=channel_idx, Z=0
+            # ND2: axis order follows nd2.ND2File.sizes (often T,Z,C,Y,X — not always TCZYX).
+            if len(frames_source.shape) == 5:
+                if nd2_axis_keys is not None and len(nd2_axis_keys) == len(frames_source.shape):
+                    z_i = 0
+                    if "Z" in nd2_axis_keys:
+                        z_i = max(0, min(int(getattr(preview_dialog, "current_z", 0)), num_z - 1))
+                    frame = _nd2_slice_yx(frames_source, nd2_axis_keys, frame_idx, channel_idx, z_i)
                 else:
-                    frame = frames_source[frame_idx, 0, 0, :, :]  # Fallback
+                    # Legacy TCZYX assumption (first Z)
+                    if channel_idx < frames_source.shape[1]:
+                        frame = frames_source[frame_idx, channel_idx, 0, :, :]
+                    else:
+                        frame = frames_source[frame_idx, 0, 0, :, :]
             elif len(frames_source.shape) == 4:
-                # TCYX (e.g. bleach-corrected) or TZYX: always take 2D slice so frame is (Y, X)
-                if num_channels > 1:
-                    # TCYX: extract frame and channel
+                # ND2 4D: axis order is often Z,C,Y,X when T=1 (T omitted) — not TCYX.
+                if nd2_axis_keys is not None and len(nd2_axis_keys) == len(frames_source.shape):
+                    z_i = 0
+                    if "Z" in nd2_axis_keys:
+                        z_i = max(0, min(int(getattr(preview_dialog, "current_z", 0)), num_z - 1))
+                    frame = _nd2_slice_yx(frames_source, nd2_axis_keys, frame_idx, channel_idx, z_i)
+                # TCYX (e.g. bleach-corrected) or TZYX: first dim = time
+                elif num_channels > 1:
                     if channel_idx < frames_source.shape[1]:
                         frame = frames_source[frame_idx, channel_idx, :, :]
                     else:
@@ -2103,9 +2203,9 @@ class ND2ConversionTab(QWidget):
                 current_vmin = vmin
                 current_vmax = vmax
             elif current_vmin is None or current_vmax is None:
-                # First time - use percentile-based defaults
-                current_vmin = float(np.percentile(frame, 1))
-                current_vmax = float(np.percentile(frame, 99))
+                # Auto LUT: wide percentile band so min/max lines use more of the image dynamic range
+                current_vmin = float(np.percentile(frame, _LUT_PREVIEW_AUTO_LO_PCT))
+                current_vmax = float(np.percentile(frame, _LUT_PREVIEW_AUTO_HI_PCT))
             # Otherwise, keep current_vmin and current_vmax (preserve user settings)
             
             vmin = current_vmin
@@ -2178,7 +2278,7 @@ class ND2ConversionTab(QWidget):
             showing_corrected = (display_frames_ref['data'] is not raw_frames)
             disp_name = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if showing_corrected else None
             view_suffix = f" | View: Bleach corrected ({disp_name})" if showing_corrected else " | View: Raw"
-            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{view_suffix}")
+            frame_info.setText(f"Timepoint {frame_idx + 1} of {num_time} | Channel: {current_channel} | Z-slice: {current_z_display()} | LUT: [{vmin:.1f}, {vmax:.1f}]{view_suffix}")
         
         # Manual LUT adjustment from sliders
         def update_lut_from_sliders():
@@ -2215,7 +2315,7 @@ class ND2ConversionTab(QWidget):
                     _showing_corr = (display_frames_ref['data'] is not raw_frames)
                     _dn2 = getattr(preview_dialog, '_bleach_display_name_used', method_display_name) if _showing_corr else None
                     _view_suff = f" | View: Bleach corrected ({_dn2})" if _showing_corr else " | View: Raw"
-                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: 1 | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suff}")
+                    frame_info.setText(f"Timepoint {preview_dialog.current_frame + 1} of {num_time} | Channel: {current_channel} | Z-slice: {current_z_display()} | LUT: [{vmin:.1f}, {vmax:.1f}]{_view_suff}")
 
                     # Update histogram lines (only update lines, don't redraw entire histogram)
                     if hist_vmin_line is not None and hist_vmax_line is not None:
@@ -2298,7 +2398,15 @@ class ND2ConversionTab(QWidget):
                     nonlocal current_vmin, current_vmax
                     current_vmin = None
                     current_vmax = None
-                    # This will auto-adjust min/max based on the new channel's intensity range
+                    if z_spin is not None and nd2_axis_keys is not None and "Z" in nd2_axis_keys:
+                        ci = channel_spin.value() - 1
+                        zb = _nd2_best_z_for_channel(
+                            raw_frames, nd2_axis_keys, preview_dialog.current_frame, ci, num_z
+                        )
+                        z_spin.blockSignals(True)
+                        z_spin.setValue(zb + 1)
+                        z_spin.blockSignals(False)
+                        preview_dialog.current_z = zb
                     update_frame(preview_dialog.current_frame, vmin=None, vmax=None, update_sliders=True)
             channel_debounce = QTimer(preview_dialog)
             channel_debounce.setSingleShot(True)
@@ -2309,6 +2417,25 @@ class ND2ConversionTab(QWidget):
                 channel_debounce.start(_DEBOUNCE_MS)
             channel_spin.valueChanged.connect(on_channel_value_changed)
             channel_spin.editingFinished.connect(lambda: (channel_debounce.stop(), on_channel_changed()))
+
+        if z_spin is not None:
+            def on_z_changed():
+                if preview_dialog.current_frame is not None:
+                    preview_dialog.current_z = z_spin.value() - 1
+                    vmin = lut_min_slider.value()
+                    vmax = lut_max_slider.value()
+                    update_frame(preview_dialog.current_frame, vmin=vmin, vmax=vmax, update_sliders=False)
+
+            z_debounce = QTimer(preview_dialog)
+            z_debounce.setSingleShot(True)
+            z_debounce.timeout.connect(on_z_changed)
+
+            def on_z_value_changed():
+                z_debounce.stop()
+                z_debounce.start(_DEBOUNCE_MS)
+
+            z_spin.valueChanged.connect(on_z_value_changed)
+            z_spin.editingFinished.connect(lambda: (z_debounce.stop(), on_z_changed()))
         
         # Connect "Show bleach correction" checkbox: always use current main-window settings when computing
         if show_bleach_check is not None and bleach_status_label is not None:
@@ -2323,7 +2450,12 @@ class ND2ConversionTab(QWidget):
                     return None, None, None
                 data = np.asarray(raw_frames)
                 if data.ndim == 5:
-                    data = data[:, :, 0, :, :].copy()  # TCZYX -> TCYX
+                    if nd2_axis_keys is not None and "Z" in nd2_axis_keys:
+                        data = np.take(data, 0, axis=nd2_axis_keys.index("Z")).copy()
+                    else:
+                        data = data[:, :, 0, :, :].copy()  # legacy TCZYX -> TCYX
+                elif data.ndim == 4 and nd2_axis_keys is not None and "Z" in nd2_axis_keys:
+                    data = np.take(data, 0, axis=nd2_axis_keys.index("Z")).copy()
                 elif data.ndim == 3 and num_channels == 1:
                     data = data[:, np.newaxis, :, :]  # TYX -> T1YX for stack API
                 corrected = bleach_correct_stack(data, method=cur_method, channel_indices=cur_channels)
@@ -2459,22 +2591,27 @@ class ND2ConversionTab(QWidget):
             
             layout = QVBoxLayout()
             
-            # Load ND2 file info first
+            # Load ND2: dimension order follows nd2.ND2File.sizes keys (often T,Z,C,Y,X — not TCZYX).
             with nd2.ND2File(file_path) as nd2_reader:
-                sizes = nd2_reader.sizes
-                num_time = sizes.get('T', 1)
-                num_channels = sizes.get('C', 1)
-                num_z = sizes.get('Z', 1)
-                
+                axis_keys = tuple(nd2_reader.sizes.keys())
+                shp = nd2_reader.shape
+                if len(axis_keys) != len(shp):
+                    num_time = nd2_reader.sizes.get("T", 1)
+                    num_channels = nd2_reader.sizes.get("C", 1)
+                    num_z = nd2_reader.sizes.get("Z", 1)
+                    axis_keys = None
+                else:
+                    num_time = int(shp[axis_keys.index("T")]) if "T" in axis_keys else 1
+                    num_channels = int(shp[axis_keys.index("C")]) if "C" in axis_keys else 1
+                    num_z = int(shp[axis_keys.index("Z")]) if "Z" in axis_keys else 1
+
                 # Load all frames and take an owned copy while reader is still open.
-                # nd2_reader.asarray() can return a view into reader-backed memory; after the
-                # context exits the reader closes and that memory is invalid. Any later .copy()
-                # (e.g. in preview or bleach correction) would then segfault.
                 all_frames = np.ascontiguousarray(nd2_reader.asarray()).copy()
             
             # Use unified preview UI (with optional bleach preview from tab settings)
             self._create_unified_preview_ui(
                 preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+                nd2_axis_keys=axis_keys,
                 **self._get_bleach_preview_kwargs()
             )
             

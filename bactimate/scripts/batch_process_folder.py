@@ -278,7 +278,13 @@ def save_combined_excel(combined_df, output_path):
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         # Main combined summary sheet only
         combined_df.to_excel(writer, sheet_name='Combined Summary', index=False)
-    
+        try:
+            from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
+
+            autofit_openpyxl_workbook(writer.book)
+        except Exception:
+            pass
+
     print(f"\n✓ Combined results saved to: {output_path}")
 
 
@@ -330,7 +336,14 @@ def save_individual_excel(file_result, output_dir, include_detailed=False):
             if detailed_rows:
                 df_detailed = pd.DataFrame(detailed_rows)
                 df_detailed.to_excel(writer, sheet_name='Per-Cell Data', index=False)
-    
+
+        try:
+            from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
+
+            autofit_openpyxl_workbook(writer.book)
+        except Exception:
+            pass
+
     return excel_path
 
 
