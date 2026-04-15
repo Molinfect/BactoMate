@@ -779,25 +779,89 @@ def detect_peaks_skimage_auto(
 
 def detect_peaks_spotiflow(
     image: np.ndarray,
+    *,
     model_name: str = "general",
+    model_path: Optional[str] = None,
+    use_optimized_threshold: bool = True,
+    prob_thresh: Optional[float] = None,
+    min_distance: int = 1,
+    subpix: bool = True,
+    normalize: bool = True,
+    perc_low: float = 1.0,
+    perc_high: float = 99.8,
+    bg_subtract_radius: int = 0,
+    blur_sigma: float = 0.0,
+    auto_tiling: bool = True,
+    n_tiles_y: int = 1,
+    n_tiles_x: int = 1,
+    verbose: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Optional: detect spots using Spotiflow (deep learning). Returns list of dicts
     with y, x, intensity, size_px, mean_intensity, rel_intensity, or None if spotiflow unavailable.
+
+    When ``use_optimized_threshold`` is True, ``prob_thresh`` is not passed to ``predict`` (library uses
+    tuned thresholds). Otherwise ``prob_thresh`` is used (0–1).
+
+    ``blur_sigma`` and ``bg_subtract_radius`` are applied to a working copy of the image before inference.
     """
     try:
         from spotiflow.model import Spotiflow
+        from spotiflow.utils import normalize as sf_normalize
     except ImportError:
         return None
     raw = np.asarray(image, dtype=np.float64)
     if raw.ndim != 2 or raw.size == 0:
         return []
+    if raw.ndim > 2:
+        raw = raw[:, :, 0] if raw.shape[2] < 10 else raw[0, :, :]
     raw_median = float(np.median(raw))
     if raw_median <= 0:
         raw_median = 1e-10
+
+    img_work = np.asarray(raw, dtype=np.float32)
+    if blur_sigma and float(blur_sigma) > 0:
+        img_work = gaussian(img_work, sigma=float(blur_sigma), preserve_range=True).astype(np.float32)
+    if bg_subtract_radius and int(bg_subtract_radius) > 0:
+        r = int(bg_subtract_radius)
+        img_work = white_tophat(img_work, footprint=disk(r)).astype(np.float32)
+
+    if normalize:
+        pl = float(perc_low)
+        ph = float(perc_high)
+        normalizer = (lambda x, _pl=pl, _ph=ph: sf_normalize(np.asarray(x, dtype=np.float32), pmin=_pl, pmax=_ph))
+    else:
+        normalizer = None
+
+    prob_kw: Optional[float]
+    if use_optimized_threshold:
+        prob_kw = None
+    else:
+        prob_kw = float(prob_thresh) if prob_thresh is not None else 0.5
+
+    n_tiles: Optional[Tuple[int, int]]
+    if auto_tiling:
+        n_tiles = None
+    else:
+        ny = max(1, int(n_tiles_y))
+        nx = max(1, int(n_tiles_x))
+        n_tiles = (ny, nx)
+
     try:
-        model = Spotiflow.from_pretrained(model_name)
-        spots, _ = model.predict(raw)
+        mp = (model_path or "").strip()
+        if mp:
+            model = Spotiflow.from_folder(mp, map_location="auto")
+        else:
+            model = Spotiflow.from_pretrained(model_name, map_location="auto")
+        spots, _ = model.predict(
+            img_work,
+            prob_thresh=prob_kw,
+            n_tiles=n_tiles,
+            min_distance=int(min_distance),
+            subpix=bool(subpix),
+            normalizer=normalizer if normalize else None,
+            verbose=verbose,
+        )
     except Exception:
         return None
     if spots is None or getattr(spots, "size", 0) == 0:
@@ -808,7 +872,6 @@ def detect_peaks_spotiflow(
     peaks = []
     h, w = raw.shape
     for i in range(spots.shape[0]):
-        # spots are typically (y, x) or (x, y); Spotiflow doc often (n_spots, 2) row,col
         yy, xx = int(round(spots[i, 0])), int(round(spots[i, 1]))
         if 0 <= yy < h and 0 <= xx < w:
             intensity = float(raw[yy, xx])

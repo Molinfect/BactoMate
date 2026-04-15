@@ -428,43 +428,90 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._expand_window_for_log_panel)
 
     def closeEvent(self, event):
-        # Wait for any running workers so we never destroy a QThread while it is running
-        tracking_tab = getattr(self, "tracking_tab", None)
-        if tracking_tab is not None and getattr(tracking_tab, "worker", None) is not None:
-            worker = tracking_tab.worker
-            if worker.isRunning():
-                old_title = self.windowTitle()
-                self.setWindowTitle("Waiting for tracking to finish…")
-                QApplication.processEvents()
-                if not worker.wait(300000):  # wait up to 5 minutes; if timeout, do not close
-                    self.setWindowTitle(old_title)
-                    QMessageBox.warning(
-                        self,
-                        "Please wait",
-                        "Tracking is still running. Wait for it to finish or cancel it, then close the application.",
-                    )
-                    event.ignore()
-                    return
-                self.setWindowTitle(old_title)
+        def _wait_for_thread_worker(
+            worker: Any,
+            waiting_title: str,
+            timeout_ms: int,
+            warning_text: str,
+        ) -> bool:
+            """Wait for a running QThread-like worker and keep closeEvent logic compact."""
+            if worker is None or not hasattr(worker, "isRunning") or not worker.isRunning():
+                return True
+            old_title = self.windowTitle()
+            self.setWindowTitle(waiting_title)
+            QApplication.processEvents()
+            ok = bool(worker.wait(timeout_ms))
+            self.setWindowTitle(old_title)
+            if not ok:
+                QMessageBox.warning(self, "Please wait", warning_text)
+            return ok
+
+        # Wait for any running workers so we never destroy a QThread while it is running.
+        # This prevents macOS aborts like: "QThread: Destroyed while thread is still running" (Abort trap: 6).
+        worker_wait_specs = [
+            (
+                getattr(self, "tracking_tab", None),
+                "worker",
+                "Waiting for tracking to finish…",
+                300000,
+                "Tracking is still running. Wait for it to finish or cancel it, then close the application.",
+            ),
+            (
+                getattr(self, "analyze_tab", None),
+                "worker",
+                "Waiting for Analyze Masks to finish…",
+                300000,
+                "Analyze Masks is still running. Wait for it to finish or cancel it, then close the application.",
+            ),
+            (
+                getattr(self, "omnipose_seg_tab", None),
+                "worker",
+                "Waiting for Omnipose processing to finish…",
+                300000,
+                "Omnipose processing is still running. Wait for it to finish or cancel it, then close the application.",
+            ),
+            (
+                getattr(self, "nd2_tab", None),
+                "worker",
+                "Waiting for file conversion to finish…",
+                300000,
+                "File conversion is still running. Wait for it to finish or cancel it, then close the application.",
+            ),
+            (
+                getattr(self, "post_processing_tab", None),
+                "worker",
+                "Waiting for post-processing to finish…",
+                300000,
+                "Post-processing is still running. Wait for it to finish, then close the application.",
+            ),
+            (
+                getattr(self, "unet_segment_tab", None),
+                "_unet_train_worker",
+                "Waiting for U-Net training to finish…",
+                300000,
+                "U-Net training is still running. Wait for it to finish, then close the application.",
+            ),
+        ]
+        for tab, worker_attr, waiting_title, timeout_ms, warning_text in worker_wait_specs:
+            if tab is None:
+                continue
+            worker = getattr(tab, worker_attr, None)
+            if not _wait_for_thread_worker(worker, waiting_title, timeout_ms, warning_text):
+                event.ignore()
+                return
         # Wait for Analyze Masks filter preview worker if dialog is open (never destroy QThread while running)
         analyze_tab = getattr(self, "analyze_tab", None)
         preview_dialog = getattr(analyze_tab, "_filter_preview_dialog", None) if analyze_tab else None
         if preview_dialog is not None:
             w = getattr(preview_dialog, "_preview_worker", None)
-            if w is not None and w.isRunning():
-                old_title = self.windowTitle()
-                self.setWindowTitle("Waiting for filter preview to finish…")
-                QApplication.processEvents()
-                if not w.wait(120000):  # wait up to 2 minutes; if timeout, do not close
-                    self.setWindowTitle(old_title)
-                    QMessageBox.warning(
-                        self,
-                        "Please wait",
-                        "Filter Effects Preview is still computing. Close the preview window first or wait for it to finish, then close the application.",
-                    )
-                    event.ignore()
-                    return
-                self.setWindowTitle(old_title)
+            if not _wait_for_thread_worker(
+                w,
+                "Waiting for filter preview to finish…",
+                120000,
+                "Filter Effects Preview is still computing. Close the preview window first or wait for it to finish, then close the application.",
+            ):
+                event.ignore()
+                return
         self._save_geometry_and_state()
         self._save_session_log()
         super().closeEvent(event)

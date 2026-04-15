@@ -3,8 +3,11 @@ Analyze masks tab: run analyze_cell_areas on mask TIFFs, combine summaries, morp
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 from typing import Any, Optional
@@ -22,6 +25,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -139,7 +143,7 @@ class AnalyzeMasksTab(QWidget):
         fi_mode_row.addStretch()
         fi_mask_layout.addLayout(fi_mode_row)
         self.fi_naming_hint = QLabel(
-            "(Match stem_fi / stem_foci and stem_fi_* / stem_foci_* to the mask stem; search in mask folder and parent folder)"
+            "(Match stem_fi / stem_foci, stem_fi_* / stem_foci_*, and stem_*_foci to the mask stem; search in mask folder and parent folder)"
         )
         self.fi_naming_hint.setStyleSheet("color: #888; font-size: 9pt;")
         self.fi_naming_hint.setWordWrap(True)
@@ -212,6 +216,19 @@ class AnalyzeMasksTab(QWidget):
         self.foci_detection_mode.currentIndexChanged.connect(self._update_foci_mode_visibility)
         run_foci_row.addWidget(self.foci_detection_mode, 0)
         run_foci_row.addSpacing(8)
+        run_foci_row.addWidget(QLabel("Blob threshold (0-1):"))
+        self.foci_blob_threshold = QDoubleSpinBox()
+        self.foci_blob_threshold.setRange(0.05, 1.0)
+        self.foci_blob_threshold.setDecimals(2)
+        self.foci_blob_threshold.setSingleStep(0.05)
+        self.foci_blob_threshold.setValue(0.80)
+        self.foci_blob_threshold.setToolTip(
+            "Fraction of the local peak used to define the focus blob area (default: 0.80). "
+            "Higher = smaller/stricter blobs; lower = larger blobs."
+        )
+        self.foci_blob_threshold.setFixedWidth(76)
+        run_foci_row.addWidget(self.foci_blob_threshold)
+        run_foci_row.addSpacing(8)
         run_foci_row.addWidget(create_info_icon(
             "**Run foci:** Detect bright spots in the FI channel per frame; add foci count and a **Foci** sheet to Excel "
             "(foci_id, cell_id, frame, y, x, intensity, Area (px/µm²), Mean intensity, Rel intensity, in_cell).\n\n"
@@ -219,7 +236,7 @@ class AnalyzeMasksTab(QWidget):
             "when unchecked, all detected foci are included.\n\n"
             "**Detection:**\n"
             "• **Manual:** Cell-first: we start from the mask and each cell. Inside each cell we find local maxima, "
-            "build the focus blob (connected pixels ≥ 80% of peak, same cell), then apply your filters (min peak, min/max area, min focus mean). "
+            "build the focus blob (connected pixels ≥ Blob threshold × peak, same cell), then apply your filters (min peak, min/max area, min focus mean). "
             "The per-cell factor (e.g. 1.6) compares the **focus blob mean** to the **mean of the rest of the cell** (cell minus focus); "
             "a focus is kept only if focus mean ≥ factor × rest-of-cell mean. The focus never contributes to that baseline.\n"
             "• **Auto-detect:** Cell-first, no manual thresholds; region-growing from each cell's brightest pixel.\n"
@@ -288,7 +305,7 @@ class AnalyzeMasksTab(QWidget):
         foci_params_row.addWidget(QLabel("Min area (µm²):"))
         foci_params_row.addWidget(create_info_icon(
             "Minimum focus area in µm² (converted to pixels using Pixel Size (µm)).\n\n"
-            "Focus area is the connected region around the peak (pixels above half peak intensity, within the same cell). "
+            "Focus area is the connected region around the peak (pixels above Blob threshold × peak intensity, within the same cell). "
             "If you see fewer foci than expected, try: lower Min separation (e.g. 1 px), lower Min relative intensity, or set Min area to 0.001.\n\n"
             "The Excel Foci sheet reports Area (px) and Area (µm²) per focus.",
             parent_widget=self
@@ -334,7 +351,7 @@ class AnalyzeMasksTab(QWidget):
         foci_params_row2.addWidget(QLabel("Min peak mean:"))
         foci_params_row2.addWidget(create_info_icon(
             "Minimum mean intensity of the focus blob (0 = off).\n\n"
-            "Mean is taken over the connected pixels above half the peak (same region as size). "
+            "Mean is taken over the connected pixels above Blob threshold × peak (same region as size). "
             "Bright compact foci have high mean; diffuse dim spots have low mean. Use to keep obvious foci and drop weak/diffuse ones.",
             parent_widget=self
         ))
@@ -348,12 +365,169 @@ class AnalyzeMasksTab(QWidget):
         foci_params_row2.addStretch()
         foci_manual_layout.addLayout(foci_params_row2)
         fi_foci_layout.addWidget(self.foci_manual_params_container)
+
+        # Spotiflow-only options (visible when Detection = Spotiflow)
+        self.foci_spotiflow_container = QWidget()
+        sf_outer = QVBoxLayout(self.foci_spotiflow_container)
+        sf_outer.setContentsMargins(0, 4, 0, 0)
+        sf_grid = QGridLayout()
+        sf_grid.setHorizontalSpacing(10)
+        sf_grid.setVerticalSpacing(6)
+        row = 0
+        sf_grid.addWidget(QLabel("Model:"), row, 0)
+        self.foci_sf_model_name = QComboBox()
+        self.foci_sf_model_name.setEditable(True)
+        self.foci_sf_model_name.addItems(["general", "fluo_live", "hybiss", "synth_complex"])
+        self.foci_sf_model_name.setCurrentIndex(0)
+        self.foci_sf_model_name.setMinimumContentsLength(14)
+        self.foci_sf_model_name.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.foci_sf_model_name.setToolTip("Pretrained Spotiflow model name (used when custom model folder is empty).")
+        sf_grid.addWidget(self.foci_sf_model_name, row, 1, 1, 2)
+        row += 1
+        sf_grid.addWidget(QLabel("Custom model folder:"), row, 0)
+        self.foci_sf_model_path = QLineEdit()
+        self.foci_sf_model_path.setPlaceholderText("Optional — overrides pretrained model name when set")
+        self.foci_sf_browse = QPushButton("Browse…")
+        self.foci_sf_browse.setFixedWidth(90)
+
+        def _browse_spotiflow_folder() -> None:
+            start = self.foci_sf_model_path.text().strip() or str(get_default_browse_dir())
+            d = QFileDialog.getExistingDirectory(self, "Spotiflow model folder", start)
+            if d:
+                self.foci_sf_model_path.setText(d)
+
+        self.foci_sf_browse.clicked.connect(_browse_spotiflow_folder)
+        path_row = QHBoxLayout()
+        path_row.addWidget(self.foci_sf_model_path, 1)
+        path_row.addWidget(self.foci_sf_browse)
+        sf_grid.addLayout(path_row, row, 1, 1, 2)
+        row += 1
+        self.foci_sf_use_optimized = QCheckBox("Use optimized probability threshold (from model)")
+        self.foci_sf_use_optimized.setChecked(True)
+        self.foci_sf_use_optimized.setToolTip(
+            "When checked, Spotiflow uses its tuned threshold and ignores the manual probability value below."
+        )
+        sf_grid.addWidget(self.foci_sf_use_optimized, row, 0, 1, 3)
+        row += 1
+        sf_grid.addWidget(QLabel("Probability threshold:"), row, 0)
+        self.foci_sf_prob_thresh = QDoubleSpinBox()
+        self.foci_sf_prob_thresh.setRange(0.0, 1.0)
+        self.foci_sf_prob_thresh.setDecimals(3)
+        self.foci_sf_prob_thresh.setSingleStep(0.05)
+        self.foci_sf_prob_thresh.setValue(0.5)
+        self.foci_sf_prob_thresh.setEnabled(False)
+        sf_grid.addWidget(self.foci_sf_prob_thresh, row, 1)
+        sf_grid.addWidget(QLabel("(0–1, manual mode)"), row, 2)
+        row += 1
+        sf_grid.addWidget(QLabel("Min peak distance (NMS, px):"), row, 0)
+        self.foci_sf_min_distance = QSpinBox()
+        self.foci_sf_min_distance.setRange(1, 512)
+        self.foci_sf_min_distance.setValue(1)
+        sf_grid.addWidget(self.foci_sf_min_distance, row, 1)
+        row += 1
+        self.foci_sf_subpix = QCheckBox("Subpixel localization")
+        self.foci_sf_subpix.setChecked(True)
+        sf_grid.addWidget(self.foci_sf_subpix, row, 0, 1, 3)
+        row += 1
+        self.foci_sf_normalize = QCheckBox("Percentile normalization before predict")
+        self.foci_sf_normalize.setChecked(True)
+        sf_grid.addWidget(self.foci_sf_normalize, row, 0, 1, 3)
+        row += 1
+        self.foci_sf_perc_label = QLabel("Norm. percentiles (low / high):")
+        sf_grid.addWidget(self.foci_sf_perc_label, row, 0)
+        self.foci_sf_perc_low = QDoubleSpinBox()
+        self.foci_sf_perc_low.setRange(0.0, 100.0)
+        self.foci_sf_perc_low.setDecimals(2)
+        self.foci_sf_perc_low.setValue(1.0)
+        self.foci_sf_perc_high = QDoubleSpinBox()
+        self.foci_sf_perc_high.setRange(0.0, 100.0)
+        self.foci_sf_perc_high.setDecimals(2)
+        self.foci_sf_perc_high.setValue(99.8)
+        perc_row = QHBoxLayout()
+        perc_row.addWidget(self.foci_sf_perc_low)
+        perc_row.addWidget(QLabel("/"))
+        perc_row.addWidget(self.foci_sf_perc_high)
+        perc_row.addStretch()
+        sf_grid.addLayout(perc_row, row, 1, 1, 2)
+        row += 1
+        sf_grid.addWidget(QLabel("BG subtract radius (px):"), row, 0)
+        self.foci_sf_bg_radius = QSpinBox()
+        self.foci_sf_bg_radius.setMinimum(0)
+        self.foci_sf_bg_radius.setRange(0, 500)
+        self.foci_sf_bg_radius.setValue(0)
+        self.foci_sf_bg_radius.setSpecialValueText("0 (off)")
+        self.foci_sf_bg_radius.setToolTip("White top-hat background suppression; 0 = off.")
+        sf_grid.addWidget(self.foci_sf_bg_radius, row, 1)
+        row += 1
+        sf_grid.addWidget(QLabel("Gaussian blur σ (pre-inference):"), row, 0)
+        self.foci_sf_blur_sigma = QDoubleSpinBox()
+        self.foci_sf_blur_sigma.setRange(0.0, 20.0)
+        self.foci_sf_blur_sigma.setDecimals(2)
+        self.foci_sf_blur_sigma.setSingleStep(0.25)
+        self.foci_sf_blur_sigma.setValue(0.0)
+        self.foci_sf_blur_sigma.setSpecialValueText("0 (off)")
+        sf_grid.addWidget(self.foci_sf_blur_sigma, row, 1)
+        row += 1
+        self.foci_sf_auto_tiling = QCheckBox("Automatic tiling")
+        self.foci_sf_auto_tiling.setChecked(True)
+        self.foci_sf_auto_tiling.setToolTip("Let Spotiflow choose tile counts from image size.")
+        sf_grid.addWidget(self.foci_sf_auto_tiling, row, 0, 1, 3)
+        row += 1
+        self.foci_sf_tile_label = QLabel("Tile count (Y × X):")
+        sf_grid.addWidget(self.foci_sf_tile_label, row, 0)
+        tile_row = QHBoxLayout()
+        self.foci_sf_n_tiles_y = QSpinBox()
+        self.foci_sf_n_tiles_y.setRange(1, 64)
+        self.foci_sf_n_tiles_y.setValue(1)
+        self.foci_sf_n_tiles_x = QSpinBox()
+        self.foci_sf_n_tiles_x.setRange(1, 64)
+        self.foci_sf_n_tiles_x.setValue(1)
+        tile_row.addWidget(self.foci_sf_n_tiles_y)
+        tile_row.addWidget(QLabel("×"))
+        tile_row.addWidget(self.foci_sf_n_tiles_x)
+        tile_row.addStretch()
+        sf_grid.addLayout(tile_row, row, 1, 1, 2)
+        sf_outer.addLayout(sf_grid)
+        fi_foci_layout.addWidget(self.foci_spotiflow_container)
         fi_foci_section.setLayout(fi_foci_layout)
         fi_content_layout.addWidget(fi_mask_section)
         fi_content_layout.addWidget(fi_contour_section)
         fi_content_layout.addWidget(fi_foci_section)
         # Manual-only widgets (Exclude foci outside is not here — it applies to all detection modes)
-        self.foci_params_widgets = [self.foci_min_rel, self.foci_min_rel_mode, self.foci_min_rel_cell_label, self.foci_min_rel_cell, self.foci_min_separation, self.foci_min_area_um2, self.foci_max_area_um2, self.foci_min_peak_raw, self.foci_min_focus_mean]
+        self.foci_params_widgets = [
+            self.foci_min_rel,
+            self.foci_min_rel_mode,
+            self.foci_min_rel_cell_label,
+            self.foci_min_rel_cell,
+            self.foci_min_separation,
+            self.foci_min_area_um2,
+            self.foci_max_area_um2,
+            self.foci_min_peak_raw,
+            self.foci_min_focus_mean,
+            self.foci_blob_threshold,
+        ]
+        self.foci_spotiflow_widgets = [
+            self.foci_sf_model_name,
+            self.foci_sf_model_path,
+            self.foci_sf_browse,
+            self.foci_sf_use_optimized,
+            self.foci_sf_prob_thresh,
+            self.foci_sf_min_distance,
+            self.foci_sf_subpix,
+            self.foci_sf_normalize,
+            self.foci_sf_perc_label,
+            self.foci_sf_perc_low,
+            self.foci_sf_perc_high,
+            self.foci_sf_bg_radius,
+            self.foci_sf_blur_sigma,
+            self.foci_sf_auto_tiling,
+            self.foci_sf_n_tiles_y,
+            self.foci_sf_n_tiles_x,
+            self.foci_sf_tile_label,
+        ]
+        self.foci_sf_use_optimized.toggled.connect(self._update_spotiflow_subwidgets)
+        self.foci_sf_normalize.toggled.connect(self._update_spotiflow_subwidgets)
+        self.foci_sf_auto_tiling.toggled.connect(self._update_spotiflow_subwidgets)
         fi_drop_layout.addWidget(self.fi_content)
         fi_drop_group.setLayout(fi_drop_layout)
         self.fi_drop_group = fi_drop_group
@@ -1161,13 +1335,111 @@ class AnalyzeMasksTab(QWidget):
             return True
         return self.foci_detection_mode.currentIndex() == 0
 
+    def _spotiflow_params_dict(self) -> dict[str, Any]:
+        """Keyword arguments for ``detect_peaks_spotiflow`` / CLI JSON snapshot."""
+        mn = "general"
+        if getattr(self, "foci_sf_model_name", None) is not None:
+            t = self.foci_sf_model_name.currentText().strip()
+            if t:
+                mn = t
+        return {
+            "model_name": mn,
+            "model_path": (self.foci_sf_model_path.text() or "").strip() if getattr(self, "foci_sf_model_path", None) else "",
+            "use_optimized_threshold": bool(getattr(self, "foci_sf_use_optimized", None) and self.foci_sf_use_optimized.isChecked()),
+            "prob_thresh": float(self.foci_sf_prob_thresh.value()) if getattr(self, "foci_sf_prob_thresh", None) else 0.5,
+            "min_distance": int(self.foci_sf_min_distance.value()) if getattr(self, "foci_sf_min_distance", None) else 1,
+            "subpix": bool(getattr(self, "foci_sf_subpix", None) and self.foci_sf_subpix.isChecked()),
+            "normalize": bool(getattr(self, "foci_sf_normalize", None) and self.foci_sf_normalize.isChecked()),
+            "perc_low": float(self.foci_sf_perc_low.value()) if getattr(self, "foci_sf_perc_low", None) else 1.0,
+            "perc_high": float(self.foci_sf_perc_high.value()) if getattr(self, "foci_sf_perc_high", None) else 99.8,
+            "bg_subtract_radius": int(self.foci_sf_bg_radius.value()) if getattr(self, "foci_sf_bg_radius", None) else 0,
+            "blur_sigma": float(self.foci_sf_blur_sigma.value()) if getattr(self, "foci_sf_blur_sigma", None) else 0.0,
+            "auto_tiling": bool(getattr(self, "foci_sf_auto_tiling", None) and self.foci_sf_auto_tiling.isChecked()),
+            "n_tiles_y": int(self.foci_sf_n_tiles_y.value()) if getattr(self, "foci_sf_n_tiles_y", None) else 1,
+            "n_tiles_x": int(self.foci_sf_n_tiles_x.value()) if getattr(self, "foci_sf_n_tiles_x", None) else 1,
+            "verbose": False,
+        }
+
+    def _update_spotiflow_subwidgets(self) -> None:
+        """Enable/disable Spotiflow fields that depend on other toggles."""
+        if not getattr(self, "foci_sf_use_optimized", None):
+            return
+        spotiflow_foci = (
+            bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+            and bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+            and getattr(self, "foci_detection_mode", None) is not None
+            and self.foci_detection_mode.currentIndex() == 2
+        )
+        opt_on = self.foci_sf_use_optimized.isChecked()
+        self.foci_sf_prob_thresh.setEnabled(spotiflow_foci and not opt_on)
+        if getattr(self, "foci_sf_normalize", None):
+            n_on = self.foci_sf_normalize.isChecked()
+            for w in (
+                getattr(self, "foci_sf_perc_label", None),
+                getattr(self, "foci_sf_perc_low", None),
+                getattr(self, "foci_sf_perc_high", None),
+            ):
+                if w is not None:
+                    w.setVisible(spotiflow_foci and n_on)
+        if getattr(self, "foci_sf_auto_tiling", None):
+            manual_tiles = spotiflow_foci and not self.foci_sf_auto_tiling.isChecked()
+            for w in (
+                getattr(self, "foci_sf_tile_label", None),
+                getattr(self, "foci_sf_n_tiles_y", None),
+                getattr(self, "foci_sf_n_tiles_x", None),
+            ):
+                if w is not None:
+                    w.setVisible(manual_tiles)
+
+    def _append_spotiflow_config_if_needed(self, cmd_args: list) -> None:
+        """Append ``--spotiflow-config`` with JSON kwargs when Detection = Spotiflow."""
+        if not (
+            getattr(self, "run_foci", None)
+            and self.run_foci.isChecked()
+            and getattr(self, "foci_detection_mode", None)
+            and self.foci_detection_mode.currentIndex() == 2
+        ):
+            return
+        try:
+            prev = getattr(self, "_spotiflow_config_temp_path", None)
+            if prev:
+                try:
+                    os.unlink(prev)
+                except OSError:
+                    pass
+            fd, path = tempfile.mkstemp(prefix="bmt_spotiflow_", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._spotiflow_params_dict(), f)
+            cmd_args.extend(["--spotiflow-config", path])
+            self._spotiflow_config_temp_path = path
+        except Exception:
+            pass
+
+    def _cleanup_spotiflow_config_temp(self) -> None:
+        pcfg = getattr(self, "_spotiflow_config_temp_path", None)
+        if pcfg:
+            try:
+                os.unlink(pcfg)
+            except OSError:
+                pass
+            self._spotiflow_config_temp_path = None
+
     def _update_foci_mode_visibility(self) -> None:
         """Show/hide manual params block; show Frame/Cell factor labels when mode is 'both'; enable widgets when Detection = Manual."""
         manual_foci = self._is_foci_manual_mode()
         run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
         analyze_fi_on = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+        spotiflow_foci = (
+            analyze_fi_on and run_foci_on
+            and getattr(self, "foci_detection_mode", None) is not None
+            and self.foci_detection_mode.currentIndex() == 2
+        )
         if getattr(self, "foci_manual_params_container", None) is not None:
             self.foci_manual_params_container.setVisible(analyze_fi_on and run_foci_on and manual_foci)
+        if getattr(self, "foci_spotiflow_container", None) is not None:
+            self.foci_spotiflow_container.setVisible(spotiflow_foci)
+        for w in getattr(self, "foci_spotiflow_widgets", []):
+            w.setEnabled(spotiflow_foci)
         if getattr(self, "foci_min_rel_mode", None):
             is_both = self.foci_min_rel_mode.currentText().strip().lower() == "both"
             if getattr(self, "foci_min_rel_label", None):
@@ -1178,9 +1450,14 @@ class AnalyzeMasksTab(QWidget):
                 self.foci_min_rel_cell.setVisible(is_both)
         for w in getattr(self, "foci_params_widgets", []):
             w.setEnabled(analyze_fi_on and run_foci_on and manual_foci)
+        # Blob threshold also applies to Spotiflow-derived blob area, so keep it editable there.
+        if getattr(self, "foci_blob_threshold", None) is not None:
+            self.foci_blob_threshold.setEnabled(analyze_fi_on and run_foci_on and (manual_foci or spotiflow_foci))
         # Exclude foci outside / rejected cells applies to all detection modes (Manual, Auto-detect, Spotiflow)
         if hasattr(self, "foci_exclude_outside_cells"):
             self.foci_exclude_outside_cells.setEnabled(analyze_fi_on and run_foci_on)
+        if hasattr(self, "_update_spotiflow_subwidgets"):
+            self._update_spotiflow_subwidgets()
         self._update_fi_feedback()
 
     def _update_fi_contour_state(self, *_args):
@@ -1200,6 +1477,90 @@ class AnalyzeMasksTab(QWidget):
         path = Path(self.file_path.text())
         return path.exists() and path.is_dir()
 
+    @staticmethod
+    def _looks_non_channel_token(token: str) -> bool:
+        t = (token or "").strip().lower()
+        if not t:
+            return True
+        if t in {"fi", "foci", "mask", "masks", "phase", "bf", "dic", "seg", "segmentation"}:
+            return True
+        if t.startswith("t=") or t.startswith("z="):
+            return True
+        if t.endswith("x") and t[:-1].isdigit():
+            return True
+        return False
+
+    def _candidate_match_stems(self, stem: str) -> list[str]:
+        """Possible stems for FI/foci file matching (exact stem + conservative fallbacks)."""
+        out: list[str] = []
+
+        def _add(s: str) -> None:
+            s = (s or "").strip("_")
+            if s and s not in out:
+                out.append(s)
+
+        _add(stem)
+        if "_" in stem:
+            _add(stem.rsplit("_", 1)[0])
+        if "__" in stem:
+            s2 = stem.split("__", 1)[0]
+            _add(s2)
+            if "_" in s2:
+                _add(s2.rsplit("_", 1)[0])
+        return out
+
+    def _matches_fi_name(self, name: str, stem: str) -> bool:
+        # Canonical: stem_fi or stem_fi_Channel
+        if name == f"{stem}_fi" or name.startswith(f"{stem}_fi_"):
+            return True
+        # Also accept stem_Channel_fi
+        if name.startswith(f"{stem}_") and name.endswith("_fi"):
+            return True
+        return False
+
+    def _matches_foci_name(self, name: str, stem: str) -> bool:
+        # Canonical: stem_foci or stem_foci_Channel
+        if name == f"{stem}_foci" or name.startswith(f"{stem}_foci_"):
+            return True
+        # Also accept stem_Channel_foci and stem_fi_*_foci
+        if name.startswith(f"{stem}_fi_") and "_foci" in name:
+            return True
+        if name.startswith(f"{stem}_") and name.endswith("_foci"):
+            return True
+        return False
+
+    def _extract_channel_tag_for_mask_stem(self, file_stem: str, mask_stem: str) -> str | None:
+        """Extract channel tag from FI/foci filename relative to a mask stem."""
+        for s in self._candidate_match_stems(mask_stem):
+            if file_stem in (f"{s}_fi", f"{s}_foci", f"{s}_fi_foci", f"{s}_foci_fi"):
+                return None
+            if file_stem.startswith(f"{s}_fi_"):
+                rem = file_stem[len(s) + 4 :].strip("_")
+                if not rem or rem == "foci":
+                    return None
+                if rem.startswith("foci_"):
+                    rem = rem[len("foci_") :].strip("_")
+                if rem.endswith("_foci"):
+                    rem = rem[: -len("_foci")].strip("_")
+                return rem or None
+            if file_stem.startswith(f"{s}_foci_"):
+                rem = file_stem[len(s) + 6 :].strip("_")
+                return rem or None
+            if file_stem.startswith(f"{s}_") and file_stem.endswith("_foci"):
+                rem = file_stem[len(s) + 1 : -len("_foci")].strip("_")
+                return rem or None
+            if file_stem.startswith(f"{s}_") and file_stem.endswith("_fi"):
+                rem = file_stem[len(s) + 1 : -len("_fi")].strip("_")
+                return rem or None
+        # Last-resort heuristic: <anything>_<channel>_foci
+        if file_stem.endswith("_foci"):
+            prefix = file_stem[: -len("_foci")].strip("_")
+            if "_" in prefix:
+                token = prefix.rsplit("_", 1)[-1].strip("_")
+                if token and not self._looks_non_channel_token(token):
+                    return token
+        return None
+
     def _resolve_fi_paths_for_mask(self, mask_path: Path) -> list[Path]:
         """For Analyze FI: find FI channel files (name must contain _fi). stem_fi / stem_fi_* only.
         _foci-only files are not included (use _resolve_foci_paths_for_mask for Run foci).
@@ -1211,10 +1572,7 @@ class AnalyzeMasksTab(QWidget):
         else:
             search_dir = parent
         stem = mask_path.stem.replace("_masks", "")
-
-        def matches_fi(name: str, s: str) -> bool:
-            # Only _fi files for Analyze FI (mean/contour). _foci-only files use _resolve_foci_paths_for_mask.
-            return name == f"{s}_fi" or name.startswith(f"{s}_fi_")
+        stems = self._candidate_match_stems(stem)
 
         def search_in(directory: Path) -> list[Path]:
             out: list[Path] = []
@@ -1223,40 +1581,18 @@ class AnalyzeMasksTab(QWidget):
             for f in directory.iterdir():
                 if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
                     continue
-                if matches_fi(f.stem, stem):
-                    out.append(f)
-            return out
-
-        def try_base(directory: Path, s: str) -> list[Path]:
-            out = []
-            for f in directory.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                    continue
-                if matches_fi(f.stem, s):
+                if any(self._matches_fi_name(f.stem, s) for s in stems):
                     out.append(f)
             return out
 
         found: list[Path] = search_in(search_dir)
-        if not found and "_" in stem:
-            base = stem.rsplit("_", 1)[0]
-            found = try_base(search_dir, base)
-        # Fallback: stem like EM19763_NoPhage__Phase60X vs FI file EM19763_NoPhage_fi_foci_mScarlet — use part before "__"
-        if not found and "__" in stem:
-            base_double = stem.split("__")[0]
-            if base_double:
-                found = try_base(search_dir, base_double)
         if not found and search_dir.parent != search_dir:
             found = search_in(search_dir.parent)
-            if not found and "_" in stem:
-                found = try_base(search_dir.parent, stem.rsplit("_", 1)[0])
-            if not found and "__" in stem:
-                base_double = stem.split("__")[0]
-                if base_double:
-                    found = try_base(search_dir.parent, base_double)
         return sorted(set(found), key=lambda p: p.name.lower())
 
     def _resolve_foci_paths_for_mask(self, mask_path: Path) -> list[Path]:
-        """For Run foci: find _foci channel files. stem_foci / stem_foci_* or stem_fi_* with _foci in name.
+        """For Run foci: find _foci channel files.
+        Supports stem_foci, stem_foci_*, stem_*_foci, and stem_fi_* with _foci in name.
         Search dir: same as FI. Used only when Run foci analysis is checked."""
         parent = mask_path.parent
         if parent.name.startswith("_segmentation"):
@@ -1264,13 +1600,7 @@ class AnalyzeMasksTab(QWidget):
         else:
             search_dir = parent
         stem = mask_path.stem.replace("_masks", "")
-
-        def matches_foci(name: str, s: str) -> bool:
-            if name == f"{s}_foci" or name.startswith(f"{s}_foci_"):
-                return True
-            if name.startswith(f"{s}_fi_") and "_foci" in name:
-                return True
-            return False
+        stems = self._candidate_match_stems(stem)
 
         def search_in(directory: Path) -> list[Path]:
             out: list[Path] = []
@@ -1279,36 +1609,13 @@ class AnalyzeMasksTab(QWidget):
             for f in directory.iterdir():
                 if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
                     continue
-                if matches_foci(f.stem, stem):
-                    out.append(f)
-            return out
-
-        def try_base_foci(directory: Path, s: str) -> list[Path]:
-            out = []
-            for f in directory.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                    continue
-                if matches_foci(f.stem, s):
+                if any(self._matches_foci_name(f.stem, s) for s in stems):
                     out.append(f)
             return out
 
         found_foci: list[Path] = search_in(search_dir)
-        if not found_foci and "_" in stem:
-            base = stem.rsplit("_", 1)[0]
-            found_foci = try_base_foci(search_dir, base)
-        # Fallback: stem like EM19763_NoPhage__Phase60X vs FI/foci file EM19763_NoPhage_fi_foci_mScarlet — use part before "__"
-        if not found_foci and "__" in stem:
-            base_double = stem.split("__")[0]
-            if base_double:
-                found_foci = try_base_foci(search_dir, base_double)
         if not found_foci and search_dir.parent != search_dir:
             found_foci = search_in(search_dir.parent)
-            if not found_foci and "_" in stem:
-                found_foci = try_base_foci(search_dir.parent, stem.rsplit("_", 1)[0])
-            if not found_foci and "__" in stem:
-                base_double = stem.split("__")[0]
-                if base_double:
-                    found_foci = try_base_foci(search_dir.parent, base_double)
         return sorted(set(found_foci), key=lambda p: p.name.lower())
 
     def _preview_fi_path_candidates(self, mask_path: Path) -> list[Path]:
@@ -1366,17 +1673,21 @@ class AnalyzeMasksTab(QWidget):
         if fi_path is None:
             return ""
         name = fi_path.stem
-        if name == f"{stem}_fi":
-            return ""
-        prefix = f"{stem}_fi_"
-        if name.startswith(prefix):
-            return "_" + name[len(prefix):]
-        base = stem.rsplit("_", 1)[0] if "_" in stem else stem
-        if name == f"{base}_fi":
-            return "_fi"
-        if name.startswith(f"{base}_fi_"):
-            return "_" + name[len(base) + 4:]
-        return "_fi"
+        tag = self._extract_channel_tag_for_mask_stem(name, stem)
+        if tag:
+            return "_" + tag
+        # Single-channel FI/foci names map to unsuffixed output.
+        for s in self._candidate_match_stems(stem):
+            if name in (f"{s}_fi", f"{s}_foci", f"{s}_fi_foci", f"{s}_foci_fi"):
+                return ""
+            if name.startswith(f"{s}_fi_") and name[len(s) + 4 :].strip("_") in ("", "foci"):
+                return ""
+        # Keep deterministic uniqueness for uncommon names to avoid output collisions.
+        if name.startswith(f"{stem}_"):
+            rest = name[len(stem) + 1 :].strip("_")
+            if rest:
+                return "_" + rest
+        return "_" + name
     
     def _match_log_from_folder_tasks(self) -> tuple[int, int, list[str]]:
         """Build (n_masks, n_tif, lines) from folder_fi_tasks and folder_results for the Logs column."""
@@ -1757,7 +2068,24 @@ class AnalyzeMasksTab(QWidget):
                 summary_df = None
                 merged = None
                 first_excel = phase_entries[0][0] if phase_entries else fi_entries[0][0]
-                key_cols = ["Frame", "Cell_ID"] if "Cell_ID" in pd.read_excel(first_excel, sheet_name="Per-Cell Data", nrows=0).columns else ["Frame", "Cell Label"]
+                # Prefer FI summary (contains Total Foci / Mean Foci per Cell) over phase-only summary.
+                for _p, _fp, _lbl in fi_entries:
+                    try:
+                        summary_df = pd.read_excel(_p, sheet_name="Summary")
+                        break
+                    except Exception:
+                        continue
+                if summary_df is None and phase_entries:
+                    try:
+                        summary_df = pd.read_excel(phase_entries[0][0], sheet_name="Summary")
+                    except Exception:
+                        pass
+
+                try:
+                    head = pd.read_excel(first_excel, sheet_name="Per-Cell Data", nrows=0)
+                    key_cols = ["Frame", "Cell_ID"] if "Cell_ID" in head.columns else ["Frame", "Cell Label"]
+                except Exception:
+                    key_cols = ["Frame", "Cell Label"]
                 # Legacy flat names; runs may also emit e.g. Mean FI Intensity (whole cell) [GFP] (merge uses is_fi_or_foci_col too)
                 fi_col_names = [
                     "Mean FI Intensity",
@@ -1767,21 +2095,24 @@ class AnalyzeMasksTab(QWidget):
                 ]
                 if phase_entries:
                     phase_path = phase_entries[0][0]
-                    df_phase = pd.read_excel(phase_path, sheet_name="Per-Cell Data")
-                    summary_df = pd.read_excel(phase_path, sheet_name="Summary")
-                    if df_phase is not None and not df_phase.empty:
-                        merged = df_phase.copy()
+                    try:
+                        df_phase = pd.read_excel(phase_path, sheet_name="Per-Cell Data")
+                        if df_phase is not None and not df_phase.empty:
+                            merged = df_phase.copy()
+                    except Exception:
+                        pass
                 for idx, (excel_path, _fp, channel_label) in enumerate(fi_entries):
-                    df = pd.read_excel(excel_path, sheet_name="Per-Cell Data")
+                    try:
+                        df = pd.read_excel(excel_path, sheet_name="Per-Cell Data")
+                    except Exception:
+                        df = None
                     if df is None or df.empty:
                         continue
-                    if summary_df is None:
-                        summary_df = pd.read_excel(excel_path, sheet_name="Summary")
                     # FI columns to rename (optional; merge still runs if only foci columns present)
                     has_fi = [c for c in fi_col_names if c in df.columns]
                     rename = {c: f"{c} ({channel_label})" for c in has_fi}
                     sub = df.rename(columns=rename)
-                    merge_on = [c for c in key_cols if c in merged.columns and c in sub.columns]
+                    merge_on = [c for c in key_cols if merged is not None and c in merged.columns and c in sub.columns]
                     # Include FI and Foci columns from this file (not just "FI" in name)
                     def is_fi_or_foci_col(c: str) -> bool:
                         if c in key_cols:
@@ -1803,19 +2134,50 @@ class AnalyzeMasksTab(QWidget):
                             fi_cols_to_add = [rename[c] for c in has_fi if rename[c] in sub.columns and rename[c] not in merged.columns]
                             if fi_cols_to_add:
                                 merged = merged.merge(sub[merge_on + fi_cols_to_add], on=merge_on, how="outer")
-                if summary_df is not None and merged is not None and not merged.empty and "Frame" in merged.columns:
+                if summary_df is not None:
+                    # Merge Foci sheets from all FI runs (one row per focus; keep channel_name to distinguish channels).
+                    foci_parts = []
+                    for excel_path, _fp, _lbl in fi_entries:
+                        try:
+                            df_foci = pd.read_excel(excel_path, sheet_name="Foci")
+                            if df_foci is not None and not df_foci.empty:
+                                if "channel_name" in df_foci.columns:
+                                    ch_series = df_foci["channel_name"].astype(str).str.strip()
+                                    if _lbl and _lbl != "FI" and (ch_series.eq("").all() or ch_series.str.upper().eq("FI").all()):
+                                        df_foci["channel_name"] = _lbl
+                                elif _lbl:
+                                    df_foci["channel_name"] = _lbl
+                                foci_parts.append(df_foci)
+                        except Exception:
+                            pass
+
+                    # If summary came from phase-only file, derive/update foci summary metrics from merged foci rows.
+                    if foci_parts:
+                        df_foci_all = pd.concat(foci_parts, ignore_index=True, sort=False)
+                        sort_cols = [c for c in ("frame", "channel_name", "foci_id") if c in df_foci_all.columns]
+                        if sort_cols:
+                            df_foci_all = df_foci_all.sort_values(sort_cols, kind="stable")
+                        frame_col = next((c for c in df_foci_all.columns if isinstance(c, str) and c.lower() == "frame"), None)
+                        if frame_col is not None and "Frame" in summary_df.columns:
+                            counts_by_frame = df_foci_all.groupby(frame_col).size()
+                            summary_df = summary_df.copy()
+                            summary_df["Total Foci"] = [
+                                int(counts_by_frame.get(fr, 0))
+                                for fr in summary_df["Frame"]
+                            ]
+                            if "Number of Cells" in summary_df.columns:
+                                nc = pd.to_numeric(summary_df["Number of Cells"], errors="coerce").replace({0: np.nan})
+                                summary_df["Mean Foci per Cell"] = pd.to_numeric(summary_df["Total Foci"], errors="coerce") / nc
+                                summary_df["Mean Foci per Cell"] = summary_df["Mean Foci per Cell"].fillna(0.0)
+                    else:
+                        df_foci_all = None
+
                     with pd.ExcelWriter(merged_path, engine="openpyxl") as writer:
                         summary_df.to_excel(writer, sheet_name="Summary", index=False)
-                        merged.to_excel(writer, sheet_name="Per-Cell Data", index=False)
-                        # Include Foci sheet from first FI Excel that has one (one row per focus, link by cell_id)
-                        for excel_path, _fp, _lbl in fi_entries:
-                            try:
-                                df_foci = pd.read_excel(excel_path, sheet_name="Foci")
-                                if df_foci is not None and not df_foci.empty:
-                                    df_foci.to_excel(writer, sheet_name="Foci", index=False)
-                                    break
-                            except Exception:
-                                pass
+                        if merged is not None and not merged.empty and "Frame" in merged.columns:
+                            merged.to_excel(writer, sheet_name="Per-Cell Data", index=False)
+                        if df_foci_all is not None and not df_foci_all.empty:
+                            df_foci_all.to_excel(writer, sheet_name="Foci", index=False)
                         try:
                             from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
 
@@ -1938,6 +2300,8 @@ class AnalyzeMasksTab(QWidget):
             self.foci_min_area_um2.setValue(0.200)
         if hasattr(self, "foci_max_area_um2"):
             self.foci_max_area_um2.setValue(0.800)
+        if hasattr(self, "foci_blob_threshold"):
+            self.foci_blob_threshold.setValue(0.80)
     
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
@@ -1987,10 +2351,14 @@ class AnalyzeMasksTab(QWidget):
             d["foci_min_peak_raw"] = self.foci_min_peak_raw.value()
         if hasattr(self, "foci_min_focus_mean"):
             d["foci_min_focus_mean"] = self.foci_min_focus_mean.value()
+        if hasattr(self, "foci_blob_threshold"):
+            d["foci_blob_threshold"] = self.foci_blob_threshold.value()
         if hasattr(self, "foci_exclude_outside_cells"):
             d["foci_exclude_outside_cells"] = self.foci_exclude_outside_cells.isChecked()
         if hasattr(self, "foci_detection_mode"):
             d["foci_detection_mode"] = self.foci_detection_mode.currentIndex()
+        if hasattr(self, "_spotiflow_params_dict"):
+            d["foci_spotiflow"] = self._spotiflow_params_dict()
         path_txt = (self.file_path.text() or "").strip()
         if path_txt:
             d["file_path"] = path_txt
@@ -2109,6 +2477,11 @@ class AnalyzeMasksTab(QWidget):
                 self.foci_min_focus_mean.setValue(float(data["foci_min_focus_mean"]))
             except (TypeError, ValueError):
                 pass
+        if "foci_blob_threshold" in data and hasattr(self, "foci_blob_threshold"):
+            try:
+                self.foci_blob_threshold.setValue(float(data["foci_blob_threshold"]))
+            except (TypeError, ValueError):
+                pass
         if "foci_exclude_outside_cells" in data and hasattr(self, "foci_exclude_outside_cells"):
             self.foci_exclude_outside_cells.setChecked(bool(data["foci_exclude_outside_cells"]))
         if "foci_detection_mode" in data and hasattr(self, "foci_detection_mode"):
@@ -2118,6 +2491,67 @@ class AnalyzeMasksTab(QWidget):
                     self.foci_detection_mode.setCurrentIndex(idx)
             except (TypeError, ValueError):
                 pass
+        if "foci_spotiflow" in data and isinstance(data.get("foci_spotiflow"), dict) and hasattr(self, "foci_sf_model_name"):
+            fs = data["foci_spotiflow"]
+            try:
+                if fs.get("model_name"):
+                    self.foci_sf_model_name.setCurrentText(str(fs["model_name"]))
+            except Exception:
+                pass
+            try:
+                self.foci_sf_model_path.setText(str(fs.get("model_path", "") or ""))
+            except Exception:
+                pass
+            try:
+                self.foci_sf_use_optimized.setChecked(bool(fs.get("use_optimized_threshold", True)))
+            except Exception:
+                pass
+            try:
+                self.foci_sf_prob_thresh.setValue(float(fs.get("prob_thresh", 0.5)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_min_distance.setValue(int(fs.get("min_distance", 1)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_subpix.setChecked(bool(fs.get("subpix", True)))
+            except Exception:
+                pass
+            try:
+                self.foci_sf_normalize.setChecked(bool(fs.get("normalize", True)))
+            except Exception:
+                pass
+            try:
+                self.foci_sf_perc_low.setValue(float(fs.get("perc_low", 1.0)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_perc_high.setValue(float(fs.get("perc_high", 99.8)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_bg_radius.setValue(int(fs.get("bg_subtract_radius", 0)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_blur_sigma.setValue(float(fs.get("blur_sigma", 0.0)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_auto_tiling.setChecked(bool(fs.get("auto_tiling", True)))
+            except Exception:
+                pass
+            try:
+                self.foci_sf_n_tiles_y.setValue(int(fs.get("n_tiles_y", 1)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                self.foci_sf_n_tiles_x.setValue(int(fs.get("n_tiles_x", 1)))
+            except (TypeError, ValueError):
+                pass
+            if hasattr(self, "_update_spotiflow_subwidgets"):
+                self._update_spotiflow_subwidgets()
         if "file_path" in data and data.get("file_path"):
             self.file_path.setText(str(data["file_path"]).strip())
         if "performed" in data:
@@ -2680,12 +3114,16 @@ class AnalyzeMasksTab(QWidget):
                                     min_focus_mean = sn.get("min_focus_mean")
                                     if min_focus_mean is None:
                                         min_focus_mean = self.foci_min_focus_mean.value() if hasattr(self, "foci_min_focus_mean") else 0
+                                    blob_thresh = sn.get("blob_threshold")
+                                    if blob_thresh is None:
+                                        blob_thresh = self.foci_blob_threshold.value() if hasattr(self, "foci_blob_threshold") else 0.8
                                     peaks = _detect_foci(
                                         fi_image,
                                         min_rel=min_rel,
                                         min_distance=min_sep,
                                         min_size=min_sz,
                                         max_size=max_sz,
+                                        size_threshold_frac=float(blob_thresh),
                                         min_peak_raw=min_peak_raw if min_peak_raw and float(min_peak_raw) > 0 else None,
                                         min_focus_mean=min_focus_mean if min_focus_mean and float(min_focus_mean) > 0 else None,
                                         labeled_mask=mask,
@@ -2738,7 +3176,7 @@ class AnalyzeMasksTab(QWidget):
                                             if i >= FOCI_CAP:
                                                 break
                                             yi, xi = int(p["y"]), int(p["x"])
-                                            blob = get_focus_blob_mask(fi_image, yi, xi, threshold_frac=0.8, max_radius=5, labeled_mask=mask)
+                                            blob = get_focus_blob_mask(fi_image, yi, xi, threshold_frac=float(blob_thresh), max_radius=5, labeled_mask=mask)
                                             if np.any(blob):
                                                 vis[blob] = orange
                                         # Thin contour around each focus so adjacent foci look like two
@@ -2746,7 +3184,7 @@ class AnalyzeMasksTab(QWidget):
                                             if i >= FOCI_CAP:
                                                 break
                                             yi, xi = int(p["y"]), int(p["x"])
-                                            blob = get_focus_blob_mask(fi_image, yi, xi, threshold_frac=0.8, max_radius=5, labeled_mask=mask)
+                                            blob = get_focus_blob_mask(fi_image, yi, xi, threshold_frac=float(blob_thresh), max_radius=5, labeled_mask=mask)
                                             if np.any(blob):
                                                 boundaries = find_boundaries(blob, mode="outer")
                                                 if np.any(boundaries):
@@ -3027,6 +3465,7 @@ class AnalyzeMasksTab(QWidget):
                         "detection_mode": detection_mode,
                         "min_rel": self.foci_min_rel.value() if hasattr(self, "foci_min_rel") else 2.0,
                         "mode": _mode,
+                        "blob_threshold": self.foci_blob_threshold.value() if hasattr(self, "foci_blob_threshold") else 0.8,
                         "cell_factor": (self.foci_min_rel_cell.value() if _mode == "both" and hasattr(self, "foci_min_rel_cell") else self.foci_min_rel.value()) if hasattr(self, "foci_min_rel") else 2.0,
                         "min_sep": self.foci_min_separation.value() if hasattr(self, "foci_min_separation") else 2,
                         "min_sz": min_sz,
@@ -3034,6 +3473,7 @@ class AnalyzeMasksTab(QWidget):
                         "min_peak_raw": self.foci_min_peak_raw.value() if hasattr(self, "foci_min_peak_raw") else 0,
                         "min_focus_mean": self.foci_min_focus_mean.value() if hasattr(self, "foci_min_focus_mean") else 0,
                         "exclude_outside": bool(getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked()),
+                        "spotiflow": self._spotiflow_params_dict() if hasattr(self, "_spotiflow_params_dict") else {},
                     }
                     
                     # Get current parameters from main window
@@ -3573,6 +4013,80 @@ class AnalyzeMasksTab(QWidget):
             # Single file mode (use resolved path so subprocess finds the file)
             input_file = Path(self.file_path.text()).resolve()
 
+            # Single-file + "Match FI by name": run the same task pipeline as folder mode
+            # so one mask can fan out to multiple FI/foci channels and merged output.
+            if self.analyze_fi.isChecked() and self._is_match_by_name_mode():
+                self.folder_files = [input_file]
+                self.folder_results = []
+                self.folder_output_paths = []
+                self.folder_phase_per_mask = {}
+                self.folder_fi_tasks = []
+                self._folder_run_cancelled = False
+
+                mask_path = input_file
+                base_dir = base_dir_for_mask(mask_path)
+                stem = stem_from_mask_path(mask_path)
+                analysis_dir = analysis_dir_from_base(base_dir)
+                fi_paths = self._resolve_fi_paths_for_mask(mask_path)
+                run_foci_on = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
+                if not fi_paths:
+                    # No _fi file: if Run foci is on, use _foci files.
+                    foci_paths = self._resolve_foci_paths_for_mask(mask_path) if run_foci_on else []
+                    if run_foci_on and foci_paths:
+                        self.folder_phase_per_mask[mask_path] = self._resolve_phase_path_for_mask(mask_path)
+                        for fp in foci_paths:
+                            suf = self._fi_output_suffix(fp, stem)
+                            self.folder_fi_tasks.append((mask_path, fp, analysis_dir / f"{stem}_analysis{suf}.xlsx"))
+                    else:
+                        self.folder_fi_tasks.append((mask_path, None, analysis_dir / f"{stem}_analysis.xlsx"))
+                        self.folder_phase_per_mask[mask_path] = None
+                else:
+                    phase_path = self._resolve_phase_path_for_mask(mask_path)
+                    self.folder_phase_per_mask[mask_path] = phase_path
+                    if phase_path is not None:
+                        self.folder_fi_tasks.append((mask_path, None, analysis_dir / f"{stem}_analysis_phase.xlsx"))
+                    for fi_path in fi_paths:
+                        suffix = self._fi_output_suffix(fi_path, stem)
+                        out = analysis_dir / f"{stem}_analysis{suffix}.xlsx"
+                        self.folder_fi_tasks.append((mask_path, fi_path, out))
+
+                # Pre-run validation: paths exist and mask/FI shape match for each task
+                validation_errors = []
+                for m_path, fi_path, _ in self.folder_fi_tasks:
+                    ok, _missing = paths_exist([m_path])
+                    if not ok:
+                        validation_errors.append(f"{m_path.name}: mask file not found.")
+                        continue
+                    if fi_path is not None:
+                        ok, _missing = paths_exist([fi_path])
+                        if not ok:
+                            validation_errors.append(f"{m_path.name}: FI file not found.")
+                            continue
+                        ok, err = mask_fi_spatial_shape_match(m_path, fi_path)
+                        if not ok and err:
+                            validation_errors.append(f"{m_path.name}: {err}")
+                if validation_errors:
+                    QMessageBox.warning(
+                        self,
+                        "Validation failed",
+                        "Cannot start analysis:\n\n" + "\n\n".join(validation_errors[:10])
+                        + ("\n\n… and more." if len(validation_errors) > 10 else ""),
+                    )
+                    return
+
+                self.current_task_index = 0
+                self.analyze_btn.setEnabled(False)
+                self.analyze_btn.setText(f"Analyzing... (0/{len(self.folder_fi_tasks)})")
+                if getattr(self, "analyze_cancel_btn", None) is not None:
+                    self.analyze_cancel_btn.setVisible(True)
+                self.parent_window.log_output(f"Starting mask analysis: {input_file}\n")
+                self.parent_window.log_output(f"Running {len(self.folder_fi_tasks)} task(s) (script: {script_module})\n")
+                self.parent_window.progress_bar.setVisible(True)
+                self.parent_window.progress_bar.setRange(0, 100)
+                self.parent_window.progress_bar.setValue(0)
+                self._process_next_folder_file(script_path)
+                return
+
             # Pre-run validation: FI path and mask/FI shape match
             if self.analyze_fi.isChecked() and getattr(self, "_single_fi_path", None) and self._single_fi_path.exists():
                 fi_path = self._single_fi_path
@@ -3642,6 +4156,7 @@ class AnalyzeMasksTab(QWidget):
                     else:
                         cmd_args.extend(['--foci-min-rel-mode', 'per_frame'])
                     cmd_args.extend(['--foci-min-separation', str(self.foci_min_separation.value())])
+                    cmd_args.extend(['--foci-blob-threshold', str(self.foci_blob_threshold.value() if hasattr(self, "foci_blob_threshold") else 0.8)])
                     min_sz, max_sz = self._foci_area_um2_to_px()
                     cmd_args.extend(['--foci-min-size', str(min_sz)])
                     if max_sz is not None and max_sz > 0:
@@ -3652,6 +4167,7 @@ class AnalyzeMasksTab(QWidget):
                         cmd_args.extend(['--foci-min-focus-mean', str(int(self.foci_min_focus_mean.value()))])
                     if getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked():
                         cmd_args.append('--foci-exclude-outside-cells')
+                    self._append_spotiflow_config_if_needed(cmd_args)
 
             # Run in thread
             self.analyze_btn.setEnabled(False)
@@ -3699,6 +4215,7 @@ class AnalyzeMasksTab(QWidget):
         """Process next task in folder mode (one task = one mask + one FI file, or mask without FI)."""
         if self.current_task_index >= len(self.folder_fi_tasks):
             # All tasks processed (or user cancelled)
+            self._cleanup_spotiflow_config_temp()
             self.analyze_btn.setEnabled(True)
             self.analyze_btn.setText("Analyze Masks")
             if getattr(self, "analyze_cancel_btn", None) is not None:
@@ -3847,6 +4364,7 @@ class AnalyzeMasksTab(QWidget):
                     else:
                         cmd_args.extend(['--foci-min-rel-mode', 'per_frame'])
                     cmd_args.extend(['--foci-min-separation', str(self.foci_min_separation.value())])
+                    cmd_args.extend(['--foci-blob-threshold', str(self.foci_blob_threshold.value() if hasattr(self, "foci_blob_threshold") else 0.8)])
                     min_sz, max_sz = self._foci_area_um2_to_px()
                     cmd_args.extend(['--foci-min-size', str(min_sz)])
                     if max_sz is not None and max_sz > 0:
@@ -3857,6 +4375,7 @@ class AnalyzeMasksTab(QWidget):
                         cmd_args.extend(['--foci-min-focus-mean', str(int(self.foci_min_focus_mean.value()))])
                     if getattr(self, "foci_exclude_outside_cells", None) and self.foci_exclude_outside_cells.isChecked():
                         cmd_args.append('--foci-exclude-outside-cells')
+                    self._append_spotiflow_config_if_needed(cmd_args)
 
         self.parent_window.log_output(f"Output file: {output_path}\n")
         file_progress = int((self.current_task_index / len(self.folder_fi_tasks)) * 100)
@@ -3909,6 +4428,7 @@ class AnalyzeMasksTab(QWidget):
             self.parent_window.log_output("Cancelling analysis...\n")
 
     def on_finished(self, success, message):
+        self._cleanup_spotiflow_config_temp()
         self.analyze_btn.setEnabled(True)
         self.analyze_btn.setText("Analyze Masks")
         if getattr(self, "analyze_cancel_btn", None) is not None:
@@ -3943,5 +4463,3 @@ class AnalyzeMasksTab(QWidget):
         else:
             QMessageBox.critical(self, "Error", f"Analysis failed:\n{message}")
         self.workflow_step_finished.emit(success)
-
-

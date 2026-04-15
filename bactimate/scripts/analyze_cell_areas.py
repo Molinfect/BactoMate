@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sys
 import numpy as np
@@ -38,6 +39,7 @@ try:
         detect_peaks_cell_first_region_grow,
         detect_peaks_spotiflow,
         assign_peaks_to_cells,
+        focus_size_and_mean_at_peak,
         get_focus_blob_mask,
     )
 except ImportError:
@@ -46,6 +48,7 @@ except ImportError:
     detect_peaks_cell_first_region_grow = None
     detect_peaks_spotiflow = None
     assign_peaks_to_cells = None
+    focus_size_and_mean_at_peak = None
     get_focus_blob_mask = None
 
 try:
@@ -348,8 +351,9 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   remove_small=True, min_size_pixels=10, fi_image_path=None, fi_contour_thickness=1, fi_do_contour=True,
                   exclude_border=False,
                   run_foci=False, foci_detection_mode=0, foci_min_rel=2.0, foci_min_rel_mode="per_cell", foci_min_rel_cell=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
-                  foci_min_peak_raw=0, foci_min_focus_mean=0,
+                  foci_min_peak_raw=0, foci_min_focus_mean=0, foci_blob_threshold=0.8,
                   foci_exclude_outside_cells=False,
+                  spotiflow_options=None,
                   fi_channel_name=None):
     """
     Analyze masks and extract cell areas with morphological filtering.
@@ -410,6 +414,13 @@ def analyze_masks(masks_path, pixel_size=0.108,
         ok, err = mask_fi_spatial_shape_match(masks_path, fi_image_path)
         if not ok and err:
             raise ValueError(err)
+    try:
+        foci_blob_threshold = float(foci_blob_threshold)
+    except (TypeError, ValueError):
+        foci_blob_threshold = 0.8
+    if not np.isfinite(foci_blob_threshold):
+        foci_blob_threshold = 0.8
+    foci_blob_threshold = float(np.clip(foci_blob_threshold, 0.05, 1.0))
 
     SCRIPT_LOG.info("Loading masks from: %s", masks_path)
     masks = tifffile.imread(masks_path)
@@ -544,7 +555,13 @@ def analyze_masks(masks_path, pixel_size=0.108,
                 use_per_cell = False
                 cell_factor = None
                 if foci_detection_mode == 2 and detect_peaks_spotiflow is not None:
-                    peaks = detect_peaks_spotiflow(fi_image, model_name="general")
+                    sf_kw = dict(spotiflow_options) if spotiflow_options else {}
+                    try:
+                        peaks = detect_peaks_spotiflow(fi_image, **sf_kw)
+                    except TypeError:
+                        peaks = detect_peaks_spotiflow(
+                            fi_image, model_name=str(sf_kw.get("model_name") or "general")
+                        )
                     if peaks is None and SCRIPT_LOG:
                         SCRIPT_LOG.info("Spotiflow not available or failed, using Auto-detect for foci.")
                 if peaks is None and foci_detection_mode in (1, 2) and detect_peaks_cell_first_region_grow is not None:
@@ -563,11 +580,37 @@ def analyze_masks(masks_path, pixel_size=0.108,
                         min_distance=foci_min_separation,
                         min_size=foci_min_size,
                         max_size=foci_max_size,
+                        size_threshold_frac=foci_blob_threshold,
                         min_peak_raw=foci_min_peak_raw if foci_min_peak_raw and float(foci_min_peak_raw) > 0 else None,
                         min_focus_mean=foci_min_focus_mean if foci_min_focus_mean and float(foci_min_focus_mean) > 0 else None,
                         labeled_mask=mask_cleaned,
                     )
                 if peaks is not None:
+                    # Spotiflow yields point detections; derive blob area/mean using the configured blob threshold.
+                    if (
+                        foci_detection_mode == 2
+                        and peaks
+                        and focus_size_and_mean_at_peak is not None
+                    ):
+                        fi_flat = np.asarray(fi_image, dtype=np.float64)
+                        if fi_flat.ndim > 2:
+                            fi_flat = fi_flat[:, :, 0] if fi_flat.shape[2] < 10 else fi_flat[0, :, :]
+                        peaks_refined = []
+                        for p in peaks:
+                            yi, xi = int(p.get("y", 0)), int(p.get("x", 0))
+                            size_px, mean_int = focus_size_and_mean_at_peak(
+                                fi_flat,
+                                yi,
+                                xi,
+                                threshold_frac=foci_blob_threshold,
+                                max_radius=5,
+                                labeled_mask=mask_cleaned,
+                            )
+                            q = dict(p)
+                            q["size_px"] = int(size_px)
+                            q["mean_intensity"] = float(mean_int)
+                            peaks_refined.append(q)
+                        peaks = peaks_refined
                     foci_rows, cell_foci_ids = assign_peaks_to_cells(
                         peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx
                     )
@@ -585,7 +628,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                             yi, xi = int(row.get('y', 0)), int(row.get('x', 0))
                             blob_mask = get_focus_blob_mask(
                                 fi_flat, yi, xi,
-                                threshold_frac=0.8, max_radius=5,
+                                threshold_frac=foci_blob_threshold, max_radius=5,
                                 labeled_mask=mask_cleaned,
                             )
                             rest_of_cell = (mask_cleaned == cell_id) & ~blob_mask
@@ -1510,8 +1553,12 @@ Examples:
                        help='Min raw intensity at focus peak; 0 = off (default: 0)')
     parser.add_argument('--foci-min-focus-mean', type=float, default=0,
                        help='Min mean intensity of focus blob; 0 = off (default: 0)')
+    parser.add_argument('--foci-blob-threshold', type=float, default=0.8,
+                       help='Blob threshold fraction for focus area/mean around each peak (default: 0.8)')
     parser.add_argument('--foci-exclude-outside-cells', action='store_true',
                        help='Exclude foci that fall outside any cell from counts and Foci sheet')
+    parser.add_argument('--spotiflow-config', type=str, default=None,
+                       help='JSON file with Spotiflow options (same keys as GUI foci_spotiflow snapshot)')
     parser.add_argument('--foci-channel-name', type=str, default=None,
                        help='Channel name for foci columns/sheet (default: from FI filename, e.g. GFP)')
     parser.add_argument('--export-csv', action='store_true',
@@ -1543,16 +1590,59 @@ Examples:
             return 1
         fi_image_path = args.fi_image
     
-    # Foci channel name from FI path if not set (e.g. stem_fi_GFP.tif -> GFP)
+    spotiflow_options = None
+    sc = getattr(args, "spotiflow_config", None)
+    if sc:
+        sc_path = Path(sc)
+        if sc_path.is_file():
+            try:
+                with open(sc_path, encoding="utf-8") as sf:
+                    spotiflow_options = json.load(sf)
+            except Exception as e:
+                SCRIPT_LOG.warning("Could not read --spotiflow-config %s: %s", sc_path, e)
+
+    def _is_unlikely_channel_token(token: str) -> bool:
+        t = (token or "").strip().lower()
+        if not t:
+            return True
+        if t in {"fi", "foci", "mask", "masks", "phase", "bf", "dic", "seg", "segmentation"}:
+            return True
+        if t.startswith("t=") or t.startswith("z="):
+            return True
+        if t.endswith("x") and t[:-1].isdigit():
+            return True
+        return False
+
+    def _infer_foci_channel_name(path_str: str) -> str:
+        stem = Path(path_str).stem
+        if stem.endswith("_fi"):
+            return "FI"
+        if "_fi_" in stem:
+            rem = stem.split("_fi_", 1)[1].strip("_")
+            if rem.startswith("foci_"):
+                rem = rem[len("foci_") :].strip("_")
+            if rem.endswith("_foci"):
+                rem = rem[: -len("_foci")].strip("_")
+            return rem or "FI"
+        if stem.startswith("foci_"):
+            rem = stem[len("foci_") :].strip("_")
+            return rem or "FI"
+        if "_foci_" in stem:
+            rem = stem.split("_foci_", 1)[1].strip("_")
+            return rem or "FI"
+        if stem.endswith("_foci"):
+            prefix = stem[: -len("_foci")].strip("_")
+            if "_" in prefix:
+                token = prefix.rsplit("_", 1)[-1].strip("_")
+                if token and not _is_unlikely_channel_token(token):
+                    return token
+            return "FI"
+        return "FI"
+
+    # Foci channel name from FI path if not set (supports *_fi_*, *_foci_*, and *_<channel>_foci)
     fi_channel_name = args.foci_channel_name
     if fi_channel_name is None and fi_image_path:
-        stem = Path(fi_image_path).stem
-        if stem.endswith('_fi'):
-            fi_channel_name = 'FI'
-        elif '_fi_' in stem:
-            fi_channel_name = stem.split('_fi_')[-1].strip('_')
-        else:
-            fi_channel_name = 'FI'
+        fi_channel_name = _infer_foci_channel_name(fi_image_path)
     
     # Analyze masks
     results, detailed_data, masks_with_cellids, masks_original, foci_table = analyze_masks(
@@ -1583,7 +1673,9 @@ Examples:
         foci_max_size=args.foci_max_size,
         foci_min_peak_raw=getattr(args, 'foci_min_peak_raw', 0),
         foci_min_focus_mean=getattr(args, 'foci_min_focus_mean', 0),
+        foci_blob_threshold=getattr(args, 'foci_blob_threshold', 0.8),
         foci_exclude_outside_cells=getattr(args, 'foci_exclude_outside_cells', False),
+        spotiflow_options=spotiflow_options,
         fi_channel_name=fi_channel_name,
     )
     

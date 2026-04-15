@@ -91,7 +91,7 @@ class AnalyzeMasksPreviewWorker(QThread):
                 return
 
             # Own a copy for thread safety (parent may reuse buffers on next preview request)
-            mask_work = np.asarray(self._mask_cleaned, copy=True)
+            mask_work = np.asarray(self._mask_cleaned).copy()
 
             params = self._params
             self.progress.emit(20, "Computing cell properties... (20%)")
@@ -145,10 +145,10 @@ class AnalyzeMasksPreviewWorker(QThread):
 
                 fi_copy: Optional[np.ndarray] = None
                 if self._fi_image is not None:
-                    fi_copy = np.asarray(self._fi_image, copy=True)
+                    fi_copy = np.asarray(self._fi_image).copy()
                 multi_copy: Optional[list[np.ndarray]] = None
                 if self._multi_foci_fi_2d:
-                    multi_copy = [np.asarray(x, copy=True) for x in self._multi_foci_fi_2d]
+                    multi_copy = [np.asarray(x).copy() for x in self._multi_foci_fi_2d]
 
                 if self._superseded():
                     self._emit_superseded()

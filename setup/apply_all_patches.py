@@ -40,6 +40,76 @@ def _find_all_in_syspath(relative_path: str) -> list[Path]:
     return out
 
 
+def _omnipose_gpu_fallback_line(stripped: str) -> bool:
+    """Lines that belong to _get_gpu_torch except-branch (mis-indented by bad patches)."""
+    if stripped.startswith("gpu_logger.info") and "TORCH GPU" in stripped:
+        return True
+    if "torch_CPU" in stripped and "=" in stripped:
+        return True
+    if stripped.startswith("return device") and "False" in stripped:
+        return True
+    return False
+
+
+def _repair_omnipose_gpu_bactimate_pass_fallback(content: str) -> tuple[str, bool]:
+    """Remove erroneous 'pass  # empty except fixed by BactiMate patch' before gpu_logger fallback and re-indent."""
+    marker = "pass  # empty except fixed by BactiMate patch"
+    if marker not in content:
+        return content, False
+    lines = content.splitlines(keepends=True)
+    changed = False
+    i = 0
+    while i < len(lines):
+        if marker not in lines[i]:
+            i += 1
+            continue
+        pass_line = lines[i]
+        body_indent = pass_line[: len(pass_line) - len(pass_line.lstrip())]
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        has_fallback = False
+        k = j
+        while k < len(lines):
+            s = lines[k].strip()
+            if not s:
+                k += 1
+                continue
+            if _omnipose_gpu_fallback_line(s):
+                has_fallback = True
+            break
+        if not has_fallback:
+            i += 1
+            continue
+        lines.pop(i)
+        changed = True
+        j = i
+        seen_fallback = False
+        while j < len(lines):
+            raw = lines[j]
+            stripped = raw.strip()
+            if not stripped:
+                j += 1
+                continue
+            if not _omnipose_gpu_fallback_line(stripped):
+                if seen_fallback:
+                    break
+                j += 1
+                continue
+            nl = ""
+            if raw.endswith("\r\n"):
+                nl = "\r\n"
+            elif raw.endswith("\n"):
+                nl = "\n"
+            lines[j] = body_indent + stripped + nl
+            seen_fallback = True
+            j += 1
+        i = j
+    if changed:
+        content = "".join(lines)
+    return content, changed
+
+
 def patch_peakdetect() -> bool:
     """Patch peakdetect/peakdetect.py to fix scipy ifft import (scipy >= 1.10).
     BactiMate does not use the peakdetect package (foci use skimage.peak_local_max).
@@ -289,8 +359,9 @@ def patch_omnipose_gpu_empty_except() -> bool:
         print("  WARNING: Could not find omnipose/gpu.py")
         return False
     content = gpu_file.read_text()
+    content, repaired = _repair_omnipose_gpu_bactimate_pass_fallback(content)
+    patched = repaired
     lines = content.splitlines(keepends=True)
-    patched = False
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if not stripped.startswith("except") or ":" not in stripped:
@@ -326,30 +397,6 @@ def patch_omnipose_gpu_empty_except() -> bool:
             content = "".join(lines)
             patched = True
             break
-    # Repair: if we previously inserted "pass" but the next line was gpu_logger.info at same indent as except, we broke the file. Remove our pass and indent the following block to proper body indent (except + 4 spaces).
-    if not patched and "pass  # empty except fixed by BactiMate patch" in content:
-        lines = content.splitlines(keepends=True)
-        for i, line in enumerate(lines):
-            if "pass  # empty except fixed by BactiMate patch" not in line:
-                continue
-            pass_indent = line[: len(line) - len(line.lstrip())]
-            body_indent = pass_indent  # our pass was at except_indent+4, so body indent = pass_indent (8 spaces)
-            except_indent_len = len(pass_indent) - 4  # except is 4 spaces less (e.g. 4)
-            lines.pop(i)
-            j = i
-            while j < len(lines):
-                if not lines[j].strip():
-                    j += 1
-                    continue
-                line_indent = lines[j][: len(lines[j]) - len(lines[j].lstrip())]
-                if len(line_indent) <= except_indent_len:
-                    break
-                if len(line_indent) < len(body_indent):
-                    lines[j] = body_indent + lines[j].lstrip()
-                j += 1
-            content = "".join(lines)
-            patched = True
-            break
     if patched:
         gpu_file.write_text(content)
         print("  ✓ Patched omnipose gpu.py (empty except block fixed)")
@@ -366,6 +413,9 @@ def patch_omnipose_gpu_mps() -> bool:
         return False
     content = gpu_file.read_text()
     patched = False
+    content, repaired = _repair_omnipose_gpu_bactimate_pass_fallback(content)
+    if repaired:
+        patched = True
     # 1) Broaden ARM detection (platform.processor() can vary; platform.machine() == 'arm64' is reliable on Mac)
     old_arm = "ARM = 'arm' in platform.processor()"
     new_arm = "ARM = ('arm' in platform.processor()) or (platform.machine() == 'arm64')"
@@ -422,14 +472,13 @@ def patch_omnipose_gpu_mps() -> bool:
     if mps_fstring_pattern.search(content):
         content = mps_fstring_pattern.sub("'mps'", content)
         patched = True
-    # 5) Fix empty except block (SyntaxError: expected an indented block after 'except')
+    # 5) Fix empty except block only when truly empty — never insert pass before gpu_logger/torch_CPU fallback lines
     lines = content.splitlines(keepends=True)
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if not stripped.startswith("except") or ":" not in stripped:
             continue
         except_indent = line[: len(line) - len(stripped)]
-        # Find next non-empty line
         j = i + 1
         while j < len(lines) and not lines[j].strip():
             j += 1
@@ -437,11 +486,27 @@ def patch_omnipose_gpu_mps() -> bool:
             break
         next_line = lines[j]
         next_indent = next_line[: len(next_line) - len(next_line.lstrip())]
-        # If next line is not indented more than except, the block is empty
         if len(next_indent) <= len(except_indent):
+            nstrip = next_line.strip()
+            if _omnipose_gpu_fallback_line(nstrip):
+                body_indent = except_indent + "    "
+                k = j
+                while k < len(lines):
+                    sk = lines[k].strip()
+                    if not sk:
+                        k += 1
+                        continue
+                    if not _omnipose_gpu_fallback_line(sk):
+                        break
+                    raw = lines[k]
+                    nl = "\r\n" if raw.endswith("\r\n") else ("\n" if raw.endswith("\n") else "")
+                    lines[k] = body_indent + sk + nl
+                    k += 1
+                content = "".join(lines)
+                patched = True
+                break
             body_indent = except_indent + "    "
             body = f"{body_indent}pass  # empty except fixed by BactiMate patch\n"
-            # Normalize except to "except Exception as e:" so variable e exists if used below
             if "Exception as" not in stripped:
                 lines[i] = line.replace("except:", "except Exception as e:", 1).replace("except :", "except Exception as e:", 1)
             lines.insert(i + 1, body)

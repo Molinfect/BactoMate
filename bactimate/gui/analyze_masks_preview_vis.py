@@ -46,6 +46,7 @@ def _foci_detect_draw_channel(
             detect_peaks_skimage_auto as _detect_foci_auto,
             detect_peaks_cell_first_region_grow as _detect_foci_cell_first,
             detect_peaks_spotiflow as _detect_foci_spotiflow,
+            focus_size_and_mean_at_peak,
             get_focus_blob_mask,
         )
     except ImportError:
@@ -60,9 +61,39 @@ def _foci_detect_draw_channel(
         rel_mode = (sn.get("mode") or "per_cell").strip().lower()
         detection_mode = int(sn.get("detection_mode", 0))
         min_sep = sn.get("min_sep", 2)
+        blob_thresh = sn.get("blob_threshold", 0.8)
+        try:
+            blob_thresh = float(blob_thresh)
+        except (TypeError, ValueError):
+            blob_thresh = 0.8
+        if not np.isfinite(blob_thresh):
+            blob_thresh = 0.8
+        blob_thresh = float(np.clip(blob_thresh, 0.05, 1.0))
         peaks = None
         if detection_mode == 2 and _detect_foci_spotiflow is not None:
-            peaks = _detect_foci_spotiflow(fi_work, model_name="general")
+            sf_kw = dict(sn.get("spotiflow") or {})
+            try:
+                peaks = _detect_foci_spotiflow(fi_work, **sf_kw)
+            except TypeError:
+                peaks = _detect_foci_spotiflow(fi_work, model_name=str(sf_kw.get("model_name") or "general"))
+            # Spotiflow yields points; derive blob area/mean with the configured threshold.
+            if peaks:
+                peaks_refined = []
+                for p in peaks:
+                    yi, xi = int(p.get("y", 0)), int(p.get("x", 0))
+                    size_px, mean_int = focus_size_and_mean_at_peak(
+                        fi_work,
+                        yi,
+                        xi,
+                        threshold_frac=blob_thresh,
+                        max_radius=5,
+                        labeled_mask=mask,
+                    )
+                    q = dict(p)
+                    q["size_px"] = int(size_px)
+                    q["mean_intensity"] = float(mean_int)
+                    peaks_refined.append(q)
+                peaks = peaks_refined
         if peaks is None and detection_mode in (1, 2):
             if _detect_foci_cell_first is not None:
                 peaks = _detect_foci_cell_first(fi_work, labeled_mask=mask)
@@ -89,6 +120,7 @@ def _foci_detect_draw_channel(
                 min_distance=min_sep,
                 min_size=min_sz,
                 max_size=max_sz,
+                size_threshold_frac=blob_thresh,
                 min_peak_raw=min_peak_raw if min_peak_raw and float(min_peak_raw) > 0 else None,
                 min_focus_mean=min_focus_mean if min_focus_mean and float(min_focus_mean) > 0 else None,
                 labeled_mask=mask,
@@ -147,7 +179,7 @@ def _foci_detect_draw_channel(
                 if i >= peak_cap:
                     break
                 yi, xi = int(p["y"]), int(p["x"])
-                blob = get_focus_blob_mask(fi_f32, yi, xi, threshold_frac=0.8, max_radius=5, labeled_mask=mask)
+                blob = get_focus_blob_mask(fi_f32, yi, xi, threshold_frac=blob_thresh, max_radius=5, labeled_mask=mask)
                 if np.any(blob):
                     vis[blob] = draw_color
                     boundaries = find_boundaries(blob, mode="outer")
@@ -192,7 +224,8 @@ def build_preview_vis(
 ) -> tuple[np.ndarray, list[dict], int, Optional[float], Optional[float], str]:
     """
     Build RGB overlay (vis) and foci hover list. Safe to call from a worker thread.
-    foci_snapshot: dict with mode, min_rel, min_sep, min_sz, max_sz, min_peak_raw, min_focus_mean, exclude_outside, cell_factor.
+    foci_snapshot: dict with mode, min_rel, min_sep, min_sz, max_sz, min_peak_raw, min_focus_mean,
+    blob_threshold, exclude_outside, cell_factor.
     multi_foci_fi_2d: optional list of 2D FI arrays (same shape as mask) for multi-color foci preview; when set with len>0, foci are drawn for each.
     foci_channel_labels: short names (e.g. TIFF stem) aligned with multi_foci_fi_2d for hover/title.
     """

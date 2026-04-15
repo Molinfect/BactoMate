@@ -53,6 +53,16 @@ class WorkerThread(QThread):
         self.script_path = script_path
         self.cmd_args = cmd_args
         self._process = None
+        # Name thread for clearer Qt fatal logs (e.g. "QThread: Destroyed while thread 'analyze_cell_areas' is still running").
+        try:
+            if str(script_path) == "-m" and cmd_args:
+                first = str(cmd_args[0]).strip()
+                label = first.rsplit(".", 1)[-1] if first else "module"
+            else:
+                label = Path(str(script_path)).stem if script_path else "worker"
+            self.setObjectName(f"WorkerThread:{label}")
+        except Exception:
+            pass
 
     def terminate_process(self) -> None:
         """Request termination of the running subprocess (e.g. for Cancel). Safe to call from main thread."""

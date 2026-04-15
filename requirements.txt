@@ -4,6 +4,15 @@
 # - If you get "resolution-too-deep" on a fresh install, try:
 #   pip install --use-deprecated=legacy-resolver -r requirements.txt
 #
+# Python 3.12 / Apple Silicon (anticipate install pain):
+# - Upgrade pip first:  python -m pip install -U pip
+# - Floors below (numpy/scipy/skimage/trackastra/matplotlib/pandas) prefer wheels and avoid sdist builds
+#   that fail on 3.12 or against NumPy 2 (e.g. old matplotlib versioneer, pandas 2.1.0 vs NumPy 2).
+# - trackastra>=0.5 and torch>=2.5/torchvision>=0.20 narrow backtracking vs wide >=2.0 / old trackastra.
+# - Omnipose still pulls aicsimageio (older stack); keep bioio/tifffile as documented—avoid double TIFF stacks.
+# - TensorFlow + PyTorch in one env is OK on CPU; for Apple GPU use tensorflow-metal matching your TF minor.
+# - Mixing conda base Python with a venv can confuse native builds (wrong headers); prefer a plain venv + `which pip`.
+#
 # Core Omnipose dependencies (pinned for reproducible builds)
 omnipose>=1.0.6,<3.0.0
 cellpose-omni>=0.6.0,<1.0.0
@@ -12,9 +21,9 @@ cellpose-omni>=0.6.0,<1.0.0
 cellpose>=2.0.0
 
 # Image processing (upper bounds reduce resolver backtracking)
-numpy>=1.21.0,<3.0.0
-scipy>=1.7.0,<2.0.0
-scikit-image>=0.18.0,<0.25.0
+numpy>=1.26.0,<3.0.0  # 1.26+: py312; avoids resolver picking ancient sdists
+scipy>=1.11.0,<2.0.0  # 1.11+: cp312 wheels widely available
+scikit-image>=0.21.0,<0.25.0  # 0.21+: py312-friendly
 # tifffile>=2025.5.21 required by bioio-ome-tiff 1.2+ on Python 3.11+
 tifffile>=2025.5.21
 Pillow>=9.0.0,<12.0.0  # NumPy 2.0 compatibility; fallback for tifffile
@@ -37,12 +46,12 @@ czifile>=2019.7.2,<2025.0.0
 # GUI framework
 PyQt6>=6.6.0,<7.0.0
 
-# Data analysis and export
-pandas>=1.3.0,<3.0.0
+# Data analysis and export (>=2.1.1: wheels on py312; 2.1.0 sdist fails vs NumPy 2: PyArray_Descr.c_metadata)
+pandas>=2.1.1,<3.0.0
 openpyxl>=3.0.0,<4.0.0
 
-# Visualization
-matplotlib>=3.4.0,<4.0.0
+# Visualization (>=3.10: wheels on py312, narrows pip backtracking vs 3.8–3.9; old sdists: SafeConfigParser)
+matplotlib>=3.10.0,<4.0.0
 
 # Utilities
 tqdm>=4.62.0,<5.0.0
@@ -55,11 +64,12 @@ pytest>=7.0.0,<9.0.0
 # PyTorch (Omnipose, Trackastra). For CUDA see comments below.
 # CUDA: after install, pip uninstall torch torchvision torchaudio -y
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-torch>=2.0.0,<3.0.0
-torchvision>=0.15.0,<1.0.0
+# >=2.5 / >=0.20: paired release line, cp312 wheels, cuts pip backtracking vs torch>=2.0
+torch>=2.5.0,<3.0.0
+torchvision>=0.20.0,<1.0.0
 
 # Cell tracking (zarr 3.x required by trackastra; bioio-ome-tiff 1.2+ is compatible)
-trackastra>=0.1.0,<1.0.0
+trackastra>=0.5.0,<1.0.0  # 0.5+: avoids resolver probing 0.1.x–0.4.x (long backtracking + old stacks)
 zarr>=3.0.0
 
 # Model downloads (e.g. Trackastra pretrained models)
