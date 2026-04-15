@@ -53,8 +53,6 @@ class PostProcessingTab(QWidget):
         self.montage_channel_color_overrides: dict = {}  # (path_stem, ch_idx) -> "auto"|"gray"|"red"|"green"|...
         self.montage_tile_color_overrides: Dict[int, Tuple[float, float, float]] = {}  # tile_idx -> (r,g,b) 0-1
         self.montage_tile_percentile_overrides: Dict[int, Tuple[float, float]] = {}  # tile_idx -> (p_low, p_high)
-        self._montage_overlay_cache_key: Optional[tuple] = None
-        self._montage_overlay_cache_records: List[dict] = []
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -440,44 +438,19 @@ class PostProcessingTab(QWidget):
         montage_hint.setWordWrap(True)
         layout.addWidget(montage_hint)
 
-        overlay_group = QGroupBox("Optional overlay: foci + segmented cells + colocalization")
+        overlay_group = QGroupBox("Optional overlay: segmented cells")
         overlay_layout = QVBoxLayout()
         overlay_toggle_row = QHBoxLayout()
-        self.montage_overlay_enable = QCheckBox("Enable foci/cell overlay")
+        self.montage_overlay_enable = QCheckBox("Enable cell boundary overlay")
         self.montage_overlay_enable.setChecked(False)
         overlay_toggle_row.addWidget(self.montage_overlay_enable)
         overlay_toggle_row.addWidget(create_info_icon(
-            "When enabled, overlays are drawn on montage tiles using Analyze Masks outputs:\n"
-            "• Cell contours from mask TIFF\n"
-            "• Foci markers from Excel sheet 'Foci'\n"
-            "• Dashed links between colocalized foci on the merged tile\n\n"
-            "Colocalization uses one-to-one matching per channel pair in the selected frame.",
+            "When enabled, cell boundaries from a mask TIFF are drawn on montage tiles (yellow contours).\n"
+            "Leave Mask empty to auto-find ``*_masks.tif`` next to the montage input.",
             parent_widget=self,
         ))
         overlay_toggle_row.addStretch()
         overlay_layout.addLayout(overlay_toggle_row)
-
-        overlay_excel_row = QHBoxLayout()
-        self.montage_overlay_excel_path = QLineEdit()
-        self.montage_overlay_excel_path.setPlaceholderText("Analyze Masks Excel (contains 'Foci' sheet)")
-        overlay_excel_btn = QPushButton("Excel…")
-        overlay_excel_btn.setFixedWidth(90)
-
-        def _select_overlay_excel() -> None:
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select Analyze Masks Excel",
-                get_default_browse_dir(),
-                "Excel Files (*.xlsx *.xls);;All Files (*)",
-            )
-            if path:
-                self.montage_overlay_excel_path.setText(path)
-
-        overlay_excel_btn.clicked.connect(_select_overlay_excel)
-        overlay_excel_row.addWidget(QLabel("Excel:"))
-        overlay_excel_row.addWidget(self.montage_overlay_excel_path, 1)
-        overlay_excel_row.addWidget(overlay_excel_btn)
-        overlay_layout.addLayout(overlay_excel_row)
 
         overlay_mask_row = QHBoxLayout()
         self.montage_overlay_mask_path = QLineEdit()
@@ -507,24 +480,6 @@ class PostProcessingTab(QWidget):
         self.montage_overlay_frame.setRange(0, 100000)
         self.montage_overlay_frame.setValue(0)
         overlay_params_row.addWidget(self.montage_overlay_frame)
-        overlay_params_row.addSpacing(10)
-        overlay_params_row.addWidget(QLabel("Max distance (px):"))
-        self.montage_coloc_max_distance = QDoubleSpinBox()
-        self.montage_coloc_max_distance.setRange(0.1, 500.0)
-        self.montage_coloc_max_distance.setDecimals(1)
-        self.montage_coloc_max_distance.setValue(8.0)
-        overlay_params_row.addWidget(self.montage_coloc_max_distance)
-        overlay_params_row.addSpacing(10)
-        overlay_params_row.addWidget(QLabel("Coloc threshold (px):"))
-        self.montage_coloc_threshold = QDoubleSpinBox()
-        self.montage_coloc_threshold.setRange(0.1, 500.0)
-        self.montage_coloc_threshold.setDecimals(1)
-        self.montage_coloc_threshold.setValue(4.0)
-        overlay_params_row.addWidget(self.montage_coloc_threshold)
-        overlay_params_row.addSpacing(10)
-        self.montage_coloc_same_cell_only = QCheckBox("Same cell only")
-        self.montage_coloc_same_cell_only.setChecked(True)
-        overlay_params_row.addWidget(self.montage_coloc_same_cell_only)
         overlay_params_row.addStretch()
         overlay_layout.addLayout(overlay_params_row)
 
@@ -1164,170 +1119,26 @@ class PostProcessingTab(QWidget):
         t = cls._normalize_channel_token(token)
         return t in {"phase", "bf", "trans", "brightfield"}
 
-    def _find_montage_overlay_excel_paths(
+    def _prepare_montage_mask_overlay(
         self,
-        *,
         base_name: str,
         channel_paths: List[Path],
-        explicit_excel_path: Optional[Path],
-    ) -> List[Path]:
-        """Find candidate analysis Excels, prioritizing _analysis folders near montage inputs."""
-        roots: List[Path] = []
-        explicit_files: List[Path] = []
-
-        if explicit_excel_path is not None:
-            if explicit_excel_path.is_file():
-                explicit_files.append(explicit_excel_path)
-                for r in (explicit_excel_path.parent, explicit_excel_path.parent.parent):
-                    if r.exists() and r.is_dir() and r not in roots:
-                        roots.append(r)
-            elif explicit_excel_path.is_dir():
-                for r in (explicit_excel_path, explicit_excel_path.parent):
-                    if r.exists() and r.is_dir() and r not in roots:
-                        roots.append(r)
-
-        for p in channel_paths:
-            for r in (p.parent, p.parent.parent):
-                if r.exists() and r.is_dir() and r not in roots:
-                    roots.append(r)
-
-        analysis_dirs: List[Path] = []
-        for r in roots:
-            if r.name == "_analysis" and r not in analysis_dirs:
-                analysis_dirs.append(r)
-            d = r / "_analysis"
-            if d.exists() and d.is_dir() and d not in analysis_dirs:
-                analysis_dirs.append(d)
-
-        excel_candidates: List[Path] = []
-        seen = set()
-        for p in explicit_files:
-            rp = p.resolve()
-            if rp not in seen:
-                seen.add(rp)
-                excel_candidates.append(p)
-
-        for d in analysis_dirs:
-            for p in sorted(d.glob("*_analysis*.xlsx"), key=lambda x: x.name.lower()):
-                if "combined_summary" in p.name.lower():
-                    continue
-                rp = p.resolve()
-                if rp not in seen:
-                    seen.add(rp)
-                    excel_candidates.append(p)
-
-        if not excel_candidates:
-            return []
-
-        def _norm(s: str) -> str:
-            return "".join(ch for ch in (s or "").lower() if ch.isalnum())
-
-        base_tokens = {_norm(base_name)}
-        for cp in channel_paths:
-            base_tokens.add(_norm(cp.stem))
-            inf = self._infer_channel_from_stem(cp.stem)
-            if inf and inf[0]:
-                base_tokens.add(_norm(inf[0]))
-        base_tokens = {t for t in base_tokens if len(t) >= 8}
-
-        if not base_tokens:
-            return excel_candidates
-
-        filtered: List[Path] = []
-        for p in excel_candidates:
-            n = _norm(p.stem)
-            if any((tok in n) or (n in tok) for tok in base_tokens):
-                filtered.append(p)
-        return filtered if filtered else excel_candidates
-
-    def _load_montage_overlay_foci_records(
-        self,
-        excel_paths: List[Path],
         frame_index: int,
-    ) -> List[dict]:
-        """Load frame-specific foci rows from one or more analysis Excels."""
-        valid_paths: List[Path] = [p for p in excel_paths if p.exists() and p.is_file()]
-        if not valid_paths:
-            return []
-        try:
-            resolved = sorted(
-                (
-                    str(p.resolve()),
-                    int(p.stat().st_mtime_ns),
-                )
-                for p in valid_paths
-            )
-            cache_key = (tuple(resolved), int(frame_index))
-            if cache_key == self._montage_overlay_cache_key:
-                return list(self._montage_overlay_cache_records)
-            import pandas as pd
-        except Exception:
-            self._montage_overlay_cache_key = None
-            self._montage_overlay_cache_records = []
-            return []
-
-        records: List[dict] = []
-        for excel_path in valid_paths:
-            try:
-                df = pd.read_excel(excel_path, sheet_name="Foci")
-            except Exception:
-                continue
-            if df is None or df.empty:
-                continue
-
-            lowered = {str(c).strip().lower(): c for c in df.columns}
-
-            def _pick(*names: str) -> Optional[str]:
-                for n in names:
-                    if n in lowered:
-                        return str(lowered[n])
-                return None
-
-            x_col = _pick("x", "foci_center_x")
-            y_col = _pick("y", "foci_center_y")
-            ch_col = _pick("channel_name", "channel", "foci_channel")
-            frame_col = _pick("frame")
-            cell_col = _pick("cell_id")
-            if x_col is None or y_col is None:
-                continue
-
-            frame_df = df
-            if frame_col is not None:
-                frame_num = pd.to_numeric(df[frame_col], errors="coerce")
-                frame_df = df[frame_num == float(frame_index)]
-                if frame_df.empty:
-                    frame_df = df[frame_num == float(frame_index + 1)]
-
-            for _, row in frame_df.iterrows():
-                try:
-                    x = float(row[x_col])
-                    y = float(row[y_col])
-                except Exception:
-                    continue
-                if not (np.isfinite(x) and np.isfinite(y)):
-                    continue
-                ch_name = str(row[ch_col]).strip() if ch_col and row.get(ch_col) is not None else "FI"
-                cell_id = 0
-                if cell_col and row.get(cell_col) is not None:
-                    try:
-                        c = float(row[cell_col])
-                        if np.isfinite(c):
-                            cell_id = int(c)
-                    except Exception:
-                        cell_id = 0
-                records.append(
-                    {
-                        "x": x,
-                        "y": y,
-                        "cell_id": cell_id,
-                        "channel_name": ch_name,
-                        "channel_norm": self._normalize_channel_token(ch_name),
-                    }
-                )
-
-        self._montage_overlay_cache_key = cache_key
-        self._montage_overlay_cache_records = list(records)
-        return records
+        mask_override_path: Optional[Path],
+    ) -> dict:
+        """Build montage overlay context: labeled mask frame and shape (cell boundaries only)."""
+        mask_path = self._resolve_montage_mask_path(base_name, channel_paths, mask_override_path)
+        mask_frame = self._load_mask_frame(mask_path, frame_index) if mask_path is not None else None
+        src_shape: Optional[tuple[int, int]] = None
+        if mask_frame is not None and mask_frame.ndim == 2:
+            src_shape = (int(mask_frame.shape[0]), int(mask_frame.shape[1]))
+        return {
+            "base_name": base_name,
+            "mask_frame": mask_frame,
+            "mask_path": mask_path,
+            "source_shape": src_shape,
+            "boundary_cache": {},
+        }
 
     def _resolve_montage_mask_path(
         self,
@@ -1410,147 +1221,6 @@ class PostProcessingTab(QWidget):
         return None
 
     @staticmethod
-    def _compute_colocalized_pairs(
-        points_a: List[dict],
-        points_b: List[dict],
-        *,
-        max_distance_px: float,
-        threshold_px: float,
-        same_cell_only: bool,
-    ) -> List[tuple[dict, dict, float]]:
-        """One-to-one matching with distance cutoff, then threshold classification."""
-        if not points_a or not points_b:
-            return []
-
-        a_xy = np.asarray([[p["x"], p["y"]] for p in points_a], dtype=float)
-        b_xy = np.asarray([[p["x"], p["y"]] for p in points_b], dtype=float)
-        dx = a_xy[:, None, 0] - b_xy[None, :, 0]
-        dy = a_xy[:, None, 1] - b_xy[None, :, 1]
-        dist = np.sqrt(dx * dx + dy * dy)
-
-        if max_distance_px > 0:
-            dist = np.where(dist <= float(max_distance_px), dist, np.inf)
-
-        if same_cell_only:
-            a_cell = np.asarray([int(p.get("cell_id", 0) or 0) for p in points_a], dtype=int)
-            b_cell = np.asarray([int(p.get("cell_id", 0) or 0) for p in points_b], dtype=int)
-            compat = (a_cell[:, None] == b_cell[None, :]) & (a_cell[:, None] > 0)
-            dist = np.where(compat, dist, np.inf)
-
-        if not np.isfinite(dist).any():
-            return []
-
-        pairs: List[tuple[int, int]] = []
-        try:
-            from scipy.optimize import linear_sum_assignment
-
-            finite = np.isfinite(dist)
-            max_finite = float(np.nanmax(dist[finite])) if finite.any() else 1.0
-            penalty = max(max_finite, 1.0) * (float(min(dist.shape)) + 1.0) + 1.0
-            work = np.where(finite, dist, penalty)
-            ri, ci = linear_sum_assignment(work)
-            for i, j in zip(ri.tolist(), ci.tolist()):
-                if np.isfinite(dist[i, j]):
-                    pairs.append((int(i), int(j)))
-        except Exception:
-            # Fallback greedy matching when scipy is unavailable.
-            work = dist.copy()
-            while np.isfinite(work).any():
-                flat_idx = int(np.nanargmin(np.where(np.isfinite(work), work, np.nan)))
-                i, j = np.unravel_index(flat_idx, work.shape)
-                if not np.isfinite(work[i, j]):
-                    break
-                pairs.append((int(i), int(j)))
-                work[i, :] = np.inf
-                work[:, j] = np.inf
-
-        out: List[tuple[dict, dict, float]] = []
-        for i, j in pairs:
-            d = float(dist[i, j])
-            if not np.isfinite(d):
-                continue
-            if threshold_px > 0 and d > float(threshold_px):
-                continue
-            out.append((points_a[i], points_b[j], d))
-        return out
-
-    def _prepare_montage_overlay_group(
-        self,
-        base_name: str,
-        channel_names: List[str],
-        channel_paths: List[Path],
-        foci_records: List[dict],
-        frame_index: int,
-        max_distance_px: float,
-        threshold_px: float,
-        same_cell_only: bool,
-        mask_override_path: Optional[Path],
-    ) -> dict:
-        """Assemble overlay context for one montage dataset."""
-        by_norm: Dict[str, List[dict]] = {}
-        for rec in foci_records:
-            by_norm.setdefault(rec["channel_norm"], []).append(rec)
-        non_phase_norms = [n for n in by_norm.keys() if not self._is_phase_channel_token(n)]
-
-        channel_norms: List[str] = [self._normalize_channel_token(c) for c in channel_names]
-        channel_norms = [c for c in channel_norms if c]
-
-        foci_by_channel: Dict[str, List[dict]] = {}
-        for n in channel_norms:
-            if self._is_phase_channel_token(n):
-                foci_by_channel[n] = []
-                continue
-            pts = list(by_norm.get(n, []))
-            if not pts and len(non_phase_norms) == 1:
-                pts = list(by_norm.get(non_phase_norms[0], []))
-            foci_by_channel[n] = pts
-
-        mask_path = self._resolve_montage_mask_path(base_name, channel_paths, mask_override_path)
-        mask_frame = self._load_mask_frame(mask_path, frame_index) if mask_path is not None else None
-
-        coloc_pairs: List[dict] = []
-        uniq_norms = [n for n in dict.fromkeys(channel_norms) if not self._is_phase_channel_token(n)]
-        for i in range(len(uniq_norms)):
-            for j in range(i + 1, len(uniq_norms)):
-                a = uniq_norms[i]
-                b = uniq_norms[j]
-                pairs = self._compute_colocalized_pairs(
-                    foci_by_channel.get(a, []),
-                    foci_by_channel.get(b, []),
-                    max_distance_px=max_distance_px,
-                    threshold_px=threshold_px,
-                    same_cell_only=same_cell_only,
-                )
-                for p_a, p_b, d in pairs:
-                    coloc_pairs.append(
-                        {
-                            "a_norm": a,
-                            "b_norm": b,
-                            "a_point": p_a,
-                            "b_point": p_b,
-                            "distance": d,
-                        }
-                    )
-
-        src_shape = None
-        if mask_frame is not None and mask_frame.ndim == 2:
-            src_shape = (int(mask_frame.shape[0]), int(mask_frame.shape[1]))
-        elif foci_records:
-            max_x = max((float(r["x"]) for r in foci_records), default=0.0)
-            max_y = max((float(r["y"]) for r in foci_records), default=0.0)
-            src_shape = (int(max_y + 1), int(max_x + 1))
-
-        return {
-            "base_name": base_name,
-            "mask_frame": mask_frame,
-            "mask_path": mask_path,
-            "source_shape": src_shape,
-            "foci_by_channel": foci_by_channel,
-            "coloc_pairs": coloc_pairs,
-            "boundary_cache": {},
-        }
-
-    @staticmethod
     def _mask_boundaries(mask_labels: np.ndarray) -> np.ndarray:
         """Return binary boundaries for labeled mask image."""
         if mask_labels is None or mask_labels.ndim != 2:
@@ -1568,36 +1238,6 @@ class PostProcessingTab(QWidget):
             edges[:, :-1] |= (m[:, :-1] != m[:, 1:])
             return edges & (m > 0)
 
-    @staticmethod
-    def _draw_dashed_line(
-        draw: Any,
-        p0: tuple[float, float],
-        p1: tuple[float, float],
-        color: tuple[int, int, int],
-        width: int = 2,
-        dash_px: float = 6.0,
-        gap_px: float = 4.0,
-    ) -> None:
-        """Draw dashed line segment with PIL.ImageDraw."""
-        x0, y0 = p0
-        x1, y1 = p1
-        dx = x1 - x0
-        dy = y1 - y0
-        length = math.hypot(dx, dy)
-        if length < 1e-6:
-            return
-        ux = dx / length
-        uy = dy / length
-        pos = 0.0
-        while pos < length:
-            seg_end = min(pos + dash_px, length)
-            sx = x0 + ux * pos
-            sy = y0 + uy * pos
-            ex = x0 + ux * seg_end
-            ey = y0 + uy * seg_end
-            draw.line([(sx, sy), (ex, ey)], fill=color, width=width)
-            pos += dash_px + gap_px
-
     def _apply_overlay_to_tile(
         self,
         tile_rgb: np.ndarray,
@@ -1607,16 +1247,13 @@ class PostProcessingTab(QWidget):
         tiles: List[tuple],
         per_tile_color_override: Optional[Dict[int, Tuple[float, float, float]]],
     ) -> np.ndarray:
-        """Apply cell contours, foci markers, and optional colocalization links to one tile."""
+        """Apply cell boundary overlay from a labeled mask (yellow contours)."""
         if tile_rgb is None or tile_rgb.ndim != 3 or tile_rgb.shape[-1] != 3:
             return tile_rgb
-        from PIL import Image, ImageDraw
+        from PIL import Image
 
         arr = np.ascontiguousarray(tile_rgb.copy())
         h, w = arr.shape[:2]
-        src_shape = overlay_ctx.get("source_shape") or (h, w)
-        src_h = max(1, int(src_shape[0]))
-        src_w = max(1, int(src_shape[1]))
 
         mask_frame = overlay_ctx.get("mask_frame")
         if mask_frame is not None and mask_frame.ndim == 2:
@@ -1632,69 +1269,7 @@ class PostProcessingTab(QWidget):
                 cache[key] = edges
             arr[edges] = np.array([255, 255, 0], dtype=np.uint8)
 
-        img = Image.fromarray(arr)
-        draw = ImageDraw.Draw(img)
-
-        def _to_xy(rec: dict) -> tuple[float, float]:
-            x = float(rec.get("x", 0.0))
-            y = float(rec.get("y", 0.0))
-            return (x * (w / float(src_w)), y * (h / float(src_h)))
-
-        def _rgb255(rgb01: Optional[tuple[float, float, float]], fallback=(255, 255, 0)) -> tuple[int, int, int]:
-            if rgb01 is None:
-                return fallback
-            return (
-                int(max(0.0, min(1.0, float(rgb01[0]))) * 255.0),
-                int(max(0.0, min(1.0, float(rgb01[1]))) * 255.0),
-                int(max(0.0, min(1.0, float(rgb01[2]))) * 255.0),
-            )
-
-        marker_radius = 4
-        kind = tile_meta.get("kind")
-        if kind == "channel":
-            ch_norm = tile_meta.get("channel_norm", "")
-            points = overlay_ctx.get("foci_by_channel", {}).get(ch_norm, [])
-            tile_color = per_tile_color_override.get(tile_index) if per_tile_color_override and tile_index in per_tile_color_override else tiles[tile_index][2]
-            color = _rgb255(tile_color, fallback=(255, 200, 0))
-            for rec in points:
-                cx, cy = _to_xy(rec)
-                draw.ellipse(
-                    [(cx - marker_radius, cy - marker_radius), (cx + marker_radius, cy + marker_radius)],
-                    outline=color,
-                    width=2,
-                )
-        elif kind == "merged":
-            idxs: List[int] = list(tile_meta.get("channel_tile_indices") or [])
-            norms: List[str] = list(tile_meta.get("channel_norms") or [])
-            color_map: Dict[str, tuple[int, int, int]] = {}
-            for ch_norm, ch_tile_idx in zip(norms, idxs):
-                rgb01 = per_tile_color_override.get(ch_tile_idx) if per_tile_color_override and ch_tile_idx in per_tile_color_override else tiles[ch_tile_idx][2]
-                color_map[ch_norm] = _rgb255(rgb01, fallback=(255, 200, 0))
-            for ch_norm in norms:
-                color = color_map.get(ch_norm, (255, 200, 0))
-                for rec in overlay_ctx.get("foci_by_channel", {}).get(ch_norm, []):
-                    cx, cy = _to_xy(rec)
-                    draw.ellipse(
-                        [(cx - marker_radius, cy - marker_radius), (cx + marker_radius, cy + marker_radius)],
-                        outline=color,
-                        width=2,
-                    )
-            for pair in overlay_ctx.get("coloc_pairs", []):
-                a_norm = pair.get("a_norm", "")
-                b_norm = pair.get("b_norm", "")
-                if a_norm not in color_map or b_norm not in color_map:
-                    continue
-                p0 = _to_xy(pair["a_point"])
-                p1 = _to_xy(pair["b_point"])
-                c0 = color_map[a_norm]
-                c1 = color_map[b_norm]
-                line_color = (
-                    int((c0[0] + c1[0]) / 2),
-                    int((c0[1] + c1[1]) / 2),
-                    int((c0[2] + c1[2]) / 2),
-                )
-                self._draw_dashed_line(draw, p0, p1, line_color, width=2, dash_px=6.0, gap_px=4.0)
-        return np.asarray(img)
+        return arr
 
     def _get_montage_datasets(self) -> List[dict]:
         """
@@ -1828,13 +1403,6 @@ class PostProcessingTab(QWidget):
             and self.montage_overlay_enable.isChecked()
         )
         overlay_frame = int(self.montage_overlay_frame.value()) if hasattr(self, "montage_overlay_frame") else 0
-        overlay_max_dist = float(self.montage_coloc_max_distance.value()) if hasattr(self, "montage_coloc_max_distance") else 8.0
-        overlay_threshold = float(self.montage_coloc_threshold.value()) if hasattr(self, "montage_coloc_threshold") else 4.0
-        overlay_same_cell = bool(
-            getattr(self, "montage_coloc_same_cell_only", None)
-            and self.montage_coloc_same_cell_only.isChecked()
-        )
-        overlay_excel_input = Path(self.montage_overlay_excel_path.text().strip()) if hasattr(self, "montage_overlay_excel_path") and self.montage_overlay_excel_path.text().strip() else None
         overlay_mask_override = Path(self.montage_overlay_mask_path.text().strip()) if hasattr(self, "montage_overlay_mask_path") and self.montage_overlay_mask_path.text().strip() else None
 
         def _normalize_plane(plane: np.ndarray, p_low: float = 5.0, p_high: float = 95.0) -> np.ndarray:
@@ -1987,16 +1555,12 @@ class PostProcessingTab(QWidget):
             if ds_type in ("nd2", "nd2_like"):
                 path = ds["path"]
                 overlay_group_key = f"{path.stem}|{ds_type}"
-                ds_overlay_records: List[dict] = []
-                if overlay_enabled:
-                    ds_overlay_excels = self._find_montage_overlay_excel_paths(
+                if overlay_enabled and overlay_group_key not in overlay_groups:
+                    overlay_groups[overlay_group_key] = self._prepare_montage_mask_overlay(
                         base_name=path.stem,
                         channel_paths=[path],
-                        explicit_excel_path=overlay_excel_input,
-                    )
-                    ds_overlay_records = self._load_montage_overlay_foci_records(
-                        ds_overlay_excels,
-                        overlay_frame,
+                        frame_index=overlay_frame,
+                        mask_override_path=overlay_mask_override,
                     )
                 result = load_nd2_or_multichannel_tiff(path, 0)
                 if result is None:
@@ -2028,19 +1592,7 @@ class PostProcessingTab(QWidget):
                         single = arr_hwc[..., 0] if arr_hwc.ndim == 3 else arr_hwc
                         col = self._get_channel_colors_for_path(path, 1, entry_index=0)[0]
                         tiles.append((single, base_label, col))
-                        if overlay_enabled and ds_overlay_records:
-                            if overlay_group_key not in overlay_groups:
-                                overlay_groups[overlay_group_key] = self._prepare_montage_overlay_group(
-                                    base_name=path.stem,
-                                    channel_names=[ch_names[0] if ch_names else "FI"],
-                                    channel_paths=[path],
-                                    foci_records=ds_overlay_records,
-                                    frame_index=overlay_frame,
-                                    max_distance_px=overlay_max_dist,
-                                    threshold_px=overlay_threshold,
-                                    same_cell_only=overlay_same_cell,
-                                    mask_override_path=overlay_mask_override,
-                                )
+                        if overlay_enabled:
                             tile_meta.append(
                                 {
                                     "kind": "channel",
@@ -2057,19 +1609,7 @@ class PostProcessingTab(QWidget):
                     single = arr_hwc[..., 0] if arr_hwc.ndim == 3 else arr_hwc
                     col = self._get_channel_colors_for_path(path, 1, entry_index=0)[0]
                     tiles.append((single, base_label, col))
-                    if overlay_enabled and ds_overlay_records:
-                        if overlay_group_key not in overlay_groups:
-                            overlay_groups[overlay_group_key] = self._prepare_montage_overlay_group(
-                                base_name=path.stem,
-                                channel_names=[ch_names[0] if ch_names else "FI"],
-                                channel_paths=[path],
-                                foci_records=ds_overlay_records,
-                                frame_index=overlay_frame,
-                                max_distance_px=overlay_max_dist,
-                                threshold_px=overlay_threshold,
-                                same_cell_only=overlay_same_cell,
-                                mask_override_path=overlay_mask_override,
-                            )
+                    if overlay_enabled:
                         tile_meta.append(
                             {
                                 "kind": "channel",
@@ -2082,18 +1622,6 @@ class PostProcessingTab(QWidget):
                     if use_global_lut:
                         all_arrays_for_global.append(np.asarray(single, dtype=np.float64))
                     continue
-                if overlay_enabled and ds_overlay_records and overlay_group_key not in overlay_groups:
-                    overlay_groups[overlay_group_key] = self._prepare_montage_overlay_group(
-                        base_name=path.stem,
-                        channel_names=ch_names,
-                        channel_paths=[path],
-                        foci_records=ds_overlay_records,
-                        frame_index=overlay_frame,
-                        max_distance_px=overlay_max_dist,
-                        threshold_px=overlay_threshold,
-                        same_cell_only=overlay_same_cell,
-                        mask_override_path=overlay_mask_override,
-                    )
                 group_channel_tile_indices: List[int] = []
                 group_channel_norms: List[str] = []
                 for c in range(arr_hwc.shape[-1]):
@@ -2101,7 +1629,7 @@ class PostProcessingTab(QWidget):
                     label = ch_names[c] if c < len(ch_names) else f"Ch{c+1}"
                     tile_idx = len(tiles)
                     tiles.append((plane, f"{base_label} {label}", colors[c]))
-                    if overlay_enabled and ds_overlay_records:
+                    if overlay_enabled:
                         ch_norm = self._normalize_channel_token(label)
                         group_channel_tile_indices.append(tile_idx)
                         group_channel_norms.append(ch_norm)
@@ -2118,7 +1646,7 @@ class PostProcessingTab(QWidget):
                         all_arrays_for_global.append(np.asarray(plane, dtype=np.float64))
                 merged = _compose_merged(arr_hwc, colors)
                 tiles.append((merged, f"{base_label} Merged", None))
-                if overlay_enabled and ds_overlay_records:
+                if overlay_enabled:
                     tile_meta.append(
                         {
                             "kind": "merged",
@@ -2136,16 +1664,12 @@ class PostProcessingTab(QWidget):
                 channel_list: List[tuple[Path, str]] = ds["channels"]
                 overlay_group_key = f"{base}|tiff_group"
                 channel_paths_for_group = [p for p, _ in channel_list]
-                ds_overlay_records: List[dict] = []
-                if overlay_enabled:
-                    ds_overlay_excels = self._find_montage_overlay_excel_paths(
+                if overlay_enabled and overlay_group_key not in overlay_groups:
+                    overlay_groups[overlay_group_key] = self._prepare_montage_mask_overlay(
                         base_name=base,
                         channel_paths=channel_paths_for_group,
-                        explicit_excel_path=overlay_excel_input,
-                    )
-                    ds_overlay_records = self._load_montage_overlay_foci_records(
-                        ds_overlay_excels,
-                        overlay_frame,
+                        frame_index=overlay_frame,
+                        mask_override_path=overlay_mask_override,
                     )
                 loaded_channels: List[tuple[np.ndarray, str, tuple]] = []
                 for path, ch_name in channel_list:
@@ -2155,24 +1679,12 @@ class PostProcessingTab(QWidget):
                         loaded_channels.append((plane, ch_name, color))
                         if use_global_lut:
                             all_arrays_for_global.append(np.asarray(plane, dtype=np.float64))
-                if overlay_enabled and ds_overlay_records and overlay_group_key not in overlay_groups:
-                    overlay_groups[overlay_group_key] = self._prepare_montage_overlay_group(
-                        base_name=base,
-                        channel_names=[ch for _, ch, _ in loaded_channels],
-                        channel_paths=channel_paths_for_group,
-                        foci_records=ds_overlay_records,
-                        frame_index=overlay_frame,
-                        max_distance_px=overlay_max_dist,
-                        threshold_px=overlay_threshold,
-                        same_cell_only=overlay_same_cell,
-                        mask_override_path=overlay_mask_override,
-                    )
                 group_channel_tile_indices: List[int] = []
                 group_channel_norms: List[str] = []
                 for plane, ch_name, color in loaded_channels:
                     tile_idx = len(tiles)
                     tiles.append((plane, f"{base} {ch_name}", color))
-                    if overlay_enabled and ds_overlay_records:
+                    if overlay_enabled:
                         ch_norm = self._normalize_channel_token(ch_name)
                         group_channel_tile_indices.append(tile_idx)
                         group_channel_norms.append(ch_norm)
@@ -2202,7 +1714,7 @@ class PostProcessingTab(QWidget):
                     arr_hwc = np.stack(resized, axis=-1)
                     merged = _compose_merged(arr_hwc, color_list)
                     tiles.append((merged, f"{base} Merged", None))
-                    if overlay_enabled and ds_overlay_records:
+                    if overlay_enabled:
                         tile_meta.append(
                             {
                                 "kind": "merged",
@@ -3261,9 +2773,22 @@ class PostProcessingTab(QWidget):
         if path_obj.is_file():
             self.excel_path.setText(dropped_path)
         elif path_obj.is_dir():
-            xlsx_files = list(path_obj.glob("*.xlsx")) + list(path_obj.glob("*.xls"))
-            if xlsx_files:
-                self.excel_path.setText(str(xlsx_files[0]))
+            xlsx_files = sorted(
+                list(path_obj.glob("*.xlsx")) + list(path_obj.glob("*.xls")),
+                key=lambda p: p.name.lower(),
+            )
+            if not xlsx_files:
+                return
+            preferred = [
+                p for p in xlsx_files
+                if p.suffix.lower() in (".xlsx", ".xls")
+                and (
+                    p.name.lower().endswith("_analysis.xlsx")
+                    or p.name.lower().endswith("_masks_analysis.xlsx")
+                )
+                and not p.name.lower().endswith("_foci_analysis.xlsx")
+            ]
+            self.excel_path.setText(str(preferred[0] if preferred else xlsx_files[0]))
 
     def select_excel_file(self):
         """Select Excel file from Analyze Masks tab"""
@@ -3430,18 +2955,10 @@ class PostProcessingTab(QWidget):
         ])
         if hasattr(self, "montage_overlay_enable"):
             d["montage_overlay_enable"] = self.montage_overlay_enable.isChecked()
-        if hasattr(self, "montage_overlay_excel_path"):
-            d["montage_overlay_excel_path"] = self.montage_overlay_excel_path.text().strip()
         if hasattr(self, "montage_overlay_mask_path"):
             d["montage_overlay_mask_path"] = self.montage_overlay_mask_path.text().strip()
         if hasattr(self, "montage_overlay_frame"):
             d["montage_overlay_frame"] = self.montage_overlay_frame.value()
-        if hasattr(self, "montage_coloc_max_distance"):
-            d["montage_coloc_max_distance"] = self.montage_coloc_max_distance.value()
-        if hasattr(self, "montage_coloc_threshold"):
-            d["montage_coloc_threshold"] = self.montage_coloc_threshold.value()
-        if hasattr(self, "montage_coloc_same_cell_only"):
-            d["montage_coloc_same_cell_only"] = self.montage_coloc_same_cell_only.isChecked()
         if getattr(self, "montage_tile_percentile_overrides", None):
             d["montage_tile_percentile_overrides"] = {
                 str(int(k)): [float(v[0]), float(v[1])]
@@ -3463,8 +2980,6 @@ class PostProcessingTab(QWidget):
         ])
         if "montage_overlay_enable" in data and hasattr(self, "montage_overlay_enable"):
             self.montage_overlay_enable.setChecked(bool(data["montage_overlay_enable"]))
-        if "montage_overlay_excel_path" in data and hasattr(self, "montage_overlay_excel_path"):
-            self.montage_overlay_excel_path.setText(str(data["montage_overlay_excel_path"] or ""))
         if "montage_overlay_mask_path" in data and hasattr(self, "montage_overlay_mask_path"):
             self.montage_overlay_mask_path.setText(str(data["montage_overlay_mask_path"] or ""))
         if "montage_overlay_frame" in data and hasattr(self, "montage_overlay_frame"):
@@ -3472,18 +2987,6 @@ class PostProcessingTab(QWidget):
                 self.montage_overlay_frame.setValue(int(data["montage_overlay_frame"]))
             except (TypeError, ValueError):
                 pass
-        if "montage_coloc_max_distance" in data and hasattr(self, "montage_coloc_max_distance"):
-            try:
-                self.montage_coloc_max_distance.setValue(float(data["montage_coloc_max_distance"]))
-            except (TypeError, ValueError):
-                pass
-        if "montage_coloc_threshold" in data and hasattr(self, "montage_coloc_threshold"):
-            try:
-                self.montage_coloc_threshold.setValue(float(data["montage_coloc_threshold"]))
-            except (TypeError, ValueError):
-                pass
-        if "montage_coloc_same_cell_only" in data and hasattr(self, "montage_coloc_same_cell_only"):
-            self.montage_coloc_same_cell_only.setChecked(bool(data["montage_coloc_same_cell_only"]))
         self.montage_tile_percentile_overrides = {}
         mtpo = data.get("montage_tile_percentile_overrides")
         if isinstance(mtpo, dict):

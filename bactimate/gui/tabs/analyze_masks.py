@@ -3,6 +3,7 @@ Analyze masks tab: run analyze_cell_areas on mask TIFFs, combine summaries, morp
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import subprocess
@@ -488,7 +489,55 @@ class AnalyzeMasksTab(QWidget):
         tile_row.addStretch()
         sf_grid.addLayout(tile_row, row, 1, 1, 2)
         sf_outer.addLayout(sf_grid)
+
+        coloc_merge_group = QGroupBox("Colocalization (multi-FI merge)")
+        coloc_merge_group.setToolTip(
+            "Parameters for colocalization sheets (merged multi-FI Excel) and for optional per-pair workbooks. "
+            "When Spotiflow is selected below, you can enable automatic workbooks for every pair of matching *_foci.tif "
+            "channels after a successful analysis (frame 0, Spotiflow re-run in the GUI)."
+        )
+        coloc_merge_outer = QVBoxLayout()
+        coloc_merge_row = QHBoxLayout()
+        coloc_merge_row.addWidget(QLabel("Max distance (px):"))
+        self.coloc_merge_max_distance = QDoubleSpinBox()
+        self.coloc_merge_max_distance.setRange(0.1, 500.0)
+        self.coloc_merge_max_distance.setDecimals(1)
+        self.coloc_merge_max_distance.setValue(8.0)
+        self.coloc_merge_max_distance.setToolTip(
+            "Maximum center-to-center distance (px) for candidate foci pairs when writing Colocalization sheets."
+        )
+        coloc_merge_row.addWidget(self.coloc_merge_max_distance)
+        coloc_merge_row.addWidget(QLabel("Threshold (px):"))
+        self.coloc_merge_threshold = QDoubleSpinBox()
+        self.coloc_merge_threshold.setRange(0.1, 500.0)
+        self.coloc_merge_threshold.setDecimals(1)
+        self.coloc_merge_threshold.setValue(4.0)
+        self.coloc_merge_threshold.setToolTip(
+            "Assigned pairs at or below this distance are counted as colocalized."
+        )
+        coloc_merge_row.addWidget(self.coloc_merge_threshold)
+        self.coloc_merge_same_cell_only = QCheckBox("Same cell only")
+        self.coloc_merge_same_cell_only.setChecked(True)
+        self.coloc_merge_same_cell_only.setToolTip(
+            "When checked, only foci in the same labeled cell can be paired."
+        )
+        coloc_merge_row.addWidget(self.coloc_merge_same_cell_only)
+        coloc_merge_row.addStretch()
+        coloc_merge_outer.addLayout(coloc_merge_row)
+        self.coloc_calc_all_pairs = QCheckBox(
+            "After successful analysis, write one colocalization workbook per *_foci.tif channel pair (Spotiflow, frame 0)"
+        )
+        self.coloc_calc_all_pairs.setChecked(False)
+        self.coloc_calc_all_pairs.setToolTip(
+            "Runs Spotiflow on each matching _foci stack next to the mask, assigns peaks, then writes "
+            "{stem}_colocalization_{chA}_{chB}.xlsx for every unordered pair of channels (requires ≥2 _foci files)."
+        )
+        coloc_merge_outer.addWidget(self.coloc_calc_all_pairs)
+        coloc_merge_group.setLayout(coloc_merge_outer)
+        sf_outer.addWidget(coloc_merge_group)
+
         fi_foci_layout.addWidget(self.foci_spotiflow_container)
+
         fi_foci_section.setLayout(fi_foci_layout)
         fi_content_layout.addWidget(fi_mask_section)
         fi_content_layout.addWidget(fi_contour_section)
@@ -524,6 +573,10 @@ class AnalyzeMasksTab(QWidget):
             self.foci_sf_n_tiles_y,
             self.foci_sf_n_tiles_x,
             self.foci_sf_tile_label,
+            self.coloc_merge_max_distance,
+            self.coloc_merge_threshold,
+            self.coloc_merge_same_cell_only,
+            self.coloc_calc_all_pairs,
         ]
         self.foci_sf_use_optimized.toggled.connect(self._update_spotiflow_subwidgets)
         self.foci_sf_normalize.toggled.connect(self._update_spotiflow_subwidgets)
@@ -1618,6 +1671,337 @@ class AnalyzeMasksTab(QWidget):
             found_foci = search_in(search_dir.parent)
         return sorted(set(found_foci), key=lambda p: p.name.lower())
 
+    @staticmethod
+    def _sanitize_coloc_filename_part(s: str) -> str:
+        bad = '\\/:*?"<>|'
+        out = "".join(c if c not in bad else "_" for c in str(s))
+        out = out.strip("._ ") or "ch"
+        return out[:80]
+
+    def _resolve_colocalization_mask_path(self) -> Path | None:
+        """Labeled mask TIFF for Calculate colocalization: Path file, or folder (first matching *_masks*.tif)."""
+        path_txt = (self.file_path.text() or "").strip()
+        if not path_txt:
+            return None
+        try:
+            path = Path(path_txt).expanduser().resolve()
+        except Exception:
+            path = Path(path_txt).expanduser()
+        if not path.exists():
+            return None
+
+        def _is_labeled_mask_tif(p: Path) -> bool:
+            if not p.is_file() or p.suffix.lower() not in (".tif", ".tiff"):
+                return False
+            sl = p.stem.lower()
+            if "_masks" not in sl:
+                return False
+            if "visualization" in sl or "overlay" in sl:
+                return False
+            return True
+
+        if path.is_file():
+            stem_l = path.stem.lower()
+            if "_masks" in stem_l and path.suffix.lower() in (".tif", ".tiff"):
+                return path
+            return None
+        if path.is_dir():
+            masks = sorted((p for p in path.iterdir() if _is_labeled_mask_tif(p)), key=lambda p: p.name.lower())
+            if masks:
+                return masks[0]
+            # Same mask discovery spirit as FI feedback when the folder layout is non-obvious
+            fb = [p for p in self._get_mask_files_for_feedback() if _is_labeled_mask_tif(p)]
+            if fb:
+                return sorted(fb, key=lambda p: p.name.lower())[0]
+            return None
+        return None
+
+    def _coloc_channel_display_label(self, mask_stem: str, foci_path: Path, used: set[str]) -> str:
+        """Short channel label for colocalization output filenames and Foci rows (unique per mask folder)."""
+        tag = self._extract_channel_tag_for_mask_stem(foci_path.stem, mask_stem)
+        base = (tag or "").strip() or "foci"
+        lbl = base
+        n = 2
+        while lbl in used:
+            lbl = f"{base}_{n}"
+            n += 1
+        used.add(lbl)
+        return lbl
+
+    def _foci_channel_entries_for_colocalization(self, mask_path: Path) -> list[tuple[str, Path]]:
+        """(display_label, path) for each *_foci*.tif matching this mask (same discovery as Run foci)."""
+        mask_stem = mask_path.stem.replace("_masks", "")
+        foci_paths = self._resolve_foci_paths_for_mask(mask_path)
+        used: set[str] = set()
+        return [(self._coloc_channel_display_label(mask_stem, fp, used), fp) for fp in foci_paths]
+
+    def _should_run_post_analysis_colocalization(self) -> bool:
+        return bool(
+            getattr(self, "coloc_calc_all_pairs", None)
+            and self.coloc_calc_all_pairs.isChecked()
+            and getattr(self, "foci_detection_mode", None) is not None
+            and self.foci_detection_mode.currentIndex() == 2
+            and getattr(self, "run_foci", None)
+            and self.run_foci.isChecked()
+            and getattr(self, "analyze_fi", None)
+            and self.analyze_fi.isChecked()
+        )
+
+    def _mask_paths_with_all_tasks_succeeded(self) -> list[Path]:
+        """After a folder / multi-task run, masks for which every (mask, FI, out) task succeeded."""
+        tasks = getattr(self, "folder_fi_tasks", []) or []
+        results = getattr(self, "folder_results", []) or []
+        if not tasks or len(tasks) != len(results):
+            return []
+        by_m: dict[Path, list[bool]] = {}
+        for i, (m, _, _) in enumerate(tasks):
+            mp = Path(m).resolve()
+            by_m.setdefault(mp, []).append(bool(results[i]))
+        out: list[Path] = []
+        for m, oks in by_m.items():
+            if oks and all(oks):
+                out.append(m)
+        return sorted(out, key=lambda p: str(p).lower())
+
+    def _write_colocalization_workbook_for_pair(
+        self,
+        mask_path: Path,
+        path_a: Path,
+        path_b: Path,
+        label_a: str,
+        label_b: str,
+    ) -> tuple[bool, str]:
+        """Run Spotiflow + assign + analyze_colocalization for one channel pair; write xlsx. Returns (ok, path or error)."""
+        mask_labels = self._load_mask_frame_for_coloc(mask_path, frame_index=0)
+        if mask_labels is None:
+            return False, f"could not read mask {mask_path}"
+
+        stack_a = self._load_foci_stack_for_coloc(path_a)
+        stack_b = self._load_foci_stack_for_coloc(path_b)
+        if stack_a is None or stack_b is None:
+            return False, f"could not read foci stacks ({path_a.name}, {path_b.name})"
+
+        fi_a = stack_a[0]
+        fi_b = stack_b[0]
+        if fi_a.shape[:2] != mask_labels.shape[:2] or fi_b.shape[:2] != mask_labels.shape[:2]:
+            return (
+                False,
+                f"shape mismatch mask {mask_labels.shape[:2]} vs {label_a} {fi_a.shape[:2]} vs {label_b} {fi_b.shape[:2]}",
+            )
+
+        from bactimate.modules.foci_utils import assign_peaks_to_cells
+        from bactimate.modules.analysis_coloc import ColocSettings, analyze_colocalization_foci_table
+
+        peaks_a = self._spotiflow_peaks_refined(fi_a, mask_labels)
+        peaks_b = self._spotiflow_peaks_refined(fi_b, mask_labels)
+
+        rows_a, _ = assign_peaks_to_cells(peaks_a, mask_labels, dilation_px=1, frame_index=0)
+        rows_b, _ = assign_peaks_to_cells(peaks_b, mask_labels, dilation_px=1, frame_index=0)
+        foci_rows: list[dict[str, Any]] = []
+        for r in rows_a:
+            q = dict(r)
+            q["channel_name"] = label_a
+            foci_rows.append(q)
+        for r in rows_b:
+            q = dict(r)
+            q["channel_name"] = label_b
+            foci_rows.append(q)
+
+        settings = ColocSettings(
+            coloc_max_distance=float(self.coloc_merge_max_distance.value()),
+            coloc_threshold=float(self.coloc_merge_threshold.value()),
+            coloc_filter_boundaries=bool(self.coloc_merge_same_cell_only.isChecked()),
+        )
+        out = analyze_colocalization_foci_table(
+            foci_rows,
+            settings,
+            foci_channels=(label_a, label_b),
+            frame=0,
+        )
+
+        stem = mask_path.stem.replace("_masks", "")
+        safe_a = self._sanitize_coloc_filename_part(label_a)
+        safe_b = self._sanitize_coloc_filename_part(label_b)
+        base_dir = base_dir_for_mask(mask_path)
+        out_dir = analysis_dir_from_base(base_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{stem}_colocalization_{safe_a}_{safe_b}.xlsx"
+        try:
+            import pandas as pd
+
+            coloc_summary_df = pd.DataFrame(out.coloc_records) if out.coloc_records else None
+            coloc_pairs_df = pd.DataFrame(out.pair_records) if out.pair_records else None
+            info_rows = [
+                {
+                    "mask_path": str(mask_path.resolve()),
+                    "foci_path_channel_1": str(path_a.resolve()),
+                    "foci_path_channel_2": str(path_b.resolve()),
+                    "channel_1_label": label_a,
+                    "channel_2_label": label_b,
+                    "frame_index_0based": 0,
+                    "spotiflow_params_json": json.dumps(self._spotiflow_params_dict(), sort_keys=True),
+                }
+            ]
+            info_df = pd.DataFrame(info_rows)
+            with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+                if coloc_summary_df is not None and not coloc_summary_df.empty:
+                    coloc_summary_df.to_excel(writer, sheet_name="Colocalization", index=False)
+                else:
+                    pd.DataFrame({"message": ["No colocalization records (empty result)."]}).to_excel(
+                        writer, sheet_name="Colocalization", index=False
+                    )
+                if coloc_pairs_df is not None and not coloc_pairs_df.empty:
+                    coloc_pairs_df.to_excel(writer, sheet_name="Coloc_pairs", index=False)
+                else:
+                    pd.DataFrame({"message": ["No pairs."]}).to_excel(writer, sheet_name="Coloc_pairs", index=False)
+                info_df.to_excel(writer, sheet_name="Info", index=False)
+                try:
+                    from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
+
+                    autofit_openpyxl_workbook(writer.book)
+                except Exception:
+                    pass
+        except Exception as exc:
+            get_logger().exception("Colocalization workbook write failed")
+            return False, str(exc)
+        return True, str(out_path.resolve())
+
+    def _run_all_colocalization_pair_workbooks_for_mask(self, mask_path: Path) -> tuple[int, list[str]]:
+        """Write one workbook per unordered pair of _foci channels. Returns (n_ok, log_lines)."""
+        log_lines: list[str] = []
+        entries = self._foci_channel_entries_for_colocalization(mask_path)
+        if len(entries) < 2:
+            log_lines.append(
+                f"  Colocalization skipped for {mask_path.name}: need ≥2 matching *_foci*.tif (found {len(entries)}).\n"
+            )
+            return 0, log_lines
+        n_ok = 0
+        for (la, pa), (lb, pb) in itertools.combinations(entries, 2):
+            ok, msg = self._write_colocalization_workbook_for_pair(mask_path, pa, pb, la, lb)
+            if ok:
+                n_ok += 1
+                log_lines.append(f"  Colocalization: {mask_path.name} {la} × {lb} → {msg}\n")
+            else:
+                log_lines.append(f"  Colocalization failed ({la} × {lb}): {msg}\n")
+        return n_ok, log_lines
+
+    def _post_analysis_colocalization_for_masks(self, mask_paths: list[Path] | None) -> None:
+        """If enabled, write colocalization workbooks for every mask and every _foci channel pair."""
+        if not mask_paths:
+            return
+        if not self._should_run_post_analysis_colocalization():
+            if getattr(self, "coloc_calc_all_pairs", None) and self.coloc_calc_all_pairs.isChecked():
+                self.parent_window.log_output(
+                    "Colocalization workbook option is checked but skipped: requires Analyze FI, Run foci, and Spotiflow.\n"
+                )
+            return
+        total = 0
+        for mp in mask_paths:
+            n, lines = self._run_all_colocalization_pair_workbooks_for_mask(mp)
+            total += n
+            for ln in lines:
+                self.parent_window.log_output(ln)
+        if total:
+            self.parent_window.log_output(f"Colocalization: wrote {total} workbook(s) (Spotiflow pairs, frame 0).\n")
+
+    @staticmethod
+    def _load_mask_frame_for_coloc(mask_path: Path, frame_index: int = 0) -> np.ndarray | None:
+        """Load one mask frame as int32 labels (frame 0 for v1 colocalization)."""
+        try:
+            arr = safe_imread(str(mask_path))
+        except Exception:
+            return None
+        arr = np.asarray(arr)
+        if arr.ndim == 2:
+            return arr.astype(np.int32, copy=False)
+        if arr.ndim == 3:
+            if arr.shape[-1] in (1, 2, 3, 4) and arr.shape[0] > 8 and arr.shape[1] > 8:
+                arr = arr[..., 0]
+            else:
+                idx = int(max(0, min(frame_index, arr.shape[0] - 1)))
+                arr = arr[idx]
+            if arr.ndim == 2:
+                return arr.astype(np.int32, copy=False)
+        if arr.ndim == 4:
+            t_idx = int(max(0, min(frame_index, arr.shape[0] - 1)))
+            arr = arr[t_idx]
+            if arr.ndim == 3:
+                if arr.shape[0] in (1, 2, 3, 4):
+                    arr = arr[0]
+                elif arr.shape[-1] in (1, 2, 3, 4):
+                    arr = arr[..., 0]
+                else:
+                    arr = arr[0]
+            if arr.ndim == 2:
+                return arr.astype(np.int32, copy=False)
+        return None
+
+    @staticmethod
+    def _load_foci_stack_for_coloc(foci_path: Path) -> np.ndarray | None:
+        """Load foci TIFF as a (T, Y, X) stack for colocalization (mirrors analyze_cell_areas FI loading)."""
+        try:
+            fi_images = tifffile.imread(str(foci_path))
+        except Exception:
+            return None
+        fi_images = np.asarray(fi_images)
+        if fi_images.ndim == 2:
+            fi_images = fi_images[np.newaxis, ...]
+        elif fi_images.ndim == 4:
+            fi_images = fi_images[:, 0, :, :]
+        elif fi_images.ndim == 3:
+            if fi_images.shape[-1] < 10:
+                fi_images = fi_images.transpose(2, 0, 1)[np.newaxis, ...]
+                fi_images = fi_images[:, 0, :, :]
+            else:
+                fi_images = fi_images[np.newaxis, ...]
+        if fi_images.ndim != 3:
+            return None
+        return fi_images
+
+    @staticmethod
+    def _foci_plane_to_float_2d(fi_image: np.ndarray) -> np.ndarray:
+        """Single 2D plane as float64 for Spotiflow / blob refinement."""
+        a = np.asarray(fi_image, dtype=np.float64)
+        if a.ndim > 2:
+            a = a[:, :, 0] if a.shape[2] < 10 else a[0, :, :]
+        return a
+
+    def _spotiflow_peaks_refined(
+        self, fi_plane: np.ndarray, mask_labels: np.ndarray
+    ) -> list[dict[str, Any]]:
+        """Spotiflow detection + focus_size_and_mean_at_peak (same pattern as preview / analyze_cell_areas)."""
+        from bactimate.modules.foci_utils import detect_peaks_spotiflow, focus_size_and_mean_at_peak
+
+        fi_work = self._foci_plane_to_float_2d(fi_plane)
+        if fi_work.shape[:2] != mask_labels.shape[:2]:
+            return []
+        sf_kw = dict(self._spotiflow_params_dict())
+        peaks = None
+        try:
+            peaks = detect_peaks_spotiflow(fi_work, **sf_kw)
+        except TypeError:
+            peaks = detect_peaks_spotiflow(fi_work, model_name=str(sf_kw.get("model_name") or "general"))
+        if not peaks:
+            return []
+        blob_thresh = float(self.foci_blob_threshold.value()) if getattr(self, "foci_blob_threshold", None) else 0.8
+        blob_thresh = float(np.clip(blob_thresh, 0.05, 1.0))
+        peaks_refined: list[dict[str, Any]] = []
+        for p in peaks:
+            yi, xi = int(p.get("y", 0)), int(p.get("x", 0))
+            size_px, mean_int = focus_size_and_mean_at_peak(
+                fi_work,
+                yi,
+                xi,
+                threshold_frac=blob_thresh,
+                max_radius=5,
+                labeled_mask=mask_labels,
+            )
+            q = dict(p)
+            q["size_px"] = int(size_px)
+            q["mean_intensity"] = float(mean_int)
+            peaks_refined.append(q)
+        return peaks_refined
+
     def _preview_fi_path_candidates(self, mask_path: Path) -> list[Path]:
         """FI / foci TIFFs to offer in Filter preview (match-by-name). Prefer _foci files when Run foci is on."""
         run_foci = bool(getattr(self, "run_foci", None) and self.run_foci.isChecked())
@@ -2007,11 +2391,10 @@ class AnalyzeMasksTab(QWidget):
             pass
 
     def _merge_fi_channels_into_one_excel(self) -> None:
-        """After folder analysis: one Excel per mask with all FI columns and Logs in Summary.
-        - 1 FI channel: copy that file to stem_analysis.xlsx, add Logs, remove suffixed file.
-        - 2+ FI channels: merge Per-Cell Data (morphology + FI columns), one Summary with Logs, remove per-channel files.
+        """After folder analysis: one cell workbook + one foci workbook per mask.
+        - ``{stem}_analysis.xlsx``: Summary + Per-Cell Data (cell-centric output).
+        - ``{stem}_foci_analysis.xlsx``: one sheet per foci channel + colocalization sheets.
         """
-        import shutil
         import pandas as pd
         tasks = getattr(self, "folder_fi_tasks", [])
         results = getattr(self, "folder_results", [])
@@ -2038,32 +2421,6 @@ class AnalyzeMasksTab(QWidget):
                 continue
             analysis_dir = group[0][0].parent
             merged_path = analysis_dir / f"{stem}_analysis.xlsx"
-            if len(fi_entries) == 1 and not phase_entries:
-                # Single FI: copy to stem_analysis.xlsx, add Logs, remove suffixed file
-                single_path, single_fp, _ = fi_entries[0]
-                if single_path != merged_path:
-                    try:
-                        shutil.copy2(single_path, merged_path)
-                        self._write_logs_to_individual_excel(merged_path, Path(stem + "_masks.tif"), single_fp)
-                        path_replacements[str(single_path)] = str(merged_path)
-                        single_path.unlink()
-                        self.parent_window.log_output(f"Single FI channel -> {merged_path.name}\n")
-                    except Exception as e:
-                        get_logger().debug("Single-FI consolidate failed: %s", e, exc_info=True)
-                else:
-                    try:
-                        from openpyxl import load_workbook
-                        wb = load_workbook(merged_path)
-                        if "Summary" in wb.sheetnames:
-                            ws = wb["Summary"]
-                            ws["G1"] = "Logs"
-                            ws["G2"] = f"{stem}_masks -> {single_fp.name}"
-                            wb.save(merged_path)
-                            wb.close()
-                    except Exception:
-                        pass
-                continue
-            # 2+ FI channels (or 1 phase + 1+ FI): merge into one Excel
             try:
                 summary_df = None
                 merged = None
@@ -2134,89 +2491,237 @@ class AnalyzeMasksTab(QWidget):
                             fi_cols_to_add = [rename[c] for c in has_fi if rename[c] in sub.columns and rename[c] not in merged.columns]
                             if fi_cols_to_add:
                                 merged = merged.merge(sub[merge_on + fi_cols_to_add], on=merge_on, how="outer")
-                if summary_df is not None:
-                    # Merge Foci sheets from all FI runs (one row per focus; keep channel_name to distinguish channels).
-                    foci_parts = []
-                    for excel_path, _fp, _lbl in fi_entries:
+                if summary_df is None:
+                    continue
+
+                if merged is not None and not merged.empty:
+                    # Keep existing machine-friendly columns and add user-friendly aliases.
+                    for col in list(merged.columns):
+                        if not isinstance(col, str):
+                            continue
+                        if col.startswith("foci_ids_"):
+                            ch = col[len("foci_ids_") :].strip() or "FI"
+                            alias = f"Foci ID [{ch}]"
+                            if alias not in merged.columns:
+                                merged[alias] = merged[col]
+                        if col.endswith("_foci_count"):
+                            ch = col[: -len("_foci_count")].strip() or "FI"
+                            alias = f"Number of Foci [{ch}]"
+                            if alias not in merged.columns:
+                                merged[alias] = merged[col]
+
+                # Gather per-channel foci rows for the dedicated foci workbook.
+                foci_by_channel: dict[str, list[pd.DataFrame]] = {}
+                foci_parts = []
+                for excel_path, _fp, _lbl in fi_entries:
+                    try:
+                        df_foci = pd.read_excel(excel_path, sheet_name="Foci")
+                    except Exception:
+                        df_foci = None
+                    if df_foci is None or df_foci.empty:
+                        continue
+                    df_foci = df_foci.copy()
+                    if "channel_name" in df_foci.columns:
+                        ch_series = df_foci["channel_name"].astype(str).str.strip()
+                        if _lbl and _lbl != "FI" and (ch_series.eq("").all() or ch_series.str.upper().eq("FI").all()):
+                            df_foci["channel_name"] = _lbl
+                    elif _lbl:
+                        df_foci["channel_name"] = _lbl
+                    ch_label = str(_lbl or "FI").strip() or "FI"
+                    foci_by_channel.setdefault(ch_label, []).append(df_foci)
+                    foci_parts.append(df_foci)
+
+                df_foci_all = None
+                if foci_parts:
+                    df_foci_all = pd.concat(foci_parts, ignore_index=True, sort=False)
+                    sort_cols = [c for c in ("frame", "channel_name", "foci_id") if c in df_foci_all.columns]
+                    if sort_cols:
+                        df_foci_all = df_foci_all.sort_values(sort_cols, kind="stable")
+
+                # If summary came from phase-only file, derive/update foci summary metrics from merged foci rows.
+                if df_foci_all is not None and "Frame" in summary_df.columns:
+                    frame_col = next(
+                        (c for c in df_foci_all.columns if isinstance(c, str) and c.lower() == "frame"),
+                        None,
+                    )
+                    if frame_col is not None:
+                        counts_by_frame = df_foci_all.groupby(frame_col).size()
+                        summary_df = summary_df.copy()
+                        summary_df["Total Foci"] = [
+                            int(counts_by_frame.get(fr, 0))
+                            for fr in summary_df["Frame"]
+                        ]
+                        if "Number of Cells" in summary_df.columns:
+                            nc = pd.to_numeric(summary_df["Number of Cells"], errors="coerce").replace({0: np.nan})
+                            summary_df["Mean Foci per Cell"] = (
+                                pd.to_numeric(summary_df["Total Foci"], errors="coerce") / nc
+                            )
+                            summary_df["Mean Foci per Cell"] = summary_df["Mean Foci per Cell"].fillna(0.0)
+
+                coloc_summary_df = None
+                coloc_pairs_df = None
+                if (
+                    df_foci_all is not None
+                    and not df_foci_all.empty
+                    and "channel_name" in df_foci_all.columns
+                    and hasattr(self, "coloc_merge_max_distance")
+                ):
+                    ch_nonempty = (
+                        df_foci_all["channel_name"]
+                        .astype(str)
+                        .str.strip()
+                        .replace("", pd.NA)
+                        .dropna()
+                    )
+                    if ch_nonempty.nunique() >= 2:
                         try:
-                            df_foci = pd.read_excel(excel_path, sheet_name="Foci")
-                            if df_foci is not None and not df_foci.empty:
-                                if "channel_name" in df_foci.columns:
-                                    ch_series = df_foci["channel_name"].astype(str).str.strip()
-                                    if _lbl and _lbl != "FI" and (ch_series.eq("").all() or ch_series.str.upper().eq("FI").all()):
-                                        df_foci["channel_name"] = _lbl
-                                elif _lbl:
-                                    df_foci["channel_name"] = _lbl
-                                foci_parts.append(df_foci)
-                        except Exception:
-                            pass
+                            from bactimate.modules.analysis_coloc import (
+                                ColocSettings,
+                                analyze_colocalization_foci_table,
+                            )
 
-                    # If summary came from phase-only file, derive/update foci summary metrics from merged foci rows.
-                    if foci_parts:
-                        df_foci_all = pd.concat(foci_parts, ignore_index=True, sort=False)
-                        sort_cols = [c for c in ("frame", "channel_name", "foci_id") if c in df_foci_all.columns]
-                        if sort_cols:
-                            df_foci_all = df_foci_all.sort_values(sort_cols, kind="stable")
-                        frame_col = next((c for c in df_foci_all.columns if isinstance(c, str) and c.lower() == "frame"), None)
-                        if frame_col is not None and "Frame" in summary_df.columns:
-                            counts_by_frame = df_foci_all.groupby(frame_col).size()
-                            summary_df = summary_df.copy()
-                            summary_df["Total Foci"] = [
-                                int(counts_by_frame.get(fr, 0))
-                                for fr in summary_df["Frame"]
-                            ]
-                            if "Number of Cells" in summary_df.columns:
-                                nc = pd.to_numeric(summary_df["Number of Cells"], errors="coerce").replace({0: np.nan})
-                                summary_df["Mean Foci per Cell"] = pd.to_numeric(summary_df["Total Foci"], errors="coerce") / nc
-                                summary_df["Mean Foci per Cell"] = summary_df["Mean Foci per Cell"].fillna(0.0)
-                    else:
-                        df_foci_all = None
+                            foci_rows = df_foci_all.to_dict("records")
+                            settings = ColocSettings(
+                                coloc_max_distance=float(self.coloc_merge_max_distance.value()),
+                                coloc_threshold=float(self.coloc_merge_threshold.value()),
+                                coloc_filter_boundaries=bool(
+                                    self.coloc_merge_same_cell_only.isChecked()
+                                ),
+                            )
+                            out = analyze_colocalization_foci_table(
+                                foci_rows,
+                                settings,
+                                frame=None,
+                            )
+                            if out.coloc_records:
+                                coloc_summary_df = pd.DataFrame(out.coloc_records)
+                            if out.pair_records:
+                                coloc_pairs_df = pd.DataFrame(out.pair_records)
+                        except Exception as exc:
+                            get_logger().debug(
+                                "Colocalization merge sheets skipped: %s",
+                                exc,
+                                exc_info=True,
+                            )
 
-                    with pd.ExcelWriter(merged_path, engine="openpyxl") as writer:
-                        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-                        if merged is not None and not merged.empty and "Frame" in merged.columns:
-                            merged.to_excel(writer, sheet_name="Per-Cell Data", index=False)
-                        if df_foci_all is not None and not df_foci_all.empty:
-                            df_foci_all.to_excel(writer, sheet_name="Foci", index=False)
+                # Cell-centric workbook: keep Summary + Per-Cell Data only.
+                with pd.ExcelWriter(merged_path, engine="openpyxl") as writer:
+                    summary_df.to_excel(writer, sheet_name="Summary", index=False)
+                    if merged is not None and not merged.empty and "Frame" in merged.columns:
+                        merged.to_excel(writer, sheet_name="Per-Cell Data", index=False)
+                    try:
+                        from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
+
+                        autofit_openpyxl_workbook(writer.book)
+                    except Exception:
+                        pass
+
+                # Foci-centric workbook: one sheet per channel + colocalization sheets.
+                foci_book_path = analysis_dir / f"{stem}_foci_analysis.xlsx"
+                wrote_foci_book = False
+                if foci_by_channel or coloc_summary_df is not None or coloc_pairs_df is not None:
+                    used_sheet_names: set[str] = set()
+
+                    def _make_sheet_name(base: str) -> str:
+                        bad = "\\/:*?[]"
+                        safe = "".join("_" if ch in bad else ch for ch in str(base)).strip() or "Sheet"
+                        safe = safe[:31]
+                        if safe not in used_sheet_names:
+                            used_sheet_names.add(safe)
+                            return safe
+                        stem_name = safe[:28] if len(safe) > 28 else safe
+                        n = 2
+                        candidate = f"{stem_name}_{n}"
+                        while candidate in used_sheet_names:
+                            n += 1
+                            candidate = f"{stem_name}_{n}"
+                        used_sheet_names.add(candidate)
+                        return candidate
+
+                    with pd.ExcelWriter(foci_book_path, engine="openpyxl") as writer:
+                        for ch in sorted(foci_by_channel.keys(), key=lambda s: str(s).lower()):
+                            parts = foci_by_channel.get(ch) or []
+                            if not parts:
+                                continue
+                            ch_df = pd.concat(parts, ignore_index=True, sort=False)
+                            sort_cols = [c for c in ("frame", "foci_id") if c in ch_df.columns]
+                            if sort_cols:
+                                ch_df = ch_df.sort_values(sort_cols, kind="stable")
+                            ch_df.to_excel(
+                                writer,
+                                sheet_name=_make_sheet_name(f"Foci [{ch}]"),
+                                index=False,
+                            )
+                        if coloc_summary_df is not None and not coloc_summary_df.empty:
+                            coloc_summary_df.to_excel(
+                                writer, sheet_name=_make_sheet_name("Colocalization Summary"), index=False
+                            )
+                        else:
+                            pd.DataFrame({"message": ["No colocalization records."]}).to_excel(
+                                writer, sheet_name=_make_sheet_name("Colocalization Summary"), index=False
+                            )
+                        if coloc_pairs_df is not None and not coloc_pairs_df.empty:
+                            coloc_pairs_df.to_excel(
+                                writer, sheet_name=_make_sheet_name("Coloc_pairs"), index=False
+                            )
+                        else:
+                            pd.DataFrame({"message": ["No pairs."]}).to_excel(
+                                writer, sheet_name=_make_sheet_name("Coloc_pairs"), index=False
+                            )
                         try:
                             from bactimate.modules.excel_autofit import autofit_openpyxl_workbook
 
                             autofit_openpyxl_workbook(writer.book)
                         except Exception:
                             pass
-                    n_matched = len(fi_entries) + (1 if phase_entries else 0)
-                    phase_path_display = next(
-                        (phase_per_mask[m].name for m in phase_per_mask if m.stem.replace("_masks", "") == stem and phase_per_mask.get(m)),
-                        None,
-                    )
+                    wrote_foci_book = True
+                elif foci_book_path.exists():
                     try:
-                        from openpyxl import load_workbook
-                        wb = load_workbook(merged_path)
-                        if "Summary" in wb.sheetnames:
-                            ws = wb["Summary"]
-                            ws["G1"] = "Logs"
-                            ws["G2"] = f"1 mask(s) and {n_matched} tif file(s) matched"
-                            row = 3
-                            if phase_path_display:
-                                ws.cell(row=row, column=7, value=f"{stem}_masks -> {phase_path_display}")
-                                row += 1
-                            for i, (_p, fp, _lbl) in enumerate(fi_entries):
-                                line = f"{stem}_masks -> {fp.name}" if (row == 3) else f"{stem}_masks with {fp.name}"
-                                ws.cell(row=row, column=7, value=line)
-                                row += 1
-                            wb.save(merged_path)
-                        wb.close()
+                        foci_book_path.unlink()
                     except Exception:
                         pass
-                    self.parent_window.log_output(f"Merged {n_matched} run(s) into {merged_path.name}\n")
-                    for excel_path, _fp, _lbl in phase_entries + fi_entries:
-                        if excel_path != merged_path and excel_path.exists():
-                            path_replacements[str(excel_path)] = str(merged_path)
-                            try:
-                                excel_path.unlink()
-                                self.parent_window.log_output(f"  Removed {excel_path.name}\n")
-                            except Exception:
-                                pass
+
+                n_matched = len(fi_entries) + (1 if phase_entries else 0)
+                phase_path_display = next(
+                    (
+                        phase_per_mask[m].name
+                        for m in phase_per_mask
+                        if m.stem.replace("_masks", "") == stem and phase_per_mask.get(m)
+                    ),
+                    None,
+                )
+                try:
+                    from openpyxl import load_workbook
+
+                    wb = load_workbook(merged_path)
+                    if "Summary" in wb.sheetnames:
+                        ws = wb["Summary"]
+                        ws["G1"] = "Logs"
+                        ws["G2"] = f"1 mask(s) and {n_matched} tif file(s) matched"
+                        row = 3
+                        if phase_path_display:
+                            ws.cell(row=row, column=7, value=f"{stem}_masks -> {phase_path_display}")
+                            row += 1
+                        for i, (_p, fp, _lbl) in enumerate(fi_entries):
+                            line = f"{stem}_masks -> {fp.name}" if (row == 3) else f"{stem}_masks with {fp.name}"
+                            ws.cell(row=row, column=7, value=line)
+                            row += 1
+                        wb.save(merged_path)
+                    wb.close()
+                except Exception:
+                    pass
+
+                self.parent_window.log_output(f"Merged {n_matched} run(s) into {merged_path.name}\n")
+                if wrote_foci_book:
+                    self.parent_window.log_output(f"  Wrote {foci_book_path.name}\n")
+                for excel_path, _fp, _lbl in phase_entries + fi_entries:
+                    if excel_path != merged_path and excel_path.exists():
+                        path_replacements[str(excel_path)] = str(merged_path)
+                        try:
+                            excel_path.unlink()
+                            self.parent_window.log_output(f"  Removed {excel_path.name}\n")
+                        except Exception:
+                            pass
             except Exception as e:
                 get_logger().debug("Merge FI channels failed: %s", e, exc_info=True)
         # So combined summary and completion message use the merged path(s)
@@ -2241,6 +2746,7 @@ class AnalyzeMasksTab(QWidget):
             return
         # Search in folder and all subfolders (one Excel per subfolder layout)
         excel_paths = list(folder.rglob("*_analysis.xlsx")) + list(folder.rglob("*_masks_analysis.xlsx"))
+        excel_paths = [p for p in excel_paths if not p.name.lower().endswith("_foci_analysis.xlsx")]
         excel_paths = sorted(set(excel_paths), key=lambda p: (str(p).lower(), p.name.lower()))
         if not excel_paths:
             QMessageBox.warning(self, "No Analysis Files", 
@@ -2359,6 +2865,14 @@ class AnalyzeMasksTab(QWidget):
             d["foci_detection_mode"] = self.foci_detection_mode.currentIndex()
         if hasattr(self, "_spotiflow_params_dict"):
             d["foci_spotiflow"] = self._spotiflow_params_dict()
+        if hasattr(self, "coloc_merge_max_distance"):
+            d["coloc_merge_max_distance"] = self.coloc_merge_max_distance.value()
+        if hasattr(self, "coloc_merge_threshold"):
+            d["coloc_merge_threshold"] = self.coloc_merge_threshold.value()
+        if hasattr(self, "coloc_merge_same_cell_only"):
+            d["coloc_merge_same_cell_only"] = self.coloc_merge_same_cell_only.isChecked()
+        if hasattr(self, "coloc_calc_all_pairs"):
+            d["coloc_calc_all_pairs"] = self.coloc_calc_all_pairs.isChecked()
         path_txt = (self.file_path.text() or "").strip()
         if path_txt:
             d["file_path"] = path_txt
@@ -2552,6 +3066,20 @@ class AnalyzeMasksTab(QWidget):
                 pass
             if hasattr(self, "_update_spotiflow_subwidgets"):
                 self._update_spotiflow_subwidgets()
+        if "coloc_merge_max_distance" in data and hasattr(self, "coloc_merge_max_distance"):
+            try:
+                self.coloc_merge_max_distance.setValue(float(data["coloc_merge_max_distance"]))
+            except (TypeError, ValueError):
+                pass
+        if "coloc_merge_threshold" in data and hasattr(self, "coloc_merge_threshold"):
+            try:
+                self.coloc_merge_threshold.setValue(float(data["coloc_merge_threshold"]))
+            except (TypeError, ValueError):
+                pass
+        if "coloc_merge_same_cell_only" in data and hasattr(self, "coloc_merge_same_cell_only"):
+            self.coloc_merge_same_cell_only.setChecked(bool(data["coloc_merge_same_cell_only"]))
+        if "coloc_calc_all_pairs" in data and hasattr(self, "coloc_calc_all_pairs"):
+            self.coloc_calc_all_pairs.setChecked(bool(data["coloc_calc_all_pairs"]))
         if "file_path" in data and data.get("file_path"):
             self.file_path.setText(str(data["file_path"]).strip())
         if "performed" in data:
@@ -3862,6 +4390,7 @@ class AnalyzeMasksTab(QWidget):
         script_module = "bactimate.scripts.analyze_cell_areas"
         self._analyze_script_module = script_module
         script_dir = PROJECT_ROOT
+        self._post_analysis_coloc_masks: list[Path] | None = None
 
         is_folder = self._is_folder_mode()
         if is_folder:
@@ -4181,6 +4710,7 @@ class AnalyzeMasksTab(QWidget):
             self.parent_window.progress_bar.setRange(0, 100)  # 0-100 range
             self.parent_window.progress_bar.setValue(0)
             run_args = [getattr(self, "_analyze_script_module", "bactimate.scripts.analyze_cell_areas")] + cmd_args if script_path == "-m" else cmd_args
+            self._post_analysis_coloc_masks = [input_file.resolve()]
             # Store reference to prevent garbage collection
             self.worker = WorkerThread(script_path, run_args, parent=self)
             self.worker.finished.connect(self.on_finished)
@@ -4246,6 +4776,7 @@ class AnalyzeMasksTab(QWidget):
                 self.parent_window.log_output(f"  {n_fail} task(s) failed — check log above for errors.\n")
             # Merge multiple FI channel outputs into one Excel per mask (one table with two FI columns)
             self._merge_fi_channels_into_one_excel()
+            self._post_analysis_colocalization_for_masks(self._mask_paths_with_all_tasks_succeeded())
             combined_summary_path = None
             if getattr(self, "create_combined_summary", None) and getattr(self, "create_combined_summary").isChecked() and n_ok > 0:
                 paths = getattr(self, "folder_output_paths", [])
@@ -4441,6 +4972,9 @@ class AnalyzeMasksTab(QWidget):
         # Hide progress bar
         self.parent_window.progress_bar.setVisible(False)
         if success:
+            masks = getattr(self, "_post_analysis_coloc_masks", None)
+            self._post_analysis_colocalization_for_masks(masks)
+            self._post_analysis_coloc_masks = None
             self.parent_window.log_output("✓ Analysis completed successfully!\n")
             self._performed_this_session = True
             # Completion popup (unified with Omnipose, Tracking, etc.)
@@ -4461,5 +4995,6 @@ class AnalyzeMasksTab(QWidget):
             else:
                 QMessageBox.information(self, "Analysis Complete", "Analysis completed successfully.")
         else:
+            self._post_analysis_coloc_masks = None
             QMessageBox.critical(self, "Error", f"Analysis failed:\n{message}")
         self.workflow_step_finished.emit(success)
