@@ -34,13 +34,24 @@ from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 
-from .config import PipelineConfig
-from .masks import MaskSet
-from .shifts import ShiftRegistry
-
 LOGGER = logging.getLogger(__name__)
 
 SPARSE_COMPONENT_THRESHOLD = 200_000
+
+
+@dataclass
+class ColocSettings:
+    """Colocalization parameters (distances in pixels)."""
+
+    coloc_max_distance: Optional[float] = 8.0
+    coloc_threshold: Optional[float] = 4.0
+    coloc_filter_boundaries: bool = True
+    coloc_edge_tolerance: float = 0.0
+    coloc_save_unmatched: bool = False
+    coloc_n_randomizations: int = 0
+    coloc_randomization_seed: int = 0
+    coloc_one_to_one: bool = True
+    coloc_mutual_nearest: bool = True
 
 
 @dataclass
@@ -263,130 +274,194 @@ def _match_pairs(
 
 
 # ---------------------------------------------------------------------------
+# Row helpers (Analyze Masks / Excel Foci sheet)
+# ---------------------------------------------------------------------------
+
+
+def _row_channel_name(record: Dict[str, object]) -> str:
+    raw = record.get("channel_name")
+    if raw is None:
+        raw = record.get("Channel_name")
+    return str(raw).strip() if raw is not None else ""
+
+
+def _row_frame(record: Dict[str, object]) -> Optional[int]:
+    for key in ("frame", "Frame"):
+        if key in record and record[key] is not None:
+            try:
+                return int(record[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _filter_foci_rows_by_frame(
+    rows: List[Dict[str, object]], frame: Optional[int]
+) -> List[Dict[str, object]]:
+    if frame is None:
+        return list(rows)
+    out: List[Dict[str, object]] = []
+    for r in rows:
+        fr = _row_frame(r)
+        if fr is not None and fr == frame:
+            out.append(r)
+    return out
+
+
+def _unique_frames_in_rows(rows: List[Dict[str, object]]) -> List[Optional[int]]:
+    frames: List[int] = []
+    for r in rows:
+        fr = _row_frame(r)
+        if fr is not None and fr not in frames:
+            frames.append(fr)
+    if not frames:
+        return [None]
+    return sorted(frames)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def analyze_colocalization(
-    config: PipelineConfig,
-    foci_records: List[Dict[str, object]],
-    phase_mask: MaskSet,
-    shift_registry: ShiftRegistry,
-    pixel_size: Optional[float],
-) -> ColocalizationOutputs:
-    """Run colocalization across all channel pairs for a single ND2 file.
 
-    All distances are in **pixels**.  ``config.coloc_max_distance`` is the
-    KD-tree ball-query cutoff radius; ``config.coloc_threshold`` classifies
-    each assigned pair as colocalized (≤ threshold) or not.
+def analyze_colocalization_foci_table(
+    foci_rows: List[Dict[str, object]],
+    settings: ColocSettings,
+    *,
+    foci_channels: Optional[Sequence[str]] = None,
+    phase_labels: Optional[np.ndarray] = None,
+    frame: Optional[int] = None,
+) -> ColocalizationOutputs:
+    """Colocalization from foci rows (e.g. Analyze Masks ``foci_table`` / Foci sheet).
+
+    Coordinates are ``(y, x)`` in pixels; no inter-channel registration is applied.
+
+    When *frame* is ``None`` and rows contain multiple *frame* values, analysis
+    runs **per frame** and each output record includes a ``frame`` field.
     """
-    if len(config.foci_channels) < 2:
+    rows_in = list(foci_rows)
+    if foci_channels is None:
+        chans = sorted({_row_channel_name(r) for r in rows_in if _row_channel_name(r)})
+    else:
+        chans = [str(c).strip() for c in foci_channels if str(c).strip()]
+    if len(chans) < 2:
         return ColocalizationOutputs([], [], [])
 
-    _warn_ignored_matching_flags(config)
+    _warn_ignored_matching_flags(settings)
+
+    tolerance_px = float(settings.coloc_edge_tolerance)
+    max_distance_px = settings.coloc_max_distance
+    coloc_threshold_px = settings.coloc_threshold
+
+    need_labels_for_random = settings.coloc_n_randomizations > 0
+    if need_labels_for_random and phase_labels is None:
+        LOGGER.warning(
+            "coloc_n_randomizations > 0 but phase_labels is missing; skipping randomization."
+        )
+
+    if tolerance_px > 0 and phase_labels is None:
+        LOGGER.warning(
+            "coloc_edge_tolerance > 0 but phase_labels is missing; using cell_id from rows only."
+        )
+
+    filtered = _filter_foci_rows_by_frame(rows_in, frame)
+    frame_groups = [frame] if frame is not None else _unique_frames_in_rows(filtered)
 
     coloc_records: List[Dict[str, object]] = []
     pair_records: List[Dict[str, object]] = []
     unmatched_records: List[Dict[str, object]] = []
 
-    reference_channel = config.shift_reference or config.phase_channels[0]
-    phase_channel = phase_mask.channel or config.phase_channels[0]
-    tolerance_px = config.coloc_edge_tolerance
-    max_distance_px = config.coloc_max_distance
-    coloc_threshold_px = config.coloc_threshold
-
-    require_phase_mask = bool(
-        config.coloc_filter_boundaries
-        or tolerance_px > 0
-        or config.coloc_n_randomizations > 0
-    )
-    if require_phase_mask and phase_mask.labeled is None:
-        LOGGER.warning(
-            "Phase mask missing; skipping colocalization analysis because "
-            "boundary/tolerance/randomization requires phase labels."
-        )
-        return ColocalizationOutputs([], [], [])
-
-    grouped = _group_foci_by_channel(
-        config=config,
-        foci_records=foci_records,
-        reference_channel=reference_channel,
-        phase_channel=phase_channel,
-        phase_mask=phase_mask,
-        shift_registry=shift_registry,
-        tolerance_px=tolerance_px,
-    )
-
-    centroid_methods = {"weighted_centroid", "external"}
-    peak_methods = {"peak_local_max", "spotiflow", "skimage_peak"}
-    for primary, secondary in itertools.combinations(config.foci_channels, 2):
-        m1 = grouped.get(primary, {}).get("detection_methods", set())
-        m2 = grouped.get(secondary, {}).get("detection_methods", set())
-        all_m = m1 | m2
-        if all_m & centroid_methods and all_m & peak_methods:
-            LOGGER.warning(
-                "Channels %s and %s use different detection semantics "
-                "(centroid vs peak); colocalization distances may be biased. "
-                "Consider using a uniform detection method across channels.",
-                primary, secondary,
-            )
-
-    for primary, secondary in itertools.combinations(config.foci_channels, 2):
-        pts_p = grouped.get(primary)
-        pts_s = grouped.get(secondary)
-        if not pts_p or not pts_s:
+    for fr in frame_groups:
+        if fr is None:
+            sub_rows = filtered
+        else:
+            sub_rows = [r for r in filtered if _row_frame(r) == fr]
+        if not sub_rows:
             continue
-        record, pairs, unmatched = _analyze_pair(
-            primary_channel=primary,
-            secondary_channel=secondary,
-            points_primary=pts_p,
-            points_secondary=pts_s,
-            config=config,
-            max_distance_px=max_distance_px,
-            coloc_threshold_px=coloc_threshold_px,
+
+        grouped = _group_foci_from_table_rows(
+            sub_rows,
+            foci_channels=chans,
+            tolerance_px=tolerance_px,
+            phase_labels=phase_labels,
         )
-        if config.coloc_n_randomizations > 0 and record.get("valid_pairs", 0) is not None:
-            rand_result = _run_randomization_test(
-                observed_valid=int(record.get("valid_pairs", 0) or 0),
+
+        centroid_methods = {"weighted_centroid", "external"}
+        peak_methods = {"peak_local_max", "spotiflow", "skimage_peak"}
+        for primary, secondary in itertools.combinations(chans, 2):
+            m1 = grouped.get(primary, {}).get("detection_methods", set())
+            m2 = grouped.get(secondary, {}).get("detection_methods", set())
+            all_m = m1 | m2
+            if all_m & centroid_methods and all_m & peak_methods:
+                LOGGER.warning(
+                    "Channels %s and %s use different detection semantics "
+                    "(centroid vs peak); colocalization distances may be biased. "
+                    "Consider using a uniform detection method across channels.",
+                    primary, secondary,
+                )
+
+        for primary, secondary in itertools.combinations(chans, 2):
+            pts_p = grouped.get(primary)
+            pts_s = grouped.get(secondary)
+            if not pts_p or not pts_s:
+                continue
+            record, pairs, unmatched = _analyze_pair(
+                primary_channel=primary,
+                secondary_channel=secondary,
                 points_primary=pts_p,
                 points_secondary=pts_s,
-                phase_labels=phase_mask.labeled,
-                config=config,
+                settings=settings,
                 max_distance_px=max_distance_px,
                 coloc_threshold_px=coloc_threshold_px,
             )
-            record.update(rand_result)
+            if len(frame_groups) > 1 or frame is not None:
+                if fr is not None:
+                    record["frame"] = int(fr)
 
-        coloc_records.append(record)
-        pair_records.extend(pairs)
-        unmatched_records.extend(unmatched)
+            if (
+                settings.coloc_n_randomizations > 0
+                and phase_labels is not None
+                and record.get("valid_pairs", 0) is not None
+            ):
+                rand_result = _run_randomization_test(
+                    observed_valid=int(record.get("valid_pairs", 0) or 0),
+                    points_primary=pts_p,
+                    points_secondary=pts_s,
+                    phase_labels=phase_labels,
+                    settings=settings,
+                    max_distance_px=max_distance_px,
+                    coloc_threshold_px=coloc_threshold_px,
+                )
+                record.update(rand_result)
+
+            coloc_records.append(record)
+            for pr in pairs:
+                prc = dict(pr)
+                if len(frame_groups) > 1 or frame is not None:
+                    if fr is not None:
+                        prc["frame"] = int(fr)
+                pair_records.append(prc)
+            unmatched_records.extend(unmatched)
 
     return ColocalizationOutputs(
         coloc_records=coloc_records,
         pair_records=pair_records,
-        unmatched_records=unmatched_records if config.coloc_save_unmatched else [],
+        unmatched_records=unmatched_records if settings.coloc_save_unmatched else [],
     )
 
 
-# ---------------------------------------------------------------------------
-# Foci grouping / coordinate extraction (unchanged logic)
-# ---------------------------------------------------------------------------
-
-def _group_foci_by_channel(
-    config: PipelineConfig,
+def _group_foci_from_table_rows(
     foci_records: List[Dict[str, object]],
-    reference_channel: str,
-    phase_channel: str,
-    phase_mask: MaskSet,
-    shift_registry: ShiftRegistry,
+    *,
+    foci_channels: Sequence[str],
     tolerance_px: float,
+    phase_labels: Optional[np.ndarray],
 ) -> Dict[str, Dict[str, object]]:
-    """Group foci by channel and shift all coordinates to a common reference
-    channel.  Also assigns cell IDs using phase mask with edge tolerance."""
-    phase_labels = phase_mask.labeled
-    has_phase_labels = phase_labels is not None
+    """Group foci by channel in image coordinates; optional mask snap for cell_id."""
+    has_phase_labels = phase_labels is not None and phase_labels.ndim == 2
     height = width = 0
     if has_phase_labels:
-        height, width = phase_labels.shape
+        height, width = int(phase_labels.shape[0]), int(phase_labels.shape[1])
     distance_map = None
     nearest_indices = None
     if tolerance_px > 0 and has_phase_labels:
@@ -395,7 +470,7 @@ def _group_foci_by_channel(
         )
 
     grouped: Dict[str, Dict[str, object]] = {}
-    for channel in config.foci_channels:
+    for channel in foci_channels:
         grouped[channel] = {
             "coords": [],
             "cell_ids": [],
@@ -405,41 +480,26 @@ def _group_foci_by_channel(
             "detection_methods": set(),
         }
 
+    local_idx = 0
     for idx, record in enumerate(foci_records):
-        channel = record.get("channel")
+        channel = _row_channel_name(record)
         if channel not in grouped:
             continue
         y_orig, x_orig = _extract_foci_coordinates(record)
         if np.isnan(y_orig) or np.isnan(x_orig):
             continue
-        coords = np.array([[y_orig, x_orig]], dtype=float)
-        shifted_ref = shift_registry.shift_coordinates(
-            coords, from_channel=channel, to_channel=reference_channel,
-        )[0]
-        y, x = shifted_ref
-        if np.isnan(y) or np.isnan(x):
-            continue
-        y = float(y)
-        x = float(x)
-        cell_id = 0
-        if has_phase_labels:
-            shifted_phase = (
-                shifted_ref
-                if phase_channel == reference_channel
-                else shift_registry.shift_coordinates(
-                    coords, from_channel=channel, to_channel=phase_channel,
-                )[0]
-            )
-            y_phase = float(shifted_phase[0])
-            x_phase = float(shifted_phase[1])
-            if np.isfinite(y_phase) and np.isfinite(x_phase):
-                y_int = int(round(y_phase))
-                x_int = int(round(x_phase))
-                if 0 <= y_int < height and 0 <= x_int < width:
-                    cell_id = int(phase_labels[y_int, x_int])
-                else:
-                    y_int = -1
-                    x_int = -1
+        y = float(y_orig)
+        x = float(x_orig)
+        try:
+            cell_id = int(record.get("cell_id") or record.get("Cell_ID") or 0)
+        except (TypeError, ValueError):
+            cell_id = 0
+
+        y_int = int(round(y))
+        x_int = int(round(x))
+        if has_phase_labels and np.isfinite(y) and np.isfinite(x):
+            if 0 <= y_int < height and 0 <= x_int < width:
+                cell_id = int(phase_labels[y_int, x_int])
             else:
                 y_int = -1
                 x_int = -1
@@ -455,16 +515,21 @@ def _group_foci_by_channel(
                         nearest_y = nearest_indices[0, y_int, x_int]
                         nearest_x = nearest_indices[1, y_int, x_int]
                         cell_id = int(phase_labels[nearest_y, nearest_x])
+
         grouped[channel]["coords"].append([y, x])
         grouped[channel]["cell_ids"].append(cell_id)
-        grouped[channel]["indices"].append(idx)
+        grouped[channel]["indices"].append(local_idx)
+        local_idx += 1
         grouped[channel]["orig_coords"].append([y_orig, x_orig])
+        fid = record.get("foci_id")
+        if fid is None:
+            fid = record.get("Foci_id")
         grouped[channel]["foci_ids"].append(
-            record.get("foci_id") if record.get("foci_id") is not None else idx + 1
+            int(fid) if fid is not None else idx + 1
         )
         dm = record.get("detection_method")
         if dm:
-            grouped[channel]["detection_methods"].add(dm)
+            grouped[channel]["detection_methods"].add(str(dm))
 
     centroid_methods = {"weighted_centroid", "external"}
     peak_methods = {"peak_local_max", "spotiflow", "skimage_peak"}
@@ -486,6 +551,12 @@ def _extract_foci_coordinates(record: Dict[str, object]) -> Tuple[float, float]:
         parsed = _parse_coordinate_pair(record["foci_location"])
         if parsed is not None:
             return parsed
+    for yk, xk in (("y", "x"), ("Y", "X")):
+        if yk in record and xk in record:
+            yy = _as_float(record.get(yk, np.nan))
+            xx = _as_float(record.get(xk, np.nan))
+            if np.isfinite(yy) and np.isfinite(xx):
+                return yy, xx
     return (
         _as_float(record.get("foci_center_y", np.nan)),
         _as_float(record.get("foci_center_x", np.nan)),
@@ -538,7 +609,7 @@ def _analyze_pair(
     secondary_channel: str,
     points_primary: Dict[str, Sequence],
     points_secondary: Dict[str, Sequence],
-    config: PipelineConfig,
+    settings: ColocSettings,
     max_distance_px: Optional[float],
     coloc_threshold_px: Optional[float],
 ) -> Tuple[Dict[str, object], List[Dict[str, object]], List[Dict[str, object]]]:
@@ -561,7 +632,7 @@ def _analyze_pair(
         coords_secondary=coords2,
         cell_ids_primary=cell_ids1,
         cell_ids_secondary=cell_ids2,
-        filter_boundaries=config.coloc_filter_boundaries,
+        filter_boundaries=settings.coloc_filter_boundaries,
         max_distance_px=max_distance_px,
         primary_channel=primary_channel,
         secondary_channel=secondary_channel,
@@ -578,7 +649,7 @@ def _analyze_pair(
         record["primary_unmatched_indices"] = primary_unmatched
         record["secondary_unmatched_indices"] = secondary_unmatched
         unmatched_records = _collect_unmatched_records(
-            save_unmatched=config.coloc_save_unmatched,
+            save_unmatched=settings.coloc_save_unmatched,
             primary_channel=primary_channel,
             secondary_channel=secondary_channel,
             primary_unmatched=primary_unmatched,
@@ -681,7 +752,7 @@ def _analyze_pair(
     }
 
     unmatched_records = _collect_unmatched_records(
-        save_unmatched=config.coloc_save_unmatched,
+        save_unmatched=settings.coloc_save_unmatched,
         primary_channel=primary_channel,
         secondary_channel=secondary_channel,
         primary_unmatched=primary_unmatched,
@@ -892,12 +963,12 @@ def _count_cross_cell_pairs(
 # Deprecated matching-mode warnings
 # ---------------------------------------------------------------------------
 
-def _warn_ignored_matching_flags(config: PipelineConfig) -> None:
-    if not config.coloc_one_to_one:
+def _warn_ignored_matching_flags(settings: ColocSettings) -> None:
+    if not settings.coloc_one_to_one:
         LOGGER.warning(
             "coloc_one_to_one=False is deprecated and ignored; using one-to-one pairing."
         )
-    if not config.coloc_mutual_nearest:
+    if not settings.coloc_mutual_nearest:
         LOGGER.warning(
             "coloc_mutual_nearest is deprecated and ignored; "
             "colocalization always uses one-to-one pairing."
@@ -935,14 +1006,14 @@ def _run_randomization_test(
     points_primary: Dict[str, Sequence],
     points_secondary: Dict[str, Sequence],
     phase_labels: np.ndarray,
-    config: PipelineConfig,
+    settings: ColocSettings,
     max_distance_px: Optional[float],
     coloc_threshold_px: Optional[float],
 ) -> Dict[str, object]:
     """Assess colocalization significance by randomizing secondary foci
     positions within cell masks and re-running matching."""
-    n_iter = config.coloc_n_randomizations
-    rng = np.random.default_rng(config.coloc_randomization_seed)
+    n_iter = settings.coloc_n_randomizations
+    rng = np.random.default_rng(settings.coloc_randomization_seed)
 
     cell_pixels: Dict[int, np.ndarray] = {}
     cell_ids_secondary = np.asarray(points_secondary["cell_ids"], dtype=int)
@@ -984,7 +1055,7 @@ def _run_randomization_test(
             coords_secondary=shuffled,
             cell_ids_primary=cell_ids_primary,
             cell_ids_secondary=cell_ids_secondary,
-            filter_boundaries=config.coloc_filter_boundaries,
+            filter_boundaries=settings.coloc_filter_boundaries,
             max_distance_px=max_distance_px,
             warn_cross_cell=False,
         )

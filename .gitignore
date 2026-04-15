@@ -57,6 +57,7 @@ models/
 
 # Logs
 *.log
+*_session.json
 
 # Temporary files
 *.tmp

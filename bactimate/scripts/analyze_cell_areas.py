@@ -662,6 +662,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
                                 continue
                         r = row.copy()
                         r['channel_name'] = fi_channel_name or 'FI'
+                        if foci_detection_mode == 2:
+                            r['detection_method'] = 'spotiflow'
                         foci_table.append(r)
         
         # Determine rejected labels
