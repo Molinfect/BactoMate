@@ -340,6 +340,11 @@ class TrackingWorker(QThread):
         self.output_dir = Path(output_dir) if output_dir else None
         self.track_action = track_action  # "preview" | "movement" | "lineage"
         self.frame_limit = frame_limit
+        profile = os.getenv("BACTIMATE_TRACKING_OUTPUT_PROFILE", "minimal")
+        profile = str(profile).strip().lower()
+        if profile not in {"minimal", "legacy", "both"}:
+            profile = "minimal"
+        self.output_profile = profile
 
     def run(self) -> None:
         # Initialize debug output list
@@ -660,6 +665,12 @@ class TrackingWorker(QThread):
                 output_dir = base_dir / "_tracking" / f"{mask_path.stem}_tracking"
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
+            stem = Path(self.mask_file).stem
+            write_legacy_outputs = self.output_profile in {"legacy", "both"}
+            write_minimal_outputs = self.output_profile in {"minimal", "both"}
+            debug_output.append(
+                f"Output profile: {self.output_profile} (minimal={write_minimal_outputs}, legacy={write_legacy_outputs})"
+            )
 
             # Read calibration from original or mask TIFF so we can preserve it in written TIFFs
             from bactimate.modules.tiff_metadata import read_calibration_from_path, build_metadata_dict
@@ -758,13 +769,13 @@ class TrackingWorker(QThread):
             # Save tracks as CSV: track_id, frame, y, x (and Cell_ID if analysis Excel was used).
             # y,x come from Trackastra's track graph (centroid-like node positions; napari format or node centroid_y/x).
             self.progress.emit(80, "Saving tracks...")
-            tracks_file = output_dir / f"{Path(self.mask_file).stem}_tracks.csv"
+            tracks_file = output_dir / f"{stem}_tracks.csv"
             tracks_df.to_csv(tracks_file, index=False)
             debug_output.append(f"✓ Saved tracks to: {tracks_file}")
             
             # Save tracked masks
             self.progress.emit(85, "Saving tracked masks...")
-            masks_tracked_file = output_dir / f"{Path(self.mask_file).stem}_masks_tracked.tif"
+            masks_tracked_file = output_dir / f"{stem}_masks_tracked.tif"
             debug_output.append(f"\nSaving tracked masks...")
             debug_output.append(f"  - Shape: {masks_tracked.shape}")
             debug_output.append(f"  - Unique labels per frame: {[len(np.unique(masks_tracked[i])) for i in range(min(5, masks_tracked.shape[0]))]}")
@@ -805,7 +816,7 @@ class TrackingWorker(QThread):
                 else:
                     debug_output.append("  (This may take a while for large datasets - optimizing...)")
                 try:
-                    vis_file = output_dir / f"{Path(self.mask_file).stem}_trajectories.tif"
+                    vis_file = output_dir / f"{stem}_trajectories.tif"
                     def progress_callback(pct, msg):
                         self.progress.emit(pct, msg)
                     self._create_trajectory_visualization(
@@ -819,20 +830,25 @@ class TrackingWorker(QThread):
                     debug_output.append(f"  {traceback.format_exc()}")
                     self.progress.emit(96, f"WARNING: Trajectory file was not created: {e}")
             
+            edges_df = pd.DataFrame(
+                columns=["parent_track_id", "daughter_track_id", "division_frame", "parent_last_frame"]
+            )
+            edges_path = None
+            lineage_summary_legacy = None
             if self.track_action == "lineage":
                 self.progress.emit(92, "Building lineage exports...")
-                stem = Path(self.mask_file).stem
                 try:
                     edges_df = self._lineage_edges_dataframe(napari_graph, tracks_df)
-                    edges_path = output_dir / f"{stem}_lineage_edges.csv"
-                    edges_df.to_csv(edges_path, index=False)
-                    debug_output.append(f"✓ Saved lineage edges: {edges_path.name}")
-                    summary_df = self._lineage_per_track_summary(edges_df, tracks_df)
-                    lineage_xlsx = output_dir / f"{stem}_lineage_summary.xlsx"
-                    with pd.ExcelWriter(lineage_xlsx, engine="openpyxl") as writer:
-                        edges_df.to_excel(writer, sheet_name="Lineage edges", index=False)
-                        summary_df.to_excel(writer, sheet_name="Per-track summary", index=False)
-                    debug_output.append(f"✓ Saved lineage summary: {lineage_xlsx.name}")
+                    if write_legacy_outputs:
+                        edges_path = output_dir / f"{stem}_lineage_edges.csv"
+                        edges_df.to_csv(edges_path, index=False)
+                        debug_output.append(f"✓ Saved lineage edges: {edges_path.name}")
+                        summary_df = self._lineage_per_track_summary(edges_df, tracks_df)
+                        lineage_summary_legacy = output_dir / f"{stem}_lineage_summary.xlsx"
+                        with pd.ExcelWriter(lineage_summary_legacy, engine="openpyxl") as writer:
+                            edges_df.to_excel(writer, sheet_name="Lineage edges", index=False)
+                            summary_df.to_excel(writer, sheet_name="Per-track summary", index=False)
+                        debug_output.append(f"✓ Saved lineage summary: {lineage_summary_legacy.name}")
                     if self.original_file:
                         try:
                             founder_by_track = self._lineage_founder_map(edges_df, tracks_df)
@@ -869,32 +885,78 @@ class TrackingWorker(QThread):
                 pass
             
             # If Excel data was provided, merge with tracks
+            merged_data = None
+            merged_file = None
             if cell_data is not None:
                 self.progress.emit(95, "Merging with analysis data...")
                 # Merge tracking data with cell properties
                 merged_data = self._merge_tracking_with_analysis(tracks_df, cell_data, masks_tracked)
-                merged_file = output_dir / f"{Path(self.mask_file).stem}_tracks_with_analysis.xlsx"
-                with pd.ExcelWriter(merged_file, engine='openpyxl') as writer:
-                    merged_data.to_excel(writer, sheet_name='Tracks with Analysis', index=False)
-                    tracks_df.to_excel(writer, sheet_name='Tracks', index=False)
-                    if isinstance(cell_data, pd.DataFrame):
-                        cell_data.to_excel(writer, sheet_name='Original Analysis', index=False)
-                self.progress.emit(100, "Tracking completed!")
-                # Add debug output to success message
-                success_msg = "Tracking completed!\n\n"
-                success_msg += "\n".join(debug_output)
-                success_msg += f"\n\nTracks saved to: {tracks_file}\n"
-                success_msg += f"Tracked masks saved to: {masks_tracked_file}\n"
-                success_msg += f"Merged data saved to: {merged_file}"
-                self.finished.emit(True, success_msg)
-            else:
-                self.progress.emit(100, "Tracking completed!")
-                # Add debug output to success message
-                success_msg = "Tracking completed!\n\n"
-                success_msg += "\n".join(debug_output)
-                success_msg += f"\n\nTracks saved to: {tracks_file}\n"
-                success_msg += f"Tracked masks saved to: {masks_tracked_file}"
-                self.finished.emit(True, success_msg)
+                if write_legacy_outputs:
+                    merged_file = output_dir / f"{stem}_tracks_with_analysis.xlsx"
+                    with pd.ExcelWriter(merged_file, engine='openpyxl') as writer:
+                        merged_data.to_excel(writer, sheet_name='Tracks with Analysis', index=False)
+                        tracks_df.to_excel(writer, sheet_name='Tracks', index=False)
+                        if isinstance(cell_data, pd.DataFrame):
+                            cell_data.to_excel(writer, sheet_name='Original Analysis', index=False)
+                    debug_output.append(f"✓ Saved merged tracks workbook: {merged_file.name}")
+
+            report_file = None
+            tables_dir = None
+            written_tables: dict[str, str] = {}
+            if write_minimal_outputs:
+                try:
+                    self.progress.emit(97, "Building simplified tabular outputs...")
+                    trajectory_tables = self._build_trajectory_tables(
+                        tracks_df=tracks_df,
+                        masks_tracked=masks_tracked,
+                        merged_data=merged_data,
+                    )
+                    lineage_tables = None
+                    if self.track_action == "lineage":
+                        lineage_tables = self._build_lineage_tables(
+                            tracks_df=tracks_df,
+                            edges_df=edges_df,
+                            masks_tracked=masks_tracked,
+                            merged_data=merged_data,
+                        )
+                    report_file = output_dir / f"{stem}_report.xlsx"
+                    self._write_report_workbook(
+                        output_path=report_file,
+                        trajectory_tables=trajectory_tables,
+                        lineage_tables=lineage_tables,
+                    )
+                    debug_output.append(f"✓ Saved report workbook: {report_file.name}")
+                    tables_dir, written_tables = self._write_canonical_tables(
+                        output_dir=output_dir,
+                        trajectory_tables=trajectory_tables,
+                        lineage_tables=lineage_tables,
+                    )
+                    debug_output.append(f"✓ Saved canonical tables in: {tables_dir}")
+                except Exception as e:
+                    import traceback
+                    debug_output.append(f"⚠ Could not write simplified tabular outputs: {e}")
+                    debug_output.append(traceback.format_exc())
+
+            self.progress.emit(100, "Tracking completed!")
+            success_msg = "Tracking completed!\n\n"
+            success_msg += "\n".join(debug_output)
+            success_msg += f"\n\nTracks saved to: {tracks_file}\n"
+            success_msg += f"Tracked masks saved to: {masks_tracked_file}\n"
+            if report_file is not None:
+                success_msg += f"Report workbook saved to: {report_file}\n"
+            if tables_dir is not None:
+                success_msg += f"Canonical tables saved to: {tables_dir}\n"
+                if written_tables:
+                    success_msg += "Canonical table files:\n"
+                    for k in sorted(written_tables.keys()):
+                        success_msg += f"  - {k}: {written_tables[k]}\n"
+            if edges_path is not None:
+                success_msg += f"Legacy lineage edges saved to: {edges_path}\n"
+            if lineage_summary_legacy is not None:
+                success_msg += f"Legacy lineage summary saved to: {lineage_summary_legacy}\n"
+            if merged_file is not None:
+                success_msg += f"Merged data saved to: {merged_file}\n"
+            self.finished.emit(True, success_msg)
                 
         except ImportError as e:
             debug_output.append(f"\n✗ Import error: {str(e)}")
@@ -1333,6 +1395,675 @@ class TrackingWorker(QThread):
         print("\n".join(debug_info), file=sys.stderr)
         
         return merged
+
+    @staticmethod
+    def _json_list(values: list[int]) -> str:
+        import json
+
+        return json.dumps([int(v) for v in values], separators=(",", ":"))
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            if value is None:
+                return None
+            if isinstance(value, float) and np.isnan(value):
+                return None
+            return int(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            if value is None:
+                return None
+            f = float(value)
+            if np.isnan(f):
+                return None
+            return f
+        except Exception:
+            return None
+
+    def _build_track_cell_table(self, tracks_df) -> tuple[dict[int, list[int]], Any]:
+        import pandas as pd
+
+        empty_df = pd.DataFrame(columns=["track_id", "cell_id"])
+        if tracks_df is None or len(tracks_df) == 0 or "track_id" not in tracks_df.columns:
+            return {}, empty_df
+        cell_col = "Cell_ID" if "Cell_ID" in tracks_df.columns else "track_id"
+        mapping: dict[int, list[int]] = {}
+        rows: list[dict[str, int]] = []
+        for tid_raw, g in tracks_df.groupby("track_id"):
+            tid = self._safe_int(tid_raw)
+            if tid is None:
+                continue
+            vals: list[int] = []
+            for v in g[cell_col].tolist():
+                iv = self._safe_int(v)
+                if iv is None:
+                    continue
+                vals.append(iv)
+            unique_vals = sorted(set(vals)) if vals else [tid]
+            mapping[tid] = unique_vals
+            for cid in unique_vals:
+                rows.append({"track_id": tid, "cell_id": cid})
+        return mapping, (pd.DataFrame(rows) if rows else empty_df)
+
+    @staticmethod
+    def _guess_area_column(df) -> Optional[str]:
+        if df is None or len(df) == 0:
+            return None
+        preferred = [
+            "area_um2",
+            "area_µm2",
+            "area_um^2",
+            "area",
+            "Area",
+            "cell_area",
+            "Cell_Area",
+            "Area (um^2)",
+            "Area_um2",
+            "size",
+            "Size",
+        ]
+        cols = list(df.columns)
+        for c in preferred:
+            if c in cols:
+                return c
+        for c in cols:
+            s = str(c).lower()
+            if "area" in s:
+                return c
+        return None
+
+    def _compute_track_metrics_table(
+        self,
+        tracks_df,
+        pixel_size_um: float,
+        time_per_frame_min: float,
+    ):
+        import pandas as pd
+
+        cols = [
+            "track_id",
+            "trajectory_length",
+            "duration_frames",
+            "duration_min",
+            "first_frame",
+            "last_frame",
+            "displacement_px",
+            "displacement_um",
+            "path_length_px",
+            "path_length_um",
+            "mean_speed_px_frame",
+            "mean_speed_um_min",
+            "straight_line_speed_px_frame",
+            "straight_line_speed_um_min",
+            "straightness",
+        ]
+        if tracks_df is None or len(tracks_df) == 0 or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+            return pd.DataFrame(columns=cols)
+        need_xy = "y" in tracks_df.columns and "x" in tracks_df.columns
+        rows = []
+        for tid, g in tracks_df.groupby("track_id"):
+            g = g.sort_values("frame")
+            n = len(g)
+            first_frame = int(g["frame"].iloc[0])
+            last_frame = int(g["frame"].iloc[-1])
+            duration = max(1, int(last_frame - first_frame + 1))
+            displacement_px = 0.0
+            path_length_px = 0.0
+            if need_xy and n >= 2:
+                ys = g["y"].values
+                xs = g["x"].values
+                displacement_px = float(np.hypot(ys[-1] - ys[0], xs[-1] - xs[0]))
+                path_length_px = float(np.sum(np.hypot(np.diff(ys), np.diff(xs))))
+            displacement_um = displacement_px * pixel_size_um if pixel_size_um > 0 else displacement_px
+            path_length_um = path_length_px * pixel_size_um if pixel_size_um > 0 else path_length_px
+            straightness = float(displacement_px / path_length_px) if path_length_px > 0 else 0.0
+            mean_speed_px_frame = path_length_px / duration if duration > 0 else 0.0
+            if pixel_size_um > 0 and time_per_frame_min > 0:
+                mean_speed_um_min = path_length_um / (duration * time_per_frame_min)
+            else:
+                mean_speed_um_min = mean_speed_px_frame
+            duration_min = duration * time_per_frame_min if time_per_frame_min > 0 else 0.0
+            straight_line_speed_px_frame = displacement_px / duration if duration > 0 else 0.0
+            if duration > 0 and time_per_frame_min > 0 and pixel_size_um > 0:
+                straight_line_speed_um_min = displacement_um / (duration * time_per_frame_min)
+            else:
+                straight_line_speed_um_min = straight_line_speed_px_frame
+            rows.append(
+                {
+                    "track_id": int(tid),
+                    "trajectory_length": int(n),
+                    "duration_frames": int(duration),
+                    "duration_min": float(duration_min),
+                    "first_frame": int(first_frame),
+                    "last_frame": int(last_frame),
+                    "displacement_px": float(displacement_px),
+                    "displacement_um": float(displacement_um),
+                    "path_length_px": float(path_length_px),
+                    "path_length_um": float(path_length_um),
+                    "mean_speed_px_frame": float(mean_speed_px_frame),
+                    "mean_speed_um_min": float(mean_speed_um_min),
+                    "straight_line_speed_px_frame": float(straight_line_speed_px_frame),
+                    "straight_line_speed_um_min": float(straight_line_speed_um_min),
+                    "straightness": float(straightness),
+                }
+            )
+        return pd.DataFrame(rows, columns=cols)
+
+    def _build_track_information_table(self, tracks_df, metrics_df):
+        import pandas as pd
+
+        cols = [
+            "Cell_ID",
+            "TrackID",
+            "trajectory_length",
+            "duration_frames",
+            "duration_min",
+            "first_frame",
+            "last_frame",
+            "displacement_px",
+            "displacement_um",
+            "path_length_px",
+            "path_length_um",
+            "mean_speed_px_frame",
+            "mean_speed_um_min",
+            "mean_speed_um_s",
+            "straight_line_speed_px_frame",
+            "straight_line_speed_um_min",
+            "straight_line_speed_um_s",
+            "straightness",
+        ]
+        if metrics_df is None or len(metrics_df) == 0:
+            return pd.DataFrame(columns=cols)
+        out = pd.DataFrame()
+        if "Cell_ID" in tracks_df.columns:
+            first_cell = tracks_df.groupby("track_id")["Cell_ID"].first()
+            out["Cell_ID"] = metrics_df["track_id"].map(first_cell).fillna(metrics_df["track_id"]).astype(int)
+        else:
+            out["Cell_ID"] = metrics_df["track_id"].astype(int)
+        out["TrackID"] = metrics_df["track_id"].astype(int)
+        out["trajectory_length"] = metrics_df["trajectory_length"].astype(int)
+        out["duration_frames"] = metrics_df["duration_frames"].astype(int)
+        out["duration_min"] = np.round(metrics_df["duration_min"], 4)
+        out["first_frame"] = metrics_df["first_frame"].astype(int)
+        out["last_frame"] = metrics_df["last_frame"].astype(int)
+        out["displacement_px"] = np.round(metrics_df["displacement_px"], 4)
+        out["displacement_um"] = np.round(metrics_df["displacement_um"], 4)
+        out["path_length_px"] = np.round(metrics_df["path_length_px"], 4)
+        out["path_length_um"] = np.round(metrics_df["path_length_um"], 4)
+        out["mean_speed_px_frame"] = np.round(metrics_df["mean_speed_px_frame"], 6)
+        out["mean_speed_um_min"] = np.round(metrics_df["mean_speed_um_min"], 6)
+        out["mean_speed_um_s"] = np.round(metrics_df["mean_speed_um_min"] / 60.0, 6)
+        out["straight_line_speed_px_frame"] = np.round(metrics_df["straight_line_speed_px_frame"], 6)
+        out["straight_line_speed_um_min"] = np.round(metrics_df["straight_line_speed_um_min"], 6)
+        out["straight_line_speed_um_s"] = np.round(metrics_df["straight_line_speed_um_min"] / 60.0, 6)
+        out["straightness"] = np.round(metrics_df["straightness"], 6)
+        return out[cols]
+
+    def _track_area_table(self, tracks_df, masks_tracked, merged_data=None):
+        import pandas as pd
+
+        cols = ["track_id", "frame", "area", "area_source"]
+        if tracks_df is None or len(tracks_df) == 0 or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+            return pd.DataFrame(columns=cols)
+        points = tracks_df[["track_id", "frame"]].copy()
+        points["track_id"] = pd.to_numeric(points["track_id"], errors="coerce")
+        points["frame"] = pd.to_numeric(points["frame"], errors="coerce")
+        points = points.dropna().astype({"track_id": int, "frame": int}).drop_duplicates()
+        if len(points) == 0:
+            return pd.DataFrame(columns=cols)
+
+        area_map: dict[tuple[int, int], tuple[float, str]] = {}
+        if (
+            merged_data is not None
+            and len(merged_data) > 0
+            and "track_id" in merged_data.columns
+            and "frame" in merged_data.columns
+        ):
+            area_col = self._guess_area_column(merged_data)
+            if area_col is not None:
+                m = merged_data[["track_id", "frame", area_col]].copy()
+                m["track_id"] = pd.to_numeric(m["track_id"], errors="coerce")
+                m["frame"] = pd.to_numeric(m["frame"], errors="coerce")
+                m[area_col] = pd.to_numeric(m[area_col], errors="coerce")
+                m = m.dropna()
+                if len(m) > 0:
+                    m = (
+                        m.groupby(["track_id", "frame"], as_index=False)[area_col]
+                        .median()
+                        .astype({"track_id": int, "frame": int})
+                    )
+                    for _, r in m.iterrows():
+                        v = float(r[area_col])
+                        if v > 0:
+                            area_map[(int(r["track_id"]), int(r["frame"]))] = (v, f"analysis:{area_col}")
+
+        frame_counts: dict[int, dict[int, int]] = {}
+        for fr in sorted(points["frame"].unique().tolist()):
+            if fr < 0 or fr >= int(masks_tracked.shape[0]):
+                frame_counts[fr] = {}
+                continue
+            vals, cnts = np.unique(masks_tracked[fr], return_counts=True)
+            counts = {}
+            for v, c in zip(vals, cnts):
+                iv = int(v)
+                if iv > 0:
+                    counts[iv] = int(c)
+            frame_counts[fr] = counts
+
+        rows = []
+        for r in points.itertuples(index=False):
+            tid = int(r.track_id)
+            fr = int(r.frame)
+            area, source = area_map.get((tid, fr), (None, None))
+            if area is None:
+                area = float(frame_counts.get(fr, {}).get(tid, 0))
+                source = "mask_px"
+            rows.append({"track_id": tid, "frame": fr, "area": float(area), "area_source": source})
+        return pd.DataFrame(rows, columns=cols)
+
+    def _build_trajectory_tables(self, tracks_df, masks_tracked, merged_data=None) -> dict[str, Any]:
+        import pandas as pd
+
+        pixel_size = float(getattr(self, "_cal_ps", 0.0) or 0.0)
+        time_per_frame = float(getattr(self, "_cal_tp", 0.0) or 0.0)
+        metrics_df = self._compute_track_metrics_table(tracks_df, pixel_size, time_per_frame)
+        track_info_df = self._build_track_information_table(tracks_df, metrics_df)
+        track_cell_map, track_cells_df = self._build_track_cell_table(tracks_df)
+        area_df = self._track_area_table(tracks_df, masks_tracked, merged_data=merged_data)
+        summary_cols = [
+            "track_id",
+            "containing_cell_ids",
+            "start_frame",
+            "start_coord",
+            "start_y",
+            "start_x",
+            "end_frame",
+            "end_coord",
+            "end_y",
+            "end_x",
+            "total_traveled",
+            "total_traveled_unit",
+            "total_traveled_px",
+            "total_traveled_um",
+            "displacement_px",
+            "displacement_um",
+            "duration_frames",
+            "duration_min",
+            "mean_speed_px_frame",
+            "mean_speed_um_min",
+            "straightness",
+        ]
+
+        summary_rows = []
+        tracks_sorted = tracks_df.sort_values(["track_id", "frame"]) if len(tracks_df) > 0 and "frame" in tracks_df.columns else tracks_df
+        metrics_lookup = (
+            metrics_df.set_index("track_id").to_dict(orient="index")
+            if len(metrics_df) > 0 and "track_id" in metrics_df.columns
+            else {}
+        )
+        for tid_raw, g in tracks_sorted.groupby("track_id") if len(tracks_sorted) > 0 and "track_id" in tracks_sorted.columns else []:
+            tid = int(tid_raw)
+            m = metrics_lookup.get(tid, {})
+            start_row = g.iloc[0]
+            end_row = g.iloc[-1]
+            start_frame = self._safe_int(start_row.get("frame"))
+            end_frame = self._safe_int(end_row.get("frame"))
+            start_y = self._safe_float(start_row.get("y")) if "y" in g.columns else None
+            start_x = self._safe_float(start_row.get("x")) if "x" in g.columns else None
+            end_y = self._safe_float(end_row.get("y")) if "y" in g.columns else None
+            end_x = self._safe_float(end_row.get("x")) if "x" in g.columns else None
+            start_coord = self._json_list([int(round(start_y)), int(round(start_x))]) if start_y is not None and start_x is not None else ""
+            end_coord = self._json_list([int(round(end_y)), int(round(end_x))]) if end_y is not None and end_x is not None else ""
+            containing_cells = track_cell_map.get(tid, [tid])
+            total_traveled_px = float(m.get("path_length_px", 0.0))
+            total_traveled_um = float(m.get("path_length_um", total_traveled_px))
+            if pixel_size > 0:
+                total_traveled = total_traveled_um
+                total_traveled_unit = "um"
+            else:
+                total_traveled = total_traveled_px
+                total_traveled_unit = "px"
+            summary_rows.append(
+                {
+                    "track_id": tid,
+                    "containing_cell_ids": self._json_list(containing_cells),
+                    "start_frame": start_frame,
+                    "start_coord": start_coord,
+                    "start_y": start_y,
+                    "start_x": start_x,
+                    "end_frame": end_frame,
+                    "end_coord": end_coord,
+                    "end_y": end_y,
+                    "end_x": end_x,
+                    "total_traveled": total_traveled,
+                    "total_traveled_unit": total_traveled_unit,
+                    "total_traveled_px": total_traveled_px,
+                    "total_traveled_um": total_traveled_um,
+                    "displacement_px": float(m.get("displacement_px", 0.0)),
+                    "displacement_um": float(m.get("displacement_um", 0.0)),
+                    "duration_frames": int(m.get("duration_frames", 0) or 0),
+                    "duration_min": float(m.get("duration_min", 0.0)),
+                    "mean_speed_px_frame": float(m.get("mean_speed_px_frame", 0.0)),
+                    "mean_speed_um_min": float(m.get("mean_speed_um_min", 0.0)),
+                    "straightness": float(m.get("straightness", 0.0)),
+                }
+            )
+        track_summary_df = pd.DataFrame(summary_rows, columns=summary_cols)
+
+        track_points_df = tracks_df.copy()
+        if "Cell_ID" in track_points_df.columns:
+            track_points_df["cell_id"] = track_points_df["Cell_ID"]
+        elif "track_id" in track_points_df.columns:
+            track_points_df["cell_id"] = track_points_df["track_id"]
+        if "track_id" in track_points_df.columns and "frame" in track_points_df.columns:
+            track_points_df = track_points_df.sort_values(["track_id", "frame"])
+
+        return {
+            "track_summary": track_summary_df,
+            "track_information": track_info_df,
+            "track_points": track_points_df,
+            "track_cells": track_cells_df,
+            "track_area": area_df,
+        }
+
+    def _build_lineage_tables(
+        self,
+        tracks_df,
+        edges_df,
+        masks_tracked,
+        merged_data=None,
+    ) -> dict[str, Any]:
+        import pandas as pd
+
+        if tracks_df is None:
+            tracks_df = pd.DataFrame(columns=["track_id", "frame", "y", "x"])
+        if edges_df is None:
+            edges_df = pd.DataFrame(
+                columns=["parent_track_id", "daughter_track_id", "division_frame", "parent_last_frame"]
+            )
+
+        founder_by_track = self._lineage_founder_map(edges_df, tracks_df)
+        if not founder_by_track and "track_id" in tracks_df.columns:
+            founder_by_track = {int(t): int(t) for t in tracks_df["track_id"].dropna().unique().tolist()}
+
+        track_cell_map, _ = self._build_track_cell_table(tracks_df)
+        lineage_tracks_rows = [
+            {"lineage_id": int(fid), "track_id": int(tid)}
+            for tid, fid in sorted(founder_by_track.items(), key=lambda x: (int(x[1]), int(x[0])))
+        ]
+        lineage_tracks_df = pd.DataFrame(lineage_tracks_rows, columns=["lineage_id", "track_id"])
+
+        lineage_cells_rows = []
+        for lid in sorted(set(founder_by_track.values())):
+            tracks_in_lineage = [int(tid) for tid, lf in founder_by_track.items() if int(lf) == int(lid)]
+            cells: set[int] = set()
+            for tid in tracks_in_lineage:
+                cells.update(track_cell_map.get(tid, [tid]))
+            for cid in sorted(cells):
+                lineage_cells_rows.append({"lineage_id": int(lid), "cell_id": int(cid)})
+        lineage_cells_df = pd.DataFrame(lineage_cells_rows, columns=["lineage_id", "cell_id"])
+
+        edge_lineage_count: dict[int, int] = defaultdict(int)
+        if len(edges_df) > 0 and "parent_track_id" in edges_df.columns and "daughter_track_id" in edges_df.columns:
+            for er in edges_df.itertuples(index=False):
+                parent = self._safe_int(getattr(er, "parent_track_id", None))
+                daughter = self._safe_int(getattr(er, "daughter_track_id", None))
+                lid = None
+                if parent is not None:
+                    lid = founder_by_track.get(parent)
+                if lid is None and daughter is not None:
+                    lid = founder_by_track.get(daughter)
+                if lid is not None:
+                    edge_lineage_count[int(lid)] += 1
+
+        lineage_summary_cols = [
+            "lineage_id",
+            "containing_cells",
+            "containing_tracks",
+            "start_frame",
+            "start_coord",
+            "start_y",
+            "start_x",
+            "end_frame",
+            "end_coord",
+            "end_y",
+            "end_x",
+            "total_divisions",
+            "n_tracks",
+            "n_cells",
+        ]
+        lineage_summary_rows = []
+        if len(tracks_df) > 0 and "track_id" in tracks_df.columns and "frame" in tracks_df.columns:
+            for lid in sorted(set(founder_by_track.values())):
+                tracks_in_lineage = [int(tid) for tid, lf in founder_by_track.items() if int(lf) == int(lid)]
+                sub = tracks_df[tracks_df["track_id"].isin(tracks_in_lineage)].copy()
+                if len(sub) == 0:
+                    continue
+                sub = sub.sort_values(["frame", "track_id"])
+                first = sub.iloc[0]
+                last = sub.iloc[-1]
+                start_frame = self._safe_int(first.get("frame"))
+                end_frame = self._safe_int(last.get("frame"))
+                start_y = self._safe_float(first.get("y")) if "y" in sub.columns else None
+                start_x = self._safe_float(first.get("x")) if "x" in sub.columns else None
+                end_y = self._safe_float(last.get("y")) if "y" in sub.columns else None
+                end_x = self._safe_float(last.get("x")) if "x" in sub.columns else None
+                start_coord = self._json_list([int(round(start_y)), int(round(start_x))]) if start_y is not None and start_x is not None else ""
+                end_coord = self._json_list([int(round(end_y)), int(round(end_x))]) if end_y is not None and end_x is not None else ""
+                cells = sorted(
+                    set(
+                        lineage_cells_df.loc[lineage_cells_df["lineage_id"] == int(lid), "cell_id"].astype(int).tolist()
+                    )
+                )
+                lineage_summary_rows.append(
+                    {
+                        "lineage_id": int(lid),
+                        "containing_cells": self._json_list(cells),
+                        "containing_tracks": self._json_list(sorted(tracks_in_lineage)),
+                        "start_frame": start_frame,
+                        "start_coord": start_coord,
+                        "start_y": start_y,
+                        "start_x": start_x,
+                        "end_frame": end_frame,
+                        "end_coord": end_coord,
+                        "end_y": end_y,
+                        "end_x": end_x,
+                        "total_divisions": int(edge_lineage_count.get(int(lid), 0)),
+                        "n_tracks": int(len(tracks_in_lineage)),
+                        "n_cells": int(len(cells)),
+                    }
+                )
+        lineage_summary_df = pd.DataFrame(lineage_summary_rows, columns=lineage_summary_cols)
+
+        area_df = self._track_area_table(tracks_df, masks_tracked, merged_data=merged_data)
+        lineage_growth_cols = [
+            "lineage_id",
+            "growth",
+            "doubling_time",
+            "growth_unit",
+            "metric_used",
+            "fit_r2",
+            "n_points",
+        ]
+        lineage_growth_rows = []
+        if len(area_df) > 0 and "track_id" in area_df.columns and "frame" in area_df.columns:
+            area_df = area_df.copy()
+            area_df["lineage_id"] = area_df["track_id"].map(
+                lambda t: founder_by_track.get(int(t), int(t)) if self._safe_int(t) is not None else None
+            )
+            time_per_frame = float(getattr(self, "_cal_tp", 0.0) or 0.0)
+            for lid, g in area_df.groupby("lineage_id"):
+                if self._safe_int(lid) is None:
+                    continue
+                gsum = g.groupby("frame", as_index=False)["area"].sum().sort_values("frame")
+                positive = gsum[gsum["area"] > 0].copy()
+                sources = sorted(set(g["area_source"].astype(str).tolist()))
+                source_label = "mask_px"
+                analysis_sources = [s for s in sources if s.startswith("analysis:")]
+                if analysis_sources and len(sources) > 1:
+                    source_label = f"mixed({','.join(analysis_sources + ['mask_px'])})"
+                elif analysis_sources:
+                    source_label = analysis_sources[0]
+                n_points = int(len(positive))
+                growth = np.nan
+                doubling_time = np.nan
+                r2 = np.nan
+                if n_points >= 2:
+                    x = positive["frame"].to_numpy(dtype=float)
+                    if time_per_frame > 0:
+                        x = x * time_per_frame
+                    y = np.log(positive["area"].to_numpy(dtype=float))
+                    try:
+                        slope, intercept = np.polyfit(x, y, 1)
+                        y_pred = slope * x + intercept
+                        ss_res = float(np.sum((y - y_pred) ** 2))
+                        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+                        r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+                        growth = float(slope)
+                        if growth > 0:
+                            doubling_time = float(np.log(2.0) / growth)
+                    except Exception:
+                        pass
+                lineage_growth_rows.append(
+                    {
+                        "lineage_id": int(lid),
+                        "growth": growth,
+                        "doubling_time": doubling_time,
+                        "growth_unit": "1/min" if time_per_frame > 0 else "1/frame",
+                        "metric_used": source_label,
+                        "fit_r2": r2,
+                        "n_points": n_points,
+                    }
+                )
+        lineage_growth_df = pd.DataFrame(lineage_growth_rows, columns=lineage_growth_cols)
+
+        lineage_points_df = tracks_df.copy()
+        if "track_id" in lineage_points_df.columns:
+            lineage_points_df["lineage_id"] = lineage_points_df["track_id"].map(
+                lambda t: founder_by_track.get(int(t), int(t))
+                if self._safe_int(t) is not None
+                else None
+            )
+            if "frame" in lineage_points_df.columns:
+                lineage_points_df = lineage_points_df.sort_values(["lineage_id", "track_id", "frame"])
+
+        return {
+            "lineage_summary": lineage_summary_df,
+            "lineage_growth": lineage_growth_df,
+            "lineage_edges": edges_df.copy(),
+            "lineage_tracks": lineage_tracks_df,
+            "lineage_cells": lineage_cells_df,
+            "lineage_points": lineage_points_df,
+        }
+
+    def _write_trajectory_workbook(
+        self,
+        tracks_df,
+        masks_tracked,
+        output_path: Path,
+        merged_data=None,
+    ) -> None:
+        import pandas as pd
+
+        tables = self._build_trajectory_tables(
+            tracks_df=tracks_df,
+            masks_tracked=masks_tracked,
+            merged_data=merged_data,
+        )
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            for name in ("track_summary", "track_information", "track_points", "track_cells", "track_area"):
+                tables[name].to_excel(writer, sheet_name=name, index=False)
+
+    def _write_lineage_workbook(
+        self,
+        tracks_df,
+        edges_df,
+        masks_tracked,
+        output_path: Path,
+        merged_data=None,
+    ) -> None:
+        import pandas as pd
+
+        tables = self._build_lineage_tables(
+            tracks_df=tracks_df,
+            edges_df=edges_df,
+            masks_tracked=masks_tracked,
+            merged_data=merged_data,
+        )
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            for name in (
+                "lineage_summary",
+                "lineage_growth",
+                "lineage_edges",
+                "lineage_tracks",
+                "lineage_cells",
+                "lineage_points",
+            ):
+                tables[name].to_excel(writer, sheet_name=name, index=False)
+
+    def _write_report_workbook(
+        self,
+        output_path: Path,
+        trajectory_tables: dict[str, Any],
+        lineage_tables: Optional[dict[str, Any]] = None,
+    ) -> None:
+        import pandas as pd
+
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            trajectory_tables["track_summary"].to_excel(writer, sheet_name="track_summary", index=False)
+            trajectory_tables["track_information"].to_excel(writer, sheet_name="track_information", index=False)
+            if lineage_tables is not None:
+                lineage_tables["lineage_summary"].to_excel(writer, sheet_name="lineage_summary", index=False)
+                lineage_tables["lineage_growth"].to_excel(writer, sheet_name="lineage_growth", index=False)
+
+    def _write_canonical_tables(
+        self,
+        output_dir: Path,
+        trajectory_tables: dict[str, Any],
+        lineage_tables: Optional[dict[str, Any]] = None,
+    ) -> tuple[Path, dict[str, str]]:
+        import json
+
+        tables_dir = output_dir / "tables"
+        tables_dir.mkdir(parents=True, exist_ok=True)
+        written: dict[str, str] = {}
+
+        all_tables: list[tuple[str, Any]] = list(trajectory_tables.items())
+        if lineage_tables is not None:
+            all_tables.extend(list(lineage_tables.items()))
+
+        for key, df in all_tables:
+            if df is None:
+                continue
+            if hasattr(df, "empty") and df.empty:
+                # Write empty datasets too so schema is explicit downstream.
+                pass
+            base = tables_dir / key
+            try:
+                out_path = base.with_suffix(".parquet")
+                df.to_parquet(out_path, index=False)
+            except Exception:
+                out_path = base.with_suffix(".csv.gz")
+                df.to_csv(out_path, index=False, compression="gzip")
+            written[key] = out_path.name
+
+        meta = {
+            "schema_version": 1,
+            "output_profile": self.output_profile,
+            "pixel_size_um": float(getattr(self, "_cal_ps", 0.0) or 0.0),
+            "time_per_frame_min": float(getattr(self, "_cal_tp", 0.0) or 0.0),
+            "tables": written,
+        }
+        meta_path = tables_dir / "metadata.json"
+        with meta_path.open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=True)
+        written["metadata"] = meta_path.name
+        return tables_dir, written
     
     def _create_trajectory_visualization(self, images, masks_tracked, tracks_df, output_path, progress_callback=None, overlay_frames=None):
         """Create visualization showing original images with tracked cell IDs and trajectories.

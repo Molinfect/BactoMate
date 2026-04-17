@@ -27,8 +27,8 @@ The tab exposes **three** runs (one shared Trackastra `model.track(...)` pass pe
 | Button | Frames | Output folder | Extra outputs |
 |--------|--------|----------------|---------------|
 | **Preview tracking** | First **N** frames only (`N` in Tracking Parameters) | `base_dir / _preview / {stem}_n{N}` | Same file types as movement for those frames. **No `_tracking` folder** for preview (keeps full runs separate). **Caveat:** divisions after frame `N−1` are invisible. When a `*_trajectories.tif` is written, the GUI opens the trajectory viewer after the run. |
-| **Run tracking (movement)** | Full stack | `base_dir / _tracking / {stem}_tracking` | CSV, tracked masks, optional overlays/trajectories, filtered Excel, CTC (§2b). |
-| **Run lineage tracking** | Full stack | `base_dir / _tracking / {stem}_tracking` | Same as movement **plus** lineage CSV/XLSX/TIFF (§2b). |
+| **Run tracking (movement)** | Full stack | `base_dir / _tracking / {stem}_tracking` | Core TIFF/CSV + profile-based tabular exports (default: report + canonical `tables/`) + CTC (§2b). |
+| **Run lineage tracking** | Full stack | `base_dir / _tracking / {stem}_tracking` | Same as movement, plus lineage visualizations and lineage tables. |
 
 **Linking mode and divisions**
 
@@ -38,87 +38,103 @@ The tab exposes **three** runs (one shared Trackastra `model.track(...)` pass pe
 
 ---
 
-## 2b. Output files (movement / preview / lineage)
+## 2b. Output profiles and files
 
-For each mask, the worker writes under **`_tracking/{stem}_tracking/`** (movement and lineage) or **`_preview/{stem}_n{N}/`** (preview):
+For each mask, the worker writes under **`_tracking/{stem}_tracking/`** (movement/lineage) or
+**`_preview/{stem}_n{N}/`** (preview).
+
+### Output profile switch
+
+`BACTIMATE_TRACKING_OUTPUT_PROFILE` controls tabular artifacts:
+
+- `minimal` (default): simplified outputs + canonical `tables/` dataset.
+- `legacy`: old CSV/XLSX artifacts (for backward compatibility).
+- `both`: writes both sets.
+
+### Core outputs (all profiles)
 
 | File | Format | When | Description |
 |------|--------|------|-------------|
-| **`{stem}_tracks.csv`** | CSV | Always | One row per (track_id, frame) with centroid; see §3. |
-| **`{stem}_masks_tracked.tif`** | TIFF (3D) | Always | Tracked label masks (same shape as input masks; labels = persistent track/Cell IDs). |
-| **`{stem}_overlay_tracked.tif`** | TIFF (RGB) | If original image found | Phase image with track IDs overlaid per frame. |
-| **`{stem}_trajectories.tif`** | TIFF (RGB) | If original image found (and “Create visualization” on) | Trajectory visualization: frames with paths drawn. |
-| **`{stem}_tracks_with_analysis.xlsx`** | Excel | If analysis Excel found | Merged tracking + analysis; see §4. |
-| **`{stem}_filtered_tracks.xlsx`** | Excel | After run (when we merge “Run” with filter export) | Filtered track table; see §5. |
-| **`{stem}_lineage_edges.csv`** | CSV | **Lineage** run only | Parent–daughter edges from the Napari-style graph: `parent_track_id`, `daughter_track_id`, `division_frame` (daughter’s first frame), `parent_last_frame` (optional). |
-| **`{stem}_lineage_summary.xlsx`** | Excel | **Lineage** run only | Sheets **Lineage edges** (same as CSV) and **Per-track summary** (`track_id`, `founder_track_id`, `generation`, `branch_depth`, optional `Cell_ID`). |
-| **`{stem}_lineage.tif`** | TIFF (RGB) | **Lineage** run, when an original/phase stack is available | Founder-family colors, trajectories, division markers, track IDs (similar style to trajectories). |
-| **`ctc_format/`** | Folder | Always (best-effort) | CTC benchmark format; see §6. |
+| **`{stem}_tracks.csv`** | CSV | Always | One row per track point (`track_id`, `frame`, `y`, `x`, optional `Cell_ID`). Kept for GUI compatibility and quick inspection. |
+| **`{stem}_masks_tracked.tif`** | TIFF (3D) | Always | Tracked label masks (persistent IDs over time). |
+| **`{stem}_overlay_tracked.tif`** | TIFF (RGB) | If original image found | Overlay of tracked labels on phase image. |
+| **`{stem}_trajectories.tif`** | TIFF (RGB) | If original image found | Trajectory visualization. |
+| **`{stem}_lineage.tif`** | TIFF (RGB) | Lineage run + original image | Founder-colored lineage visualization with division marks. |
+| **`ctc_format/`** | Folder | Always (best-effort) | CTC benchmark export (`graph_to_ctc`). |
 
-Calibration (pixel size, time per frame) is read from the original or mask TIFF and written into the output TIFF metadata where supported.
+### Minimal profile tabular outputs
 
----
+| File | Format | Description |
+|------|--------|-------------|
+| **`{stem}_report.xlsx`** | Excel | Human-readable summary workbook (`track_summary`, `track_information`, and lineage sheets when applicable). |
+| **`tables/`** | Folder | Canonical machine-readable tables for downstream analysis. |
+| **`tables/metadata.json`** | JSON | Schema/version, calibration, profile, and filename map. |
+| **`tables/*.parquet`** | Parquet | Preferred canonical storage. |
+| **`tables/*.csv.gz`** | GZip CSV | Fallback if Parquet engine is unavailable. |
 
-## 3. CSV: `{stem}_tracks.csv`
+Canonical trajectory tables:
+- `track_points`
+- `track_summary`
+- `track_information`
+- `track_cells`
+- `track_area`
 
-- **Columns:** `track_id`, `frame`, `y`, `x` [, `Cell_ID` if analysis Excel was used].
-- **Semantics:** One row per detection: track index, frame index, and centroid (y, x). Optional `Cell_ID` aligns with Analyze Masks Cell IDs when we had an analysis Excel and could map track IDs → Cell IDs.
-- **Source:** From Trackastra’s track graph via `graph_to_napari_tracks` (or fallback extraction). Saved as-is after optional Cell_ID mapping.
+Canonical lineage tables (lineage runs):
+- `lineage_edges`
+- `lineage_summary`
+- `lineage_growth`
+- `lineage_tracks`
+- `lineage_cells`
+- `lineage_points`
 
----
+### Legacy profile tabular outputs
 
-## 4. Excel: `{stem}_tracks_with_analysis.xlsx` (when analysis Excel exists)
+| File | Format | Description |
+|------|--------|-------------|
+| **`{stem}_tracks_with_analysis.xlsx`** | Excel | Merged tracking + analysis workbook. |
+| **`{stem}_lineage_edges.csv`** | CSV | Parent/daughter lineage edges. |
+| **`{stem}_lineage_summary.xlsx`** | Excel | Legacy lineage workbook (`Lineage edges`, `Per-track summary`). |
+| **`{stem}_filtered_tracks.xlsx`** | Excel | Auto-export from GUI filter settings (only in `legacy`/`both`). |
 
-- **Sheet “Tracks with Analysis”:** Merged table: each row = one (track_id, frame) point plus **all columns from the analysis Excel** for the matching (frame, Cell_ID). So you get trajectory positions plus morphology/FI/etc. from Analyze Masks.
-- **Sheet “Tracks”:** Raw tracks table (same content as the CSV, possibly with extra columns).
-- **Sheet “Original Analysis”:** Copy of the analysis Excel sheet we used for merging.
-
-So: **tracking + analysis in one workbook**, keyed by (frame, Cell_ID) when we have analysis data.
-
----
-
-## 5. Excel: `{stem}_filtered_tracks.xlsx` (filtered export)
-
-Produced when we apply the current **Filter tracks** settings (e.g. after Run, as part of the single “Run” flow). One row per **track** (not per frame).
-
-**Columns:**
-
-| Column | Meaning |
-|--------|--------|
-| `Cell_ID` | From analysis if available, else track_id. |
-| `TrackID` | Track index. |
-| `trajectory_length` | Number of points in the track. |
-| `duration_frames` | last_frame − first_frame + 1. |
-| `duration_min` | Duration in minutes (needs calibration). |
-| `first_frame`, `last_frame` | Frame range. |
-| `displacement_px`, `displacement_um` | Straight-line distance first → last (px / µm). |
-| `path_length_px`, `path_length_um` | Sum of step lengths (px / µm). |
-| `mean_speed_px_frame`, `mean_speed_um_min`, `mean_speed_um_s` | Mean speed. |
-| `straight_line_speed_*` | Displacement / duration. |
-| `straightness` | Displacement / path_length (0–1). |
-
-Only tracks that pass the current filter (length, duration, displacement, path length, speed, straightness) are included. Calibration (pixel size, time per frame) comes from the trajectory metadata or the Filter tracks widgets.
+Calibration (pixel size, time per frame) is read from original/mask TIFF and propagated to written TIFF metadata.
 
 ---
 
-## 6. `ctc_format/` folder (CTC = Cell Tracking Challenge)
+## 3. Canonical trajectory semantics (`tables/`)
 
-- **What we do:** We call Trackastra’s `graph_to_ctc(track_graph, masks_tracked, outdir=ctc_dir)`. So **contents are defined by the trackastra library**, not by BactiMate.
-- **Typical CTC layout:** Benchmark submissions use a standard layout, e.g. **RES** (segmentation/track masks) and **TRA** (lineage), with fixed naming (e.g. `man_track*.tif`, `res_*.tif`) and conventions. `graph_to_ctc` is intended to write that layout so results can be submitted to the Cell Tracking Challenge.
-- **In BactiMate:** We create `output_dir / "ctc_format"`, call `graph_to_ctc`, and catch errors so that if the library fails or the format changes, the main run still succeeds. So **ctc_format is optional and for benchmarking/interop**; the main outputs are the CSV, TIFFs, and Excel files above.
+- `track_points`: long table with point-level trajectory rows.
+- `track_summary`: one row per track with start/end, containing cell IDs, travel/displacement/speed.
+- `track_information`: one row per track with metric columns aligned to prior filtered-track conventions.
+- `track_cells`: normalized mapping (`track_id`, `cell_id`).
+- `track_area`: per `(track_id, frame)` area and source (`analysis:*` preferred, fallback `mask_px`).
 
 ---
 
-## 7. Summary
+## 4. Canonical lineage semantics (`tables/`, lineage runs)
 
-- **Input:** Mask path (file or folder) → we resolve base dir, original (phase) TIFF, and analysis Excel the same way as elsewhere in BactiMate (mask as anchor, match by name/location).
-- **Runs:** **Preview** (first **N** frames → `_preview/{stem}_n{N}/`), **movement** (full → `_tracking/{stem}_tracking/`), **lineage** (full + lineage files → `_tracking/{stem}_tracking/`). Preview does not use the `_tracking` directory.
-- **Outputs:**  
-  - **Always:** `_tracks.csv`, `_masks_tracked.tif`, `ctc_format/` (best-effort).  
-  - **If original found:** `_overlay_tracked.tif`, `_trajectories.tif` (if “Create visualization” is on).  
-  - **Lineage run:** `_lineage_edges.csv`, `_lineage_summary.xlsx`, `_lineage.tif` (when original stack is available).  
-  - **If analysis Excel found:** `_tracks_with_analysis.xlsx`.  
-  - **After run (with filter export):** `_filtered_tracks.xlsx` using current Filter tracks settings.
-- **Formats:** CSV = track_id, frame, y, x [, Cell_ID]. Excel = raw tracks, merged analysis, filtered one-row-per-track summary, and lineage summary when applicable. CTC folder = trackastra’s CTC benchmark layout.
+- `lineage_id` is founder-based (`founder_track_id` concept).
+- `lineage_edges`: directed parent/daughter links.
+- `lineage_summary`: lineage-level span, containing cells/tracks, division count.
+- `lineage_growth`: growth fit metrics per lineage:
+  - `growth`: slope of linear fit on `log(area)` vs time.
+  - `doubling_time`: `ln(2) / growth` when growth > 0.
+  - `fit_r2`: goodness-of-fit of that model.
+  - `metric_used`: analysis area column when available, else mask pixel area.
+- `lineage_tracks`, `lineage_cells`: normalized relations.
+- `lineage_points`: point-level rows with `lineage_id`.
 
-This matches the idea: **one anchor (mask), resolve the rest; one clear set of outputs and formats.**
+---
+
+## 5. `ctc_format/` folder (CTC = Cell Tracking Challenge)
+
+- Export is generated by Trackastra via `graph_to_ctc(track_graph, masks_tracked, outdir=ctc_dir)`.
+- BactiMate treats this as optional/best-effort; failures here do not fail the main tracking run.
+
+---
+
+## 6. Summary
+
+- Input resolution is unchanged (mask as anchor; resolve original and analysis by name/location).
+- Core TIFF + CSV artifacts remain.
+- Default tabular output is now simplified (`{stem}_report.xlsx` + canonical `tables/`).
+- Legacy artifacts are still available via `BACTIMATE_TRACKING_OUTPUT_PROFILE=legacy` (or `both`).

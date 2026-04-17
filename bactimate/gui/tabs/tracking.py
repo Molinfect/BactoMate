@@ -3,6 +3,7 @@ Tracking tab: run trackastra on mask TIFFs.
 """
 from __future__ import annotations
 
+import os
 import traceback
 from pathlib import Path
 from typing import Any, Optional
@@ -509,6 +510,12 @@ class TrackingTab(QWidget):
         except ImportError:
             pass
         return "cpu"
+
+    @staticmethod
+    def _legacy_outputs_enabled() -> bool:
+        """Legacy tabular artifacts are emitted only in legacy/both profile."""
+        profile = str(os.getenv("BACTIMATE_TRACKING_OUTPUT_PROFILE", "minimal")).strip().lower()
+        return profile in {"legacy", "both"}
 
     def _get_trajectory_files(self) -> list[Path]:
         """Return existing *_trajectories.tif under _tracking and _preview for the current Path."""
@@ -1473,7 +1480,7 @@ class TrackingTab(QWidget):
             self.parent_window.log_output("✓ Tracking completed successfully!\n")
             # Export filtered tracks for the output we just produced (single Run = one output dir)
             out_dir = getattr(self, "_last_tracking_output_dir", None)
-            if out_dir is not None:
+            if out_dir is not None and self._legacy_outputs_enabled():
                 out_path = Path(out_dir)
                 if out_path.is_dir():
                     traj_files = sorted(out_path.glob("*_trajectories.tif"))
@@ -1523,13 +1530,14 @@ class TrackingTab(QWidget):
             self.workflow_step_finished.emit(True)
             # Export filtered tracks for all outputs we just produced
             all_traj = []
-            for t in tasks:
-                if len(t) > 3:
-                    od = Path(t[3])
-                    if od.is_dir():
-                        all_traj.extend(sorted(od.glob("*_trajectories.tif")))
-            if all_traj:
-                self._export_filtered_tracks_for_paths(all_traj, silent=True)
+            if self._legacy_outputs_enabled():
+                for t in tasks:
+                    if len(t) > 3:
+                        od = Path(t[3])
+                        if od.is_dir():
+                            all_traj.extend(sorted(od.glob("*_trajectories.tif")))
+                if all_traj:
+                    self._export_filtered_tracks_for_paths(all_traj, silent=True)
             if getattr(self, "_batch_track_action", None) == "preview" and n_ok > 0:
                 results = getattr(self, "folder_tracking_results", [])
                 for i, t in enumerate(tasks):
@@ -1960,5 +1968,4 @@ class TrajectoryPreviewDialog(QDialog):
         pixmap = to_qpixmap(scaled)
         self._canvas.set_pixmap(pixmap, (scaled.shape[1], scaled.shape[0]), reset_view=False)
         self._frame_label.setText(str(idx))
-
 
