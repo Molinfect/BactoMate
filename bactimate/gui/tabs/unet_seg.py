@@ -11,6 +11,10 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
+import tifffile
+from skimage.measure import label
+
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 from PyQt6.QtCore import Qt, QEventLoop, QThread, pyqtSignal, QTimer
@@ -56,8 +60,38 @@ from bactimate.gui.image_canvas import ImageCanvas
 from bactimate.gui.image_utils import build_segmentation_overlay, scale_for_preview, to_qpixmap
 
 
+class UNetTrainWidget(QWidget):
+    """Wrapper widget hosting the training section of a `UNetSegmentTab`."""
+
+    def __init__(self, owner: "UNetSegmentTab", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._owner = owner
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(owner.take_train_group())
+        layout.addStretch(1)
+        self.setLayout(layout)
+
+
+class UNetInferenceWidget(QWidget):
+    """Wrapper widget hosting the inference section of a `UNetSegmentTab`."""
+
+    def __init__(self, owner: "UNetSegmentTab", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._owner = owner
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(owner.take_infer_group())
+        layout.addStretch(1)
+        self.setLayout(layout)
+
+
 class UNetSegmentTab(QWidget):
     """Tab for U-Net: train a model (all controls inline) and run segmentation."""
+
+    workflow_step_finished = pyqtSignal(bool)  # for workflow replay chain
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -68,11 +102,11 @@ class UNetSegmentTab(QWidget):
         self._unet_train_worker = None
         layout = QVBoxLayout()
         scroll = QScrollArea()
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout()
+        self._scroll_widget = QWidget()
+        self._scroll_layout = QVBoxLayout()
 
         # ----- Section 1: Train a new U-Net model (everything in-tab) -----
-        train_group = QGroupBox("Train U-Net model")
+        self._train_group_widget = QGroupBox("Train U-Net model")
         train_layout = QVBoxLayout()
 
         # Training directory (drag-and-drop supported)
@@ -212,11 +246,11 @@ class UNetSegmentTab(QWidget):
         self.start_training_btn.clicked.connect(self._start_training)
         train_layout.addWidget(self.start_training_btn)
 
-        train_group.setLayout(train_layout)
-        scroll_layout.addWidget(train_group)
+        self._train_group_widget.setLayout(train_layout)
+        self._scroll_layout.addWidget(self._train_group_widget)
 
         # ----- Section 2: Run segmentation (inference) -----
-        infer_group = QGroupBox("Run segmentation")
+        self._infer_group_widget = QGroupBox("Run segmentation")
         infer_layout = QVBoxLayout()
 
         # Model selection
@@ -267,18 +301,46 @@ class UNetSegmentTab(QWidget):
         self.process_btn.clicked.connect(self._process_file_or_folder)
         infer_layout.addWidget(self.process_btn)
 
-        infer_group.setLayout(infer_layout)
-        scroll_layout.addWidget(infer_group)
+        self._infer_group_widget.setLayout(infer_layout)
+        self._scroll_layout.addWidget(self._infer_group_widget)
 
         self.file_path.textChanged.connect(self._update_button_states)
         self.file_path.textChanged.connect(self._try_push_metadata_from_path)
         self._update_button_states()
 
-        scroll_widget.setLayout(scroll_layout)
-        scroll.setWidget(scroll_widget)
+        self._scroll_widget.setLayout(self._scroll_layout)
+        scroll.setWidget(self._scroll_widget)
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
         self.setLayout(layout)
+
+    def take_train_group(self) -> QWidget:
+        """Detach and return the training group widget for embedding elsewhere."""
+        w = getattr(self, "_train_group_widget", None)
+        if w is None:
+            w = QGroupBox("Train U-Net model")
+            self._train_group_widget = w
+        try:
+            if getattr(self, "_scroll_layout", None) is not None:
+                self._scroll_layout.removeWidget(w)
+        except Exception:
+            pass
+        w.setParent(None)
+        return w
+
+    def take_infer_group(self) -> QWidget:
+        """Detach and return the inference group widget for embedding elsewhere."""
+        w = getattr(self, "_infer_group_widget", None)
+        if w is None:
+            w = QGroupBox("Run segmentation")
+            self._infer_group_widget = w
+        try:
+            if getattr(self, "_scroll_layout", None) is not None:
+                self._scroll_layout.removeWidget(w)
+        except Exception:
+            pass
+        w.setParent(None)
+        return w
 
     def _browse_training_dir(self) -> None:
         last = getattr(self.parent_window, "get_last_dir_for_tab", lambda _: "")(LAST_DIR_UNET_SEGMENT) or str(Path.home())
@@ -358,16 +420,25 @@ class UNetSegmentTab(QWidget):
             "--img-filter", self.img_filter_edit.text().strip(),
             "--mask-filter", self.mask_filter_edit.text().strip() or "_mask",
         ]
-        analyze_worker = WorkerThread("-m", analyze_cmd_args, parent=self)
+        # Keep a strong reference: Qt will abort the whole process if a QThread is
+        # destroyed while still running (e.g. during widget teardown / GC).
+        self._unet_analyze_worker = WorkerThread("-m", analyze_cmd_args, parent=self)
         result_holder = [None, None]  # success, message
         loop = QEventLoop(self)
         def on_analyze_done(success: bool, message: str) -> None:
             result_holder[0], result_holder[1] = success, message
             loop.quit()
-        analyze_worker.finished.connect(on_analyze_done)
-        analyze_worker.progress.connect(lambda line: self.training_log.append(line.strip()) if line.strip() else None)
-        analyze_worker.start()
+        self._unet_analyze_worker.finished.connect(on_analyze_done)
+        self._unet_analyze_worker.progress.connect(lambda line: self.training_log.append(line.strip()) if line.strip() else None)
+        self._unet_analyze_worker.start()
         loop.exec()
+        # Ensure the thread is fully stopped before we release our reference.
+        try:
+            if self._unet_analyze_worker is not None:
+                self._unet_analyze_worker.wait(30_000)
+                self._unet_analyze_worker.deleteLater()
+        finally:
+            self._unet_analyze_worker = None
         if not result_holder[0]:
             self.training_log.append(result_holder[1] or "Analyze failed. Check training data and filters.")
             return
@@ -627,197 +698,21 @@ class UNetSegmentTab(QWidget):
         model_name = model_path.stem
         main_win = self.window() if hasattr(self, "window") and callable(self.window) else None
 
-        class PreviewDialog(QDialog):
-            """Disconnects and stops U-Net preview worker on close so QThread is not destroyed while running."""
-            def closeEvent(self, event):
-                self._dialog_closed = True
-                w = getattr(self, "_unet_worker", None)
-                s = getattr(self, "_unet_worker_slot", None)
-                if w is not None:
-                    if w.isRunning():
-                        w.wait(60000)  # wait up to 60s for current segmentation (avoids QThread destroyed-while-running abort)
-                    if s is not None:
-                        try:
-                            w.finished.disconnect(s)
-                        except Exception:
-                            pass
-                    self._unet_worker = None
-                self._unet_worker_slot = None
-                super().closeEvent(event)
+        from bactimate.gui.preview.preview_window import PreviewDialogBase, WorkerGuard
+        from bactimate.gui.preview.navigation_controls import PreviewNavSpec, PreviewNavState, PreviewNavigationControls
+        from bactimate.gui.preview.render_utils import apply_lut_to_uint8
+        from bactimate.gui.preview.preview_window import RenderResult
 
-        d = PreviewDialog(main_win)
-        d.setWindowTitle("Segmentation Preview")
-        d.setMinimumSize(900, 700)
-        d.setModal(False)
-        layout = QVBoxLayout()
-        title_label = QLabel("")
-        title_label.setStyleSheet("font-weight: bold; color: #ddd;")
-        layout.addWidget(title_label)
-        image_canvas = ImageCanvas()
-        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
-        image_canvas.setMinimumSize(400, 300)
-        image_canvas.setStyleSheet("background-color: #1e1e1e;")
-        image_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(image_canvas, 1)
-
-        # Interactive LUT histogram (same as Convert TIFF: drag min/max lines to adjust display)
-        lut_data = {"frame_idx": None, "vmin": None, "vmax": None, "frame_min": None, "frame_max": None}
-        hist_vmin_line = None
-        hist_vmax_line = None
-        dragging_line = None
-        try:
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.figure import Figure
-            _has_histogram = True
-        except ImportError:
-            _has_histogram = False
-        if _has_histogram:
-            hist_group = QGroupBox("LUT (click/drag lines to adjust min/max)")
-            hist_group.setStyleSheet("QGroupBox { font-weight: 600; }")
-            hist_layout = QVBoxLayout()
-            # Match TIFF conversion preview: same figure size and canvas height so histogram fills the section
-            hist_fig = Figure(figsize=(10, 3.0))
-            hist_canvas = FigureCanvas(hist_fig)
-            hist_canvas.setMinimumHeight(180)
-            hist_canvas.setMaximumHeight(180)
-            hist_ax = hist_fig.add_subplot(111)
-            hist_fig.patch.set_facecolor("#2b2b2b")
-            hist_ax.set_facecolor("#2b2b2b")
-            hist_ax.tick_params(colors="white", labelsize=9)
-            for spine in hist_ax.spines.values():
-                spine.set_color("white")
-            hist_ax.xaxis.label.set_color("white")
-            hist_ax.yaxis.label.set_color("white")
-            hist_fig.subplots_adjust(left=0.12, right=0.95, top=0.90, bottom=0.15)
-            hist_canvas.setStyleSheet("background-color: #2b2b2b;")
-            hist_layout.addWidget(hist_canvas)
-            hist_group.setLayout(hist_layout)
-            hist_group.setMaximumHeight(280)
-            layout.addWidget(hist_group)
-
-            def refresh_image_display():
-                """Redraw overlay using current display_frame, mask, and LUT (vmin/vmax)."""
-                disp_frame = getattr(d, "current_display_frame", None)
-                mask = getattr(d, "current_mask", None)
-                if disp_frame is None or mask is None:
-                    return
-                vmin = lut_data.get("vmin")
-                vmax = lut_data.get("vmax")
-                if vmin is None or vmax is None or vmax <= vmin:
-                    vmin = lut_data.get("frame_min", 0)
-                    vmax = lut_data.get("frame_max", 255)
-                    if vmax <= vmin:
-                        vmax = vmin + 1.0
-                    lut_data["vmin"] = vmin
-                    lut_data["vmax"] = vmax
-                vmin, vmax = float(vmin), float(vmax)
-                vrange = max(vmax - vmin, 1e-6)
-                display_uint8 = ((np.asarray(disp_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
-                disp, mask_scaled = scale_for_preview(display_uint8, mask)
-                overlay = build_segmentation_overlay(disp, mask_scaled, alpha=0.5)
-                pixmap = to_qpixmap(overlay)
-                h, w = overlay.shape[:2]
-                image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
-
-            def update_histogram(frame_2d, vmin_in=None, vmax_in=None):
-                nonlocal hist_vmin_line, hist_vmax_line
-                hist_ax.clear()
-                if frame_2d is None or not isinstance(frame_2d, np.ndarray) or frame_2d.size == 0:
-                    hist_ax.set_xlabel("Intensity", color="white", fontsize=9)
-                    hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
-                    hist_canvas.draw()
-                    return
-                flat = np.asarray(frame_2d).flatten().astype(np.float64)
-                flat = flat[np.isfinite(flat)]
-                if flat.size == 0:
-                    hist_canvas.draw()
-                    return
-                fmin, fmax = float(flat.min()), float(flat.max())
-                lut_data["frame_min"] = fmin
-                lut_data["frame_max"] = fmax
-                # Exclude zeros for histogram so the signal peak is prominent (like TIFF conversion preview)
-                flat_hist = flat[flat > 0]
-                if flat_hist.size == 0:
-                    flat_hist = flat
-                vmin = vmin_in if vmin_in is not None else lut_data.get("vmin", fmin)
-                vmax = vmax_in if vmax_in is not None else lut_data.get("vmax", fmax)
-                if vmax <= vmin:
-                    vmax = fmax if fmax > fmin else fmin + 1.0
-                lut_data["vmin"] = vmin
-                lut_data["vmax"] = vmax
-                bins = min(256, max(2, int(fmax - fmin + 1)))
-                hist, bin_edges = np.histogram(flat_hist, bins=bins, range=(fmin, fmax))
-                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                hist_ax.bar(bin_centers, np.log1p(hist), width=bin_edges[1] - bin_edges[0],
-                            color="#4A90E2", alpha=0.8, edgecolor="none")
-                hist_vmin_line = hist_ax.axvline(vmin, color="#FF6B6B", linewidth=2, linestyle="--", label=f"Min: {vmin:.1f}")
-                hist_vmax_line = hist_ax.axvline(vmax, color="#4ECDC4", linewidth=2, linestyle="--", label=f"Max: {vmax:.1f}")
-                hist_ax.axvspan(vmin, vmax, alpha=0.15, color="yellow")
-                hist_ax.set_xlabel("Intensity", color="white", fontsize=9)
-                hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
-                hist_ax.set_title("Click/drag lines to adjust min/max", color="white", fontsize=9, pad=10)
-                hist_ax.legend(loc="upper right", facecolor="#2b2b2b", edgecolor="white", labelcolor="white", fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
-                hist_ax.grid(True, alpha=0.25, color="white", linestyle="-", linewidth=0.5)
-                hist_ax.margins(x=0.02, y=0.08)
-                hist_fig.tight_layout(pad=2.0)
-                hist_canvas.draw()
-
-            def on_histogram_press(event):
-                nonlocal dragging_line
-                if event.inaxes != hist_ax or event.xdata is None:
-                    return
-                x = event.xdata
-                vmin, vmax = lut_data.get("vmin"), lut_data.get("vmax")
-                fmin, fmax = lut_data.get("frame_min", 0), lut_data.get("frame_max", 65535)
-                if vmin is None or vmax is None:
-                    return
-                threshold = max((fmax - fmin) * 0.05, 1.0)
-                if abs(x - vmin) < threshold and abs(x - vmin) <= abs(x - vmax):
-                    dragging_line = "min"
-                elif abs(x - vmax) < threshold:
-                    dragging_line = "max"
-                else:
-                    dragging_line = "min" if x < (vmin + vmax) / 2 else "max"
-
-            def on_histogram_motion(event):
-                if event.inaxes != hist_ax or event.xdata is None or dragging_line is None:
-                    return
-                x = event.xdata
-                fmin = lut_data.get("frame_min", 0)
-                fmax = lut_data.get("frame_max", 65535)
-                vmin, vmax = lut_data.get("vmin"), lut_data.get("vmax")
-                if dragging_line == "min":
-                    lut_data["vmin"] = max(fmin, min(x, (vmax or fmax) - 1e-6))
-                else:
-                    lut_data["vmax"] = min(fmax, max(x, (vmin or fmin) + 1e-6))
-                refresh_image_display()
-                vmin, vmax = lut_data["vmin"], lut_data["vmax"]
-                if hist_vmin_line is not None:
-                    hist_vmin_line.set_xdata([vmin, vmin])
-                if hist_vmax_line is not None:
-                    hist_vmax_line.set_xdata([vmax, vmax])
-                for patch in list(hist_ax.patches):
-                    if getattr(patch, "get_alpha", lambda: None)() == 0.15:
-                        patch.remove()
-                hist_ax.axvspan(vmin, vmax, alpha=0.15, color="yellow")
-                if hist_vmin_line is not None and hist_vmax_line is not None:
-                    hist_vmin_line.set_label(f"Min: {vmin:.1f}")
-                    hist_vmax_line.set_label(f"Max: {vmax:.1f}")
-                    hist_ax.legend(loc="upper right", facecolor="#2b2b2b", edgecolor="white", labelcolor="white", fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
-                hist_canvas.draw()
-
-            def on_histogram_release(event):
-                nonlocal dragging_line
-                dragging_line = None
-
-            hist_canvas.mpl_connect("button_press_event", on_histogram_press)
-            hist_canvas.mpl_connect("motion_notify_event", on_histogram_motion)
-            hist_canvas.mpl_connect("button_release_event", on_histogram_release)
-        else:
-            def update_histogram(frame_2d, vmin_in=None, vmax_in=None):
-                pass
-            def refresh_image_display():
-                pass
+        d = PreviewDialogBase(
+            main_win,
+            title="Segmentation Preview",
+            primary_action_label="Re-segment",
+            primary_action_callback=None,  # wired after helper definitions
+            render_callback=None,  # set below
+            worker_guard=None,
+            minimum_size=(900, 700),
+        )
+        title_label = d.title_label
 
         d.images = images
         d.model = model
@@ -832,6 +727,55 @@ class UNetSegmentTab(QWidget):
         d._unet_progress_dialog = None
         d._unet_worker_slot = None
         d._dialog_closed = False
+        d.set_extra("show_cells", True)
+        d.set_extra("show_foci", False)
+
+        def _unet_is_running() -> bool:
+            w = getattr(d, "_unet_worker", None)
+            return bool(w is not None and w.isRunning())
+
+        def _unet_request_stop() -> None:
+            # U-Net preview historically waits; do not interrupt.
+            return
+
+        def _unet_wait(ms: int) -> bool:
+            w = getattr(d, "_unet_worker", None)
+            if w is None:
+                return True
+            try:
+                return bool(w.wait(int(ms)))
+            except Exception:
+                return True
+
+        def _unet_disconnect() -> None:
+            w = getattr(d, "_unet_worker", None)
+            s = getattr(d, "_unet_worker_slot", None)
+            if w is not None and s is not None:
+                try:
+                    w.finished.disconnect(s)
+                except Exception:
+                    pass
+            try:
+                d._unet_worker = None
+            except Exception:
+                pass
+            try:
+                d._unet_worker_slot = None
+            except Exception:
+                pass
+
+        try:
+            d.set_worker_guard(WorkerGuard(
+                is_running=_unet_is_running,
+                request_stop=_unet_request_stop,
+                wait=_unet_wait,
+                disconnect=_unet_disconnect,
+                on_close_while_running="block_with_warning",
+                warning_title="Segmentation in progress",
+                warning_text="Please wait for the current segmentation to finish before closing the preview.",
+            ))
+        except Exception:
+            pass
 
         def get_display_frame(idx: int):
             frame = images[idx]
@@ -845,6 +789,7 @@ class UNetSegmentTab(QWidget):
 
             def __init__(self, request_id: int, frame_idx: int, model: Any, cfg: Any, image: np.ndarray):
                 super().__init__()
+                self.setObjectName(type(self).__name__)
                 self._request_id = request_id
                 self._frame_idx = frame_idx
                 self._model = model
@@ -861,49 +806,31 @@ class UNetSegmentTab(QWidget):
                 self.finished.emit(self._request_id, self._frame_idx, mask, err)
 
         def _apply_mask_to_ui(frame_idx: int, mask: np.ndarray) -> None:
-            """Apply segmentation result to display; re-enable controls."""
-            disp_frame = get_display_frame(frame_idx)
-            d.current_display_frame = disp_frame
-            d.current_mask = mask
-            if lut_data.get("frame_idx") != frame_idx:
-                lut_data["frame_idx"] = frame_idx
-                fmin, fmax = float(np.asarray(disp_frame).min()), float(np.asarray(disp_frame).max())
-                lut_data["vmin"] = fmin
-                lut_data["vmax"] = fmax if fmax > fmin else fmin + 1.0
-                lut_data["frame_min"] = fmin
-                lut_data["frame_max"] = fmax
-            vmin = lut_data.get("vmin")
-            vmax = lut_data.get("vmax")
-            if vmin is None or vmax is None or vmax <= vmin:
-                vmin = float(np.asarray(disp_frame).min())
-                vmax = float(np.asarray(disp_frame).max())
-                if vmax <= vmin:
-                    vmax = vmin + 1.0
-                lut_data["vmin"], lut_data["vmax"] = vmin, vmax
-            vrange = max(vmax - vmin, 1e-6)
-            display_uint8 = ((np.asarray(disp_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
-            disp, mask_scaled = scale_for_preview(display_uint8, mask)
-            overlay = build_segmentation_overlay(disp, mask_scaled, alpha=0.5)
-            pixmap = to_qpixmap(overlay)
-            h, w = overlay.shape[:2]
-            image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
+            """Apply segmentation result to cache + refresh preview."""
+            d.segmentation_cache[frame_idx] = mask
             num_cells = len(np.unique(mask)) - 1
             title_label.setText(
                 f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {d.model_name} | {d.file_name}\n"
                 f"Parameters: model={d.model_name}"
             )
-            update_histogram(disp_frame, lut_data.get("vmin"), lut_data.get("vmax"))
             if status_label:
                 status_label.setText(f"Ready (cached: {len(d.segmentation_cache)})")
             if frame_spin is not None:
                 frame_spin.setEnabled(True)
+            try:
+                d.refresh()
+            except Exception:
+                pass
 
         def update_display(frame_idx: int) -> None:
             d.current_frame = frame_idx
             if frame_idx in d.segmentation_cache:
-                _apply_mask_to_ui(frame_idx, d.segmentation_cache[frame_idx])
                 if status_label:
                     status_label.setText(f"Ready (cached: {len(d.segmentation_cache)})")
+                try:
+                    d.refresh()
+                except Exception:
+                    pass
                 return
             existing = getattr(d, "_unet_worker", None)
             if existing is not None and existing.isRunning():
@@ -951,7 +878,6 @@ class UNetSegmentTab(QWidget):
                         if frame_spin is not None:
                             frame_spin.setEnabled(True)
                         return
-                    d.segmentation_cache[fid] = m
                     _apply_mask_to_ui(fid, m)
                 except RuntimeError:
                     pass  # Dialog or widgets already destroyed (e.g. user closed preview)
@@ -971,54 +897,120 @@ class UNetSegmentTab(QWidget):
                 status_label.setText("Segmenting...")
 
         nav_layout = QHBoxLayout()
-        nav_layout.addWidget(QLabel("Frame:"))
-        frame_spin = QSpinBox()
-        frame_spin.setRange(1, max(1, num_frames))
-        frame_spin.setValue(1)
-        frame_spin.setPrefix("")
-        frame_spin.setToolTip(f"Frame 1–{num_frames}. Type a number and press Enter to jump.")
-        nav_layout.addWidget(frame_spin)
-        nav_layout.addWidget(QLabel(f"of {num_frames}"))
+        frame_spin = None  # retained for worker disabling only
         scale_label = QLabel("")
         nav_layout.addWidget(scale_label)
         nav_layout.addStretch()
         status_label = QLabel("Ready")
         status_label.setStyleSheet("color: #7F8C8D; font-size: 9pt; font-style: italic;")
         nav_layout.addWidget(status_label)
-        layout.addLayout(nav_layout)
+        bottom_extra = QWidget()
+        bottom_extra.setLayout(nav_layout)
+
+        nav = PreviewNavigationControls(
+            spec=PreviewNavSpec(
+                frame_count=max(1, num_frames),
+                show_image=False,
+                show_channel=False,
+                show_z=False,
+                show_cell_overlay_toggle=True,
+                show_foci_overlay_toggle=True,
+                cell_overlay_default=True,
+                foci_overlay_available=False,
+                foci_overlay_default=False,
+                debounce_ms=400,
+            )
+        )
+        nav.set_state(PreviewNavState(frame_idx=0), emit=False)
+
+        nav_host = QWidget()
+        nav_host_layout = QHBoxLayout(nav_host)
+        nav_host_layout.setContentsMargins(0, 0, 0, 0)
+        nav_host_layout.setSpacing(10)
+        nav_host_layout.addWidget(nav)
+        nav_host_layout.addWidget(bottom_extra)
+        d.set_navigation_controls(nav_host)
+
+        def _reset_lut() -> None:
+            try:
+                d.state().vmin = None
+                d.state().vmax = None
+                d.lut_widget.set_lut(None, None)
+            except Exception:
+                pass
+
+        def _render(state) -> RenderResult:
+            fi = max(0, min(int(state.frame_idx), max(0, num_frames - 1)))
+            disp_frame = np.asarray(get_display_frame(fi), dtype=np.float32)
+            mask = d.segmentation_cache.get(fi, None)
+            if mask is None:
+                mask = np.zeros(disp_frame.shape[:2], dtype=np.uint8)
+            else:
+                mask = np.asarray(mask)
+            # Apply LUT to the display frame using shared helper.
+            u8 = apply_lut_to_uint8(disp_frame, state.vmin, state.vmax)
+            disp_scaled, mask_scaled = scale_for_preview(u8, mask)
+            if bool(state.extra.get("show_cells", True)):
+                overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
+            else:
+                overlay = disp_scaled
+            pm = to_qpixmap(overlay)
+            num_cells = max(0, int(len(np.unique(mask)) - 1)) if mask is not None else 0
+            title = (
+                f"Frame {fi + 1} of {num_frames} | Cells: {num_cells} | Model: {d.model_name} | {d.file_name}\n"
+                f"Parameters: model={d.model_name}"
+            )
+            info = "Ready" if fi in d.segmentation_cache else "Segmenting... (not cached yet)"
+            return RenderResult(
+                pixmap=pm,
+                image_size=(int(overlay.shape[1]), int(overlay.shape[0])),
+                lut_frame=np.asarray(disp_frame, dtype=np.float32),
+                title_text=title,
+                info_text=info,
+            )
+
+        try:
+            d.set_render_callback(_render)
+        except Exception:
+            pass
 
         def go_to_frame(idx: int) -> None:
             if 0 <= idx < num_frames:
                 d.current_frame = idx
-                frame_spin.blockSignals(True)
-                frame_spin.setValue(idx + 1)
-                frame_spin.blockSignals(False)
                 update_display(idx)
 
-        # Commit on Enter/focus only (no live valueChanged) so typing "55" doesn't jump to 5
-        def on_frame_changed():
-            frame_num = frame_spin.value() - 1
-            if 0 <= frame_num < num_frames:
-                go_to_frame(frame_num)
-            else:
-                frame_spin.blockSignals(True)
-                frame_spin.setValue(d.current_frame + 1)
-                frame_spin.blockSignals(False)
+        def _on_nav_changed(st: PreviewNavState, reason: str) -> None:
+            d.set_frame_idx(int(st.frame_idx))
+            if reason in ("frame", "init"):
+                go_to_frame(int(st.frame_idx))
+            d.refresh()
 
-        frame_spin.editingFinished.connect(on_frame_changed)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(d.close)
-        layout.addWidget(close_btn)
+        nav.nav_changed.connect(_on_nav_changed)
+
+        def _on_overlay_changed(key: str, checked: bool) -> None:
+            d.set_extra(str(key), bool(checked))
+            d.refresh()
+
+        nav.overlay_changed.connect(_on_overlay_changed)
+
+        def on_resegment() -> None:
+            try:
+                if d.current_frame in d.segmentation_cache:
+                    del d.segmentation_cache[d.current_frame]
+            except Exception:
+                pass
+            _reset_lut()
+            update_display(d.current_frame)
+
+        try:
+            d.set_primary_action(on_resegment, label="Re-segment")
+        except Exception:
+            pass
+
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, d)
         close_shortcut.activated.connect(d.close)
         minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), d)
         minimize_shortcut.activated.connect(d.showMinimized)
-        d.setLayout(layout)
-        disp0 = get_display_frame(0)
-        empty = np.zeros(disp0.shape, dtype=np.uint8)
-        disp0_s, _ = scale_for_preview(disp0, empty)
-        overlay0 = build_segmentation_overlay(disp0_s, empty, alpha=0.0)
-        image_canvas.set_pixmap(to_qpixmap(overlay0), (overlay0.shape[1], overlay0.shape[0]), reset_view=True)
         title_label.setText(
             f"Frame 1 of {num_frames} | Segmenting... | Model: {d.model_name} | {d.file_name}\n"
             f"Parameters: model={d.model_name}"
@@ -1030,6 +1022,14 @@ class UNetSegmentTab(QWidget):
         def run_first_segment() -> None:
             d.raise_()
             d.activateWindow()
+            try:
+                d.set_frame_idx(0)
+            except Exception:
+                pass
+            try:
+                d.refresh()
+            except Exception:
+                pass
             update_display(0)
             status_label.setText(f"Ready (cached: {len(d.segmentation_cache)})")
 
@@ -1088,6 +1088,11 @@ class UNetSegmentTab(QWidget):
         loop.exec()
         if result_holder[0]:
             self.parent_window.log_output(f"U-Net segmentation done: {output_dir}\n")
+            self._log_unet_result_summaries(path, output_dir)
+            try:
+                self.workflow_step_finished.emit(True)
+            except Exception:
+                pass
             msg = QMessageBox(self)
             msg.setWindowTitle("Done")
             msg.setText(f"Output saved to:\n{output_dir}")
@@ -1101,7 +1106,55 @@ class UNetSegmentTab(QWidget):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
         else:
             self.parent_window.log_output((result_holder[1] or "Unknown error") + "\n")
+            try:
+                self.workflow_step_finished.emit(False)
+            except Exception:
+                pass
             QMessageBox.warning(self, "Failed", result_holder[1] or "Unknown error")
+
+    def _summarize_unet_mask_file(self, mask_path: Path) -> Optional[dict[str, Any]]:
+        try:
+            arr = np.asarray(tifffile.imread(str(mask_path)))
+        except Exception:
+            return None
+        if arr.size == 0:
+            return None
+        if arr.ndim == 2:
+            arr = arr[np.newaxis, ...]
+        elif arr.ndim < 2:
+            return None
+        frame_counts: list[int] = []
+        for i in range(arr.shape[0]):
+            frame = arr[i]
+            labeled = label(frame > 0, connectivity=1)
+            n_cells = int(labeled.max()) if labeled.size else 0
+            frame_counts.append(n_cells)
+        return {
+            "frames": int(len(frame_counts)),
+            "cells_total": int(sum(frame_counts)),
+            "cells_min": int(min(frame_counts)),
+            "cells_max": int(max(frame_counts)),
+            "cells_mean": float(sum(frame_counts) / len(frame_counts)),
+        }
+
+    def _log_unet_result_summaries(self, input_path: Path, output_dir: Path) -> None:
+        mask_files = sorted(output_dir.glob("*_unet_masks.tif"))
+        self.parent_window.log_output(
+            f"[RESULT][SEGMENT] engine=unet input={input_path.resolve()} output_dir={output_dir.resolve()} mask_files={len(mask_files)}\n"
+        )
+        for mask_file in mask_files:
+            summary = self._summarize_unet_mask_file(mask_file)
+            if summary is None:
+                self.parent_window.log_output(
+                    f"[RESULT][SEGMENT] engine=unet mask={mask_file.resolve()} cells=unavailable\n"
+                )
+                continue
+            self.parent_window.log_output(
+                "[RESULT][SEGMENT] engine=unet "
+                f"mask={mask_file.resolve()} "
+                f"frames={summary['frames']} total_cells={summary['cells_total']} "
+                f"cells_min={summary['cells_min']} cells_mean={summary['cells_mean']:.2f} cells_max={summary['cells_max']}\n"
+            )
 
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""

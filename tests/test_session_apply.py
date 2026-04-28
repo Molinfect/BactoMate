@@ -15,7 +15,7 @@ except ImportError:
 
 try:
     from PyQt6.QtWidgets import QApplication
-    from bactimate.gui.tabs.analyze_masks import AnalyzeMasksTab
+    from bactimate.gui.tabs.analyze_masks import AnalyzeTab
     QT_AVAILABLE = True
 except Exception:
     QT_AVAILABLE = False
@@ -28,7 +28,7 @@ def test_analyze_masks_set_then_get_session_params_round_trip():
             pytest.skip("PyQt6 or AnalyzeMasksTab not available")
         return
     app = QApplication.instance() or QApplication(sys.argv)
-    tab = AnalyzeMasksTab(parent=None)
+    tab = AnalyzeTab(parent=None)
     tab.parent_window = None
     # Values that map to widget types we know exist (from get_session_params)
     data = {
@@ -61,7 +61,7 @@ def test_analyze_masks_apply_session_params_ignores_unknown_keys():
             pytest.skip("PyQt6 or AnalyzeMasksTab not available")
         return
     app = QApplication.instance() or QApplication(sys.argv)
-    tab = AnalyzeMasksTab(parent=None)
+    tab = AnalyzeTab(parent=None)
     tab.parent_window = None
     data = {
         "pixel_size": 0.15,

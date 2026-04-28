@@ -713,6 +713,8 @@ def _analyze_pair(
         secondary_indices=points_secondary["indices"],
         primary_foci_ids=points_primary.get("foci_ids"),
         secondary_foci_ids=points_secondary.get("foci_ids"),
+        primary_cell_ids=cell_ids1,
+        secondary_cell_ids=cell_ids2,
         primary_coords=coords1,
         secondary_coords=coords2,
         primary_native_coords=orig_coords1,
@@ -811,6 +813,8 @@ def _build_pair_records(
     secondary_indices: Sequence[int],
     primary_foci_ids: Optional[Sequence[int]],
     secondary_foci_ids: Optional[Sequence[int]],
+    primary_cell_ids: Optional[Sequence[int]],
+    secondary_cell_ids: Optional[Sequence[int]],
     primary_coords: np.ndarray,
     secondary_coords: np.ndarray,
     primary_native_coords: np.ndarray,
@@ -829,17 +833,24 @@ def _build_pair_records(
         return []
     primary_foci_ids = list(primary_foci_ids) if primary_foci_ids is not None else []
     secondary_foci_ids = list(secondary_foci_ids) if secondary_foci_ids is not None else []
+    primary_cell_ids = list(primary_cell_ids) if primary_cell_ids is not None else []
+    secondary_cell_ids = list(secondary_cell_ids) if secondary_cell_ids is not None else []
     records: List[Dict[str, object]] = []
     for idx, (pi, si) in enumerate(pair_mapping):
+        cell_id_primary = int(primary_cell_ids[pi]) if pi < len(primary_cell_ids) else 0
+        cell_id_secondary = int(secondary_cell_ids[si]) if si < len(secondary_cell_ids) else 0
         record: Dict[str, object] = {
             "foci_channel": primary_channel,
             "foci_idx": _resolve_foci_identifier(pi, primary_indices, primary_foci_ids),
             "foci_coordinates": _resolve_foci_coordinates(pi, primary_coords),
             "foci_native_coordinates": _resolve_foci_coordinates(pi, primary_native_coords),
+            "cell_id_primary": (cell_id_primary if cell_id_primary > 0 else None),
             "colocalized_channel": secondary_channel,
             "colocalized_foci_idx": _resolve_foci_identifier(si, secondary_indices, secondary_foci_ids),
             "colocalized_foci_coordinates": _resolve_foci_coordinates(si, secondary_coords),
             "colocalized_foci_native_coordinates": _resolve_foci_coordinates(si, secondary_native_coords),
+            "cell_id_secondary": (cell_id_secondary if cell_id_secondary > 0 else None),
+            "same_cell": bool(cell_id_primary > 0 and cell_id_primary == cell_id_secondary),
             "distance_unit": "px",
             "distance": float(min_distances[idx]),
             "x_distance": float(x_distances[idx]),

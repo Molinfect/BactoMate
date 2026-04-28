@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
     QLabel,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -52,7 +53,14 @@ class SegmentationTab(QWidget):
         self._update_stage_gates()
 
     def _init_ui(self) -> None:
-        layout = QVBoxLayout()
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        layout = QVBoxLayout(scroll_widget)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(10)
 
@@ -112,7 +120,9 @@ class SegmentationTab(QWidget):
         self.analyze_group.setLayout(analyze_layout)
         layout.addWidget(self.analyze_group, 1)
 
-        self.setLayout(layout)
+        scroll.setWidget(scroll_widget)
+        outer.addWidget(scroll)
+        self.setLayout(outer)
 
     def _wire_signals(self) -> None:
         self.backend_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)

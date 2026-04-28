@@ -47,24 +47,29 @@ class FilteringTab(AnalyzeMasksBase):
         return "Write filtered mask and foci CSV artifacts for the selected path"
 
     def _stage_note_text(self) -> str:
-        return "Filtering settings are adjusted in Preview. Open preview to tune parameters, then run filtering from this tab."
+        return "Open Preview to tune filtering parameters, then run filtering from this tab."
 
     def _build_stage_controls(self, scroll_layout: QVBoxLayout) -> None:
-        # Peak filters are adjusted in the Filter Preview window (Select Filter),
-        # not on the main tab. We keep the widgets alive here so batch filtering and
-        # session params can read them, but stash them in a hidden container.
-        peak_group = self._build_filtering_peak_filters_widget()
-        self._peak_filters_stash = QWidget(self)
-        self._peak_filters_stash.hide()
-        stash_layout = QVBoxLayout(self._peak_filters_stash)
-        stash_layout.setContentsMargins(0, 0, 0, 0)
-        stash_layout.setSpacing(0)
-        stash_layout.addWidget(peak_group)
-        self._peak_filters_stash_layout = stash_layout
+        # Intentionally keep the main tab minimal: all parameter controls live in the Preview.
+        return
 
     def _wire_stage_buttons(self) -> None:
-        self.preview_btn.clicked.connect(self.preview_filter_effects)
-        self.analyze_btn.clicked.connect(self.filter_masks)
+        self._filtering_in_progress = False
+        self._cancel_filtering_requested = False
+        self.preview_action_btn.clicked.connect(self.preview_filter_effects)
+        self.primary_action_btn.clicked.connect(self._on_filter_or_cancel_clicked)
+
+    def _on_filter_or_cancel_clicked(self) -> None:
+        # Stateful action button: acts as Cancel while filtering is running.
+        if bool(getattr(self, "_filtering_in_progress", False)):
+            self._cancel_filtering_requested = True
+            try:
+                self.primary_action_btn.setEnabled(False)
+                self.primary_action_btn.setText("Cancelling…")
+            except Exception:
+                pass
+            return
+        self.filter_masks()
 
     # ---- filtering-only UI -------------------------------------------
     def _build_filtering_peak_filters_widget(self) -> QGroupBox:
@@ -117,23 +122,13 @@ class FilteringTab(AnalyzeMasksBase):
         return peak_group
 
     def _place_peak_filters_in_preview(self, target_layout) -> None:
-        section = getattr(self, "peak_filters_group", None)
-        if section is None:
-            return
-        try:
-            self._move_widget_between_layouts(section, target_layout)
-        except Exception:
-            pass
+        # Legacy hook (preview used to reparent widgets). Intentionally no-op:
+        # filtering controls remain visible in the main Filtering section.
+        return
 
     def _restore_peak_filters_to_stash(self) -> None:
-        section = getattr(self, "peak_filters_group", None)
-        stash_layout = getattr(self, "_peak_filters_stash_layout", None)
-        if section is None or stash_layout is None:
-            return
-        try:
-            self._move_widget_between_layouts(section, stash_layout)
-        except Exception:
-            pass
+        # Legacy hook (preview used to reparent widgets). Intentionally no-op.
+        return
 
     # ---- runtime entry points ----------------------------------------
     def preview_filter_effects(self) -> None:
@@ -149,7 +144,75 @@ class FilteringTab(AnalyzeMasksBase):
 
         show_filter_preview(self, self.file_path.text().strip())
 
+    # ---- settings snapshot (owned state) -----------------------------
+    def _default_filter_settings(self) -> dict[str, Any]:
+        return {
+            # Cell / mask filters
+            "pixel_size": 0.108,
+            "min_aspect_ratio": 1.5,
+            "max_aspect_ratio": 10.0,
+            "min_eccentricity": 0.5,
+            "min_solidity": 0.7,
+            "min_area_um2": None,
+            "max_area_um2": None,
+            "min_width_um": None,
+            "max_width_um": None,
+            "min_length_um": None,
+            "exclude_border": False,
+            # Foci CSV filters
+            "foci_prob_enabled": False,
+            "foci_prob_thresh": 0.5,
+            "foci_min_int_enabled": False,
+            "foci_min_int": 0.0,
+            "foci_per_cell_ratio_enabled": False,
+            "foci_per_cell_ratio": 2.0,
+        }
+
+    def _ensure_filter_settings(self) -> dict[str, Any]:
+        fs = getattr(self, "_filter_settings", None)
+        if not isinstance(fs, dict):
+            fs = self._default_filter_settings()
+            self._filter_settings = dict(fs)
+        # Backfill missing keys for forward compatibility.
+        for k, v in self._default_filter_settings().items():
+            if k not in fs:
+                fs[k] = v
+        return fs
+
+    def get_filter_settings(self) -> dict[str, Any]:
+        """Return a stable snapshot used by both preview and batch filtering."""
+        fs = dict(self._ensure_filter_settings())
+        # Normalize numeric optionals.
+        for k in ("min_area_um2", "max_area_um2", "min_width_um", "max_width_um", "min_length_um"):
+            v = fs.get(k, None)
+            try:
+                if v is None:
+                    fs[k] = None
+                else:
+                    fv = float(v)
+                    fs[k] = fv if fv > 0 else None
+            except Exception:
+                fs[k] = None
+        try:
+            fs["exclude_border"] = bool(fs.get("exclude_border", False))
+        except Exception:
+            fs["exclude_border"] = False
+        return fs
+
+    def set_filter_settings(self, data: dict[str, Any]) -> None:
+        fs = self._ensure_filter_settings()
+        if not isinstance(data, dict):
+            return
+        for k in self._default_filter_settings().keys():
+            if k in data:
+                fs[k] = data.get(k)
+
+    def reset_filter_settings_defaults(self) -> None:
+        self._filter_settings = self._default_filter_settings()
+
     def filter_masks(self) -> None:
+        if bool(getattr(self, "_filtering_in_progress", False)):
+            return
         raw_path = (self.file_path.text() or "").strip() if getattr(self, "file_path", None) else ""
         if not raw_path:
             QMessageBox.warning(self, "No Selection", "Please select a mask file or folder first.")
@@ -167,27 +230,26 @@ class FilteringTab(AnalyzeMasksBase):
             QMessageBox.warning(self, "No Masks Found", "No mask files were found in the selected path.")
             return
 
-        def _safe_checked(attr: str) -> bool:
-            w = getattr(self, attr, None)
-            try:
-                return bool(w is not None and w.isChecked())
-            except RuntimeError:
-                return False
-
-        def _safe_value(attr: str, default: float) -> float:
-            w = getattr(self, attr, None)
-            try:
-                return float(w.value()) if w is not None else float(default)
-            except RuntimeError:
-                return float(default)
-
-        prob_thresh = _safe_value("filter_prob_thresh", 0.0) if _safe_checked("filter_prob_enabled") else None
-        min_peak_raw = _safe_value("filter_min_int", 0.0) if _safe_checked("filter_min_int_enabled") else None
+        fs = self.get_filter_settings()
+        prob_thresh = float(fs.get("foci_prob_thresh", 0.5)) if bool(fs.get("foci_prob_enabled", False)) else None
+        min_peak_raw = float(fs.get("foci_min_int", 0.0)) if bool(fs.get("foci_min_int_enabled", False)) else None
         per_cell_ratio = (
-            _safe_value("filter_per_cell_ratio", 0.0) if _safe_checked("filter_per_cell_ratio_enabled") else None
+            float(fs.get("foci_per_cell_ratio", 2.0)) if bool(fs.get("foci_per_cell_ratio_enabled", False)) else None
         )
 
-        progress = QProgressDialog("Filtering masks...", "Cancel", 0, len(mask_files), self)
+        self._filtering_in_progress = True
+        self._cancel_filtering_requested = False
+        try:
+            self.preview_action_btn.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            self.primary_action_btn.setText("Cancel Filtering")
+            self.primary_action_btn.setToolTip("Stop the current filtering job.")
+        except Exception:
+            pass
+
+        progress = QProgressDialog("Filtering masks...", None, 0, len(mask_files), self)
         progress.setWindowTitle("Filtering")
         progress.setAutoClose(False)
         progress.setAutoReset(False)
@@ -202,6 +264,14 @@ class FilteringTab(AnalyzeMasksBase):
         except Exception as e:
             progress.close()
             QMessageBox.warning(self, "Filtering Error", f"Could not import filtering pipeline:\n{e}")
+            self._filtering_in_progress = False
+            try:
+                self.primary_action_btn.setText(self._primary_button_label())
+                self.primary_action_btn.setToolTip(self._primary_button_tooltip())
+                self.primary_action_btn.setEnabled(True)
+                self.preview_action_btn.setEnabled(True)
+            except Exception:
+                pass
             return
 
         try:
@@ -264,7 +334,7 @@ class FilteringTab(AnalyzeMasksBase):
                     w.writerow(out)
 
         for i, mask_path in enumerate(mask_files):
-            if progress.wasCanceled():
+            if bool(getattr(self, "_cancel_filtering_requested", False)):
                 break
             progress.setLabelText(f"Filtering {mask_path.name} ({i+1}/{len(mask_files)})...")
             progress.setValue(i)
@@ -286,22 +356,23 @@ class FilteringTab(AnalyzeMasksBase):
                 try:
                     props = calculate_cell_properties(
                         frame_mask,
-                        pixel_size=float(self.pixel_size.value()) if hasattr(self, "pixel_size") else 0.108,
-                        exclude_border=bool(getattr(self, "exclude_border_cb", None) and self.exclude_border_cb.isChecked()),
+                        pixel_size=float(fs.get("pixel_size", 0.108) or 0.108),
+                        exclude_border=bool(fs.get("exclude_border", False)),
                     )
                     rod = filter_rod_shaped_cells(
                         props,
-                        min_aspect_ratio=float(self.min_aspect_ratio.value()),
-                        max_aspect_ratio=float(self.max_aspect_ratio.value()),
-                        min_eccentricity=float(self.min_eccentricity.value()),
-                        min_solidity=float(self.min_solidity.value()),
+                        min_aspect_ratio=float(fs.get("min_aspect_ratio", 1.5) or 1.5),
+                        max_aspect_ratio=float(fs.get("max_aspect_ratio", 10.0) or 10.0),
+                        min_eccentricity=float(fs.get("min_eccentricity", 0.5) or 0.5),
+                        min_solidity=float(fs.get("min_solidity", 0.7) or 0.7),
                     )
                     filtered = filter_by_size(
                         rod,
-                        min_area_um2=(float(self.min_area.value()) if getattr(self, "min_area", None) and self.min_area.value() > 0 else None),
-                        max_area_um2=(float(self.max_area.value()) if getattr(self, "max_area", None) and self.max_area.value() > 0 else None),
-                        min_width_um=(float(self.min_width.value()) if getattr(self, "min_width", None) and self.min_width.value() > 0 else None),
-                        max_width_um=(float(self.max_width.value()) if getattr(self, "max_width", None) and self.max_width.value() > 0 else None),
+                        min_area_um2=fs.get("min_area_um2", None),
+                        max_area_um2=fs.get("max_area_um2", None),
+                        min_width_um=fs.get("min_width_um", None),
+                        max_width_um=fs.get("max_width_um", None),
+                        min_length_um=fs.get("min_length_um", None),
                     )
                     accepted = {int(c["label"]) for c in filtered}
                     if accepted:
@@ -356,27 +427,67 @@ class FilteringTab(AnalyzeMasksBase):
                             continue
                         filtered_rows.append(r)
 
-                    # Per-cell ratio filter requires access to the image + segmentation; re-use refine_spotiflow_peaks helper
+                    # Per-cell ratio filter requires access to the image + segmentation; re-use refine_spotiflow_peaks helper.
+                    # NOTE: refine_spotiflow_peaks operates on a single 2D plane + 2D label image, so we apply it
+                    # frame-by-frame to match the per-frame semantics used by the live preview window.
                     if per_cell_ratio is not None:
-                        # refine_spotiflow_peaks expects peaks list; we pass (y,x,intensity,prob,frame)-like dict rows
-                        filtered_rows = refine_spotiflow_peaks(
-                            peaks=filtered_rows,
-                            fi_stack=foci_tyx,
-                            mask_stack=out if out.ndim == 3 else out[np.newaxis, :, :],
-                            min_rel=None,
-                            min_sep_px=None,
-                            min_size_px=None,
-                            max_size_px=None,
-                            blob_threshold=None,
-                            min_peak_raw=None,
-                            min_focus_mean=None,
-                            per_cell_ratio=float(per_cell_ratio),
-                        )
+                        mask_stack_3d = out if out.ndim == 3 else out[np.newaxis, :, :]
+                        per_frame_groups: dict[int, list[dict]] = {}
+                        for r in filtered_rows:
+                            try:
+                                fi_idx = int(float(r.get("frame", 0) or 0))
+                            except Exception:
+                                fi_idx = 0
+                            per_frame_groups.setdefault(fi_idx, []).append(r)
+
+                        refined_rows: list[dict] = []
+                        n_frames = int(foci_tyx.shape[0])
+                        for fi_idx, group in per_frame_groups.items():
+                            f_clamped = max(0, min(int(fi_idx), n_frames - 1))
+                            try:
+                                plane = coerce_plane_to_2d(foci_tyx[f_clamped])
+                            except Exception:
+                                refined_rows.extend(group)
+                                continue
+                            mask_idx = max(0, min(int(fi_idx), int(mask_stack_3d.shape[0] - 1)))
+                            label_plane = np.asarray(mask_stack_3d[mask_idx], dtype=np.int32)
+                            try:
+                                refined = refine_spotiflow_peaks(
+                                    np.asarray(plane),
+                                    list(group),
+                                    labeled_mask=label_plane,
+                                    per_cell_ratio=float(per_cell_ratio),
+                                )
+                            except Exception:
+                                refined = list(group)
+                            for r in refined:
+                                rr = dict(r)
+                                rr.setdefault("frame", fi_idx)
+                                refined_rows.append(rr)
+                        filtered_rows = refined_rows
 
                     out_csv = filtered_foci_csv_path(mask_path.parent, mask_path=mask_path, foci_source_path=src)
                     _write_filtered_foci_csv(out_csv, filtered_rows, include_frame=include_frame)
                     if hasattr(self.parent_window, "log_output"):
                         self.parent_window.log_output(f"[Filtering] Wrote filtered foci CSV: {out_csv}\n")
+                    # Best-effort: also write a filtered overlay artifact for visual inspection.
+                    try:
+                        from bactimate.gui.foci_overlay_artifacts import (
+                            filtered_overlay_path_for_filtered_csv,
+                            write_foci_overlay_tif,
+                        )
+
+                        overlay_path = filtered_overlay_path_for_filtered_csv(out_csv)
+                        ok = write_foci_overlay_tif(
+                            foci_image_path=Path(src),
+                            output_path=overlay_path,
+                            rows=filtered_rows,
+                            mask_path=out_path if Path(out_path).exists() else None,
+                        )
+                        if ok and hasattr(self.parent_window, "log_output"):
+                            self.parent_window.log_output(f"[Filtering] Wrote filtered overlay: {overlay_path}\n")
+                    except Exception:
+                        pass
                 except Exception as e:
                     if hasattr(self.parent_window, "log_output"):
                         self.parent_window.log_output(f"[Filtering] Foci filtering failed for {src.name}: {e}\n")
@@ -387,34 +498,61 @@ class FilteringTab(AnalyzeMasksBase):
             progress.close()
         except Exception:
             pass
-        QMessageBox.information(self, "Filtering complete", "Filtering finished. Filtered artifacts were written next to the masks.")
+        cancelled = bool(getattr(self, "_cancel_filtering_requested", False))
+        self._filtering_in_progress = False
+        try:
+            self.primary_action_btn.setText(self._primary_button_label())
+            self.primary_action_btn.setToolTip(self._primary_button_tooltip())
+            self.primary_action_btn.setEnabled(True)
+            self.preview_action_btn.setEnabled(True)
+        except Exception:
+            pass
+        if cancelled:
+            if hasattr(self.parent_window, "log_output"):
+                self.parent_window.log_output("[Filtering] Cancelled by user.\n")
+            QMessageBox.information(self, "Filtering cancelled", "Filtering was cancelled.")
+        else:
+            QMessageBox.information(
+                self,
+                "Filtering complete",
+                "Filtering finished. Filtered artifacts were written next to the masks.",
+            )
 
     # ---- session params extension ------------------------------------
     def get_session_params(self) -> dict[str, Any]:
         d = super().get_session_params()
-        d.update(
-            {
-                "filter_prob_enabled": bool(self.filter_prob_enabled.isChecked()),
-                "filter_prob_thresh": float(self.filter_prob_thresh.value()),
-                "filter_min_int_enabled": bool(self.filter_min_int_enabled.isChecked()),
-                "filter_min_int": float(self.filter_min_int.value()),
-                "filter_per_cell_ratio_enabled": bool(self.filter_per_cell_ratio_enabled.isChecked()),
-                "filter_per_cell_ratio": float(self.filter_per_cell_ratio.value()),
-            }
-        )
+        fs = self.get_filter_settings()
+        # Persist filter settings explicitly so they survive moving controls into preview.
+        d["filter_settings"] = dict(fs)
         return d
 
     def set_session_params(self, data: dict[str, Any]) -> None:
         super().set_session_params(data)
-        apply_to_widgets(
-            data,
-            [
-                ("filter_prob_enabled", self.filter_prob_enabled),
-                ("filter_prob_thresh", self.filter_prob_thresh),
-                ("filter_min_int_enabled", self.filter_min_int_enabled),
-                ("filter_min_int", self.filter_min_int),
-                ("filter_per_cell_ratio_enabled", self.filter_per_cell_ratio_enabled),
-                ("filter_per_cell_ratio", self.filter_per_cell_ratio),
-            ],
-        )
-
+        # Preferred: unified snapshot dict.
+        fs = data.get("filter_settings", None)
+        if isinstance(fs, dict):
+            self.set_filter_settings(fs)
+            return
+        # Backward-compat for older sessions.
+        legacy = {}
+        for k in (
+            "filter_prob_enabled",
+            "filter_prob_thresh",
+            "filter_min_int_enabled",
+            "filter_min_int",
+            "filter_per_cell_ratio_enabled",
+            "filter_per_cell_ratio",
+        ):
+            if k in data:
+                legacy[k] = data.get(k)
+        if legacy:
+            self.set_filter_settings(
+                {
+                    "foci_prob_enabled": bool(legacy.get("filter_prob_enabled", False)),
+                    "foci_prob_thresh": float(legacy.get("filter_prob_thresh", 0.5) or 0.5),
+                    "foci_min_int_enabled": bool(legacy.get("filter_min_int_enabled", False)),
+                    "foci_min_int": float(legacy.get("filter_min_int", 0.0) or 0.0),
+                    "foci_per_cell_ratio_enabled": bool(legacy.get("filter_per_cell_ratio_enabled", False)),
+                    "foci_per_cell_ratio": float(legacy.get("filter_per_cell_ratio", 2.0) or 2.0),
+                }
+            )

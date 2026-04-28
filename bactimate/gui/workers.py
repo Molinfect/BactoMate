@@ -331,6 +331,7 @@ class TrackingWorker(QThread):
         frame_limit: Optional[int] = None,
     ):
         super().__init__(parent)
+        self.setObjectName(type(self).__name__)
         self.mask_file = mask_file
         self.original_file = original_file
         self.excel_file = excel_file
@@ -936,6 +937,32 @@ class TrackingWorker(QThread):
                     import traceback
                     debug_output.append(f"⚠ Could not write simplified tabular outputs: {e}")
                     debug_output.append(traceback.format_exc())
+
+            track_count = int(tracks_df["track_id"].nunique()) if ("track_id" in tracks_df.columns and len(tracks_df) > 0) else 0
+            track_points = int(len(tracks_df))
+            frame_count = int(masks_tracked.shape[0]) if hasattr(masks_tracked, "shape") and len(masks_tracked.shape) > 0 else 0
+            division_count = int(len(edges_df)) if edges_df is not None and len(edges_df) > 0 else 0
+            self.progress.emit(
+                99,
+                "[RESULT][TRACK] "
+                f"mask={Path(self.mask_file).resolve()} "
+                f"original={Path(self.original_file).resolve() if self.original_file else 'none'} "
+                f"analysis_excel={Path(self.excel_file).resolve() if self.excel_file else 'none'} "
+                f"output_dir={Path(output_dir).resolve()}",
+            )
+            self.progress.emit(
+                99,
+                "[RESULT][TRACK] "
+                f"tracks={track_count} track_points={track_points} frames={frame_count} "
+                f"divisions={division_count} action={self.track_action}",
+            )
+            self.progress.emit(
+                99,
+                "[RESULT][TRACK] "
+                f"tracks_csv={Path(tracks_file).resolve()} "
+                f"tracked_masks={Path(masks_tracked_file).resolve()} "
+                f"report={Path(report_file).resolve() if report_file is not None else 'none'}",
+            )
 
             self.progress.emit(100, "Tracking completed!")
             success_msg = "Tracking completed!\n\n"
@@ -2976,6 +3003,7 @@ class GrowthCurveVideoWorker(QThread):
     
     def __init__(self, video_paths, excel_path, output_dir, time_interval, yaxis_min, yaxis_max, fps, formats, parent=None):
         super().__init__(parent)
+        self.setObjectName(type(self).__name__)
         self.video_paths = list(video_paths)
         self.excel_path = excel_path
         self.output_dir = output_dir

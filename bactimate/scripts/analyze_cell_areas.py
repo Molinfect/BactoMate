@@ -29,6 +29,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from bactimate.modules.label_render import draw_hq_labels
+from bactimate.modules.image_stack_utils import coerce_plane_to_2d, coerce_stack_to_tyx
 
 SCRIPT_LOG = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ try:
         detect_peaks_skimage_auto,
         detect_peaks_cell_first_region_grow,
         detect_peaks_spotiflow,
+        refine_spotiflow_peaks,
         assign_peaks_to_cells,
         focus_size_and_mean_at_peak,
         get_focus_blob_mask,
@@ -47,6 +49,7 @@ except ImportError:
     detect_peaks_skimage_auto = None
     detect_peaks_cell_first_region_grow = None
     detect_peaks_spotiflow = None
+    refine_spotiflow_peaks = None
     assign_peaks_to_cells = None
     focus_size_and_mean_at_peak = None
     get_focus_blob_mask = None
@@ -352,6 +355,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                   exclude_border=False,
                   run_foci=False, foci_detection_mode=0, foci_min_rel=2.0, foci_min_rel_mode="per_cell", foci_min_rel_cell=2.0, foci_min_separation=2, foci_min_size=1, foci_max_size=None,
                   foci_min_peak_raw=0, foci_min_focus_mean=0, foci_blob_threshold=0.8,
+                  foci_image_path=None,
                   foci_exclude_outside_cells=False,
                   spotiflow_options=None,
                   fi_channel_name=None):
@@ -388,6 +392,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
         Minimum size in pixels for objects to keep
     fi_image_path : str, optional
         Path to FI channel TIFF file for fluorescence intensity analysis
+    foci_image_path : str, optional
+        Optional path to foci-detection TIFF file. When omitted, ``fi_image_path`` is used.
     fi_contour_thickness : int, default=1
         Thickness of the contour region in pixels for FI intensity calculation.
         1 = single-pixel boundary, >1 dilates the boundary to include more pixels.
@@ -414,6 +420,14 @@ def analyze_masks(masks_path, pixel_size=0.108,
         ok, err = mask_fi_spatial_shape_match(masks_path, fi_image_path)
         if not ok and err:
             raise ValueError(err)
+    if foci_image_path and paths_exist is not None:
+        ok, missing = paths_exist([foci_image_path])
+        if not ok:
+            raise FileNotFoundError(f"Foci image file not found: {missing[0]}")
+    if foci_image_path and mask_fi_spatial_shape_match is not None:
+        ok, err = mask_fi_spatial_shape_match(masks_path, foci_image_path)
+        if not ok and err:
+            raise ValueError(err)
     try:
         foci_blob_threshold = float(foci_blob_threshold)
     except (TypeError, ValueError):
@@ -431,41 +445,49 @@ def analyze_masks(masks_path, pixel_size=0.108,
     num_frames = masks.shape[0]
     SCRIPT_LOG.info("Found %s frames", num_frames)
     
-    # Load FI image if provided
     fi_images = None
+
+    def _load_stack_tyx(path_str: str, label: str) -> np.ndarray:
+        arr = tifffile.imread(path_str)
+        stack = coerce_stack_to_tyx(arr)
+        if stack is None:
+            raise ValueError(f"{label} image shape {np.asarray(arr).shape} is not supported")
+        return np.asarray(stack)
+
+    def _align_stack_to_frames(stack: np.ndarray, label: str) -> np.ndarray:
+        nonlocal masks, num_frames, fi_images
+        if stack.shape[0] == num_frames:
+            return stack
+        SCRIPT_LOG.warning("%s image has %s frames but masks have %s frames", label, stack.shape[0], num_frames)
+        if stack.shape[0] == 1:
+            return np.repeat(stack, num_frames, axis=0)
+        min_frames = min(stack.shape[0], num_frames)
+        stack = stack[:min_frames]
+        masks = masks[:min_frames]
+        if fi_images is not None and fi_images.shape[0] != min_frames:
+            fi_images = fi_images[:min_frames]
+        num_frames = min_frames
+        SCRIPT_LOG.warning("Using first %s frames from masks and %s image", min_frames, label)
+        return stack
+
+    # Load FI image for FI intensity analysis
     if fi_image_path:
         SCRIPT_LOG.info("Loading FI image from: %s", fi_image_path)
-        fi_images = tifffile.imread(fi_image_path)
-        # Handle different dimensions
-        if fi_images.ndim == 2:
-            fi_images = fi_images[np.newaxis, ...]  # Add time dimension
-        elif fi_images.ndim == 4:
-            # (T, C, Y, X) - take first channel
-            fi_images = fi_images[:, 0, :, :]
-        elif fi_images.ndim == 3:
-            # Could be (T, Y, X) or (Y, X, C)
-            if fi_images.shape[-1] < 10:  # Likely channels last
-                fi_images = fi_images.transpose(2, 0, 1)[np.newaxis, ...]  # (1, C, Y, X)
-                fi_images = fi_images[:, 0, :, :]  # (1, Y, X)
-            # Otherwise assume (T, Y, X)
-        
-        # Ensure FI images match mask frames
-        if fi_images.shape[0] != num_frames:
-            SCRIPT_LOG.warning("FI image has %s frames but masks have %s frames", fi_images.shape[0], num_frames)
-            if fi_images.shape[0] == 1:
-                # Single FI frame - use for all mask frames
-                fi_images = np.repeat(fi_images, num_frames, axis=0)
-            else:
-                # Use minimum number of frames
-                min_frames = min(fi_images.shape[0], num_frames)
-                fi_images = fi_images[:min_frames]
-                masks = masks[:min_frames]
-                num_frames = min_frames
-                SCRIPT_LOG.warning("Using first %s frames from both images", min_frames)
-        
+        fi_images = _load_stack_tyx(fi_image_path, "FI")
+        fi_images = _align_stack_to_frames(fi_images, "FI")
         SCRIPT_LOG.info("FI image loaded: %s", fi_images.shape)
+
+    # Load foci-detection image, defaulting to FI image when not set
+    foci_images = None
+    if foci_image_path:
+        SCRIPT_LOG.info("Loading foci image from: %s", foci_image_path)
+        foci_images = _load_stack_tyx(foci_image_path, "Foci")
+        foci_images = _align_stack_to_frames(foci_images, "Foci")
+        SCRIPT_LOG.info("Foci image loaded: %s", foci_images.shape)
+    elif fi_images is not None:
+        foci_images = fi_images
         if run_foci:
-            SCRIPT_LOG.info("Same image will be used for FI intensity and foci detection (by design).")
+            SCRIPT_LOG.info("Using FI image for foci detection (no separate --foci-image provided).")
     
     results = []
     all_frame_data = []  # Store detailed data for each frame
@@ -481,32 +503,17 @@ def analyze_masks(masks_path, pixel_size=0.108,
         else:
             mask_cleaned = mask
         
-        # Calculate cell properties
-        properties = calculate_cell_properties(mask_cleaned, pixel_size=pixel_size, exclude_border=exclude_border)
-        
-        # Get all cell labels
+        # Calculate cell properties.
+        #
+        # Important: analysis trusts the provided masks and does not apply additional
+        # morphology/size filtering (those are handled upstream in the Filtering stage).
+        # We also intentionally ignore exclude_border here so analysis does not depend on
+        # filtering UI state.
+        properties = calculate_cell_properties(mask_cleaned, pixel_size=pixel_size, exclude_border=False)
+
+        # Use all detected cells as-is.
+        filtered = list(properties)
         all_labels = {prop['label'] for prop in properties}
-        
-        # Apply morphological filtering
-        # Step 1: Filter for rod-shaped cells
-        rod_shaped = filter_rod_shaped_cells(
-            properties,
-            min_aspect_ratio=min_aspect_ratio,
-            max_aspect_ratio=max_aspect_ratio,
-            min_eccentricity=min_eccentricity,
-            min_solidity=min_solidity
-        )
-        rod_shaped_labels = {cell['label'] for cell in rod_shaped}
-        
-        # Step 2: Filter by size constraints
-        filtered = filter_by_size(
-            rod_shaped,
-            min_area_um2=min_area_um2,
-            max_area_um2=max_area_um2,
-            min_width_um=min_width_um,
-            max_width_um=max_width_um,
-            min_length_um=min_length_um
-        )
         accepted_labels = {cell['label'] for cell in filtered}
         
         # Step 3: Calculate FI intensities if FI image is provided
@@ -542,40 +549,116 @@ def analyze_masks(masks_path, pixel_size=0.108,
                     cell['mean_fi'] = mean_fi
         
         # Foci analysis (per-frame detection and assignment to cells)
-        if run_foci and fi_images is not None:
+        if run_foci and foci_images is not None:
             for cell in filtered:
                 cell.setdefault('foci_count', 0)
                 cell.setdefault('foci_ids', [])
-        if (run_foci and fi_images is not None and assign_peaks_to_cells is not None):
-            if fi_image.shape[:2] != mask_cleaned.shape[:2]:
-                SCRIPT_LOG.warning("FI image shape %s != mask shape %s, skipping foci for frame %s", fi_image.shape[:2], mask_cleaned.shape[:2], frame_idx + 1)
+        if (run_foci and foci_images is not None and assign_peaks_to_cells is not None):
+            foci_image = np.asarray(foci_images[frame_idx])
+            foci_plane = np.asarray(coerce_plane_to_2d(foci_image), dtype=np.float64)
+            if foci_plane.shape[:2] != mask_cleaned.shape[:2]:
+                SCRIPT_LOG.warning(
+                    "Foci image shape %s != mask shape %s, skipping foci for frame %s",
+                    foci_plane.shape[:2],
+                    mask_cleaned.shape[:2],
+                    frame_idx + 1,
+                )
             else:
                 # foci_detection_mode: 0=manual, 1=auto, 2=spotiflow
                 peaks = None
                 use_per_cell = False
                 cell_factor = None
-                if foci_detection_mode == 2 and detect_peaks_spotiflow is not None:
-                    sf_kw = dict(spotiflow_options) if spotiflow_options else {}
+                if foci_detection_mode == 2:
+                    if detect_peaks_spotiflow is None:
+                        raise RuntimeError("Spotiflow detection requested, but spotiflow is unavailable.")
+                    sf_opts = dict(spotiflow_options) if spotiflow_options else {}
+                    sf_post_on = bool(sf_opts.get("postfilters_enabled", False))
+                    sf_kw = {
+                        k: v
+                        for k, v in sf_opts.items()
+                        if k
+                        not in {
+                            "postfilters_enabled",
+                            "pf_area_enabled",
+                            "pf_min_peak_raw_enabled",
+                            "pf_min_focus_mean_enabled",
+                            "pf_per_cell_ratio_enabled",
+                            "pf_cell_ratio_factor",
+                            "pf_min_peak_raw",
+                            "pf_min_focus_mean",
+                            "pf_min_size_px",
+                            "pf_max_size_px",
+                            "preview_render_cap",
+                            "preview_show_detected_vs_rendered",
+                        }
+                    }
+                    sf_kw["raise_on_error"] = True
                     try:
-                        peaks = detect_peaks_spotiflow(fi_image, **sf_kw)
+                        peaks = detect_peaks_spotiflow(foci_plane, **sf_kw)
                     except TypeError:
                         peaks = detect_peaks_spotiflow(
-                            fi_image, model_name=str(sf_kw.get("model_name") or "general")
+                            foci_plane,
+                            model_name=str(sf_kw.get("model_name") or "general"),
+                            raise_on_error=True,
                         )
-                    if peaks is None and SCRIPT_LOG:
-                        SCRIPT_LOG.info("Spotiflow not available or failed, using Auto-detect for foci.")
-                if peaks is None and foci_detection_mode in (1, 2) and detect_peaks_cell_first_region_grow is not None:
+                    if peaks is None:
+                        raise RuntimeError("Spotiflow detection returned no result.")
+                    if refine_spotiflow_peaks is not None:
+                        min_sz_sf = None
+                        max_sz_sf = None
+                        if sf_post_on and bool(sf_opts.get("pf_area_enabled", False)):
+                            try:
+                                min_sz_sf = int(sf_opts.get("pf_min_size_px", foci_min_size))
+                            except (TypeError, ValueError):
+                                min_sz_sf = int(foci_min_size)
+                            try:
+                                max_sz_sf = int(sf_opts.get("pf_max_size_px", foci_max_size or 0))
+                            except (TypeError, ValueError):
+                                max_sz_sf = int(foci_max_size or 0)
+                            if max_sz_sf is not None and max_sz_sf <= 0:
+                                max_sz_sf = None
+                        min_peak_raw_sf = None
+                        if sf_post_on and bool(sf_opts.get("pf_min_peak_raw_enabled", False)):
+                            try:
+                                min_peak_raw_sf = float(sf_opts.get("pf_min_peak_raw", foci_min_peak_raw))
+                            except (TypeError, ValueError):
+                                min_peak_raw_sf = float(foci_min_peak_raw or 0)
+                        min_focus_mean_sf = None
+                        if sf_post_on and bool(sf_opts.get("pf_min_focus_mean_enabled", False)):
+                            try:
+                                min_focus_mean_sf = float(sf_opts.get("pf_min_focus_mean", foci_min_focus_mean))
+                            except (TypeError, ValueError):
+                                min_focus_mean_sf = float(foci_min_focus_mean or 0)
+                        per_cell_ratio_sf = None
+                        if sf_post_on and bool(sf_opts.get("pf_per_cell_ratio_enabled", False)):
+                            try:
+                                per_cell_ratio_sf = float(sf_opts.get("pf_cell_ratio_factor", foci_min_rel))
+                            except (TypeError, ValueError):
+                                per_cell_ratio_sf = float(foci_min_rel or 0)
+                        peaks = refine_spotiflow_peaks(
+                            foci_plane,
+                            peaks,
+                            labeled_mask=mask_cleaned,
+                            threshold_frac=foci_blob_threshold,
+                            max_radius=5,
+                            min_size=min_sz_sf,
+                            max_size=max_sz_sf,
+                            min_peak_raw=min_peak_raw_sf,
+                            min_focus_mean=min_focus_mean_sf,
+                            per_cell_ratio=per_cell_ratio_sf,
+                        )
+                elif foci_detection_mode == 1 and detect_peaks_cell_first_region_grow is not None:
                     peaks = detect_peaks_cell_first_region_grow(
-                        fi_image,
+                        foci_plane,
                         labeled_mask=mask_cleaned,
                     )
-                elif peaks is None and detect_peaks_skimage is not None:
+                elif detect_peaks_skimage is not None:
                     mode = (foci_min_rel_mode or "per_cell").strip().lower()
                     use_per_frame = mode in ("per_frame", "both")
                     use_per_cell = mode in ("per_cell", "both")
                     cell_factor = float(foci_min_rel_cell) if use_per_cell and mode == "both" else (float(foci_min_rel) if use_per_cell else None)
                     peaks = detect_peaks_skimage(
-                        fi_image,
+                        foci_plane,
                         min_rel=foci_min_rel if use_per_frame else None,
                         min_distance=foci_min_separation,
                         min_size=foci_min_size,
@@ -591,10 +674,9 @@ def analyze_masks(masks_path, pixel_size=0.108,
                         foci_detection_mode == 2
                         and peaks
                         and focus_size_and_mean_at_peak is not None
+                        and refine_spotiflow_peaks is None
                     ):
-                        fi_flat = np.asarray(fi_image, dtype=np.float64)
-                        if fi_flat.ndim > 2:
-                            fi_flat = fi_flat[:, :, 0] if fi_flat.shape[2] < 10 else fi_flat[0, :, :]
+                        fi_flat = np.asarray(foci_plane, dtype=np.float64)
                         peaks_refined = []
                         for p in peaks:
                             yi, xi = int(p.get("y", 0)), int(p.get("x", 0))
@@ -616,9 +698,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
                     )
                     if foci_detection_mode == 0 and use_per_cell and cell_factor is not None and cell_factor > 0 and filtered and get_focus_blob_mask is not None:
                         # Per-cell filter: keep only foci where (focus blob mean) / (mean of cell excluding focus) >= cell_factor.
-                        fi_flat = np.asarray(fi_image, dtype=np.float64)
-                        if fi_flat.ndim > 2:
-                            fi_flat = fi_flat[:, :, 0] if fi_flat.shape[2] < 10 else fi_flat[0, :, :]
+                        fi_flat = np.asarray(foci_plane, dtype=np.float64)
                         new_foci_rows = []
                         for row in foci_rows:
                             if not row.get('in_cell') or row.get('cell_id') is None:
@@ -1016,7 +1096,38 @@ def _draw_foci_on_frame(vis_frame, foci_rows, color_rgb, radius=2):
                     vis_frame[yy, xx, :] = color_rgb
 
 
-def create_filter_visualization(masks, all_frame_data, output_path, masks_original=None, foci_table=None):
+def _normalize_plane_for_visualization_u8(plane):
+    """Normalize a 2D image plane to uint8 [0..255] for display."""
+    try:
+        img = np.asarray(coerce_plane_to_2d(np.asarray(plane)), dtype=np.float32)
+    except Exception:
+        return None
+    if img is None or img.ndim != 2 or img.size == 0:
+        return None
+    finite = np.isfinite(img)
+    if not np.any(finite):
+        return np.zeros(img.shape, dtype=np.uint8)
+    vals = img[finite]
+    # Robust normalization: suppress hot-pixel outliers.
+    lo = float(np.percentile(vals, 1.0))
+    hi = float(np.percentile(vals, 99.0))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo = float(np.min(vals))
+        hi = float(np.max(vals))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.zeros(img.shape, dtype=np.uint8)
+    out = (np.clip((img - lo) / (hi - lo), 0.0, 1.0) * 255.0).astype(np.uint8)
+    return out
+
+
+def create_filter_visualization(
+    masks,
+    all_frame_data,
+    output_path,
+    masks_original=None,
+    foci_table=None,
+    background_images=None,
+):
     """
     Create visualization showing accepted (green) and rejected (red) cells with persistent CellIDs.
     When foci_table is provided (Run foci), detected foci are drawn as yellow dots.
@@ -1034,6 +1145,9 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
         If provided, used to show rejected cells. If None, only accepted cells will be shown.
     foci_table : list of dict, optional
         Foci rows (frame 0-based, y, x, ...). When provided, foci are drawn as yellow circles.
+    background_images : array, optional
+        Optional grayscale/intensity stack (T, Y, X) used as normalized background.
+        If provided, accepted/rejected masks are alpha-tinted over the normalized image.
     """
     SCRIPT_LOG.info("Creating filter visualization...")
     
@@ -1065,26 +1179,37 @@ def create_filter_visualization(masks, all_frame_data, output_path, masks_origin
         else:
             mask_orig = mask
         
-        # Create RGB channels
-        # Green channel (accepted cells with CellIDs)
-        green = np.zeros((height, width), dtype=np.uint8)
-        for cell_id in accepted_cellids:
-            if cell_id is not None:
-                green[mask == cell_id] = 255
-        
-        # Red channel (rejected cells - use original labels from original mask)
-        red = np.zeros((height, width), dtype=np.uint8)
-        for rejected_label in rejected_labels:
-            if rejected_label > 0:  # Skip background
-                red[mask_orig == rejected_label] = 255
-        
-        # Blue channel (background, can be used for original image overlay if needed)
-        blue = np.zeros((height, width), dtype=np.uint8)
-        
-        # Combine into RGB
-        visualization[frame_idx, :, :, 0] = red    # Red channel
-        visualization[frame_idx, :, :, 1] = green  # Green channel
-        visualization[frame_idx, :, :, 2] = blue   # Blue channel
+        accepted_arr = np.array([cid for cid in accepted_cellids if cid is not None], dtype=np.int64)
+        accepted_labels_img = (
+            np.where(np.isin(mask, accepted_arr), mask, 0).astype(np.int32)
+            if accepted_arr.size > 0
+            else np.zeros((height, width), dtype=np.int32)
+        )
+        rejected_arr = np.array([lab for lab in rejected_labels if lab > 0], dtype=np.int64)
+        rejected_labels_img = (
+            np.where(np.isin(mask_orig, rejected_arr), mask_orig, 0).astype(np.int32)
+            if rejected_arr.size > 0
+            else np.zeros((height, width), dtype=np.int32)
+        )
+        accepted_contour = find_boundaries(accepted_labels_img, mode="inner") if accepted_arr.size > 0 else np.zeros((height, width), dtype=bool)
+        rejected_contour = find_boundaries(rejected_labels_img, mode="inner") if rejected_arr.size > 0 else np.zeros((height, width), dtype=bool)
+
+        bg_u8 = None
+        if background_images is not None and frame_idx < background_images.shape[0]:
+            bg_u8 = _normalize_plane_for_visualization_u8(background_images[frame_idx])
+
+        if bg_u8 is None or bg_u8.shape != (height, width):
+            frame_rgb = np.zeros((height, width, 3), dtype=np.uint8)
+        else:
+            frame_rgb = np.stack([bg_u8, bg_u8, bg_u8], axis=-1).astype(np.uint8)
+
+        # Draw cell contours only (no full-area fill)
+        if np.any(rejected_contour):
+            frame_rgb[rejected_contour] = np.array([255, 0, 0], dtype=np.uint8)
+        if np.any(accepted_contour):
+            frame_rgb[accepted_contour] = np.array([0, 255, 0], dtype=np.uint8)
+
+        visualization[frame_idx] = frame_rgb
         
         # Overlay detected foci as yellow dots when Run foci was used
         if foci_table:
@@ -1164,14 +1289,12 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
     # Create RGB visualization
     visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
     
-    # Normalize FI images for background display
+    # Normalize FI images for background display (percentile 1-99)
     fi_images_norm = []
     for fi_img in fi_images:
-        fi_min, fi_max = fi_img.min(), fi_img.max()
-        if fi_max > fi_min:
-            fi_norm = ((fi_img - fi_min) / (fi_max - fi_min) * 255).astype(np.uint8)
-        else:
-            fi_norm = fi_img.astype(np.uint8)
+        fi_norm = _normalize_plane_for_visualization_u8(fi_img)
+        if fi_norm is None:
+            fi_norm = np.zeros((height, width), dtype=np.uint8)
         fi_images_norm.append(fi_norm)
     fi_images_norm = np.stack(fi_images_norm)
     
@@ -1323,7 +1446,10 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
         
         # Detailed per-cell data (optional)
         df_detailed = None
-        if detailed_data:
+        # IMPORTANT: when the caller requests detailed output, always create the
+        # "Per-Cell Data" sheet even if it's empty. Downstream post-analysis steps
+        # (e.g. colocalization) depend on the sheet existing.
+        if detailed_data is not None:
             detailed_rows = []
             ch_name = fi_channel_name or 'FI'
             foci_count_col = f'{ch_name}_foci_count'
@@ -1428,7 +1554,22 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
             
             if detailed_rows:
                 df_detailed = pd.DataFrame(detailed_rows)
-                df_detailed.to_excel(writer, sheet_name='Per-Cell Data', index=False)
+            else:
+                # Preserve a stable schema even when no cells exist (or all frames empty).
+                df_detailed = pd.DataFrame(
+                    columns=[
+                        'Frame',
+                        'Cell_ID',
+                        'Cell Label',
+                        'Area (µm²)',
+                        'Length (µm)',
+                        'Width (µm)',
+                        'Aspect Ratio',
+                        'Eccentricity',
+                        'Solidity',
+                    ]
+                )
+            df_detailed.to_excel(writer, sheet_name='Per-Cell Data', index=False)
         
         # Foci sheet (when run_foci was on)
         df_foci = None
@@ -1528,6 +1669,8 @@ Examples:
     # FI analysis
     parser.add_argument('--fi-image', type=str, default=None,
                        help='Path to FI channel TIFF file for fluorescence intensity analysis')
+    parser.add_argument('--foci-image', type=str, default=None,
+                       help='Optional path to TIFF file used only for foci detection (defaults to --fi-image)')
     parser.add_argument('--fi-contour-thickness', type=int, default=1,
                        help='Thickness of contour region in pixels for FI intensity calculation (default: 1)')
     parser.add_argument('--no-fi-contour', action='store_true',
@@ -1591,6 +1734,12 @@ Examples:
             SCRIPT_LOG.error("FI image file not found: %s", args.fi_image)
             return 1
         fi_image_path = args.fi_image
+    foci_image_path = None
+    if args.foci_image:
+        if not Path(args.foci_image).exists():
+            SCRIPT_LOG.error("Foci image file not found: %s", args.foci_image)
+            return 1
+        foci_image_path = args.foci_image
     
     spotiflow_options = None
     sc = getattr(args, "spotiflow_config", None)
@@ -1641,10 +1790,10 @@ Examples:
             return "FI"
         return "FI"
 
-    # Foci channel name from FI path if not set (supports *_fi_*, *_foci_*, and *_<channel>_foci)
+    # Foci channel name from foci image path (or FI path) if not set.
     fi_channel_name = args.foci_channel_name
-    if fi_channel_name is None and fi_image_path:
-        fi_channel_name = _infer_foci_channel_name(fi_image_path)
+    if fi_channel_name is None and (foci_image_path or fi_image_path):
+        fi_channel_name = _infer_foci_channel_name(foci_image_path or fi_image_path)
     
     # Analyze masks
     results, detailed_data, masks_with_cellids, masks_original, foci_table = analyze_masks(
@@ -1662,6 +1811,7 @@ Examples:
         remove_small=not args.no_remove_small,
         min_size_pixels=args.min_size,
         fi_image_path=fi_image_path,
+        foci_image_path=foci_image_path,
         fi_contour_thickness=args.fi_contour_thickness,
         fi_do_contour=not args.no_fi_contour,
         exclude_border=args.exclude_border,
@@ -1696,44 +1846,74 @@ Examples:
     # We'll save directly to the folder, so update output_path
     output_path = excel_in_folder
     
+    # Derive per-task artifact stem so multi-channel runs do not overwrite visualizations.
+    output_stem = Path(output_path).stem
+    default_analysis_stem = f"{input_mask_stem}_analysis"
+    vis_stem = input_mask_stem if output_stem == default_analysis_stem else output_stem
+
     # Create visualization if requested
+    vis_output = None
     if args.visualization:
-        vis_output = output_dir / f"{input_mask_stem}_filter_visualization.tif"
+        vis_output = output_dir / f"{vis_stem}_filter_visualization.tif"
+        vis_bg_images = None
+        vis_bg_source = args.foci_image or args.fi_image
+        if vis_bg_source:
+            try:
+                vis_bg_images = coerce_stack_to_tyx(tifffile.imread(vis_bg_source))
+                if vis_bg_images is None:
+                    SCRIPT_LOG.warning(
+                        "Skipping visualization background normalization: unsupported image shape for %s",
+                        vis_bg_source,
+                    )
+                else:
+                    num_frames = masks_with_cellids.shape[0]
+                    if vis_bg_images.shape[0] != num_frames:
+                        if vis_bg_images.shape[0] == 1:
+                            vis_bg_images = np.repeat(vis_bg_images, num_frames, axis=0)
+                        else:
+                            min_frames = min(vis_bg_images.shape[0], num_frames)
+                            vis_bg_images = vis_bg_images[:min_frames]
+                            if min_frames < num_frames:
+                                SCRIPT_LOG.warning(
+                                    "Visualization background has fewer frames (%s) than masks (%s); trailing frames use no background.",
+                                    min_frames,
+                                    num_frames,
+                                )
+            except Exception as e:
+                SCRIPT_LOG.warning("Could not load visualization background image %s: %s", vis_bg_source, e)
+                vis_bg_images = None
         create_filter_visualization(
             masks_with_cellids, detailed_data, str(vis_output),
             masks_original=masks_original,
             foci_table=foci_table if args.run_foci else None,
+            background_images=vis_bg_images,
         )
     
     # Create FI contour visualization only if contour FI was computed
+    fi_contour_output = None
     if args.fi_image and (not args.no_fi_contour):
         # Reload FI images for visualization (they were already loaded in analyze_masks, but we need them here)
-        fi_images = tifffile.imread(args.fi_image)
-        # Handle different dimensions (same logic as in analyze_masks)
-        if fi_images.ndim == 2:
-            fi_images = fi_images[np.newaxis, ...]
-        elif fi_images.ndim == 4:
-            fi_images = fi_images[:, 0, :, :]
-        elif fi_images.ndim == 3:
-            if fi_images.shape[-1] < 10:
-                fi_images = fi_images.transpose(2, 0, 1)[np.newaxis, ...]
-                fi_images = fi_images[:, 0, :, :]
-        
-        # Ensure FI images match mask frames
-        num_frames = masks_with_cellids.shape[0]
-        if fi_images.shape[0] != num_frames:
-            if fi_images.shape[0] == 1:
-                fi_images = np.repeat(fi_images, num_frames, axis=0)
-            else:
-                min_frames = min(fi_images.shape[0], num_frames)
-                fi_images = fi_images[:min_frames]
-        
-        fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
-        create_fi_contour_visualization(
-            masks_with_cellids, detailed_data, fi_images, str(fi_contour_output),
-            masks_original=masks_original,
-            foci_table=foci_table if args.run_foci else None,
-        )
+        fi_images = coerce_stack_to_tyx(tifffile.imread(args.fi_image))
+        if fi_images is None:
+            SCRIPT_LOG.warning("Skipping FI contour visualization: unsupported FI image shape for %s", args.fi_image)
+            fi_images = None
+
+        if fi_images is not None:
+            # Ensure FI images match mask frames
+            num_frames = masks_with_cellids.shape[0]
+            if fi_images.shape[0] != num_frames:
+                if fi_images.shape[0] == 1:
+                    fi_images = np.repeat(fi_images, num_frames, axis=0)
+                else:
+                    min_frames = min(fi_images.shape[0], num_frames)
+                    fi_images = fi_images[:min_frames]
+
+            fi_contour_output = output_dir / f"{vis_stem}_fi_contours_visualization.tif"
+            create_fi_contour_visualization(
+                masks_with_cellids, detailed_data, fi_images, str(fi_contour_output),
+                masks_original=masks_original,
+                foci_table=foci_table if args.run_foci else None,
+            )
     
     # Print summary statistics
     SCRIPT_LOG.info("=" * 60)
@@ -1758,7 +1938,7 @@ Examples:
         results, output_path,
         detailed_data if args.detailed else None,
         foci_table=foci_table if args.run_foci else None,
-        fi_channel_name=fi_channel_name if args.fi_image else None,
+        fi_channel_name=fi_channel_name if (args.fi_image or args.foci_image) else None,
         export_csv=getattr(args, 'export_csv', False),
         pixel_size=args.pixel_size,
     )
@@ -1766,10 +1946,9 @@ Examples:
     SCRIPT_LOG.info("Analysis complete!")
     SCRIPT_LOG.info("  Excel file saved to: %s", output_path)
     SCRIPT_LOG.info("  All files saved in folder: %s", output_dir)
-    if args.visualization:
+    if args.visualization and vis_output is not None:
         SCRIPT_LOG.info("  Visualization saved to: %s", vis_output)
-    if args.fi_image and (not args.no_fi_contour):
-        fi_contour_output = output_dir / f"{input_mask_stem}_fi_contours_visualization.tif"
+    if fi_contour_output is not None:
         SCRIPT_LOG.info("  FI contour visualization saved to: %s", fi_contour_output)
     return 0
 

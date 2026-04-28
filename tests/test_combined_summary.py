@@ -22,7 +22,7 @@ except ImportError:
 
 try:
     from PyQt6.QtWidgets import QApplication
-    from bactimate.gui.tabs.analyze_masks import AnalyzeMasksTab
+    from bactimate.gui.tabs.analyze_masks import AnalyzeTab
     QT_AVAILABLE = True
 except Exception:
     QT_AVAILABLE = False
@@ -55,7 +55,7 @@ def test_combined_summary_builds_wide_sheet():
         _make_summary_excel(p1, "file1", [1, 2, 3], [100.0, 110.0, 120.0], [10, 11, 12])
         _make_summary_excel(p2, "file2", [1, 2, 3], [200.0, 210.0, 220.0], [20, 21, 22])
         out_path = tmp / "combined_summary.xlsx"
-        tab = AnalyzeMasksTab(parent=None)
+        tab = AnalyzeTab(parent=None)
         tab.parent_window = None
         ok = tab._build_combined_summary_excel(
             [str(p1), str(p2)], str(out_path), match_log=None, log_callback=None
@@ -81,7 +81,7 @@ def test_combined_summary_empty_paths_returns_false():
     app = QApplication.instance() or QApplication(sys.argv)
     with tempfile.TemporaryDirectory() as tmp:
         out_path = Path(tmp) / "out.xlsx"
-        tab = AnalyzeMasksTab(parent=None)
+        tab = AnalyzeTab(parent=None)
         tab.parent_window = None
         ok = tab._build_combined_summary_excel([], str(out_path), log_callback=None)
         assert ok is False
@@ -108,7 +108,7 @@ def test_combined_summary_duplicate_frames_no_error():
         with pd.ExcelWriter(p1, engine="openpyxl") as w:
             df.to_excel(w, sheet_name="Summary", index=False)
         out_path = tmp / "combined.xlsx"
-        tab = AnalyzeMasksTab(parent=None)
+        tab = AnalyzeTab(parent=None)
         tab.parent_window = None
         ok = tab._build_combined_summary_excel([str(p1)], str(out_path), log_callback=None)
         assert ok is True

@@ -264,6 +264,7 @@ def convert_nd2_to_tif(
     pixel_size: Optional[float] = None,  # Pixel size in µm to save in metadata
     time_per_frame_min: Optional[float] = None,  # Time per frame in minutes (for speed calibration); saved as finterval
     max_z_projection: bool = False,  # Max intensity projection across Z-slices
+    z_slice: Optional[int] = None,  # If max_z_projection is False and Z>1, pick this 1-based slice; default is Z=1
     fi_channel_indices: Optional[List[int]] = None,  # Channel indices (0-based) to save with _fi in filename for Analyze FI batch
     foci_channel_indices: Optional[List[int]] = None,  # Channel indices to save with _foci in filename for Analyze Masks foci analysis
 ) -> None:
@@ -456,8 +457,16 @@ def convert_nd2_to_tif(
                             all_frames = np.max(all_frames, axis=z_axis)
                             print(f"  ✓ Max Z-projection complete: {all_frames.shape}")
                         else:
-                            print(f"  Using first Z-slice (Z=1)")
-                            all_frames = np.take(all_frames, 0, axis=z_axis)
+                            if z_slice is not None:
+                                z_idx = int(z_slice) - 1
+                                if z_idx < 0 or z_idx >= num_z:
+                                    print(f"  Warning: Requested z_slice={z_slice} is out of range (1–{num_z}); using Z=1")
+                                    z_idx = 0
+                                print(f"  Using selected Z-slice (Z={z_idx + 1})")
+                                all_frames = np.take(all_frames, z_idx, axis=z_axis)
+                            else:
+                                print(f"  Using first Z-slice (Z=1)")
+                                all_frames = np.take(all_frames, 0, axis=z_axis)
                         shape = all_frames.shape
                         ndim = len(shape)
                         num_z = 1
@@ -585,17 +594,23 @@ def convert_nd2_to_tif(
                             ndim = len(shape)
                             print(f"  ✓ Max Z-projection complete: {shape}")
                     else:
-                        # Use first Z slice only
+                        # Use selected Z slice (if provided) else first Z slice
+                        z_idx = 0
+                        if z_slice is not None:
+                            z_idx = int(z_slice) - 1
+                            if z_idx < 0 or z_idx >= num_z:
+                                print(f"  Warning: Requested z_slice={z_slice} is out of range (1–{num_z}); using Z=1")
+                                z_idx = 0
                         if ndim == 5:  # TCZYX
-                            all_frames = all_frames[:, :, 0, :, :]  # Take first Z slice: TCYX
+                            all_frames = all_frames[:, :, z_idx, :, :]  # Take Z slice: TCYX
                             shape = all_frames.shape
                             ndim = len(shape)
-                            print(f"  Using first Z-slice (Z=1)")
+                            print(f"  Using selected Z-slice (Z={z_idx + 1})" if z_idx != 0 else "  Using first Z-slice (Z=1)")
                         elif ndim == 4 and num_z > 1 and num_channels == 1:  # TZYX (no channels)
-                            all_frames = all_frames[:, 0, :, :]  # Take first Z slice: TYX
+                            all_frames = all_frames[:, z_idx, :, :]  # Take Z slice: TYX
                             shape = all_frames.shape
                             ndim = len(shape)
-                            print(f"  Using first Z-slice (Z=1)")
+                            print(f"  Using selected Z-slice (Z={z_idx + 1})" if z_idx != 0 else "  Using first Z-slice (Z=1)")
                 elif ndim == 5 and num_z == 1:
                     # 5D TCZYX with single Z – reduce to TCYX so downstream sees 4D
                     all_frames = all_frames[:, :, 0, :, :]  # Take first Z slice: TCYX
@@ -1069,6 +1084,13 @@ def main() -> None:
         action='store_true',
         help='Apply maximum intensity projection across Z-slices when Z > 1. If not set, only the first Z-slice (Z=1) is used.'
     )
+    parser.add_argument(
+        '--z-slice',
+        type=int,
+        default=None,
+        metavar='N',
+        help='When Z > 1 and --max-z-projection is not set, use this 1-based Z-slice index (e.g. 3). Default: 1.'
+    )
     
     args = parser.parse_args()
     
@@ -1090,6 +1112,7 @@ def main() -> None:
             pixel_size=args.pixel_size,
             time_per_frame_min=args.time_per_frame,
             max_z_projection=args.max_z_projection,
+            z_slice=args.z_slice,
             fi_channel_indices=args.fi_channels,
             foci_channel_indices=args.foci_channels,
         )

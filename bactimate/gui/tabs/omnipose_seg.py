@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import traceback
+import csv
 from pathlib import Path
 from typing import Any, Optional
 
@@ -126,6 +127,25 @@ MASK_DISTANCE_OMNI_MAX = 1.0
 MASK_CELLPROB_SAM_MIN = -6.0
 MASK_CELLPROB_SAM_MAX = 6.0
 
+SPOTIFLOW_DETECTION_DEFAULTS: dict[str, Any] = {
+    "model_name": "general",
+    "model_path": "",
+    "use_optimized_threshold": True,
+    "prob_thresh": None,
+    "min_distance": 1,
+    "subpix": True,
+    "normalize": True,
+    "perc_low": 1.0,
+    "perc_high": 99.8,
+    "bg_subtract_radius": 0,
+    "blur_sigma": 0.0,
+    "auto_tiling": True,
+    "n_tiles_y": 1,
+    "n_tiles_x": 1,
+    "verbose": False,
+    "raise_on_error": False,
+}
+
 
 class _OmniposeTrainWorker(QThread):
     """Runs Omnipose training subprocess in background so the GUI stays responsive."""
@@ -209,6 +229,50 @@ def _get_pretrained_training_options():
     ] + [(name, name) for name in BUILTIN_OMNIPOSE_MODELS if name in PRETRAINED_NCHAN_NCLASSES_DIM and name != CANONICAL_BACTERIAL_MODEL]
 
 
+class OmniposeTrainWidget(QWidget):
+    """Wrapper widget hosting the training section of an `OmniposeSegTab`.
+
+    The underlying training behavior stays in `OmniposeSegTab`; this wrapper only
+    re-parents the already-constructed training group into another tab.
+    """
+
+    def __init__(self, owner: "OmniposeSegTab", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._owner = owner
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(owner.take_train_group())
+        layout.addStretch(1)
+        self.setLayout(layout)
+
+
+class OmniposeInferenceWidget(QWidget):
+    """Wrapper widget hosting the inference section of an `OmniposeSegTab`."""
+
+    def __init__(
+        self,
+        owner: "OmniposeSegTab",
+        parent: Optional[QWidget] = None,
+        *,
+        cellpose_sam_only: bool = False,
+    ) -> None:
+        super().__init__(parent)
+        self._owner = owner
+        self._cellpose_sam_only = bool(cellpose_sam_only)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(owner.take_segmentation_group())
+        layout.addStretch(1)
+        self.setLayout(layout)
+        if self._cellpose_sam_only:
+            try:
+                owner.set_inference_mode_cellpose_sam_only()
+            except Exception:
+                pass
+
+
 class OmniposeSegTab(QWidget):
     """Unified tab for Omnipose: train models and run single file or folder segmentation."""
     workflow_step_finished = pyqtSignal(bool)  # for workflow replay chain
@@ -225,14 +289,14 @@ class OmniposeSegTab(QWidget):
         self._omnipose_train_worker = None
         layout = QVBoxLayout()
         scroll = QScrollArea()
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout()
+        self._scroll_widget = QWidget()
+        self._scroll_layout = QVBoxLayout()
 
-        train_group = self._build_omnipose_train_group()
-        scroll_layout.addWidget(train_group)
+        self._train_group_widget = self._build_omnipose_train_group()
+        self._scroll_layout.addWidget(self._train_group_widget)
 
-        seg_group = self._build_segmentation_params()
-        scroll_layout.addWidget(seg_group)
+        self._seg_group_widget = self._build_segmentation_params()
+        self._scroll_layout.addWidget(self._seg_group_widget)
 
         # Connect file path changes (file_group is inside seg_group)
         self.file_path.textChanged.connect(self._update_overlay_checkbox_state)
@@ -241,11 +305,59 @@ class OmniposeSegTab(QWidget):
         self.file_path.textChanged.connect(self._try_push_metadata_from_path)
         self._update_button_states()
 
-        scroll_widget.setLayout(scroll_layout)
-        scroll.setWidget(scroll_widget)
+        self._scroll_widget.setLayout(self._scroll_layout)
+        scroll.setWidget(self._scroll_widget)
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
         self.setLayout(layout)
+
+    def take_train_group(self) -> QWidget:
+        """Detach and return the training group widget for embedding elsewhere."""
+        w = getattr(self, "_train_group_widget", None)
+        if w is None:
+            w = self._build_omnipose_train_group()
+            self._train_group_widget = w
+        try:
+            if getattr(self, "_scroll_layout", None) is not None:
+                self._scroll_layout.removeWidget(w)
+        except Exception:
+            pass
+        w.setParent(None)
+        return w
+
+    def take_segmentation_group(self) -> QWidget:
+        """Detach and return the segmentation/inference group widget for embedding elsewhere."""
+        w = getattr(self, "_seg_group_widget", None)
+        if w is None:
+            w = self._build_segmentation_params()
+            self._seg_group_widget = w
+        try:
+            if getattr(self, "_scroll_layout", None) is not None:
+                self._scroll_layout.removeWidget(w)
+        except Exception:
+            pass
+        w.setParent(None)
+        return w
+
+    def set_inference_mode_cellpose_sam_only(self) -> None:
+        """Restrict the model dropdown to Cellpose-SAM for use as a dedicated Cellpose backend panel."""
+        if not hasattr(self, "model_combo"):
+            return
+        try:
+            self.model_combo.blockSignals(True)
+            self.model_combo.clear()
+            self.model_combo.addItem(CELLPOSE_SAM_DISPLAY)
+            self.model_combo.setCurrentText(CELLPOSE_SAM_DISPLAY)
+        finally:
+            try:
+                self.model_combo.blockSignals(False)
+            except Exception:
+                pass
+        # Ensure dependent UI updates (mask threshold range + defaults)
+        try:
+            self._sync_mask_threshold_spinbox_for_model()
+        except Exception:
+            pass
 
     def _build_omnipose_train_group(self) -> QGroupBox:
         """Build 'Train Omnipose model' section (all controls inline, no dialog)."""
@@ -1167,6 +1279,16 @@ class OmniposeSegTab(QWidget):
             "Create overlay TIFF (masks over original). Saved in an 'overlays' subfolder so the main folder has only mask files for Analyze Masks. Disable to speed up when you only need masks.",
             self,
         ))
+        options_row.addSpacing(37)
+        self.detect_foci = QCheckBox("Detect foci (*_foci.tif → CSV)")
+        self.detect_foci.setChecked(False)
+        options_row.addWidget(self.detect_foci)
+        options_row.addWidget(create_info_icon(
+            "When enabled, BactiMate looks for `*_foci.tif` next to the input file/folder and runs spot detection.\n\n"
+            "Outputs a raw foci CSV in the segmentation output folder (one per foci channel).\n"
+            "Columns: y, x, intensity, probability (and frame when stacks have multiple frames).",
+            self,
+        ))
         options_row.addStretch()
         main_layout.addLayout(options_row)
 
@@ -1220,7 +1342,10 @@ class OmniposeSegTab(QWidget):
         self.model_combo.currentTextChanged.connect(check_model_availability)
         check_model_availability()
 
-        self.preview_btn = QPushButton("Preview Omnipose Segmentation")
+        # Preview + Process on one row (side-by-side)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        self.preview_btn = QPushButton("Preview Segmentation")
         self.preview_btn.setEnabled(False)
         def safe_preview_segmentation():
             try:
@@ -1233,15 +1358,17 @@ class OmniposeSegTab(QWidget):
                 except Exception:
                     pass
         self.preview_btn.clicked.connect(safe_preview_segmentation)
-        main_layout.addWidget(self.preview_btn)
+        btn_row.addWidget(self.preview_btn, 1)
 
-        self.process_btn = QPushButton("Process File or Folder")
+        self.process_btn = QPushButton("Process File/Folder")
         self.process_btn.setEnabled(False)
-        self.process_btn.clicked.connect(self.process_file_or_folder)
-        main_layout.addWidget(self.process_btn)
+        self._segmentation_in_progress = False
+        self.process_btn.clicked.connect(self._on_process_or_cancel_clicked)
+        btn_row.addWidget(self.process_btn, 1)
+        main_layout.addLayout(btn_row)
 
+        # Legacy separate cancel button removed from the UI. The Process button becomes Cancel while running.
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setToolTip("Stop the current segmentation job.")
         self.cancel_btn.setVisible(False)
         self.cancel_btn.setEnabled(False)
         self._user_cancelled_processing = False
@@ -1251,10 +1378,236 @@ class OmniposeSegTab(QWidget):
                 self.worker.terminate_process()
                 self.parent_window.log_output("Cancelled by user.\n")
         self.cancel_btn.clicked.connect(on_cancel_processing)
-        main_layout.addWidget(self.cancel_btn)
+        # Do not add cancel_btn to layout.
 
         seg_group.setLayout(main_layout)
         return seg_group
+
+    def _on_process_or_cancel_clicked(self) -> None:
+        if bool(getattr(self, "_segmentation_in_progress", False)):
+            # Cancel current worker.
+            try:
+                if hasattr(self, "worker") and self.worker is not None and self.worker.isRunning():
+                    self._user_cancelled_processing = True
+                    self.worker.terminate_process()
+            except Exception:
+                pass
+            try:
+                self.process_btn.setEnabled(False)
+                self.process_btn.setText("Cancelling…")
+            except Exception:
+                pass
+            return
+        self.process_file_or_folder()
+
+    def _find_foci_sources_for_input(self, input_image_path: Path) -> list[Path]:
+        """Best-effort discovery of ``*_foci*.tif`` usable for ``input_image_path``.
+
+        Supports two sibling naming conventions that ship with BactiMate:
+
+        1. **Legacy / stem-anchored.** A foci TIFF sits directly next to the
+           input with a name like ``{stem}_foci.tif``, ``{stem}_foci_*.tif``,
+           or ``{stem}*_foci.tif``. Handled by the full-stem glob pass.
+
+        2. **File-conversion output**
+           (:mod:`bactimate.scripts.convert_nd2_to_tif`). The ND2 converter
+           emits each channel as
+           ``{nd2_stem}[_f<N>][_fi][_foci]_{channel_name}.tif`` — the ``_fi``
+           / ``_foci`` tags are inserted *before* the channel-name suffix, on
+           the ND2 stem. So for ``sample.nd2`` with channels
+           ``Phase`` / ``GFP`` (foci) / ``mScarlet`` (fi+foci) you get::
+
+               sample_Phase.tif           # segmentation input
+               sample_foci_GFP.tif        # foci sibling
+               sample_fi_foci_mScarlet.tif
+
+           The segmentation input's stem ``sample_Phase`` does *not* prefix
+           the foci file, so the legacy glob alone (``sample_Phase_foci*.tif``)
+           misses ``sample_foci_GFP.tif``. The input and foci sibling share
+           the longest common ``_``-delimited prefix — the ND2 stem
+           ``sample`` (plus any ``_f<N>`` single-frame suffix). We therefore
+           retry the same globs at progressively shorter underscore-trimmed
+           prefixes so ``sample_Phase.tif`` finds ``sample_foci_GFP.tif`` and
+           ``sample_fi_foci_mScarlet.tif``.
+
+        The returned list is de-duplicated by resolved path and sorted
+        case-insensitively by filename. Files without ``_foci`` in the final
+        name are filtered out defensively so the prefix-retry cannot bleed
+        non-foci siblings (e.g. ``sample_fi_mScarlet.tif``) into the result.
+        """
+        p = Path(input_image_path)
+        folder = p.parent
+        stem = p.stem
+        candidates: list[Path] = []
+
+        def _glob_at(prefix: str) -> None:
+            # Patterns cover: {prefix}_foci.tif, {prefix}_foci_<name>.tif,
+            # {prefix}_fi_foci_<name>.tif (both flags set in file_conversion.py),
+            # and the legacy {prefix}*_foci.tif shape where ``_foci`` is a suffix
+            # instead of a leading tag.
+            for pat in (
+                f"{prefix}_foci.tif",
+                f"{prefix}_foci.tiff",
+                f"{prefix}_foci_*.tif",
+                f"{prefix}_foci_*.tiff",
+                f"{prefix}_fi_foci_*.tif",
+                f"{prefix}_fi_foci_*.tiff",
+                f"{prefix}*_foci.tif",
+                f"{prefix}*_foci.tiff",
+            ):
+                candidates.extend(folder.glob(pat))
+
+        # Pass 1: full input stem (matches the legacy "_foci sits right next
+        # to the input with the same stem" convention).
+        _glob_at(stem)
+
+        # Pass 2: retry with progressively shorter underscore-trimmed prefixes
+        # so {nd2_stem}_{channel_name}.tif can locate its {nd2_stem}_foci_*.tif
+        # sibling. We stop the loop at i==1 (we always keep at least one token)
+        # to avoid matching every ``*_foci*.tif`` in the folder.
+        parts = stem.split("_")
+        for i in range(len(parts) - 1, 0, -1):
+            prefix = "_".join(parts[:i])
+            if not prefix:
+                continue
+            _glob_at(prefix)
+
+        # De-dup by resolved path, filter to actual `_foci` names, stable order.
+        uniq: list[Path] = []
+        seen: set[str] = set()
+        for c in sorted(candidates, key=lambda x: x.name.lower()):
+            if "_foci" not in c.name.lower():
+                continue
+            try:
+                rp = str(c.resolve())
+            except Exception:
+                rp = str(c)
+            if rp in seen:
+                continue
+            seen.add(rp)
+            uniq.append(c)
+        return uniq
+
+    @staticmethod
+    def _is_segmentation_input_file(path: Path) -> bool:
+        """Return True when a TIFF should be treated as segmentation input."""
+        name = path.name.lower()
+        # Exclude known derived outputs and foci-channel files from segmentation input lists.
+        return (
+            "_masks" not in name
+            and "_overlay" not in name
+            and "_filter_visualization" not in name
+            and "_foci" not in name
+        )
+
+    def _find_sibling_channel_tiffs(self, input_image_path: Path) -> list[Path]:
+        """Return sibling TIFFs in the input's folder usable as preview backgrounds.
+
+        The Segmentation preview's ``Image:`` dropdown historically listed only
+        channels of the loaded input stack plus discovered ``*_foci.tif`` paths.
+        Users commonly keep separate per-channel TIFFs next to the segmentation
+        input (e.g. ``sample_phase.tif`` + ``sample_gfp.tif``) and expected those
+        to show up as selectable backgrounds too. This helper enumerates every
+        ``.tif`` / ``.tiff`` in ``input_image_path.parent`` and returns the ones
+        that are not:
+
+        * the input file itself,
+        * a foci file (those are listed separately via
+          :meth:`_find_foci_sources_for_input`), or
+        * a derived output (``_masks``/``_overlay``/``_filter_visualization``)
+          per :meth:`_is_segmentation_input_file`.
+
+        The returned list is loaded lazily on selection so opening the preview
+        stays cheap even for folders with many TIFFs.
+        """
+        p = Path(input_image_path)
+        folder = p.parent
+        try:
+            input_resolved = str(p.resolve())
+        except Exception:
+            input_resolved = str(p)
+        try:
+            foci_resolved = {str(fp.resolve()) for fp in self._find_foci_sources_for_input(p)}
+        except Exception:
+            foci_resolved = set()
+        seen: set[str] = set()
+        siblings: list[Path] = []
+        for pat in ("*.tif", "*.tiff", "*.TIF", "*.TIFF"):
+            for fp in folder.glob(pat):
+                try:
+                    rp = str(fp.resolve())
+                except Exception:
+                    rp = str(fp)
+                if rp == input_resolved or rp in foci_resolved or rp in seen:
+                    continue
+                if not self._is_segmentation_input_file(fp):
+                    continue
+                seen.add(rp)
+                siblings.append(fp)
+        siblings.sort(key=lambda x: x.name.lower())
+        return siblings
+
+    def _write_raw_foci_csv(
+        self,
+        *,
+        output_csv: Path,
+        rows: list[dict],
+        include_frame: bool,
+    ) -> None:
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+        fieldnames = ["y", "x", "intensity", "probability"]
+        if include_frame:
+            fieldnames = ["frame"] + fieldnames
+        with open(output_csv, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for r in rows:
+                out = {
+                    "y": int(r.get("y", 0)),
+                    "x": int(r.get("x", 0)),
+                    "intensity": float(r.get("intensity", 0.0) or 0.0),
+                    "probability": ("" if r.get("probability") is None else float(r.get("probability"))),
+                }
+                if include_frame:
+                    out["frame"] = int(r.get("frame", 0))
+                w.writerow(out)
+
+    def _detect_foci_for_stack_and_write_csv(
+        self,
+        *,
+        foci_stack: np.ndarray,
+        output_csv: Path,
+        prob_thresh: Optional[float] = None,
+        spotiflow_params: dict[str, Any] | None = None,
+    ) -> None:
+        """Run Spotiflow detection per frame and write raw CSV."""
+        try:
+            from bactimate.modules.image_stack_utils import coerce_stack_to_tyx, coerce_plane_to_2d
+            from bactimate.modules.foci_utils import detect_peaks_spotiflow
+        except Exception:
+            return
+        arr = coerce_stack_to_tyx(np.asarray(foci_stack))
+        if arr is None or arr.size == 0:
+            return
+        include_frame = bool(arr.shape[0] > 1)
+        rows: list[dict] = []
+        params = self._get_spotiflow_detection_params()
+        if isinstance(spotiflow_params, dict):
+            params.update(spotiflow_params)
+        if prob_thresh is not None:
+            params["use_optimized_threshold"] = False
+            params["prob_thresh"] = float(prob_thresh)
+        for fi, frame in enumerate(arr):
+            plane = np.asarray(coerce_plane_to_2d(np.asarray(frame)), dtype=np.float64)
+            peaks = detect_peaks_spotiflow(
+                plane,
+                **params,
+            ) or []
+            for p in peaks:
+                q = dict(p)
+                q["frame"] = fi
+                rows.append(q)
+        self._write_raw_foci_csv(output_csv=output_csv, rows=rows, include_frame=include_frame)
 
     def _update_button_states(self):
         """Update button enabled states: path must exist and be a file or directory."""
@@ -1455,6 +1808,46 @@ class OmniposeSegTab(QWidget):
         """Public: return folder name for Re-run / main window (e.g. _segmentation_bact_phase_omni)."""
         return self._get_omnipose_segmentation_folder_name()
 
+    def _get_spotiflow_detection_params(self) -> dict[str, Any]:
+        """Return Spotiflow parameters used by batch foci detection."""
+        return dict(SPOTIFLOW_DETECTION_DEFAULTS)
+
+    def _get_segmentation_run_params(self, *, selected_files: list[Path] | None = None) -> dict[str, Any]:
+        """Return the effective segmentation/foci parameters for the run about to start."""
+        display_model = self.model_combo.currentText()
+        model_type, pretrained_path = self._resolve_model_selection(display_model)
+        model_arg = ensure_omni_in_model_path(pretrained_path) if pretrained_path is not None else (model_type or display_model)
+        run_diameter, run_flow = self._get_run_diameter_and_flow()
+        params: dict[str, Any] = {
+            "input_path": (self.file_path.text() or "").strip(),
+            "selected_file_count": len(selected_files or []),
+            "selected_files": [Path(p).name for p in (selected_files or [])],
+            "model": display_model,
+            "model_arg": str(model_arg),
+            "diameter_ui": float(self.diameter.value()),
+            "diameter_effective": float(run_diameter),
+            "flow_threshold_ui": float(self.flow_threshold.value()),
+            "flow_threshold_effective": float(run_flow),
+            "mask_threshold": float(self._get_effective_mask_threshold()),
+            "batch_size": 32,
+            "use_gpu": bool(self.use_gpu.isChecked()),
+            "cluster": bool(self.cluster.isChecked()),
+            "create_overlay": bool(self.create_overlay.isChecked()),
+            "detect_foci": bool(getattr(self, "detect_foci", None) and self.detect_foci.isChecked()),
+            "spotiflow": self._get_spotiflow_detection_params(),
+        }
+        return params
+
+    def _log_segmentation_run_params(self, *, selected_files: list[Path] | None = None) -> None:
+        params = self._get_segmentation_run_params(selected_files=selected_files)
+        lines = ["Segmentation run parameters:"]
+        for key, value in params.items():
+            lines.append(f"  {key}: {value}")
+        if hasattr(self.parent_window, "log_output"):
+            self.parent_window.log_output("\n".join(lines) + "\n")
+        if getattr(self.parent_window, "_save_session_log", None):
+            self.parent_window._save_session_log()
+
     def reset_segmentation_defaults(self):
         """Reset all segmentation parameters to their default values (model + diameter/flow/mask for that model)."""
         # Set default model, fallback to first available if bact_phase_omni not available
@@ -1476,6 +1869,7 @@ class OmniposeSegTab(QWidget):
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
+        self.detect_foci.setChecked(False)
         try:
             self._sync_mask_threshold_spinbox_for_model()
         except Exception:
@@ -1491,7 +1885,11 @@ class OmniposeSegTab(QWidget):
             ("use_gpu", self.use_gpu),
             ("cluster", self.cluster),
             ("create_overlay", self.create_overlay),
+            ("detect_foci", self.detect_foci),
         ])
+        spotiflow_params = self._get_spotiflow_detection_params()
+        for key, value in spotiflow_params.items():
+            out[f"spotiflow_{key}"] = value
         out["trained_models_this_session"] = list(self._trained_models_this_session)
         path_txt = (self.file_path.text() or "").strip()
         if path_txt:
@@ -1528,6 +1926,7 @@ class OmniposeSegTab(QWidget):
             ("use_gpu", self.use_gpu),
             ("cluster", self.cluster),
             ("create_overlay", self.create_overlay),
+            ("detect_foci", self.detect_foci),
         ])
         if hasattr(self, "omnipose_train_dir_edit"):
             apply_to_widgets(data, [
@@ -1575,9 +1974,11 @@ class OmniposeSegTab(QWidget):
             tiff_files_set = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | \
                             set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
             
-            # Filter out mask files (we want original files for segmentation preview)
-            tiff_files = sorted([f for f in tiff_files_set if '_masks' not in f.name.lower()], 
-                               key=lambda x: x.name.lower())
+            # Filter out derived outputs and foci-channel files (preview should target segmentation inputs).
+            tiff_files = sorted(
+                [f for f in tiff_files_set if self._is_segmentation_input_file(f)],
+                key=lambda x: x.name.lower(),
+            )
             
             if not tiff_files:
                 QMessageBox.warning(self, "No TIFF Files Found", 
@@ -1772,219 +2173,318 @@ class OmniposeSegTab(QWidget):
             
             # Non-modal so user can access main window; parent=main window so preview closes when app quits (e.g. Cmd+Q).
             main_win = self.window() if hasattr(self, "window") and callable(self.window) else None
+            from bactimate.gui.preview.preview_window import PreviewDialogBase, WorkerGuard
 
-            class PreviewDialog(QDialog):
-                """Preview dialog that disconnects and stops segmentation worker on close so QThread is not destroyed while running."""
-                def closeEvent(self, event):
-                    self._dialog_closed = True
-                    w = getattr(self, "_seg_worker", None)
-                    s = getattr(self, "_seg_worker_slot", None)
-                    if w is not None:
-                        if w.isRunning():
-                            w.requestInterruption()
-                            w.quit()
-                            if not w.wait(60000):  # wait up to 60s; do NOT clear worker or close if still running
-                                event.ignore()
-                                QMessageBox.warning(
-                                    self,
-                                    "Segmentation in progress",
-                                    "Please wait for the current segmentation to finish before closing the preview.",
-                                    QMessageBox.StandardButton.Ok,
-                                )
-                                return
-                        if s is not None:
-                            try:
-                                w.finished.disconnect(s)
-                            except Exception:
-                                pass
-                        self._seg_worker = None
-                    self._seg_worker_slot = None
-                    super().closeEvent(event)
-
-            preview_dialog = PreviewDialog(main_win)
-            preview_dialog.setWindowTitle("Segmentation Preview")
-            preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)
-            
-            layout = QVBoxLayout()
-
-            # Title label (frame / cells / filename)
-            title_label = QLabel("")
-            title_label.setStyleSheet("font-weight: bold; color: #ddd;")
-            layout.addWidget(title_label)
-
-            # Qt-native image canvas (zoom: wheel; pan: left-drag or middle-drag)
-            image_canvas = ImageCanvas()
-            image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
-            image_canvas.setMinimumSize(400, 300)
-            image_canvas.setStyleSheet("background-color: #1e1e1e;")
-            image_canvas.setSizePolicy(
-                QSizePolicy.Policy.Expanding,
-                QSizePolicy.Policy.Expanding,
+            preview_dialog = PreviewDialogBase(
+                main_win,
+                title="Segmentation Preview",
+                primary_action_label="Re-detect",
+                primary_action_callback=None,  # connected later once run_segmentation is defined
+                render_callback=None,
+                worker_guard=None,  # set below after worker functions are defined
+                minimum_size=(900, 700),
             )
-            layout.addWidget(image_canvas, 1)
+            layout = preview_dialog.layout()
+            title_label = preview_dialog.title_label
 
-            # Interactive LUT histogram (same as Convert TIFF: drag min/max lines to adjust display)
-            lut_data = {'frame_idx': None, 'vmin': None, 'vmax': None, 'frame_min': None, 'frame_max': None}
-            hist_vmin_line = None
-            hist_vmax_line = None
-            dragging_line = None
+            # Optional foci sources (preview-only): loaded but controls live in nav row next to Frame.
+            #
+            # Discovery is intentionally decoupled from the ``Detect foci`` checkbox:
+            # we *always* look for ``*_foci.tif`` next to the input so the user can pick
+            # them as preview backgrounds in the ``Image:`` dropdown, even when peak
+            # detection is off. Running Spotiflow (the expensive step) stays gated on
+            # the checkbox inside ``_compute_foci_peaks_for_current``. This prevents the
+            # reporter's "foci doesn't appear to run" confusion where the dropdown was
+            # empty simply because the checkbox was unchecked at preview-open time.
+            preview_dialog._foci_sources = []
+            preview_dialog._foci_source_paths = []
+            preview_dialog._foci_peaks_cache = {}  # (source_idx, frame_idx) -> peaks list
+            preview_dialog._foci_peaks_for_current = []
+            preview_dialog._sibling_paths = []
+            preview_dialog._sibling_cache = {}  # idx -> coerced TYX stack
+            preview_dialog._foci_preview_hint = ""
             try:
-                from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-                from matplotlib.figure import Figure
-                _has_histogram = True
-            except ImportError:
-                _has_histogram = False
-            if _has_histogram:
-                hist_group = QGroupBox("LUT (click/drag lines to adjust min/max)")
-                hist_group.setStyleSheet("QGroupBox { font-weight: 600; }")
-                hist_layout = QVBoxLayout()
-                # Match TIFF conversion preview: same figure size and canvas height so histogram fills the section
-                hist_fig = Figure(figsize=(10, 3.0))
-                hist_canvas = FigureCanvas(hist_fig)
-                hist_canvas.setMinimumHeight(180)
-                hist_canvas.setMaximumHeight(180)
-                hist_ax = hist_fig.add_subplot(111)
-                hist_fig.patch.set_facecolor('#2b2b2b')
-                hist_ax.set_facecolor('#2b2b2b')
-                hist_ax.tick_params(colors='white', labelsize=9)
-                for spine in hist_ax.spines.values():
-                    spine.set_color('white')
-                hist_ax.xaxis.label.set_color('white')
-                hist_ax.yaxis.label.set_color('white')
-                hist_fig.subplots_adjust(left=0.12, right=0.95, top=0.90, bottom=0.15)
-                hist_canvas.setStyleSheet("background-color: #2b2b2b;")
-                hist_layout.addWidget(hist_canvas)
-                hist_group.setLayout(hist_layout)
-                hist_group.setMaximumHeight(280)
-                layout.addWidget(hist_group)
+                foci_sources = self._find_foci_sources_for_input(Path(file_path))
+                if foci_sources:
+                    from bactimate.modules.image_stack_utils import coerce_stack_to_tyx
+                    loaded = []
+                    loaded_paths = []
+                    for fp in foci_sources:
+                        try:
+                            arr = coerce_stack_to_tyx(np.asarray(safe_imread(str(fp))))
+                            if arr is None or arr.size == 0:
+                                continue
+                            loaded.append(arr)
+                            loaded_paths.append(fp)
+                        except Exception:
+                            continue
+                    preview_dialog._foci_sources = loaded
+                    preview_dialog._foci_source_paths = loaded_paths
+                # Record why foci peaks may not be computed so the UI can surface it.
+                detect_cb = getattr(self, "detect_foci", None)
+                if not preview_dialog._foci_source_paths:
+                    # Mention both conventions so users converting ND2s with the
+                    # "Foci" channel checkbox know what filename to look for.
+                    preview_dialog._foci_preview_hint = (
+                        f"No *_foci*.tif matching '{Path(file_path).stem}' (or its ND2 stem) "
+                        f"found next to the input. Expected: {Path(file_path).stem}_foci*.tif "
+                        f"or <nd2_stem>_foci_<channel>.tif."
+                    )
+                elif detect_cb is None or not detect_cb.isChecked():
+                    preview_dialog._foci_preview_hint = (
+                        "Detect foci is off — peaks are not computed "
+                        "(foci stacks are still listed as backgrounds)."
+                    )
+            except Exception:
+                preview_dialog._foci_sources = []
+                preview_dialog._foci_source_paths = []
+            # Sibling TIFFs (separate files in the same folder) for the Image: dropdown.
+            try:
+                preview_dialog._sibling_paths = self._find_sibling_channel_tiffs(Path(file_path))
+            except Exception:
+                preview_dialog._sibling_paths = []
 
-                def refresh_image_display():
-                    """Redraw overlay using current display_frame, mask, and LUT (vmin/vmax)."""
-                    display_frame = getattr(preview_dialog, 'current_display_frame', None)
-                    mask = getattr(preview_dialog, 'masks', None)
-                    if display_frame is None or mask is None:
-                        return
-                    vmin = lut_data.get('vmin')
-                    vmax = lut_data.get('vmax')
-                    if vmin is None or vmax is None or vmax <= vmin:
-                        vmin = lut_data.get('frame_min', 0)
-                        vmax = lut_data.get('frame_max', 255)
-                        if vmax <= vmin:
-                            vmax = vmin + 1.0
-                        lut_data['vmin'] = vmin
-                        lut_data['vmax'] = vmax
-                    vmin, vmax = float(vmin), float(vmax)
-                    vrange = max(vmax - vmin, 1e-6)
-                    display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
-                    disp_scaled, mask_scaled = scale_for_preview(display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE)
+            # Shared image canvas + histogram LUT (provided by PreviewDialogBase)
+            image_canvas = preview_dialog.canvas
+            lut_widget = preview_dialog.lut_widget
+
+            def refresh_image_display() -> None:
+                """Redraw overlay using current display_frame, mask, and shared histogram LUT."""
+                display_frame = getattr(preview_dialog, "current_display_frame", None)
+                mask = getattr(preview_dialog, "masks", None)
+                if display_frame is None or mask is None:
+                    return
+                vmin, vmax = lut_widget.current_lut()
+                if vmin is None or vmax is None or vmax <= vmin:
+                    try:
+                        fmin = float(np.nanmin(display_frame))
+                        fmax = float(np.nanmax(display_frame))
+                    except Exception:
+                        fmin, fmax = 0.0, 255.0
+                    vmin = fmin
+                    vmax = fmax if fmax > fmin else fmin + 1.0
+                vmin, vmax = float(vmin), float(vmax)
+                vrange = max(vmax - vmin, 1e-6)
+                display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
+                disp_scaled, mask_scaled = scale_for_preview(display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE)
+                if bool(preview_dialog.state().extra.get("show_cells", True)):
                     overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
-                    pixmap = to_qpixmap(overlay)
-                    h, w = overlay.shape[:2]
-                    image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
-
-                def update_histogram(frame_2d, vmin, vmax):
-                    """Draw histogram with min/max lines (and optional drag)."""
-                    nonlocal hist_vmin_line, hist_vmax_line
-                    hist_ax.clear()
-                    if frame_2d is None or not isinstance(frame_2d, np.ndarray) or frame_2d.size == 0:
-                        hist_ax.set_xlabel("Intensity", color="white", fontsize=9)
-                        hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
-                        hist_canvas.draw()
-                        return
-                    flat = np.asarray(frame_2d).flatten().astype(np.float64)
-                    flat = flat[np.isfinite(flat)]
-                    if flat.size == 0:
-                        hist_canvas.draw()
-                        return
-                    fmin, fmax = float(flat.min()), float(flat.max())
-                    lut_data['frame_min'] = fmin
-                    lut_data['frame_max'] = fmax
-                    # Exclude zeros for histogram so the signal peak is prominent (like TIFF conversion preview)
-                    flat_hist = flat[flat > 0]
-                    if flat_hist.size == 0:
-                        flat_hist = flat
-                    if vmin is None:
-                        vmin = fmin
-                    if vmax is None or vmax <= vmin:
-                        vmax = fmax if fmax > fmin else fmin + 1.0
-                    lut_data['vmin'] = vmin
-                    lut_data['vmax'] = vmax
-                    bins = min(256, max(2, int(fmax - fmin + 1)))
-                    hist, bin_edges = np.histogram(flat_hist, bins=bins, range=(fmin, fmax))
-                    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                    hist_ax.bar(bin_centers, np.log1p(hist), width=bin_edges[1] - bin_edges[0],
-                                color='#4A90E2', alpha=0.8, edgecolor='none')
-                    hist_vmin_line = hist_ax.axvline(vmin, color='#FF6B6B', linewidth=2, linestyle='--', label=f'Min: {vmin:.1f}')
-                    hist_vmax_line = hist_ax.axvline(vmax, color='#4ECDC4', linewidth=2, linestyle='--', label=f'Max: {vmax:.1f}')
-                    hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
-                    hist_ax.set_xlabel("Intensity", color="white", fontsize=9)
-                    hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
-                    hist_ax.set_title("Click/drag lines to adjust min/max", color="white", fontsize=9, pad=10)
-                    hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
-                    hist_ax.grid(True, alpha=0.25, color="white", linestyle="-", linewidth=0.5)
-                    hist_ax.margins(x=0.02, y=0.08)
-                    hist_fig.tight_layout(pad=2.0)
-                    hist_canvas.draw()
-
-                def on_histogram_press(event):
-                    if event.inaxes != hist_ax or event.xdata is None:
-                        return
-                    nonlocal dragging_line
-                    x = event.xdata
-                    vmin, vmax = lut_data.get('vmin'), lut_data.get('vmax')
-                    fmin, fmax = lut_data.get('frame_min', 0), lut_data.get('frame_max', 65535)
-                    if vmin is None or vmax is None:
-                        return
-                    threshold = max((fmax - fmin) * 0.05, 1.0)
-                    if abs(x - vmin) < threshold and abs(x - vmin) <= abs(x - vmax):
-                        dragging_line = 'min'
-                    elif abs(x - vmax) < threshold:
-                        dragging_line = 'max'
-                    else:
-                        dragging_line = 'min' if x < (vmin + vmax) / 2 else 'max'
-
-                def on_histogram_motion(event):
-                    if event.inaxes != hist_ax or event.xdata is None or dragging_line is None:
-                        return
-                    x = event.xdata
-                    fmin = lut_data.get('frame_min', 0)
-                    fmax = lut_data.get('frame_max', 65535)
-                    vmin, vmax = lut_data.get('vmin'), lut_data.get('vmax')
-                    if dragging_line == 'min':
-                        new_min = max(fmin, min(x, (vmax or fmax) - 1e-6))
-                        lut_data['vmin'] = new_min
-                    else:
-                        new_max = min(fmax, max(x, (vmin or fmin) + 1e-6))
-                        lut_data['vmax'] = new_max
-                    refresh_image_display()
-                    vmin, vmax = lut_data['vmin'], lut_data['vmax']
-                    if hist_vmin_line is not None:
-                        hist_vmin_line.set_xdata([vmin, vmin])
-                    if hist_vmax_line is not None:
-                        hist_vmax_line.set_xdata([vmax, vmax])
-                    for patch in list(hist_ax.patches):
-                        if getattr(patch, 'get_alpha', lambda: None)() == 0.15:
-                            patch.remove()
-                    hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
-                    if hist_vmin_line is not None and hist_vmax_line is not None:
-                        hist_vmin_line.set_label(f'Min: {vmin:.1f}')
-                        hist_vmax_line.set_label(f'Max: {vmax:.1f}')
-                        hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=8, framealpha=0.9, bbox_to_anchor=(0.98, 0.98))
-                    hist_canvas.draw()
-
-                def on_histogram_release(event):
-                    nonlocal dragging_line
-                    dragging_line = None
-
-                hist_canvas.mpl_connect('button_press_event', on_histogram_press)
-                hist_canvas.mpl_connect('motion_notify_event', on_histogram_motion)
-                hist_canvas.mpl_connect('button_release_event', on_histogram_release)
-            else:
-                def update_histogram(frame_2d, vmin=None, vmax=None):
+                else:
+                    overlay = np.stack([disp_scaled, disp_scaled, disp_scaled], axis=-1).astype(np.uint8)
+                # Optional foci overlay (preview-only): draw circle markers in orange.
+                try:
+                    peaks = getattr(preview_dialog, "_foci_peaks_for_current", None) or []
+                    if peaks and bool(preview_dialog.state().extra.get("show_foci", bool(getattr(preview_dialog, "_foci_source_paths", [])))):
+                        h0, w0 = display_uint8.shape[:2]
+                        hs, ws = overlay.shape[0], overlay.shape[1]
+                        sx = (ws / w0) if w0 else 1.0
+                        sy = (hs / h0) if h0 else 1.0
+                        for p in peaks:
+                            yy = int(round(float(p.get("y", 0)) * sy))
+                            xx = int(round(float(p.get("x", 0)) * sx))
+                            if 0 <= yy < hs and 0 <= xx < ws:
+                                r = 4
+                                for dy in range(-r, r + 1):
+                                    for dx in range(-r, r + 1):
+                                        d2 = dx * dx + dy * dy
+                                        if d2 < (r - 1) * (r - 1) or d2 > r * r:
+                                            continue  # ring
+                                        y2 = yy + dy
+                                        x2 = xx + dx
+                                        if 0 <= y2 < hs and 0 <= x2 < ws:
+                                            overlay[y2, x2, 0] = 255
+                                            overlay[y2, x2, 1] = 165
+                                            overlay[y2, x2, 2] = 0
+                except Exception:
                     pass
-                def refresh_image_display():
-                    pass
+                pixmap = to_qpixmap(overlay)
+                h, w = overlay.shape[:2]
+                image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
+
+            try:
+                lut_widget.lut_changed.connect(lambda *_: refresh_image_display())
+            except Exception:
+                pass
+
+            def _compute_foci_peaks_for_current(
+                frame_idx: int,
+                *,
+                allow_detect: bool = True,
+                force_recalc: bool = False,
+            ) -> None:
+                """Compute/cached foci peaks for the selected foci source + frame (preview only).
+
+                Communicates the outcome through ``status_label`` so the user can
+                distinguish the three "no markers drawn" cases that previously
+                looked identical:
+
+                1. No matching ``*_foci.tif`` next to the input.
+                2. ``Detect foci`` is unchecked (Spotiflow intentionally skipped).
+                3. Spotiflow not installed / raised during inference
+                   (``detect_peaks_spotiflow`` returns ``None`` with
+                   ``raise_on_error=False``).
+
+                Case 4 — detection ran and found zero peaks — is also reported
+                so the user knows the pipeline executed.
+
+                When ``allow_detect=False`` and the cached peaks for the current
+                parameter key are missing, the previously displayed markers are
+                preserved so a parameter tweak does not visually wipe the
+                overlay; the status line indicates the cache is stale and the
+                user must click ``Re-detect`` to refresh.
+                """
+                combo = getattr(preview_dialog, "_foci_source_combo", None)
+                sources = getattr(preview_dialog, "_foci_sources", None) or []
+
+                def _set_status(text: str) -> None:
+                    try:
+                        status_label.setText(text)
+                    except Exception:
+                        pass
+
+                def _clear_peaks() -> None:
+                    preview_dialog._foci_peaks_for_current = []
+
+                if not sources:
+                    _clear_peaks()
+                    hint = getattr(preview_dialog, "_foci_preview_hint", "") or ""
+                    if hint:
+                        _set_status(hint)
+                    return
+                # Gate Spotiflow execution on the Detect foci checkbox. Peaks are
+                # expensive on large stacks; discovery + listing is always on so
+                # the dropdowns stay populated either way.
+                detect_cb = getattr(self, "detect_foci", None)
+                if detect_cb is None or not detect_cb.isChecked():
+                    _clear_peaks()
+                    _set_status(
+                        "Foci: Detect foci is off — peaks not computed. "
+                        "Enable it in the Segmentation tab to preview peaks."
+                    )
+                    return
+                if combo is None:
+                    _clear_peaks()
+                    return
+                src_idx = int(combo.currentIndex())
+                if src_idx < 0 or src_idx >= len(sources):
+                    _clear_peaks()
+                    return
+                # Cache key includes Spotiflow parameters so toggling them recomputes.
+                try:
+                    _sf_opt = bool(getattr(preview_dialog, "_sf_use_optimized", None) and preview_dialog._sf_use_optimized.isChecked())
+                except Exception:
+                    _sf_opt = True
+                try:
+                    _sf_prob = float(getattr(preview_dialog, "_sf_prob_thresh", None).value()) if getattr(preview_dialog, "_sf_prob_thresh", None) is not None else 0.5
+                except Exception:
+                    _sf_prob = 0.5
+                try:
+                    _sf_min_dist = int(getattr(preview_dialog, "_sf_min_distance", None).value()) if getattr(preview_dialog, "_sf_min_distance", None) is not None else 1
+                except Exception:
+                    _sf_min_dist = 1
+                try:
+                    _sf_subpix = bool(getattr(preview_dialog, "_sf_subpix", None) and preview_dialog._sf_subpix.isChecked())
+                except Exception:
+                    _sf_subpix = True
+                try:
+                    _sf_norm = bool(getattr(preview_dialog, "_sf_normalize_cb", None) and preview_dialog._sf_normalize_cb.isChecked())
+                except Exception:
+                    _sf_norm = True
+                try:
+                    _sf_pl = float(getattr(preview_dialog, "_sf_perc_low", None).value()) if getattr(preview_dialog, "_sf_perc_low", None) is not None else 1.0
+                except Exception:
+                    _sf_pl = 1.0
+                try:
+                    _sf_ph = float(getattr(preview_dialog, "_sf_perc_high", None).value()) if getattr(preview_dialog, "_sf_perc_high", None) is not None else 99.8
+                except Exception:
+                    _sf_ph = 99.8
+
+                key = (src_idx, int(frame_idx), _sf_opt, _sf_prob, _sf_min_dist, _sf_subpix, _sf_norm, _sf_pl, _sf_ph)
+                cache = getattr(preview_dialog, "_foci_peaks_cache", None)
+                spotiflow_available = True
+                peaks: list
+                if isinstance(cache, dict) and key in cache and not force_recalc:
+                    peaks = list(cache.get(key) or [])
+                else:
+                    if not allow_detect:
+                        # Keep the previously displayed markers visible so a
+                        # parameter tweak doesn't wipe the overlay; the user
+                        # must click Re-detect to refresh.
+                        prev = list(getattr(preview_dialog, "_foci_peaks_for_current", None) or [])
+                        preview_dialog._foci_peaks_for_current = prev
+                        _set_status(
+                            f"Foci parameters changed (showing {len(prev)} previous peak(s)). "
+                            "Click Re-detect to update."
+                        )
+                        refresh_image_display()
+                        return
+                    try:
+                        from bactimate.modules.foci_utils import detect_peaks_spotiflow
+                        from bactimate.modules.image_stack_utils import coerce_plane_to_2d
+                    except Exception as e:
+                        get_logger().warning(
+                            "Spotiflow preview imports failed: %s", e, exc_info=True,
+                        )
+                        peaks = []
+                        spotiflow_available = False
+                    else:
+                        arr = sources[src_idx]
+                        fi = max(0, min(int(frame_idx), int(arr.shape[0]) - 1))
+                        plane = np.asarray(coerce_plane_to_2d(np.asarray(arr[fi])), dtype=np.float64)
+                        # Raw point detections only (no blob threshold / postfilters).
+                        try:
+                            prob_kw = None if _sf_opt else float(_sf_prob)
+                            result = detect_peaks_spotiflow(
+                                plane,
+                                model_name="general",
+                                use_optimized_threshold=bool(_sf_opt),
+                                prob_thresh=prob_kw,
+                                min_distance=int(_sf_min_dist),
+                                subpix=bool(_sf_subpix),
+                                normalize=bool(_sf_norm),
+                                perc_low=float(_sf_pl),
+                                perc_high=float(_sf_ph),
+                                raise_on_error=False,
+                            )
+                        except Exception as e:
+                            get_logger().warning(
+                                "Spotiflow preview detection raised: %s", e, exc_info=True,
+                            )
+                            result = None
+                        if result is None:
+                            # ``detect_peaks_spotiflow`` returns None for ImportError or
+                            # any inference exception (raise_on_error=False). Treat that
+                            # as "Spotiflow unavailable" rather than "0 peaks found".
+                            spotiflow_available = False
+                            peaks = []
+                        else:
+                            peaks = list(result)
+                    if isinstance(cache, dict) and spotiflow_available:
+                        # Only cache successful runs — don't poison the cache with
+                        # zero-peak results caused by a missing install.
+                        cache[key] = list(peaks)
+                # Optional preview probability filter
+                prob_spin = getattr(preview_dialog, "_foci_prob_spin", None)
+                if prob_spin is not None:
+                    try:
+                        thr = float(prob_spin.value() or 0.0)
+                    except Exception:
+                        thr = 0.0
+                    if thr > 0:
+                        peaks = [
+                            p for p in peaks
+                            if (p.get("probability") is None or float(p.get("probability") or 0.0) >= thr)
+                        ]
+                preview_dialog._foci_peaks_for_current = peaks
+                if not spotiflow_available:
+                    _set_status(
+                        "Foci: Spotiflow unavailable — install spotiflow or check logs. "
+                        "No peaks drawn."
+                    )
+                else:
+                    _set_status(f"Foci: {len(peaks)} peak(s) on current frame.")
+                # Markers changed: redraw with current LUT.
+                refresh_image_display()
 
             # Store data for navigation
             preview_dialog.images = images
@@ -2466,17 +2966,112 @@ class OmniposeSegTab(QWidget):
             preview_dialog._dialog_closed = False
             preview_dialog._seg_progress_dialog = None
             preview_dialog._seg_worker_slot = None
+            preview_dialog.set_extra("show_cells", True)
+            preview_dialog.set_extra("show_foci", bool(getattr(preview_dialog, "_foci_source_paths", [])))
+
+            def _seg_is_running() -> bool:
+                w = getattr(preview_dialog, "_seg_worker", None)
+                return bool(w is not None and w.isRunning())
+
+            def _seg_request_stop() -> None:
+                w = getattr(preview_dialog, "_seg_worker", None)
+                if w is None:
+                    return
+                try:
+                    if w.isRunning():
+                        w.requestInterruption()
+                        w.quit()
+                except Exception:
+                    pass
+
+            def _seg_wait(ms: int) -> bool:
+                w = getattr(preview_dialog, "_seg_worker", None)
+                if w is None:
+                    return True
+                try:
+                    return bool(w.wait(int(ms)))
+                except Exception:
+                    return True
+
+            def _seg_disconnect() -> None:
+                w = getattr(preview_dialog, "_seg_worker", None)
+                s = getattr(preview_dialog, "_seg_worker_slot", None)
+                if w is not None and s is not None:
+                    try:
+                        w.finished.disconnect(s)
+                    except Exception:
+                        pass
+                try:
+                    preview_dialog._seg_worker = None
+                except Exception:
+                    pass
+                try:
+                    preview_dialog._seg_worker_slot = None
+                except Exception:
+                    pass
+
+            try:
+                preview_dialog.set_worker_guard(WorkerGuard(
+                    is_running=_seg_is_running,
+                    request_stop=_seg_request_stop,
+                    wait=_seg_wait,
+                    disconnect=_seg_disconnect,
+                    on_close_while_running="block_with_warning",
+                    warning_title="Segmentation in progress",
+                    warning_text="Please wait for the current segmentation to finish before closing the preview.",
+                ))
+            except Exception:
+                pass
 
             # Round floats for display/cache to avoid binary representation noise (e.g. 0.3 -> 0.30000000000004)
             _PARAM_DECIMALS = 4  # cache key; display uses 2 decimals in format strings
+
+            def _normalize_source_key(source_key):
+                """Normalize a source selection tuple to (kind, idx)."""
+                if not isinstance(source_key, tuple) or len(source_key) < 2:
+                    return ("input", 0)
+                try:
+                    kind = str(source_key[0] or "input")
+                except Exception:
+                    kind = "input"
+                try:
+                    idx = int(source_key[1])
+                except Exception:
+                    idx = 0
+                return (kind, idx)
+
+            def _source_token(source_key) -> str:
+                kind, idx = _normalize_source_key(source_key)
+                return f"{kind}:{idx}"
+
+            def _source_label_from_token(token: str) -> str:
+                t = str(token or "input:0")
+                if t.startswith("input:"):
+                    return ""
+                if t.startswith("foci:"):
+                    return f" | src={t.replace('foci:', 'foci#')}"
+                if t.startswith("sibling:"):
+                    return f" | src={t.replace('sibling:', 'file#')}"
+                return f" | src={t}"
 
             def format_omnipose_params_from_key(key):
                 """Short param string from cache key for display/combo."""
                 if not key or len(key) < 7:
                     return "?"
-                _, diameter, flow_threshold, mask_threshold, cluster, model_str, _ = key
+                # Cache key shape has evolved; we only care about the first 7 fields and optional source token.
+                # Current: (frame_idx, diameter, flow_threshold, mask_threshold, cluster, model_str, use_gpu, source_token, ...)
+                try:
+                    frame_idx = key[0]
+                    diameter = key[1]
+                    flow_threshold = key[2]
+                    mask_threshold = key[3]
+                    cluster = key[4]
+                    model_str = key[5]
+                except Exception:
+                    return "?"
                 model_short = Path(model_str).stem if model_str and getattr(Path(model_str), "suffix", "") else (model_str or "?")
-                return f"d={diameter:.2f} flow={flow_threshold:.2f} mask={mask_threshold:.2f} cluster={'on' if cluster else 'off'} {model_short}"
+                source_suffix = _source_label_from_token(key[7] if len(key) > 7 else "input:0")
+                return f"d={diameter:.2f} flow={flow_threshold:.2f} mask={mask_threshold:.2f} cluster={'on' if cluster else 'off'} {model_short}{source_suffix}"
 
             def format_omnipose_params_from_params(params):
                 """Short param string from params dict for display."""
@@ -2491,7 +3086,7 @@ class OmniposeSegTab(QWidget):
                 model_short = Path(model_str).stem if model_str and getattr(Path(model_str), "suffix", "") else (model_str or "?")
                 return f"d={d:.2f} flow={f:.2f} mask={m:.2f} cluster={'on' if cluster else 'off'} {model_short}"
 
-            def get_cache_key(frame_idx, params):
+            def get_cache_key(frame_idx, params, source_key=("input", 0)):
                 """Generate cache key from frame index and parameters. Floats rounded to avoid 0.3 -> 0.30000000000004."""
                 diameter = params.get('diameter', 0)
                 if diameter is None or not isinstance(diameter, (int, float)):
@@ -2510,7 +3105,31 @@ class OmniposeSegTab(QWidget):
                 return (frame_idx, diameter, flow_threshold, mask_threshold,
                        bool(params.get("cluster", False)),
                        str(params.get("model_type") or params.get("pretrained_model") or "bact_phase_omni"),
-                       bool(params.get("use_gpu", True)))
+                       bool(params.get("use_gpu", True)),
+                       _source_token(source_key))
+
+            def _seg_disk_cache_path(cache_key):
+                """Return the on-disk preview-cache path for an exact segmentation key."""
+                import hashlib
+                import tempfile
+
+                cache_dir = Path(tempfile.gettempdir()) / "bactimate_preview_cache"
+                disk_key = hashlib.sha256(f"{file_path}|{cache_key}".encode()).hexdigest()[:24]
+                return cache_dir / f"{disk_key}.npy"
+
+            def _cached_mask_for_key(cache_key):
+                """Load an already-computed mask from memory/disk without running segmentation."""
+                try:
+                    if cache_key in preview_dialog.segmentation_cache:
+                        return preview_dialog.segmentation_cache[cache_key]
+                    disk_path = _seg_disk_cache_path(cache_key)
+                    if disk_path.exists():
+                        mask_disk = np.load(disk_path)
+                        preview_dialog.segmentation_cache[cache_key] = mask_disk
+                        return mask_disk
+                except Exception:
+                    pass
+                return None
             
             def _preview_to_three_channel(img):
                 """Convert image to 3-channel (H, W, 3) for Cellpose-SAM. Grayscale duplicated."""
@@ -2618,7 +3237,7 @@ class OmniposeSegTab(QWidget):
                         error_str = str(e)
                     self.finished.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
 
-            def run_segmentation(frame_idx, use_cache=True):
+            def run_segmentation(frame_idx, use_cache=True, *, source_key=("input", 0), frame_override=None, preserve_user_lut=True):
                 """Run segmentation on a specific frame with caching and background threading"""
                 # Get current parameters
                 params = get_current_parameters()
@@ -2640,28 +3259,17 @@ class OmniposeSegTab(QWidget):
                     params['mask_threshold'] = float(params['mask_threshold'])
                 
                 # Now generate cache key with clean parameters
-                cache_key = get_cache_key(frame_idx, params)
+                cache_key = get_cache_key(frame_idx, params, source_key=source_key)
                 
                 # Optional disk cache (session): same key as in-memory, stored under temp dir
-                import hashlib
-                import tempfile
-                _cache_dir = Path(tempfile.gettempdir()) / "bactimate_preview_cache"
-                _disk_key = hashlib.sha256(f"{file_path}|{cache_key}".encode()).hexdigest()[:24]
-                _disk_path = _cache_dir / f"{_disk_key}.npy"
+                _disk_path = _seg_disk_cache_path(cache_key)
                 
                 # Check cache first (safely - handle any old cache entries with None values)
                 if use_cache:
                     try:
-                        if cache_key in preview_dialog.segmentation_cache:
-                            return (preview_dialog.segmentation_cache[cache_key], None)
-                        # Check disk cache
-                        if _disk_path.exists():
-                            try:
-                                mask_disk = np.load(_disk_path)
-                                preview_dialog.segmentation_cache[cache_key] = mask_disk
-                                return (mask_disk, None)
-                            except Exception:
-                                pass
+                        mask_cached = _cached_mask_for_key(cache_key)
+                        if mask_cached is not None:
+                            return (mask_cached, None)
                     except (TypeError, ValueError) as e:
                         # Cache key comparison failed (likely old entries with None values)
                         # Clean cache and continue
@@ -2671,10 +3279,21 @@ class OmniposeSegTab(QWidget):
                 if not load_model():
                     return (None, "Model load failed")
                 
-                frame = images[frame_idx]
-                # Handle multi-channel: use first channel if needed
-                if frame.ndim == 3:
-                    frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                frame = frame_override
+                if frame is None:
+                    frame = images[frame_idx]
+                    # Handle multi-channel: use first channel if needed
+                    if frame.ndim == 3:
+                        frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                frame = np.asarray(frame)
+                if frame.ndim != 2:
+                    try:
+                        from bactimate.modules.image_stack_utils import coerce_plane_to_2d
+                        frame = np.asarray(coerce_plane_to_2d(frame))
+                    except Exception:
+                        frame = np.asarray(frame.squeeze())
+                if frame.ndim != 2:
+                    return (None, "Selected image source is not a 2D frame")
                 
                 # Ensure frame is float32 for MPS compatibility (Apple Silicon GPU doesn't support float64)
                 if frame.dtype != np.float32:
@@ -2710,12 +3329,22 @@ class OmniposeSegTab(QWidget):
                 if existing is not None and existing.isRunning():
                     preview_dialog._seg_request_id += 1
                     preview_dialog._seg_current_requested_frame = frame_idx
+                    if not hasattr(preview_dialog, "_seg_request_meta") or not isinstance(preview_dialog._seg_request_meta, dict):
+                        preview_dialog._seg_request_meta = {}
+                    preview_dialog._seg_request_meta[preview_dialog._seg_request_id] = {
+                        "preserve_user_lut": bool(preserve_user_lut),
+                    }
                     status_label.setText("Segmenting... (requested frame %s)" % (frame_idx + 1))
                     return (None, None)
                 import sys
                 is_frozen = getattr(sys, "frozen", False) or hasattr(sys, "__compiled__")
                 preview_dialog._seg_request_id += 1
                 preview_dialog._seg_current_requested_frame = frame_idx
+                if not hasattr(preview_dialog, "_seg_request_meta") or not isinstance(preview_dialog._seg_request_meta, dict):
+                    preview_dialog._seg_request_meta = {}
+                preview_dialog._seg_request_meta[preview_dialog._seg_request_id] = {
+                    "preserve_user_lut": bool(preserve_user_lut),
+                }
                 kind = "USER_MODEL" if params.get("pretrained_model") else "BUILTIN"
                 get_logger().info(
                     "Preview: starting background worker (%s) frame_shape=%s diameter=%s flow_thr=%s",
@@ -2740,22 +3369,23 @@ class OmniposeSegTab(QWidget):
                         if err:
                             status_label.setText("Segmentation failed: %s" % err[:80])
                             status_label.setStyleSheet("color: #FF0000; font-weight: bold;")
-                            resegment_btn.setEnabled(True)
+                            redetect_btn.setEnabled(True)
                             clear_cache_btn.setEnabled(True)
                             frame_spin.setEnabled(True)
                             return
                         preview_dialog.segmentation_cache[ck] = m
                         try:
-                            import hashlib
-                            import tempfile
-                            _cache_dir = Path(tempfile.gettempdir()) / "bactimate_preview_cache"
-                            _disk_key = hashlib.sha256(f"{file_path}|{ck}".encode()).hexdigest()[:24]
-                            _disk_path = _cache_dir / f"{_disk_key}.npy"
-                            _cache_dir.mkdir(parents=True, exist_ok=True)
+                            _disk_path = _seg_disk_cache_path(ck)
+                            _disk_path.parent.mkdir(parents=True, exist_ok=True)
                             np.save(_disk_path, m)
                         except Exception:
                             pass
-                        _apply_mask_to_ui(fid, m)
+                        meta = {}
+                        try:
+                            meta = (getattr(preview_dialog, "_seg_request_meta", {}) or {}).pop(rid, {}) or {}
+                        except Exception:
+                            meta = {}
+                        _apply_mask_to_ui(fid, m, preserve_user_lut=bool(meta.get("preserve_user_lut", True)))
                         cache_size = len(preview_dialog.segmentation_cache)
                         status_label.setText(f"Ready (cached: {cache_size})")
                         status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
@@ -2774,35 +3404,28 @@ class OmniposeSegTab(QWidget):
                 worker.start()
                 return (None, None)
 
-            def _apply_mask_to_ui(frame_idx, mask):
+            def _apply_mask_to_ui(frame_idx, mask, *, preserve_user_lut=True):
                 """Apply a segmentation mask to the display (used after cache hit or worker result). Re-enables controls."""
-                frame = images[frame_idx]
-                if frame.ndim == 3:
-                    display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
-                else:
-                    display_frame = frame
+                display_frame = None
+                try:
+                    _set_display_frame_for_selection(frame_idx)
+                    display_frame = getattr(preview_dialog, "current_display_frame", None)
+                except Exception:
+                    display_frame = None
+                if display_frame is None:
+                    frame = images[frame_idx]
+                    if frame.ndim == 3:
+                        display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                    else:
+                        display_frame = frame
                 preview_dialog.masks = mask
                 preview_dialog.current_display_frame = display_frame
-                if lut_data.get("frame_idx") != frame_idx:
-                    lut_data["frame_idx"] = frame_idx
-                    fmin, fmax = float(display_frame.min()), float(display_frame.max())
-                    lut_data["vmin"] = fmin
-                    lut_data["vmax"] = fmax if fmax > fmin else fmin + 1.0
-                    lut_data["frame_min"] = fmin
-                    lut_data["frame_max"] = fmax
-                vmin = lut_data.get("vmin")
-                vmax = lut_data.get("vmax")
-                if vmin is None or vmax is None or vmax <= vmin:
-                    vmin = float(display_frame.min())
-                    vmax = float(display_frame.max()) if display_frame.max() > vmin else vmin + 1.0
-                    lut_data["vmin"], lut_data["vmax"] = vmin, vmax
-                vrange = max(vmax - vmin, 1e-6)
-                display_uint8 = ((np.asarray(display_frame).astype(np.float64) - vmin) / vrange * 255).clip(0, 255).astype(np.uint8)
-                disp_scaled, mask_scaled = scale_for_preview(display_uint8, mask, max_size=PREVIEW_SEG_MAX_SIZE)
-                overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
-                pixmap = to_qpixmap(overlay)
-                height, width = overlay.shape[:2]
-                image_canvas.set_pixmap(pixmap, (width, height), reset_view=False)
+                # Update shared LUT frame and redraw.
+                try:
+                    lut_widget.set_frame(np.asarray(display_frame), preserve_user_lut=bool(preserve_user_lut))
+                except Exception:
+                    pass
+                refresh_image_display()
                 QApplication.processEvents()
                 preview_dialog.display_cache_key = None
                 file_name = Path(file_path).name
@@ -2814,8 +3437,7 @@ class OmniposeSegTab(QWidget):
                     f"Frame {frame_idx + 1} of {num_frames} | Cells: {num_cells} | Model: {model_name} | {file_name}\n"
                     f"Parameters: {params_str}"
                 )
-                update_histogram(display_frame, lut_data.get("vmin"), lut_data.get("vmax"))
-                resegment_btn.setEnabled(True)
+                redetect_btn.setEnabled(True)
                 clear_cache_btn.setEnabled(True)
                 frame_spin.setEnabled(True)
                 cache_size = len(preview_dialog.segmentation_cache)
@@ -2830,11 +3452,11 @@ class OmniposeSegTab(QWidget):
                     status_label.setStyleSheet("color: #00FF00; font-weight: bold;")
                 refresh_cached_runs_combo()
 
-            def update_display(frame_idx, show_progress=True, force_recalc=False):
+            def update_display(frame_idx, show_progress=True, force_recalc=False, *, source_key=("input", 0), frame_override=None, preserve_user_lut=True):
                 """Update the display with segmentation overlay"""
                 # Check cache first
                 params = get_current_parameters()
-                cache_key = get_cache_key(frame_idx, params)
+                cache_key = get_cache_key(frame_idx, params, source_key=source_key)
                 has_cache = cache_key in preview_dialog.segmentation_cache and not force_recalc
                 
                 # Show progress dialog if we need to calculate
@@ -2851,27 +3473,28 @@ class OmniposeSegTab(QWidget):
                 
                 # Disable controls during processing
                 if progress_dialog:
-                    resegment_btn.setEnabled(False)
+                    redetect_btn.setEnabled(False)
                     clear_cache_btn.setEnabled(False)
                     frame_spin.setEnabled(False)
                 
                 try:
-                    frame = images[frame_idx]
-                    if frame.ndim == 3:
-                        display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
-                    else:
-                        display_frame = frame
                     if progress_dialog:
                         progress_dialog.setLabelText("Running segmentation...")
                         QApplication.processEvents()
-                    mask, err = run_segmentation(frame_idx, use_cache=not force_recalc)
+                    mask, err = run_segmentation(
+                        frame_idx,
+                        use_cache=not force_recalc,
+                        source_key=source_key,
+                        frame_override=frame_override,
+                        preserve_user_lut=preserve_user_lut,
+                    )
                     if err is not None:
                         if progress_dialog:
                             progress_dialog.close()
                             preview_dialog._seg_progress_dialog = None
                         status_label.setText("Segmentation failed" + (": " + err[:60] if err else ""))
                         status_label.setStyleSheet("color: #FF0000; font-weight: bold;")
-                        resegment_btn.setEnabled(True)
+                        redetect_btn.setEnabled(True)
                         clear_cache_btn.setEnabled(True)
                         frame_spin.setEnabled(True)
                         return
@@ -2879,19 +3502,68 @@ class OmniposeSegTab(QWidget):
                         if progress_dialog:
                             progress_dialog.close()
                             preview_dialog._seg_progress_dialog = None
-                        _apply_mask_to_ui(frame_idx, mask)
+                        _apply_mask_to_ui(frame_idx, mask, preserve_user_lut=preserve_user_lut)
                         return
                     # mask is None and err is None: worker was started; slot will update UI and close progress
                 except Exception as e:
                     if progress_dialog:
                         progress_dialog.close()
                         preview_dialog._seg_progress_dialog = None
-                    resegment_btn.setEnabled(True)
+                    redetect_btn.setEnabled(True)
                     clear_cache_btn.setEnabled(True)
                     frame_spin.setEnabled(True)
                     status_label.setText(f"Error: {str(e)}")
                     status_label.setStyleSheet("color: #FF0000; font-weight: bold;")
                     QMessageBox.warning(preview_dialog, "Preview Error", f"Could not update display:\n{str(e)}")
+
+            def show_unsegmented_frame(frame_idx: int, *, preserve_user_lut=True, status_text: str | None = None):
+                """Redraw the selected frame without starting segmentation."""
+                display_frame = None
+                try:
+                    _set_display_frame_for_selection(frame_idx)
+                    display_frame = getattr(preview_dialog, "current_display_frame", None)
+                except Exception:
+                    display_frame = None
+                if display_frame is None:
+                    frame = images[frame_idx]
+                    if frame.ndim == 3:
+                        display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                    else:
+                        display_frame = frame
+                preview_dialog.masks = np.zeros(np.asarray(display_frame).shape[:2], dtype=np.int32)
+                preview_dialog.current_display_frame = display_frame
+                try:
+                    lut_widget.set_frame(np.asarray(display_frame), preserve_user_lut=bool(preserve_user_lut))
+                except Exception:
+                    pass
+                refresh_image_display()
+                file_name = Path(file_path).name
+                params = get_current_parameters()
+                model_name = Path(params["pretrained_model"]).stem if params.get("pretrained_model") else params.get("model_type", "—")
+                params_str = format_omnipose_params_from_params(params)
+                title_label.setText(
+                    f"Frame {frame_idx + 1} of {num_frames} | Not segmented | Model: {model_name} | {file_name}\n"
+                    f"Pending parameters: {params_str}"
+                )
+                if status_text:
+                    status_label.setText(status_text)
+                    status_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                refresh_cached_runs_combo()
+
+            def show_current_cache_or_unsegmented(frame_idx: int, *, preserve_user_lut=True):
+                """Display an exact cached current-parameter result, but never start model inference."""
+                params = get_current_parameters()
+                source_key = image_combo.currentData() if image_combo is not None else ("input", 0)
+                cache_key = get_cache_key(frame_idx, params, source_key=source_key)
+                mask = _cached_mask_for_key(cache_key)
+                if mask is not None:
+                    _apply_mask_to_ui(frame_idx, mask, preserve_user_lut=preserve_user_lut)
+                    return
+                show_unsegmented_frame(
+                    frame_idx,
+                    preserve_user_lut=preserve_user_lut,
+                    status_text="Preview parameters changed. Click Re-detect to update.",
+                )
 
             def show_cached_run(cache_key):
                 """Display a cached segmentation (mask + params) without running model. Used when user picks a cached run from combo."""
@@ -2899,18 +3571,25 @@ class OmniposeSegTab(QWidget):
                     return
                 frame_idx = cache_key[0]
                 mask = preview_dialog.segmentation_cache[cache_key]
-                frame = images[frame_idx]
-                if frame.ndim == 3:
-                    display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
-                else:
-                    display_frame = frame
-                disp_scaled, mask_scaled = scale_for_preview(
-                    display_frame, mask, max_size=PREVIEW_SEG_MAX_SIZE
-                )
-                overlay = build_segmentation_overlay(disp_scaled, mask_scaled, alpha=0.5)
-                pixmap = to_qpixmap(overlay)
-                h, w = overlay.shape[:2]
-                image_canvas.set_pixmap(pixmap, (w, h), reset_view=False)
+                # Respect image/channel dropdown if present
+                try:
+                    _set_display_frame_for_selection(frame_idx)
+                    display_frame = getattr(preview_dialog, "current_display_frame", None)
+                except Exception:
+                    display_frame = None
+                if display_frame is None:
+                    frame = images[frame_idx]
+                    if frame.ndim == 3:
+                        display_frame = frame[0] if frame.shape[0] < 10 else frame[:, :, 0]
+                    else:
+                        display_frame = frame
+                preview_dialog.masks = mask
+                preview_dialog.current_display_frame = display_frame
+                try:
+                    lut_widget.set_frame(np.asarray(display_frame), preserve_user_lut=True)
+                except Exception:
+                    pass
+                refresh_image_display()
                 num_cells = len(np.unique(mask)) - 1
                 file_name = Path(file_path).name
                 params_str = format_omnipose_params_from_key(cache_key)
@@ -2922,15 +3601,191 @@ class OmniposeSegTab(QWidget):
                     f"Parameters: {params_str}"
                 )
 
-            # Frame navigation (spinbox only; no prev/next buttons)
+            # Top controls row: foci / spotiflow / display controls.
             nav_layout = QHBoxLayout()
+
+            # Bottom controls row: frame + image selectors.
+            bottom_layout = QHBoxLayout()
+            bottom_layout.setContentsMargins(0, 0, 0, 0)
+
             frame_spin = QSpinBox()
             frame_spin.setRange(1, num_frames)
             frame_spin.setValue(1)
             frame_spin.setToolTip(f"Frame 1–{num_frames}. Type a number and press Enter to jump.")
-            nav_layout.addWidget(QLabel("Frame:"))
-            nav_layout.addWidget(frame_spin)
-            nav_layout.addWidget(QLabel(f"of {num_frames}"))
+            # Keep the legacy spinbox instance for existing preview logic (enable/disable, blockSignals),
+            # but do not show it; navigation is provided by PreviewNavigationControls.
+            try:
+                frame_spin.setVisible(False)
+            except Exception:
+                pass
+
+            image_combo = QComboBox()
+            image_combo.setMinimumContentsLength(26)
+            image_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            # Populate input channels
+            ch_count = 1
+            try:
+                fr0 = images[0]
+                if isinstance(fr0, np.ndarray) and fr0.ndim == 3 and fr0.shape[0] < 10:
+                    ch_count = int(fr0.shape[0])
+            except Exception:
+                ch_count = 1
+            for ci in range(max(1, ch_count)):
+                image_combo.addItem(f"Input ch{ci}", ("input", ci))
+            # Populate foci sources if present
+            foci_sources = getattr(preview_dialog, "_foci_source_paths", None) or []
+            for si, fp in enumerate(foci_sources):
+                image_combo.addItem(f"Foci {fp.name}", ("foci", si))
+            # Populate sibling TIFFs from the input's folder so the user can flip
+            # between separate per-channel files without rerunning the preview.
+            # Loaded lazily in ``_set_display_frame_for_selection`` via
+            # ``preview_dialog._sibling_cache`` so preview-open stays cheap.
+            sibling_paths = getattr(preview_dialog, "_sibling_paths", None) or []
+            for ssi, fp in enumerate(sibling_paths):
+                image_combo.addItem(f"File {fp.name}", ("sibling", ssi))
+            image_combo.setToolTip(
+                "Choose what is shown under the segmentation overlay:\n"
+                "• Input chN — one per channel of the loaded input stack\n"
+                "• Foci <name> — a matching *_foci.tif in the same folder\n"
+                "• File <name> — another TIFF in the same folder (loaded on demand)"
+            )
+            # Keep the legacy combo instance for existing preview logic, but do not show it; navigation is shared.
+            try:
+                image_combo.setVisible(False)
+            except Exception:
+                pass
+
+            # Shared navigation control (Frame + Image) in the unified bottom row.
+            try:
+                from bactimate.gui.preview.navigation_controls import (
+                    PreviewNavSpec,
+                    PreviewNavState,
+                    PreviewSource,
+                    PreviewNavigationControls,
+                )
+            except Exception:
+                PreviewNavigationControls = None  # type: ignore
+
+            nav_ctrl = None
+            if PreviewNavigationControls is not None:
+                sources: list[PreviewSource] = []
+                try:
+                    for i in range(int(image_combo.count())):
+                        sources.append(
+                            PreviewSource(
+                                key=image_combo.itemData(i),
+                                label=str(image_combo.itemText(i)),
+                                kind="image",
+                                resets_lut=True,
+                            )
+                        )
+                except Exception:
+                    sources = []
+                nav_ctrl = PreviewNavigationControls(
+                    spec=PreviewNavSpec(
+                        frame_count=int(max(1, num_frames)),
+                        image_sources=sources,
+                        show_image=True,
+                        show_channel=False,
+                        show_z=False,
+                        show_cell_overlay_toggle=True,
+                        show_foci_overlay_toggle=True,
+                        cell_overlay_default=True,
+                        foci_overlay_available=bool(foci_sources),
+                        foci_overlay_default=bool(foci_sources),
+                        debounce_ms=400,
+                    )
+                )
+                # Initial selection: current frame + whatever the legacy combo currently points to.
+                try:
+                    nav_ctrl.set_state(
+                        PreviewNavState(
+                            source_key=image_combo.currentData(),
+                            frame_idx=int(getattr(preview_dialog, "current_frame", 0) or 0),
+                        ),
+                        emit=False,
+                    )
+                except Exception:
+                    pass
+                bottom_layout.addWidget(nav_ctrl)
+
+            # Foci + Spotiflow controls (only if foci sources exist)
+            if foci_sources:
+                nav_layout.addWidget(QLabel("Foci:"))
+                foci_combo = QComboBox()
+                for fp in foci_sources:
+                    foci_combo.addItem(fp.name)
+                nav_layout.addWidget(foci_combo)
+                nav_layout.addWidget(QLabel("Show prob ≥"))
+                prob_spin = QDoubleSpinBox()
+                prob_spin.setRange(0.0, 1.0)
+                prob_spin.setSingleStep(0.05)
+                prob_spin.setDecimals(2)
+                prob_spin.setValue(0.0)
+                prob_spin.setToolTip("Preview filter only. Set 0 to show all.")
+                prob_spin.setFixedWidth(94)
+                nav_layout.addWidget(prob_spin)
+
+                # Spotiflow detection parameters (basic)
+                nav_layout.addSpacing(8)
+                nav_layout.addWidget(QLabel("SF normalize"))
+                sf_norm_cb = QCheckBox("")
+                sf_norm_cb.setChecked(True)
+                sf_norm_cb.setToolTip("Apply percentile normalization before Spotiflow inference.")
+                nav_layout.addWidget(sf_norm_cb)
+                nav_layout.addWidget(QLabel("pLow"))
+                sf_plow = QDoubleSpinBox()
+                sf_plow.setRange(0.0, 49.0)
+                sf_plow.setDecimals(1)
+                sf_plow.setSingleStep(0.5)
+                sf_plow.setValue(1.0)
+                sf_plow.setFixedWidth(70)
+                nav_layout.addWidget(sf_plow)
+                nav_layout.addWidget(QLabel("pHigh"))
+                sf_phigh = QDoubleSpinBox()
+                sf_phigh.setRange(51.0, 100.0)
+                sf_phigh.setDecimals(1)
+                sf_phigh.setSingleStep(0.5)
+                sf_phigh.setValue(99.8)
+                sf_phigh.setFixedWidth(74)
+                nav_layout.addWidget(sf_phigh)
+
+                sf_use_opt = QCheckBox("Optimized thr")
+                sf_use_opt.setChecked(True)
+                sf_use_opt.setToolTip("When on, Spotiflow uses its optimized threshold; prob_thresh is ignored.")
+                nav_layout.addWidget(sf_use_opt)
+                nav_layout.addWidget(QLabel("thr"))
+                sf_prob = QDoubleSpinBox()
+                sf_prob.setRange(0.0, 1.0)
+                sf_prob.setDecimals(2)
+                sf_prob.setSingleStep(0.05)
+                sf_prob.setValue(0.5)
+                sf_prob.setFixedWidth(70)
+                sf_prob.setEnabled(not sf_use_opt.isChecked())
+                nav_layout.addWidget(sf_prob)
+
+                nav_layout.addWidget(QLabel("minDist"))
+                sf_min_dist = QSpinBox()
+                sf_min_dist.setRange(1, 50)
+                sf_min_dist.setSingleStep(1)
+                sf_min_dist.setValue(1)
+                sf_min_dist.setFixedWidth(64)
+                nav_layout.addWidget(sf_min_dist)
+
+                sf_subpix = QCheckBox("subpix")
+                sf_subpix.setChecked(True)
+                nav_layout.addWidget(sf_subpix)
+            else:
+                foci_combo = None
+                prob_spin = None
+                sf_norm_cb = None
+                sf_plow = None
+                sf_phigh = None
+                sf_use_opt = None
+                sf_prob = None
+                sf_min_dist = None
+                sf_subpix = None
+
             scale_label = QLabel("")
             nav_layout.addWidget(scale_label)
             # Add status label to navigation layout
@@ -2962,13 +3817,22 @@ class OmniposeSegTab(QWidget):
                 frame_spin.blockSignals(False)
                 
                 try:
-                    # Check if we have cached result for this frame with current parameters
-                    params = get_current_parameters()
-                    cache_key = get_cache_key(idx, params)
-                    has_cache = cache_key in preview_dialog.segmentation_cache
-                    
-                    # Only show progress if we need to recalculate
-                    update_display(idx, show_progress=(not has_cache or force_recalc))
+                    # Navigation is display-only: never start segmentation just
+                    # because the frame control changed. Reuse an exact cached
+                    # result when available, otherwise show the raw frame until
+                    # the user explicitly clicks Re-detect.
+                    if force_recalc:
+                        update_display(idx, show_progress=True, force_recalc=True)
+                    else:
+                        show_current_cache_or_unsegmented(idx)
+                    try:
+                        _compute_foci_peaks_for_current(
+                            preview_dialog.current_frame,
+                            allow_detect=False,
+                        )
+                        refresh_image_display()
+                    except Exception:
+                        pass
                     refresh_cached_runs_combo()
                 except Exception as e:
                     import traceback
@@ -2990,26 +3854,191 @@ class OmniposeSegTab(QWidget):
                     frame_spin.blockSignals(False)
 
             frame_spin.editingFinished.connect(on_frame_changed)
-            
+
+            preview_dialog._image_combo = image_combo
+            if foci_sources:
+                preview_dialog._foci_source_combo = foci_combo
+                preview_dialog._foci_prob_spin = prob_spin
+                preview_dialog._sf_normalize_cb = sf_norm_cb
+                preview_dialog._sf_perc_low = sf_plow
+                preview_dialog._sf_perc_high = sf_phigh
+                preview_dialog._sf_use_optimized = sf_use_opt
+                preview_dialog._sf_prob_thresh = sf_prob
+                preview_dialog._sf_min_distance = sf_min_dist
+                preview_dialog._sf_subpix = sf_subpix
+
+            def _set_display_frame_for_selection(frame_idx: int) -> None:
+                """Set preview_dialog.current_display_frame based on image_combo selection."""
+                sel = image_combo.currentData()
+                if not isinstance(sel, tuple) or len(sel) < 2:
+                    sel = ("input", 0)
+                kind, idx = sel[0], int(sel[1])
+                if kind == "foci":
+                    sources = getattr(preview_dialog, "_foci_sources", None) or []
+                    if 0 <= idx < len(sources):
+                        arr = sources[idx]
+                        fi = max(0, min(int(frame_idx), int(arr.shape[0]) - 1))
+                        try:
+                            from bactimate.modules.image_stack_utils import coerce_plane_to_2d
+                            preview_dialog.current_display_frame = np.asarray(
+                                coerce_plane_to_2d(np.asarray(arr[fi])),
+                                dtype=np.float32,
+                            )
+                        except Exception:
+                            preview_dialog.current_display_frame = np.asarray(arr[fi], dtype=np.float32)
+                        # fall through to optional normalization below
+                    else:
+                        return
+                elif kind == "sibling":
+                    paths = getattr(preview_dialog, "_sibling_paths", None) or []
+                    cache = getattr(preview_dialog, "_sibling_cache", None)
+                    if isinstance(cache, dict) and 0 <= idx < len(paths):
+                        arr = cache.get(idx)
+                        if arr is None:
+                            # Lazy load on first selection so preview-open stays cheap.
+                            try:
+                                from bactimate.modules.image_stack_utils import coerce_stack_to_tyx
+                                loaded = safe_imread(str(paths[idx]))
+                                arr = coerce_stack_to_tyx(np.asarray(loaded))
+                            except Exception:
+                                get_logger().warning(
+                                    "Failed to load sibling TIFF %s for preview", paths[idx], exc_info=True,
+                                )
+                                arr = None
+                            if arr is not None and arr.size > 0:
+                                cache[idx] = arr
+                        if arr is not None and getattr(arr, "size", 0) > 0:
+                            fi = max(0, min(int(frame_idx), int(arr.shape[0]) - 1))
+                            try:
+                                from bactimate.modules.image_stack_utils import coerce_plane_to_2d
+                                preview_dialog.current_display_frame = np.asarray(
+                                    coerce_plane_to_2d(np.asarray(arr[fi])),
+                                    dtype=np.float32,
+                                )
+                            except Exception:
+                                preview_dialog.current_display_frame = np.asarray(arr[fi], dtype=np.float32)
+                            # fall through to optional normalization below
+                        else:
+                            return
+                    # Fall through to input channel on load failure.
+                else:
+                    # Default: input channel
+                    frame = images[frame_idx]
+                    if isinstance(frame, np.ndarray) and frame.ndim == 3 and frame.shape[0] < 10:
+                        ci = max(0, min(int(idx), int(frame.shape[0]) - 1))
+                        preview_dialog.current_display_frame = frame[ci]
+                    else:
+                        preview_dialog.current_display_frame = frame if frame.ndim == 2 else frame[:, :, 0]
+
+            def _on_image_changed():
+                """Image source changed: refresh background, auto-rescale LUT, redraw."""
+                try:
+                    _set_display_frame_for_selection(preview_dialog.current_frame)
+                    _compute_foci_peaks_for_current(
+                        preview_dialog.current_frame,
+                        allow_detect=False,
+                    )
+                    # Auto-adjust the LUT (and the histogram slider/yellow band)
+                    # so the new image's dynamic range fills the viewer instead
+                    # of reusing the previous background's user-set min/max.
+                    # set_frame(..., preserve_user_lut=False) recomputes vmin/vmax
+                    # from percentiles, redraws the histogram, and emits
+                    # lut_changed (which is wired to refresh_image_display).
+                    try:
+                        lut_widget.set_frame(
+                            np.asarray(preview_dialog.current_display_frame),
+                            preserve_user_lut=False,
+                        )
+                    except Exception:
+                        pass
+                    refresh_image_display()
+                except Exception:
+                    pass
+
+            image_combo.currentIndexChanged.connect(_on_image_changed)
+            if foci_sources:
+                def _sf_ui_changed(*_a):
+                    try:
+                        try:
+                            sf_prob.setEnabled(bool(foci_sources) and (not sf_use_opt.isChecked()))
+                        except Exception:
+                            pass
+                        _compute_foci_peaks_for_current(
+                            preview_dialog.current_frame,
+                            allow_detect=False,
+                        )
+                        refresh_image_display()
+                    except Exception:
+                        pass
+
+                foci_combo.currentIndexChanged.connect(
+                    lambda *_: (
+                        _compute_foci_peaks_for_current(preview_dialog.current_frame, allow_detect=False),
+                        refresh_image_display(),
+                    )
+                )
+                prob_spin.valueChanged.connect(
+                    lambda *_: (
+                        _compute_foci_peaks_for_current(preview_dialog.current_frame, allow_detect=False),
+                        refresh_image_display(),
+                    )
+                )
+                sf_norm_cb.toggled.connect(_sf_ui_changed)
+                sf_plow.valueChanged.connect(_sf_ui_changed)
+                sf_phigh.valueChanged.connect(_sf_ui_changed)
+                sf_use_opt.toggled.connect(_sf_ui_changed)
+                sf_prob.valueChanged.connect(_sf_ui_changed)
+                sf_min_dist.valueChanged.connect(_sf_ui_changed)
+                sf_subpix.toggled.connect(_sf_ui_changed)
+
             nav_layout.addStretch()
-            
-            # Re-segment button (to update with current parameters from main window)
-            resegment_btn = QPushButton("Re-segment")
-            resegment_btn.setToolTip(
-                "Re-run segmentation on the current frame using the current parameters from the main window.\n"
-                "You can change parameters in the main window (it stays accessible) and click this button to see the effect.\n"
-                "Results are cached - changing parameters and clicking again will use cached results if parameters match."
+
+            # Re-detect button: explicit, single entry-point that re-runs
+            # segmentation (with the active backend/model) and Spotiflow foci
+            # detection on the current frame using the current parameters.
+            redetect_btn = QPushButton("Re-detect")
+            redetect_btn.setToolTip(
+                "Re-run cell segmentation (active backend/model) and Spotiflow foci detection\n"
+                "on the current frame using the current parameters from the main window.\n"
+                "Segmentation results are cached per parameter set; foci are cached per "
+                "(source, frame, Spotiflow params)."
             )
-            def on_resegment():
-                # Clear cache for current frame to force recalculation
+
+            def on_redetect():
+                # Clear segmentation cache for the current frame so it is
+                # recomputed with the current parameters.
                 params = get_current_parameters()
-                cache_key = get_cache_key(preview_dialog.current_frame, params)
+                source_key = image_combo.currentData() if image_combo is not None else ("input", 0)
+                cache_key = get_cache_key(preview_dialog.current_frame, params, source_key=source_key)
                 if cache_key in preview_dialog.segmentation_cache:
                     del preview_dialog.segmentation_cache[cache_key]
-                # Force recalculation with progress
-                update_display(preview_dialog.current_frame, show_progress=True, force_recalc=True)
-            resegment_btn.clicked.connect(on_resegment)
-            nav_layout.addWidget(resegment_btn)
+                # Kick off (background) segmentation re-run with progress.
+                update_display(
+                    preview_dialog.current_frame,
+                    show_progress=True,
+                    force_recalc=True,
+                    source_key=source_key,
+                )
+                # Force foci re-detection on the current frame using the
+                # current Spotiflow parameters (no-op when there are no foci
+                # sources or Detect foci is unchecked; in those cases the
+                # helper updates the status label accordingly).
+                try:
+                    _compute_foci_peaks_for_current(
+                        preview_dialog.current_frame,
+                        allow_detect=True,
+                        force_recalc=True,
+                    )
+                except Exception:
+                    get_logger().exception("Re-detect: foci detection failed")
+
+            redetect_btn.clicked.connect(on_redetect)
+            nav_layout.addWidget(redetect_btn)
+            try:
+                preview_dialog.set_primary_action(on_redetect, label="Re-detect")
+                redetect_btn.setVisible(False)
+            except Exception:
+                pass
             
             # Clear cache button
             clear_cache_btn = QPushButton("Clear Cache")
@@ -3057,34 +4086,112 @@ class OmniposeSegTab(QWidget):
                 key = cached_runs_combo.currentData()
                 if key is None:
                     preview_dialog.display_cache_key = None
-                    update_display(preview_dialog.current_frame, show_progress=False)
+                    show_current_cache_or_unsegmented(preview_dialog.current_frame)
                 else:
                     preview_dialog.display_cache_key = key
                     show_cached_run(key)
 
             cached_runs_combo.currentIndexChanged.connect(on_cached_run_selected)
             nav_layout.addWidget(cached_runs_combo)
-            
-            layout.addLayout(nav_layout)
 
-            # Close button
-            close_btn = QPushButton("Close")
-            close_btn.clicked.connect(preview_dialog.close)
-            layout.addWidget(close_btn)
+            # Place the two rows consistently: params/top row first, selectors/bottom row last.
+            top_widget = QWidget()
+            top_widget.setLayout(nav_layout)
+            try:
+                from bactimate.gui.preview.preview_window import CollapsibleSection
+                preview_dialog.top_section = CollapsibleSection(
+                    "Foci & Spotiflow parameters",
+                    top_widget,
+                    expanded=True,
+                )
+                top_container = preview_dialog.top_section
+            except Exception:
+                top_container = top_widget
+            try:
+                # Insert right after the title label (before the canvas), matching the unified layout.
+                layout.insertWidget(1, top_container)
+            except Exception:
+                layout.addWidget(top_container)
+
+            bottom_widget = QWidget()
+            bottom_widget.setLayout(bottom_layout)
+            try:
+                preview_dialog.set_navigation_controls(bottom_widget)
+            except Exception:
+                layout.addWidget(bottom_widget)
+
+            # Wire shared navigation to legacy widgets + existing behavior.
+            if nav_ctrl is not None:
+                def _find_image_index_by_key(k) -> int:
+                    try:
+                        for ii in range(int(image_combo.count())):
+                            if image_combo.itemData(ii) == k:
+                                return int(ii)
+                    except Exception:
+                        return 0
+                    return 0
+
+                def _on_nav_changed(st, reason: str) -> None:
+                    try:
+                        if reason in ("frame", "init"):
+                            go_to_frame(int(getattr(st, "frame_idx", 0) or 0))
+                        if reason in ("source", "init"):
+                            key = getattr(st, "source_key", None)
+                            idx = _find_image_index_by_key(key)
+                            image_combo.blockSignals(True)
+                            try:
+                                image_combo.setCurrentIndex(int(idx))
+                            finally:
+                                image_combo.blockSignals(False)
+                            # If the chosen background is a foci stack, keep the foci source selector in sync
+                            # so detected peaks correspond to the displayed foci image.
+                            try:
+                                if foci_combo is not None and isinstance(key, tuple) and len(key) >= 2 and str(key[0]) == "foci":
+                                    foci_idx = int(key[1])
+                                    if 0 <= foci_idx < int(foci_combo.count()):
+                                        foci_combo.blockSignals(True)
+                                        foci_combo.setCurrentIndex(foci_idx)
+                                        foci_combo.blockSignals(False)
+                            except Exception:
+                                pass
+                            _on_image_changed()
+                    except Exception:
+                        return
+
+                try:
+                    nav_ctrl.nav_changed.connect(_on_nav_changed)
+                except Exception:
+                    pass
+
+                def _on_overlay_changed(key: str, checked: bool) -> None:
+                    try:
+                        preview_dialog.set_extra(str(key), bool(checked))
+                        refresh_image_display()
+                    except Exception:
+                        pass
+
+                try:
+                    nav_ctrl.overlay_changed.connect(_on_overlay_changed)
+                except Exception:
+                    pass
 
             close_shortcut = QShortcut(QKeySequence.StandardKey.Close, preview_dialog)
             close_shortcut.activated.connect(preview_dialog.close)
             minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), preview_dialog)  # Cmd+M on macOS
             minimize_shortcut.activated.connect(preview_dialog.showMinimized)
 
-            preview_dialog.setLayout(layout)
-
             # Show first frame immediately (image only), scaled for fast display and zoom/pan
             frame0 = images[0]
-            if frame0.ndim == 3:
-                display_frame0 = frame0[0] if frame0.shape[0] < 10 else frame0[:, :, 0]
-            else:
-                display_frame0 = frame0
+            try:
+                _set_display_frame_for_selection(0)
+                display_frame0 = getattr(preview_dialog, "current_display_frame", None)
+            except Exception:
+                display_frame0 = None
+            if display_frame0 is None:
+                if frame0.ndim == 3:
+                    display_frame0 = frame0[0] if frame0.shape[0] < 10 else frame0[:, :, 0]
+                else:
+                    display_frame0 = frame0
             empty_mask = np.zeros(display_frame0.shape, dtype=np.int32)
             disp0, _ = scale_for_preview(display_frame0, empty_mask, max_size=PREVIEW_SEG_MAX_SIZE)
             empty_scaled = np.zeros(disp0.shape, dtype=np.int32)
@@ -3109,8 +4216,14 @@ class OmniposeSegTab(QWidget):
             def start_preview():
                 preview_dialog.raise_()
                 preview_dialog.activateWindow()
-                # Show the same small "Processing" window as Re-segment so the user sees that segmentation is running
+                # Show the same small "Processing" window as Re-detect so the user sees that segmentation is running
                 update_display(0, show_progress=True)
+                try:
+                    _set_display_frame_for_selection(0)
+                    _compute_foci_peaks_for_current(0)
+                    refresh_image_display()
+                except Exception:
+                    pass
             # Short delay so the preview window has time to paint before we run segmentation
             QTimer.singleShot(80, start_preview)
 
@@ -3574,12 +4687,14 @@ class OmniposeSegTab(QWidget):
         return errors
 
     def process_file_or_folder(self):
+        self._segmentation_in_progress = True
         errors = self._validate_for_run()
         if errors:
             QMessageBox.warning(
                 self, "Cannot Start",
                 "Please fix the following:\n\n" + "\n".join(f"• {e}" for e in errors)
             )
+            self._segmentation_in_progress = False
             return
 
         script_path_str = str(BATCH_PROCESS_TIFF_SCRIPT)
@@ -3621,12 +4736,11 @@ class OmniposeSegTab(QWidget):
                 cmd_args.append('--no-overlay')
             
             self._last_output_dir = output_dir
-            self.process_btn.setEnabled(False)
-            self.process_btn.setText("Processing...")
-            self.cancel_btn.setVisible(True)
-            self.cancel_btn.setEnabled(True)
+            self.process_btn.setEnabled(True)
+            self.process_btn.setText("Cancel")
             self.parent_window.log_output(f"Starting single file processing: {self.file_path.text()}\n")
             self.parent_window.log_output(f"Output directory: {output_dir}\n")
+            self._log_segmentation_run_params(selected_files=[input_file])
         else:
             # Folder mode - show file selection dialog first
             folder = Path(self.file_path.text())
@@ -3634,17 +4748,17 @@ class OmniposeSegTab(QWidget):
             tiff_files_set = set(folder.glob("*.tif")) | set(folder.glob("*.tiff")) | \
                             set(folder.glob("*.TIF")) | set(folder.glob("*.TIFF"))
             
-            # Filter out mask files and output files
-            tiff_files = sorted([f for f in tiff_files_set 
-                                if '_masks' not in f.name.lower() 
-                                and '_overlay' not in f.name.lower()
-                                and '_filter_visualization' not in f.name.lower()], 
-                               key=lambda x: x.name.lower())
+            # Filter out derived outputs and foci-channel files; segment only source images.
+            tiff_files = sorted(
+                [f for f in tiff_files_set if self._is_segmentation_input_file(f)],
+                key=lambda x: x.name.lower(),
+            )
             
             if not tiff_files:
                 QMessageBox.warning(self, "No TIFF Files Found", 
                                   "No TIFF files found in the selected folder.\n\n"
                                   "Please select a folder containing TIFF files to process.")
+                self._segmentation_in_progress = False
                 return
             
             # Show file selection dialog (pass saved filter so Re-run applies same selection)
@@ -3662,11 +4776,13 @@ class OmniposeSegTab(QWidget):
 
             if selected_files is None:
                 # User cancelled or no files selected
+                self._segmentation_in_progress = False
                 return
             
             if len(selected_files) == 0:
                 QMessageBox.warning(self, "No Files Selected", 
                                   "Please select at least one file to process.")
+                self._segmentation_in_progress = False
                 return
             
             # Process selected files - use batch_process_folder.py but we'll need to filter files
@@ -3687,11 +4803,10 @@ class OmniposeSegTab(QWidget):
             self.parent_window.progress_bar.setValue(0)
             if hasattr(self.parent_window, "set_status_message"):
                 self.parent_window.set_status_message(f"Omnipose: file 1 of {n_files} — {first_name}")
-            self.process_btn.setEnabled(False)
-            self.process_btn.setText(f"Processing... (0/{n_files})")
-            self.cancel_btn.setVisible(True)
-            self.cancel_btn.setEnabled(True)
+            self.process_btn.setEnabled(True)
+            self.process_btn.setText("Cancel")
             self.parent_window.log_output(f"Starting batch folder processing: {len(selected_files)} file(s) selected from {self.file_path.text()}\n")
+            self._log_segmentation_run_params(selected_files=list(selected_files))
             
             # When folder is any Tif_* (Tif_files, Tif_1-3, ...), masks go into _segmentation_<model>; else one subfolder per file
             self._last_output_dir = (folder / self._get_omnipose_segmentation_folder_name()) if folder.name.startswith('Tif_') else folder
@@ -3717,14 +4832,13 @@ class OmniposeSegTab(QWidget):
         """Process next file in folder mode (segmentation)"""
         if self.current_file_index >= len(self.folder_files):
             # All files processed
-            self.cancel_btn.setVisible(False)
-            self.cancel_btn.setEnabled(False)
             self.process_btn.setEnabled(True)
             is_folder = self._is_folder_mode()
             if is_folder:
                 self.process_btn.setText("Process All Files in Folder")
             else:
                 self.process_btn.setText("Process File")
+            self._segmentation_in_progress = False
             self.parent_window.progress_bar.setVisible(False)
             if hasattr(self.parent_window, "set_status_message"):
                 self.parent_window.set_status_message("")
@@ -3789,7 +4903,8 @@ class OmniposeSegTab(QWidget):
         n_files = len(self.folder_files)
         file_progress = int((self.current_file_index / n_files) * 100)
         self.parent_window.progress_bar.setValue(file_progress)
-        self.process_btn.setText(f"Processing... ({self.current_file_index + 1}/{n_files})")
+        # Keep cancel affordance on the primary action button while running.
+        self.process_btn.setText("Cancel")
         if hasattr(self.parent_window, "set_status_message"):
             self.parent_window.set_status_message(f"Omnipose: file {self.current_file_index + 1} of {n_files} — {tiff_file.name}")
         
@@ -3806,6 +4921,56 @@ class OmniposeSegTab(QWidget):
             self.parent_window.log_output(f"✓ File {self.current_file_index + 1}/{len(self.folder_files)} processed successfully!\n")
             # Mark file as 100% complete
             self.current_file_progress = 1.0
+            # Optional foci detection → raw CSV artifacts in output folder (folder mode)
+            try:
+                if getattr(self, "detect_foci", None) is not None and self.detect_foci.isChecked():
+                    tiff_file = self.folder_files[self.current_file_index]
+                    base_dir = Path(tiff_file).parent
+                    output_dir = (
+                        base_dir / self._get_omnipose_segmentation_folder_name()
+                        if base_dir.name.startswith("Tif_")
+                        else base_dir / f"{Path(tiff_file).stem}_omnipose_segmentation"
+                    )
+                    sources = self._find_foci_sources_for_input(Path(tiff_file))
+                    if sources:
+                        from bactimate.gui.artifact_paths import (
+                            infer_pipeline_dir_from_mask,
+                            foci_csv_path,
+                        )
+                        mask_guess = output_dir / f"{Path(tiff_file).stem}_masks.tif"
+                        pipeline_dir = infer_pipeline_dir_from_mask(mask_guess)
+                        for src in sources:
+                            try:
+                                stack = safe_imread(str(src))
+                            except Exception:
+                                continue
+                            csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
+                            self.parent_window.log_output(f"Detecting foci (CSV): {src.name} → {csv_path.name}\n")
+                            self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None)
+                            # Best-effort: also write a foci overlay artifact next to the CSV.
+                            try:
+                                from bactimate.gui.foci_overlay_artifacts import (
+                                    foci_overlay_path_for_csv,
+                                    read_foci_csv_rows,
+                                    write_foci_overlay_tif,
+                                )
+
+                                overlay_path = foci_overlay_path_for_csv(csv_path)
+                                rows = read_foci_csv_rows(csv_path)
+                                ok = write_foci_overlay_tif(
+                                    foci_image_path=Path(src),
+                                    output_path=overlay_path,
+                                    rows=rows,
+                                    mask_path=mask_guess if Path(mask_guess).exists() else None,
+                                )
+                                if ok:
+                                    self.parent_window.log_output(
+                                        f"Foci overlay: {Path(src).name} → {overlay_path.name}\n"
+                                    )
+                            except Exception:
+                                pass
+            except Exception:
+                get_logger().debug("Folder-mode foci export failed", exc_info=True)
         else:
             self.parent_window.log_output(f"✗ File {self.current_file_index + 1}/{len(self.folder_files)} failed!\n")
             # Still mark as complete (even if failed) for progress tracking
@@ -3825,10 +4990,9 @@ class OmniposeSegTab(QWidget):
         # If user cancelled, stop the queue and reset UI
         if getattr(self, "_user_cancelled_processing", False):
             self._user_cancelled_processing = False
-            self.cancel_btn.setVisible(False)
-            self.cancel_btn.setEnabled(False)
             self.process_btn.setEnabled(True)
             self.process_btn.setText("Process All Files in Folder" if self._is_folder_mode() else "Process File")
+            self._segmentation_in_progress = False
             self.parent_window.progress_bar.setVisible(False)
             if hasattr(self.parent_window, "set_status_message"):
                 self.parent_window.set_status_message("")
@@ -3929,14 +5093,13 @@ class OmniposeSegTab(QWidget):
                     pass  # ignore progress parse errors
     
     def on_finished(self, success, message):
-        self.cancel_btn.setVisible(False)
-        self.cancel_btn.setEnabled(False)
         self.process_btn.setEnabled(True)
         is_folder = self._is_folder_mode()
         if is_folder:
             self.process_btn.setText("Process All Files in Folder")
         else:
             self.process_btn.setText("Process File")
+        self._segmentation_in_progress = False
         self.parent_window.log_output(message)
         # Set progress to 100% on completion
         if success:
@@ -3954,6 +5117,57 @@ class OmniposeSegTab(QWidget):
                 self.parent_window.log_output("✓ Folder processed successfully!\n")
             else:
                 self.parent_window.log_output("✓ File processed successfully!\n")
+            # Optional foci detection → raw CSV artifacts in output folder (single file mode)
+            try:
+                if (
+                    not is_folder
+                    and getattr(self, "detect_foci", None) is not None
+                    and self.detect_foci.isChecked()
+                    and getattr(self, "_last_output_dir", None)
+                ):
+                    in_path = Path(self.file_path.text())
+                    out_dir = Path(self._last_output_dir)
+                    sources = self._find_foci_sources_for_input(in_path)
+                    if sources:
+                        from bactimate.gui.artifact_paths import (
+                            infer_pipeline_dir_from_mask,
+                            foci_csv_path,
+                        )
+                        # Derive mask name from input stem (consistent with segmentation script output)
+                        mask_guess = out_dir / f"{in_path.stem}_masks.tif"
+                        pipeline_dir = infer_pipeline_dir_from_mask(mask_guess)
+                        for src in sources:
+                            try:
+                                stack = safe_imread(str(src))
+                            except Exception:
+                                continue
+                            csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
+                            self.parent_window.log_output(f"Detecting foci (CSV): {src.name} → {csv_path.name}\n")
+                            self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None)
+                            # Best-effort: also write a foci overlay artifact next to the CSV.
+                            try:
+                                from bactimate.gui.foci_overlay_artifacts import (
+                                    foci_overlay_path_for_csv,
+                                    read_foci_csv_rows,
+                                    write_foci_overlay_tif,
+                                )
+
+                                overlay_path = foci_overlay_path_for_csv(csv_path)
+                                rows = read_foci_csv_rows(csv_path)
+                                ok = write_foci_overlay_tif(
+                                    foci_image_path=Path(src),
+                                    output_path=overlay_path,
+                                    rows=rows,
+                                    mask_path=mask_guess if Path(mask_guess).exists() else None,
+                                )
+                                if ok:
+                                    self.parent_window.log_output(
+                                        f"Foci overlay: {Path(src).name} → {overlay_path.name}\n"
+                                    )
+                            except Exception:
+                                pass
+            except Exception:
+                get_logger().debug("Foci detection export failed", exc_info=True)
             # Offer to open output folder (single-file mode only; folder mode has its own dialog)
             if not is_folder and getattr(self, "_last_output_dir", None):
                 out_path = Path(self._last_output_dir)
@@ -3976,4 +5190,3 @@ class OmniposeSegTab(QWidget):
         if success:
             self._performed_this_session = True
         self.workflow_step_finished.emit(success)
-

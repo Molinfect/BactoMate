@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QTabBar,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -41,12 +42,15 @@ from bactimate.gui.preferences import (
     set_state,
 )
 from bactimate.gui.tabs import (
-    AnalyzeMasksTab,
+    AnalyzeTab,
+    FilteringTab,
     PostProcessingTab,
     ND2ConversionTab,
     OmniposeSegTab,
+    SegmentationTab,
     SessionLogsPanel,
     TrackingTab,
+    TrainingTab,
     UNetSegmentTab,
 )
 from bactimate.gui.paths import (
@@ -148,12 +152,70 @@ def _get_tab_classes() -> Tuple[Type[Any], ...]:
     """Return tab classes (all from bactimate.gui.tabs)."""
     return (
         ND2ConversionTab,
-        OmniposeSegTab,
-        UNetSegmentTab,
-        AnalyzeMasksTab,
+        SegmentationTab,
         TrackingTab,
         PostProcessingTab,
+        TrainingTab,
     )
+
+
+class EvenTabWidget(QTabWidget):
+    """QTabWidget whose tabs always evenly fill the full widget width.
+
+    Why a stylesheet write is needed (and ``setExpanding`` is not enough):
+    BactiMate's application stylesheet matches ``QTabBar::tab`` (padding,
+    ``min-width: 80px``, hover/selected backgrounds). As soon as any rule
+    matches a tab, Qt's ``QStyleSheetStyle`` takes over tab layout and
+    silently ignores both ``QTabBar.setExpanding(True)`` and any
+    ``tabSizeHint()`` override. The only levers it honours are the CSS
+    ``min-width`` / ``max-width`` properties on ``QTabBar::tab``.
+
+    Strategy: give the internal tab bar a unique ``objectName`` so we can
+    target it with an ID selector (``QTabBar#…::tab``) — higher specificity
+    than the app-level type selector wins the cascade for width while colors,
+    padding and hover from ``styles.py`` cascade through unchanged. The
+    stylesheet is rewritten on every resize and on first show.
+    """
+
+    _BAR_OBJECT_NAME = "BactimateMainTabBar"
+
+    # ``styles.py`` uses ``padding: 8px 16px;`` (32 px horizontal) plus
+    # ``margin-right: 3px;`` between tabs. ``min-width`` measures the tab
+    # *content* box, so we subtract chrome per tab before dividing — otherwise
+    # rendered widths overflow the bar and Qt reintroduces scroll arrows.
+    _CHROME_PER_TAB = 36
+
+    def __init__(self, parent: Any = None) -> None:
+        super().__init__(parent)
+        bar = QTabBar(self)
+        bar.setObjectName(self._BAR_OBJECT_NAME)
+        self.setTabBar(bar)
+        self.setUsesScrollButtons(False)
+        self.setElideMode(Qt.TextElideMode.ElideRight)
+
+    def _apply_even_width(self) -> None:
+        bar = self.tabBar()
+        n = self.count()
+        avail = self.width() - 2
+        if bar is None or n <= 0 or avail <= 0:
+            return
+        content_w = max(40, avail // n - self._CHROME_PER_TAB)
+        bar.setStyleSheet(
+            f"QTabBar#{self._BAR_OBJECT_NAME}::tab {{"
+            f" min-width: {content_w}px;"
+            f" max-width: {content_w}px;"
+            f"}}"
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_even_width()
+
+    def showEvent(self, event) -> None:
+        # First-show is when ``width()`` becomes real; apply once so the
+        # initial layout is already evenly distributed.
+        super().showEvent(event)
+        self._apply_even_width()
 
 
 class MainWindow(QMainWindow):
@@ -238,26 +300,43 @@ class MainWindow(QMainWindow):
 
         (
             ND2ConversionTab,
-            OmniposeSegTab,
-            UNetSegmentTab,
-            AnalyzeMasksTab,
+            SegmentationTab,
             TrackingTab,
             PostProcessingTab,
+            TrainingTab,
         ) = _get_tab_classes()
 
-        tabs = QTabWidget()
+        # Custom QTabWidget that forces its 5 tabs to evenly fill the
+        # full window width and re-applies the layout on every resize.
+        tabs = EvenTabWidget()
         self.nd2_tab = ND2ConversionTab(self)
+        # Keep underlying widgets alive for session/workflow compatibility
         self.omnipose_seg_tab = OmniposeSegTab(self)
         self.unet_segment_tab = UNetSegmentTab(self)
-        self.analyze_tab = AnalyzeMasksTab(self)
+        # Stage-specific instances (keep widgets alive for session/workflow compatibility)
+        # These are embedded inside the composed Segmentation tab; avoid nested scroll areas.
+        self.filtering_tab = FilteringTab(self, embedded=True)
+        self.analyze_tab = AnalyzeTab(self, embedded=True)
+
+        self.segmentation_tab = SegmentationTab(
+            self,
+            omnipose_tab=self.omnipose_seg_tab,
+            unet_tab=self.unet_segment_tab,
+            filtering_tab=self.filtering_tab,
+            analyze_tab=self.analyze_tab,
+        )
         self.tracking_tab = TrackingTab(self)
         self.post_processing_tab = PostProcessingTab(self)
+        self.training_tab = TrainingTab(
+            self,
+            omnipose_tab=self.omnipose_seg_tab,
+            unet_tab=self.unet_segment_tab,
+        )
         tabs.addTab(self.nd2_tab, "File Conversion")
-        tabs.addTab(self.omnipose_seg_tab, "Omnipose Segment")
-        tabs.addTab(self.unet_segment_tab, "U-NET Segment")
-        tabs.addTab(self.analyze_tab, "Analyze Masks")
+        tabs.addTab(self.segmentation_tab, "Segmentation")
         tabs.addTab(self.tracking_tab, "Tracking")
         tabs.addTab(self.post_processing_tab, "Post-processing")
+        tabs.addTab(self.training_tab, "Training")
 
         main_layout.addWidget(tabs)
 
@@ -503,7 +582,7 @@ class MainWindow(QMainWindow):
         analyze_tab = getattr(self, "analyze_tab", None)
         preview_dialog = getattr(analyze_tab, "_filter_preview_dialog", None) if analyze_tab else None
         if preview_dialog is not None:
-            w = getattr(preview_dialog, "_preview_worker", None)
+            w = getattr(preview_dialog, "_preview_thread", None) or getattr(preview_dialog, "_preview_worker", None)
             if not _wait_for_thread_worker(
                 w,
                 "Waiting for filter preview to finish…",
@@ -924,6 +1003,16 @@ class MainWindow(QMainWindow):
         self.status_message.setVisible(bool((text or "").strip()))
 
     def log_output(self, message: str) -> None:
+        def _persist_lines_to_gui_log(raw_message: str) -> None:
+            # Keep GUI activity and file log in sync.
+            try:
+                for line in raw_message.splitlines():
+                    if line.strip():
+                        write_gui_log_line("GUI", line)
+            except Exception:
+                pass
+
+        _persist_lines_to_gui_log(message)
         # Normalize each line for display: strip log prefixes, condense tqdm
         lines = message.split("\n")
         formatted = [self._format_status_line(line) for line in lines]

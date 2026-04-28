@@ -51,13 +51,16 @@ class AnalyzeMasksBase(QWidget):
     workflow_step_finished = pyqtSignal(bool)  # for workflow replay chain
 
     # ---- Construction -------------------------------------------------
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, *, embedded: bool = False) -> None:
         super().__init__(parent)
         self.parent_window = parent
+        self._embedded = bool(embedded)
         self._performed_this_session = False
         self.pixel_size_metadata_loaded = False
         self._analysis_settings_stash: Optional[QWidget] = None
         self._analysis_settings_stash_layout = None
+        self._filtering_preview_controls_muted = False
+        self._filtering_preview_noop_controls: list[QWidget] = []
         self._filter_preview_dialog = None
         self._init_ui()
 
@@ -97,11 +100,17 @@ class AnalyzeMasksBase(QWidget):
     # ---- UI -----------------------------------------------------------
     def _init_ui(self) -> None:
         layout = QVBoxLayout()
-        scroll = QScrollArea()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
         scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout()
+        scroll_layout = QVBoxLayout(scroll_widget)
         scroll_layout.setSpacing(6)
-        scroll_layout.setContentsMargins(8, 4, 8, 8)
+        # In embedded mode, the host (SegmentationTab) owns outer padding.
+        if self._embedded:
+            scroll_layout.setContentsMargins(0, 0, 0, 0)
+        else:
+            scroll_layout.setContentsMargins(8, 4, 8, 8)
 
         file_group = self._build_file_group()
         scroll_layout.addWidget(file_group)
@@ -112,25 +121,18 @@ class AnalyzeMasksBase(QWidget):
         # Shared analysis settings block (morphology/size/options)
         analysis_section = self._build_analysis_settings_section()
         scroll_layout.addWidget(analysis_section)
-
-        # Stash analysis settings out of the main tab only for the Filtering stage,
-        # where the preview window is the tuning surface. Analyze stage has no preview,
-        # so these controls must remain visible on the tab.
+        # Filtering stage: keep the main tab clean; parameter controls live in the Preview.
         try:
-            stash_settings = (self._stage_key() == "filtering")
+            if self._stage_key() == "filtering":
+                analysis_section.hide()
         except Exception:
-            stash_settings = False
-        if stash_settings:
-            self._analysis_settings_stash = QWidget(self)
-            self._analysis_settings_stash.hide()
-            stash_layout = QVBoxLayout(self._analysis_settings_stash)
-            stash_layout.setContentsMargins(0, 0, 0, 0)
-            stash_layout.setSpacing(0)
-            stash_layout.addWidget(analysis_section)
-            self._analysis_settings_stash_layout = stash_layout
-        else:
-            self._analysis_settings_stash = None
-            self._analysis_settings_stash_layout = None
+            pass
+
+        # Historically, Filtering used the preview window as the tuning surface and moved these
+        # widgets out of the main UI. For the cleaned-up single-scroll overview, keep controls
+        # stable and visible in the main section.
+        self._analysis_settings_stash = None
+        self._analysis_settings_stash_layout = None
 
         settings_note = QLabel(self._stage_note_text())
         settings_note.setWordWrap(True)
@@ -149,33 +151,40 @@ class AnalyzeMasksBase(QWidget):
         run_layout.setSpacing(10 if is_filtering_stage else 6)
         run_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.preview_btn = QPushButton(self._preview_button_label())
-        self.preview_btn.setToolTip(self._preview_button_tooltip())
-        self.preview_btn.setEnabled(False)
-        self.preview_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        run_layout.addWidget(self.preview_btn, 1 if is_filtering_stage else 0)
+        self.preview_action_btn = QPushButton(self._preview_button_label())
+        self.preview_action_btn.setToolTip(self._preview_button_tooltip())
+        self.preview_action_btn.setEnabled(False)
+        self.preview_action_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        run_layout.addWidget(self.preview_action_btn, 1 if is_filtering_stage else 0)
 
-        self.analyze_btn = QPushButton(self._primary_button_label())
-        self.analyze_btn.setToolTip(self._primary_button_tooltip())
-        self.analyze_btn.setEnabled(False)
-        self.analyze_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        run_layout.addWidget(self.analyze_btn, 1 if is_filtering_stage else 0)
+        self.primary_action_btn = QPushButton(self._primary_button_label())
+        self.primary_action_btn.setToolTip(self._primary_button_tooltip())
+        self.primary_action_btn.setEnabled(False)
+        self.primary_action_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        run_layout.addWidget(self.primary_action_btn, 1 if is_filtering_stage else 0)
+        # Backward-compatible aliases retained for existing code paths.
+        self.preview_btn = self.preview_action_btn
+        self.analyze_btn = self.primary_action_btn
 
         run_section.setLayout(run_layout)
         scroll_layout.addWidget(run_section)
 
         self._wire_stage_buttons()
 
-        self.file_path.textChanged.connect(self._update_analyze_button_state)
+        self.file_path.textChanged.connect(self._update_action_button_state)
         self.file_path.textChanged.connect(self._try_fill_metadata_from_path)
-        self._update_analyze_button_state()
+        self._update_action_button_state()
 
-        scroll_widget.setLayout(scroll_layout)
-        scroll_widget.setMinimumWidth(800)
-        scroll.setWidget(scroll_widget)
-        scroll.setWidgetResizable(True)
-        self._scroll_area = scroll
-        layout.addWidget(scroll)
+        if self._embedded:
+            # Embedded mode: no nested scroll area; caller owns scrolling.
+            self._scroll_area = None
+            layout.addWidget(scroll_widget)
+        else:
+            scroll = QScrollArea()
+            scroll.setWidget(scroll_widget)
+            scroll.setWidgetResizable(True)
+            self._scroll_area = scroll
+            layout.addWidget(scroll)
         self.setLayout(layout)
 
     def _build_file_group(self) -> QWidget:
@@ -217,34 +226,33 @@ class AnalyzeMasksBase(QWidget):
         return file_group
 
     def _build_analysis_settings_section(self) -> QGroupBox:
-        # This is essentially the existing “Analysis settings” UI: pixel size + morphology + size + options + reset.
+        """
+        Build the shared "Analysis settings" group.
+
+        Filtering stage uses a wide H-row [Morph | Size | Options | Reset] with the
+        pixel-size row above. Analyze stage uses a compact single-row header
+        [Pixel size | Outputs | Reset] and hides the morph/size/border/CSV controls
+        (still created so session params and tests keep working).
+        """
+        is_analyze = (self._stage_key() == "analyze")
+
         analysis_section = QGroupBox("Analysis settings")
         analysis_section_layout = QVBoxLayout()
         analysis_section_layout.setSpacing(6)
         analysis_section_layout.setContentsMargins(8, 4, 8, 8)
 
-        container = QWidget()
-        analysis_container_layout = QHBoxLayout()
-        analysis_container_layout.setSpacing(12)
-        analysis_container_layout.setContentsMargins(6, 6, 6, 6)
-
-        # Pixel size
-        pixel_layout = QHBoxLayout()
-        pixel_layout.addWidget(QLabel("Pixel Size (µm):"))
-        pixel_layout.addWidget(
-            create_info_icon(
-                "Pixel size in µm per pixel for area and distance calculations.\n\n"
-                "Auto-filled from TIFF metadata when possible; otherwise defaults to 0.108 µm.",
-                parent_widget=self,
-            )
+        # ---- Widgets (always created so session params stay stable) -------
+        pixel_info_icon = create_info_icon(
+            "Pixel size in µm per pixel for area and distance calculations.\n\n"
+            "Auto-filled from TIFF metadata when possible; otherwise defaults to 0.108 µm.",
+            parent_widget=self,
         )
         self.pixel_size_indicator = QLabel("⚠ Check value!")
         self.pixel_size_indicator.setStyleSheet("color: #FFA500; font-size: 9pt; font-weight: bold;")
         self.pixel_size_indicator.setFixedWidth(100)
         self.pixel_size_indicator.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.pixel_size_indicator.setToolTip("Default value - verify this matches your metadata!")
-        pixel_layout.addWidget(self.pixel_size_indicator)
-        pixel_layout.addStretch()
+
         self.pixel_size = QDoubleSpinBox()
         self.pixel_size.setRange(0.001, 10.0)
         self.pixel_size.setDecimals(3)
@@ -253,10 +261,9 @@ class AnalyzeMasksBase(QWidget):
         self.pixel_size.setFixedWidth(100)
         self.pixel_size.setKeyboardTracking(False)
         self.pixel_size.valueChanged.connect(self._on_pixel_size_changed)
-        pixel_layout.addWidget(self.pixel_size)
-        analysis_section_layout.addLayout(pixel_layout)
 
-        # Morphology group (minimal; subclasses/tests care about widget existence, not layout cosmetics)
+        # Morphology / size widgets (filtering-stage only in the visible UI;
+        # always instantiated so session params and tests keep working).
         morph_group = QGroupBox("Morphological Filters")
         morph_layout = QVBoxLayout()
         self.min_aspect_ratio = QDoubleSpinBox()
@@ -290,7 +297,6 @@ class AnalyzeMasksBase(QWidget):
         _row(morph_layout, "Min Eccentricity:", self.min_eccentricity)
         _row(morph_layout, "Min Solidity:", self.min_solidity)
         morph_group.setLayout(morph_layout)
-        analysis_container_layout.addWidget(morph_group)
 
         size_group = QGroupBox("Size Filters")
         size_layout = QVBoxLayout()
@@ -321,45 +327,84 @@ class AnalyzeMasksBase(QWidget):
         _row(size_layout, "Max Width (µm):", self.max_width)
         _row(size_layout, "Min Length (µm):", self.min_length)
         size_group.setLayout(size_layout)
-        analysis_container_layout.addWidget(size_group)
 
-        options_group = QGroupBox("Options")
-        options_layout = QVBoxLayout()
+        # Output toggles
         self.detailed = QCheckBox("Detailed per-cell data")
         self.detailed.setChecked(True)
-        # Label varies by stage: filtering writes a filter visualization, analyze writes analysis visualizations.
-        self.create_vis = QCheckBox("Create filter visualization")
+        # Analyze stage relabels this; filtering keeps the historical name.
+        self.create_vis = QCheckBox("Create visualization" if is_analyze else "Create filter visualization")
         self.create_vis.setChecked(True)
         self.export_csv = QCheckBox("Also save CSV")
         self.export_csv.setChecked(False)
         self.exclude_border_cb = QCheckBox("Exclude masks at borders")
         self.exclude_border_cb.setChecked(False)
-        for cb in (self.detailed, self.create_vis, self.export_csv, self.exclude_border_cb):
-            options_layout.addWidget(cb)
-        options_group.setLayout(options_layout)
-        analysis_container_layout.addWidget(options_group)
-
-        # Analyze stage should not expose mask-filter tuning controls (those live in Filter Preview).
-        # Keep widgets alive for session persistence and compatibility, but hide them in the UI.
-        try:
-            if self._stage_key() == "analyze":
-                morph_group.hide()
-                size_group.hide()
-                self.exclude_border_cb.hide()
-                self.create_vis.setText("Create visualization")
-                # CSV sidecars are redundant with the Excel workbook in Analyze.
-                self.export_csv.setChecked(False)
-                self.export_csv.hide()
-        except Exception:
-            pass
+        self._filtering_preview_noop_controls = [self.detailed, self.create_vis, self.export_csv]
 
         reset_btn = QPushButton("Reset to Default")
         reset_btn.setToolTip("Reset all analysis parameters to their default values")
         reset_btn.clicked.connect(self.reset_analysis_defaults)
-        analysis_container_layout.addWidget(reset_btn)
 
-        container.setLayout(analysis_container_layout)
-        analysis_section_layout.addWidget(container)
+        # ---- Layout assembly ----------------------------------------------
+        if is_analyze:
+            # Compact single-row header: pixel size | outputs | reset.
+            header = QHBoxLayout()
+            header.setSpacing(12)
+            header.addWidget(QLabel("Pixel Size (µm):"))
+            header.addWidget(pixel_info_icon)
+            self.pixel_size_indicator.setFixedWidth(80)
+            header.addWidget(self.pixel_size_indicator)
+            header.addWidget(self.pixel_size)
+            header.addSpacing(20)
+            outputs_label = QLabel("Outputs:")
+            outputs_label.setStyleSheet("color: #9e9e9e;")
+            header.addWidget(outputs_label)
+            header.addWidget(self.detailed)
+            header.addWidget(self.create_vis)
+            header.addStretch()
+            header.addWidget(reset_btn)
+            analysis_section_layout.addLayout(header)
+
+            # Park hidden widgets in a hidden holder so they remain alive but never paint.
+            hidden_holder = QWidget()
+            hidden_holder.setVisible(False)
+            hh = QHBoxLayout(hidden_holder)
+            hh.setContentsMargins(0, 0, 0, 0)
+            hh.addWidget(morph_group)
+            hh.addWidget(size_group)
+            hh.addWidget(self.export_csv)
+            hh.addWidget(self.exclude_border_cb)
+            analysis_section_layout.addWidget(hidden_holder)
+            self._analyze_hidden_settings_holder = hidden_holder
+        else:
+            # Filtering: pixel-size row above a wide [Morph | Size | Options | Reset] container.
+            pixel_layout = QHBoxLayout()
+            pixel_layout.addWidget(QLabel("Pixel Size (µm):"))
+            pixel_layout.addWidget(pixel_info_icon)
+            pixel_layout.addWidget(self.pixel_size_indicator)
+            pixel_layout.addStretch()
+            pixel_layout.addWidget(self.pixel_size)
+            analysis_section_layout.addLayout(pixel_layout)
+
+            options_group = QGroupBox("Options")
+            options_layout = QVBoxLayout()
+            for cb in (self.detailed, self.create_vis, self.export_csv, self.exclude_border_cb):
+                options_layout.addWidget(cb)
+            filtering_note = QLabel("Note: Detailed/CSV/Visualization options are Analyze-stage outputs only.")
+            filtering_note.setWordWrap(True)
+            filtering_note.setStyleSheet("color: #9e9e9e; font-size: 9pt;")
+            options_layout.addWidget(filtering_note)
+            options_group.setLayout(options_layout)
+
+            container = QWidget()
+            container_layout = QHBoxLayout()
+            container_layout.setSpacing(12)
+            container_layout.setContentsMargins(6, 6, 6, 6)
+            container_layout.addWidget(morph_group)
+            container_layout.addWidget(size_group)
+            container_layout.addWidget(options_group)
+            container_layout.addWidget(reset_btn)
+            container.setLayout(container_layout)
+            analysis_section_layout.addWidget(container)
 
         stage_panel = self._build_stage_analysis_subpanel()
         if stage_panel is not None:
@@ -384,6 +429,7 @@ class AnalyzeMasksBase(QWidget):
         if section is None:
             return
         self._move_widget_between_layouts(section, target_layout)
+        self._set_filtering_preview_noop_controls_muted(True)
 
     def _restore_analysis_settings_to_stash(self) -> None:
         section = getattr(self, "analysis_section", None)
@@ -391,14 +437,37 @@ class AnalyzeMasksBase(QWidget):
         if section is None or stash_layout is None:
             return
         self._move_widget_between_layouts(section, stash_layout)
+        self._set_filtering_preview_noop_controls_muted(False)
+
+    def _set_filtering_preview_noop_controls_muted(self, muted: bool) -> None:
+        """Filtering preview keeps non-functional output toggles visible but disabled with an explanation."""
+        try:
+            if self._stage_key() != "filtering":
+                return
+        except Exception:
+            return
+        self._filtering_preview_controls_muted = bool(muted)
+        msg = "Analyze-only output option. It does not affect Filtering preview or filtering artifacts."
+        for w in getattr(self, "_filtering_preview_noop_controls", []):
+            if w is None:
+                continue
+            try:
+                w.setEnabled(not muted)
+                w.setToolTip(msg if muted else "")
+            except Exception:
+                pass
 
     # ---- Common behaviors --------------------------------------------
-    def _update_analyze_button_state(self) -> None:
+    def _update_action_button_state(self) -> None:
         has_path = bool(self.file_path.text() and self.file_path.text().strip())
-        if hasattr(self, "analyze_btn"):
-            self.analyze_btn.setEnabled(has_path)
-        if hasattr(self, "preview_btn"):
-            self.preview_btn.setEnabled(has_path)
+        if hasattr(self, "primary_action_btn"):
+            self.primary_action_btn.setEnabled(has_path)
+        if hasattr(self, "preview_action_btn"):
+            self.preview_action_btn.setEnabled(has_path)
+
+    # Backward-compatible method alias.
+    def _update_analyze_button_state(self) -> None:
+        self._update_action_button_state()
 
     def _try_fill_metadata_from_path(self) -> None:
         path_text = (self.file_path.text() or "").strip()
@@ -466,7 +535,7 @@ class AnalyzeMasksBase(QWidget):
         )
         if file_path:
             self.file_path.setText(file_path)
-            self._update_analyze_button_state()
+            self._update_action_button_state()
 
     def select_folder(self) -> None:
         folder_path = QFileDialog.getExistingDirectory(
@@ -476,11 +545,11 @@ class AnalyzeMasksBase(QWidget):
         )
         if folder_path:
             self.file_path.setText(folder_path)
-            self._update_analyze_button_state()
+            self._update_action_button_state()
 
     def handle_dropped_path_analyze(self, dropped_path: str) -> None:
         self.file_path.setText(str(dropped_path))
-        self._update_analyze_button_state()
+        self._update_action_button_state()
 
     def _is_folder_mode(self) -> bool:
         if not self.file_path.text():
@@ -745,4 +814,3 @@ class AnalyzeMasksBase(QWidget):
             self.file_path.setText(str(data["file_path"]).strip())
         if "performed" in data:
             self._performed_this_session = bool(data["performed"])
-

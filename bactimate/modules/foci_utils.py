@@ -14,6 +14,8 @@ from skimage.filters import gaussian, unsharp_mask
 from skimage.morphology import disk, white_tophat
 from skimage.segmentation import expand_labels
 
+from bactimate.modules.image_stack_utils import coerce_plane_to_2d
+
 # Default preprocessing (same idea as external foci_tool)
 DEFAULT_SIGMA_SMOOTH = 1.0
 DEFAULT_BG_RADIUS = 5
@@ -795,6 +797,7 @@ def detect_peaks_spotiflow(
     n_tiles_y: int = 1,
     n_tiles_x: int = 1,
     verbose: bool = False,
+    raise_on_error: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Optional: detect spots using Spotiflow (deep learning). Returns list of dicts
@@ -809,12 +812,12 @@ def detect_peaks_spotiflow(
         from spotiflow.model import Spotiflow
         from spotiflow.utils import normalize as sf_normalize
     except ImportError:
+        if raise_on_error:
+            raise RuntimeError("Spotiflow import failed. Install spotiflow in the active environment.")
         return None
-    raw = np.asarray(image, dtype=np.float64)
+    raw = np.asarray(coerce_plane_to_2d(image), dtype=np.float64)
     if raw.ndim != 2 or raw.size == 0:
         return []
-    if raw.ndim > 2:
-        raw = raw[:, :, 0] if raw.shape[2] < 10 else raw[0, :, :]
     raw_median = float(np.median(raw))
     if raw_median <= 0:
         raw_median = 1e-10
@@ -862,7 +865,9 @@ def detect_peaks_spotiflow(
             normalizer=normalizer if normalize else None,
             verbose=verbose,
         )
-    except Exception:
+    except Exception as e:
+        if raise_on_error:
+            raise RuntimeError(f"Spotiflow prediction failed: {e}") from e
         return None
     if spots is None or getattr(spots, "size", 0) == 0:
         return []
@@ -874,14 +879,127 @@ def detect_peaks_spotiflow(
     for i in range(spots.shape[0]):
         yy, xx = int(round(spots[i, 0])), int(round(spots[i, 1]))
         if 0 <= yy < h and 0 <= xx < w:
+            prob = None
+            if spots.shape[1] >= 3:
+                try:
+                    prob = float(spots[i, 2])
+                except Exception:
+                    prob = None
             intensity = float(raw[yy, xx])
             rel = intensity / raw_median
-            peaks.append({
+            p = {
                 "y": yy,
                 "x": xx,
                 "intensity": intensity,
+                "probability": prob,
                 "size_px": 1,
                 "mean_intensity": intensity,
                 "rel_intensity": rel,
-            })
+            }
+            peaks.append(p)
     return peaks
+
+
+def refine_spotiflow_peaks(
+    image: np.ndarray,
+    peaks: List[Dict[str, Any]],
+    *,
+    labeled_mask: Optional[np.ndarray] = None,
+    threshold_frac: float = 0.8,
+    max_radius: int = 5,
+    min_size: Optional[int] = None,
+    max_size: Optional[int] = None,
+    min_peak_raw: Optional[float] = None,
+    min_focus_mean: Optional[float] = None,
+    per_cell_ratio: Optional[float] = None,
+    accepted_labels: Optional[set[int]] = None,
+    exclude_outside: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Refine Spotiflow point detections with blob metrics and optional post-filters.
+
+    All thresholds operate on the raw image.
+    """
+    if not peaks:
+        return []
+    raw = np.asarray(coerce_plane_to_2d(image), dtype=np.float64)
+    if raw.ndim != 2 or raw.size == 0:
+        return []
+    h, w = raw.shape
+    raw_median = float(np.median(raw))
+    if raw_median <= 0:
+        raw_median = 1e-10
+    label_img = None
+    if labeled_mask is not None and labeled_mask.shape[:2] == raw.shape[:2]:
+        label_img = np.asarray(labeled_mask, dtype=np.int32)
+    accepted_set = {int(x) for x in accepted_labels} if accepted_labels else None
+
+    try:
+        threshold_frac = float(threshold_frac)
+    except (TypeError, ValueError):
+        threshold_frac = 0.8
+    if not np.isfinite(threshold_frac):
+        threshold_frac = 0.8
+    threshold_frac = float(np.clip(threshold_frac, 0.05, 1.0))
+
+    out: List[Dict[str, Any]] = []
+    for p in peaks:
+        yi, xi = int(p.get("y", -1)), int(p.get("x", -1))
+        if yi < 0 or yi >= h or xi < 0 or xi >= w:
+            continue
+        cell_id = int(label_img[yi, xi]) if label_img is not None else 0
+        if exclude_outside and label_img is not None:
+            if cell_id <= 0:
+                continue
+            if accepted_set is not None and cell_id not in accepted_set:
+                continue
+
+        intensity = p.get("intensity")
+        if intensity is None or not np.isfinite(float(intensity)):
+            intensity = float(raw[yi, xi])
+        intensity = float(intensity)
+        if min_peak_raw is not None and float(min_peak_raw) > 0 and intensity < float(min_peak_raw):
+            continue
+
+        size_px, mean_int = focus_size_and_mean_at_peak(
+            raw,
+            yi,
+            xi,
+            threshold_frac=threshold_frac,
+            max_radius=max_radius,
+            labeled_mask=label_img,
+        )
+        if min_size is not None and int(min_size) > 0 and size_px < int(min_size):
+            continue
+        if max_size is not None and int(max_size) > 0 and size_px > int(max_size):
+            continue
+        if min_focus_mean is not None and float(min_focus_mean) > 0 and mean_int < float(min_focus_mean):
+            continue
+
+        if per_cell_ratio is not None and float(per_cell_ratio) > 0 and label_img is not None and cell_id > 0:
+            blob_mask = get_focus_blob_mask(
+                raw,
+                yi,
+                xi,
+                threshold_frac=threshold_frac,
+                max_radius=max_radius,
+                labeled_mask=label_img,
+            )
+            rest_of_cell = (label_img == cell_id) & ~blob_mask
+            n_rest = int(np.sum(rest_of_cell))
+            if n_rest == 0:
+                continue
+            rest_mean = float(np.mean(raw[rest_of_cell]))
+            if not np.isfinite(rest_mean) or rest_mean <= 0:
+                continue
+            ratio = float(mean_int) / rest_mean
+            if ratio < float(per_cell_ratio):
+                continue
+
+        q = dict(p)
+        q["intensity"] = intensity
+        q["size_px"] = int(size_px)
+        q["mean_intensity"] = float(mean_int)
+        q["rel_intensity"] = float(intensity) / raw_median
+        out.append(q)
+    return out

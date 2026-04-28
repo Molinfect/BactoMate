@@ -122,6 +122,37 @@ except ImportError:
     sys.exit(1)
 
 
+def _configure_torch_sparse_invariants() -> None:
+    """
+    Explicitly configure torch sparse invariant checks.
+
+    PyTorch warns that checks are implicitly disabled and invalid sparse tensors may
+    crash natively (e.g. Bus error / SIGBUS). We default to ENABLED for safety.
+
+    Override with env var BACTIMATE_SPARSE_INVARIANTS:
+      - "1"/"true"/"on" (default): enable checks
+      - "0"/"false"/"off": disable checks (faster, less safe)
+    """
+    raw = str(os.environ.get("BACTIMATE_SPARSE_INVARIANTS", "1")).strip().lower()
+    enable = raw not in {"0", "false", "off", "no"}
+    try:
+        import torch
+        checker = getattr(getattr(torch, "sparse", None), "check_sparse_tensor_invariants", None)
+        if checker is None:
+            return
+        if enable and hasattr(checker, "enable"):
+            checker.enable()
+            print("PyTorch sparse invariant checks: enabled")
+        elif (not enable) and hasattr(checker, "disable"):
+            checker.disable()
+            print("PyTorch sparse invariant checks: disabled")
+    except Exception as e:
+        print(f"Warning: could not configure PyTorch sparse invariant checks: {e}")
+
+
+_configure_torch_sparse_invariants()
+
+
 def split_multipage_tiff(input_path, output_dir=None, prefix="frame"):
     """
     Split a multipage TIFF into individual frames.

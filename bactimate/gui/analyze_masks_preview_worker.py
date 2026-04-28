@@ -11,15 +11,15 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 import numpy as np
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
 from bactimate.gui.analyze_masks_preview_vis import build_preview_vis
 
 
-class AnalyzeMasksPreviewWorker(QThread):
+class AnalyzeMasksPreviewWorker(QObject):
     progress = pyqtSignal(int, str)  # percent 0-100, message for progress dialog
-    # finished: rid, fid, acc, rej, all, n_obj, err, vis, peaks, n_foci, raw_median_fi, min_rel, mode_txt
-    finished = pyqtSignal(int, int, list, list, list, int, str, object, object, int, object, object, str)
+    # result_ready: rid, fid, acc, rej, all, n_obj, err, vis, peaks, n_foci, n_foci_drawn, raw_median_fi, min_rel, mode_txt
+    result_ready = pyqtSignal(int, int, list, list, list, int, str, object, object, int, int, object, object, str)
 
     def __init__(
         self,
@@ -35,6 +35,9 @@ class AnalyzeMasksPreviewWorker(QThread):
         latest_request_id: Optional[Callable[[], int]] = None,
     ):
         super().__init__()
+        # Named so any Qt fatal message ("QThread: Destroyed while thread '<name>' is still running")
+        # points at the right class instead of an empty string.
+        self.setObjectName(type(self).__name__)
         self._request_id = request_id
         self._frame_idx = frame_idx
         # References only; copies happen in run() after supersede checks (saves work when cancelled).
@@ -56,8 +59,8 @@ class AnalyzeMasksPreviewWorker(QThread):
             return False
 
     def _emit_superseded(self) -> None:
-        """Emit a finished signal the UI will ignore (rid != current), triggering a fresh preview."""
-        self.finished.emit(
+        """Emit a result the UI will ignore (rid != current), triggering a fresh preview."""
+        self.result_ready.emit(
             self._request_id,
             self._frame_idx,
             [],
@@ -67,6 +70,7 @@ class AnalyzeMasksPreviewWorker(QThread):
             "",
             None,
             [],
+            0,
             0,
             None,
             None,
@@ -82,6 +86,7 @@ class AnalyzeMasksPreviewWorker(QThread):
         vis = None
         peaks_for_hover: list = []
         n_foci_total = 0
+        n_foci_drawn = 0
         raw_median_fi: Optional[float] = None
         min_rel: Optional[float] = None
         mode_txt = ""
@@ -125,6 +130,7 @@ class AnalyzeMasksPreviewWorker(QThread):
                 max_area_um2=params.get("max_area"),
                 min_width_um=params.get("min_width"),
                 max_width_um=params.get("max_width"),
+                min_length_um=params.get("min_length"),
             )
             accepted_labels = {cell["label"] for cell in filtered}
             all_labels = set(np.unique(mask_work)) - {0}
@@ -137,6 +143,35 @@ class AnalyzeMasksPreviewWorker(QThread):
             if self._superseded():
                 self._emit_superseded()
                 return
+
+            # Optional: CSV-driven peak filtering summary for the Filtering preview.
+            # This does not draw peaks; it only reports raw vs filtered counts so the
+            # UI can show “foci raw→filtered” matching `Filter File/Folder`.
+            try:
+                dp0 = self._display_params or {}
+                raw_rows = dp0.get("raw_foci_rows")
+                fp = dp0.get("filter_peaks") or {}
+                if isinstance(raw_rows, list) and raw_rows:
+                    n_foci_total = int(len(raw_rows))
+                    prob_thresh = fp.get("prob_thresh")
+                    min_peak_raw = fp.get("min_peak_raw")
+                    filtered_rows = []
+                    for r in raw_rows:
+                        try:
+                            if prob_thresh is not None:
+                                pr = r.get("probability")
+                                if pr is not None and pr != "" and float(pr) < float(prob_thresh):
+                                    continue
+                            if min_peak_raw is not None:
+                                if float(r.get("intensity", 0.0) or 0.0) < float(min_peak_raw):
+                                    continue
+                        except Exception:
+                            # If a row is malformed, treat it as filtered-out.
+                            continue
+                        filtered_rows.append(r)
+                    n_foci_drawn = int(len(filtered_rows))
+            except Exception:
+                pass
 
             self.progress.emit(85, "Building overlay... (85%)")
             if not self._skip_vis:
@@ -154,7 +189,7 @@ class AnalyzeMasksPreviewWorker(QThread):
                     self._emit_superseded()
                     return
 
-                vis, peaks_for_hover, n_foci_total, raw_median_fi, min_rel, mode_txt = build_preview_vis(
+                vis, peaks_for_hover, n_foci_total, n_foci_drawn, raw_median_fi, min_rel, mode_txt = build_preview_vis(
                     mask_work,
                     set(accepted_list),
                     set(rejected_list),
@@ -170,7 +205,7 @@ class AnalyzeMasksPreviewWorker(QThread):
             self.progress.emit(90, "Ready to draw... (90%)")
         except Exception as e:
             err = str(e)
-        self.finished.emit(
+        self.result_ready.emit(
             self._request_id,
             self._frame_idx,
             accepted_list,
@@ -181,6 +216,7 @@ class AnalyzeMasksPreviewWorker(QThread):
             vis,
             peaks_for_hover if peaks_for_hover is not None else [],
             n_foci_total,
+            n_foci_drawn,
             raw_median_fi,
             min_rel,
             mode_txt,

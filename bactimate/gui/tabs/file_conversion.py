@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -1724,22 +1725,11 @@ class ND2ConversionTab(QWidget):
                     return
                 selected_file = supported_files[idx]
 
-            original_path = self.file_path.text()
-            self.file_path.setText(str(selected_file))
-            self.load_file_info(str(selected_file))
-            if self.file_info:
-                file_type = self.file_info.get("file_type", "nd2")
-                if file_type == "nd2":
-                    self._preview_nd2()
-                elif file_type == "lif":
-                    self._preview_lif()
-                elif file_type == "czi":
-                    self._preview_czi()
-                elif file_type == "tiff":
-                    self._preview_tiff()
-                else:
-                    QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
-            self.file_path.setText(original_path)
+            file_type = self._detect_preview_file_type(selected_file)
+            if file_type is None:
+                QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {selected_file.suffix} files.")
+                return
+            self._preview_by_type(file_type, selected_file)
             return
         
         # Single file mode - check if file info is loaded
@@ -1749,16 +1739,35 @@ class ND2ConversionTab(QWidget):
         
         file_type = self.file_info.get('file_type', 'nd2')
         
-        if file_type == 'nd2':
-            self._preview_nd2()
-        elif file_type == 'lif':
-            self._preview_lif()
-        elif file_type == 'czi':
-            self._preview_czi()
-        elif file_type == 'tiff':
-            self._preview_tiff()
-        else:
-            QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
+        self._preview_by_type(file_type, file_path_obj)
+
+    def _detect_preview_file_type(self, file_path: Path) -> Optional[str]:
+        ext = file_path.suffix.lower()
+        if ext == ".nd2":
+            return "nd2"
+        if ext == ".lif":
+            return "lif"
+        if ext == ".czi":
+            return "czi"
+        if ext in (".tif", ".tiff"):
+            return "tiff"
+        return None
+
+    def _preview_by_type(self, file_type: str, file_path: Path) -> None:
+        ft = (file_type or "").strip().lower()
+        if ft == "nd2":
+            self._preview_nd2(file_path=file_path)
+            return
+        if ft == "lif":
+            self._preview_lif(file_path=file_path)
+            return
+        if ft == "czi":
+            self._preview_czi(file_path=file_path)
+            return
+        if ft == "tiff":
+            self._preview_tiff(file_path=file_path)
+            return
+        QMessageBox.warning(self, "Unsupported Format", f"Preview not yet implemented for {file_type} files.")
     
     def _get_bleach_preview_kwargs(self):
         """Return kwargs for preview bleach correction (from current tab settings)."""
@@ -1798,6 +1807,8 @@ class ND2ConversionTab(QWidget):
         raw_frames = all_frames
         display_frames_ref = {'data': all_frames}  # update_frame reads from this; we can swap to corrected
         preview_dialog.current_z = 0
+        preview_runtime_timers: list[QTimer] = []
+        preview_runtime_cleaned = False
 
         # Title (same style as Segmentation Preview)
         title_label = QLabel(f"Timepoint 1 of {num_time}  |  {Path(file_path).name}")
@@ -2343,6 +2354,7 @@ class ND2ConversionTab(QWidget):
         lut_update_timer = QTimer()
         lut_update_timer.setSingleShot(True)
         lut_update_timer.timeout.connect(update_lut_from_sliders)
+        preview_runtime_timers.append(lut_update_timer)
         
         def on_lut_value_changed():
             """Debounced handler for valueChanged signal"""
@@ -2411,6 +2423,7 @@ class ND2ConversionTab(QWidget):
             channel_debounce = QTimer(preview_dialog)
             channel_debounce.setSingleShot(True)
             channel_debounce.timeout.connect(on_channel_changed)
+            preview_runtime_timers.append(channel_debounce)
             preview_dialog._channel_debounce_timer = channel_debounce
             def on_channel_value_changed():
                 channel_debounce.stop()
@@ -2429,6 +2442,7 @@ class ND2ConversionTab(QWidget):
             z_debounce = QTimer(preview_dialog)
             z_debounce.setSingleShot(True)
             z_debounce.timeout.connect(on_z_changed)
+            preview_runtime_timers.append(z_debounce)
 
             def on_z_value_changed():
                 z_debounce.stop()
@@ -2530,6 +2544,7 @@ class ND2ConversionTab(QWidget):
             sync_timer = QTimer(preview_dialog)
             sync_timer.timeout.connect(poll_main_window_settings)
             sync_timer.start(500)  # Check every 0.5 s
+            preview_runtime_timers.append(sync_timer)
             preview_dialog._bleach_sync_timer = sync_timer  # keep reference
         
         # Debounced frame change: update after ~400 ms of no typing, or immediately on Enter
@@ -2546,6 +2561,7 @@ class ND2ConversionTab(QWidget):
         frame_debounce = QTimer(preview_dialog)
         frame_debounce.setSingleShot(True)
         frame_debounce.timeout.connect(on_frame_changed)
+        preview_runtime_timers.append(frame_debounce)
         preview_dialog._frame_debounce_timer = frame_debounce
         def on_frame_value_changed():
             frame_debounce.stop()
@@ -2570,26 +2586,38 @@ class ND2ConversionTab(QWidget):
         # Initialize current_frame to ensure it's set before channel changes
         preview_dialog.current_frame = 0
         update_frame(0)
+
+        def _cleanup_preview_runtime(*_args) -> None:
+            nonlocal preview_runtime_cleaned
+            if preview_runtime_cleaned:
+                return
+            preview_runtime_cleaned = True
+            for t in preview_runtime_timers:
+                try:
+                    t.stop()
+                except Exception:
+                    pass
+
+        try:
+            preview_dialog.finished.connect(_cleanup_preview_runtime)
+        except Exception:
+            pass
+        try:
+            preview_dialog.destroyed.connect(_cleanup_preview_runtime)
+        except Exception:
+            pass
         
         preview_dialog.setLayout(layout)
         preview_dialog.show()  # Use show() instead of exec_() for non-modal dialog
     
-    def _preview_nd2(self):
+    def _preview_nd2(self, file_path: Optional[Path] = None):
         """Preview ND2 file in a dialog with frame navigation"""
         
         try:
             import numpy as np
             import nd2
             
-            file_path = self.file_path.text()
-            
-            # Create preview dialog (non-modal so user can access main window)
-            preview_dialog = QDialog(self)
-            preview_dialog.setWindowTitle("File Preview")
-            preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)  # Make non-modal so main window is accessible
-            
-            layout = QVBoxLayout()
+            file_path = str(file_path) if file_path is not None else self.file_path.text()
             
             # Load ND2: dimension order follows nd2.ND2File.sizes keys (often T,Z,C,Y,X — not TCZYX).
             with nd2.ND2File(file_path) as nd2_reader:
@@ -2608,11 +2636,16 @@ class ND2ConversionTab(QWidget):
                 # Load all frames and take an owned copy while reader is still open.
                 all_frames = np.ascontiguousarray(nd2_reader.asarray()).copy()
             
-            # Use unified preview UI (with optional bleach preview from tab settings)
-            self._create_unified_preview_ui(
-                preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
+            from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+            show_file_conversion_preview(
+                self,
+                all_frames=all_frames,
+                num_time=num_time,
+                num_channels=num_channels,
+                num_z=num_z,
+                file_path=file_path,
                 nd2_axis_keys=axis_keys,
-                **self._get_bleach_preview_kwargs()
             )
             
         except ImportError as e:
@@ -2637,31 +2670,31 @@ class ND2ConversionTab(QWidget):
             import traceback
             traceback.print_exc()
     
-    def _preview_lif(self):
+    def _preview_lif(self, file_path: Optional[Path] = None):
         """Preview LIF file in a dialog with frame navigation. Uses BioIO when available, then aicsimageio."""
         try:
             import numpy as np
-            file_path = self.file_path.text()
+            file_path = str(file_path) if file_path is not None else self.file_path.text()
             max_f = self.max_frames.value() if hasattr(self, "max_frames") else 500
             # Try BioIO first; on error (e.g. bioio-lif "too many values to unpack") fall back to aicsimageio
             try:
                 data = bioio_load_data(Path(file_path), max_frames=max_f, use_first_z_only=True)
                 if data is not None and data.size > 0:
-                    preview_dialog = QDialog(self)
-                    preview_dialog.setWindowTitle("File Preview")
-                    preview_dialog.setMinimumSize(900, 700)
-                    preview_dialog.setModal(False)
-                    layout = QVBoxLayout()
                     num_time, num_channels = data.shape[0], data.shape[1]
                     num_z = 1
                     # For unified UI: (T, C, Y, X) is supported; take first channel for 3D display if needed by UI
                     all_frames = np.ascontiguousarray(data).copy()
-                    self._create_unified_preview_ui(
-                        preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                        **self._get_bleach_preview_kwargs()
+                    from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+                    show_file_conversion_preview(
+                        self,
+                        all_frames=all_frames,
+                        num_time=num_time,
+                        num_channels=num_channels,
+                        num_z=num_z,
+                        file_path=file_path,
+                        nd2_axis_keys=None,
                     )
-                    preview_dialog.setLayout(layout)
-                    preview_dialog.show()
                     return
             except Exception:
                 pass
@@ -2669,11 +2702,6 @@ class ND2ConversionTab(QWidget):
             aics_preview_ok = False
             try:
                 from aicsimageio import AICSImage
-                preview_dialog = QDialog(self)
-                preview_dialog.setWindowTitle("File Preview")
-                preview_dialog.setMinimumSize(900, 700)
-                preview_dialog.setModal(False)
-                layout = QVBoxLayout()
                 lif_reader = AICSImage(file_path)
                 try:
                     dims = lif_reader.dims
@@ -2702,12 +2730,17 @@ class ND2ConversionTab(QWidget):
                     elif len(all_frames.shape) == 3 and all_frames.shape[0] > 1000:
                         all_frames = all_frames.transpose(2, 0, 1)
                     all_frames = np.ascontiguousarray(all_frames).copy()
-                    self._create_unified_preview_ui(
-                        preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                        **self._get_bleach_preview_kwargs()
+                    from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+                    show_file_conversion_preview(
+                        self,
+                        all_frames=all_frames,
+                        num_time=num_time,
+                        num_channels=num_channels,
+                        num_z=num_z,
+                        file_path=file_path,
+                        nd2_axis_keys=None,
                     )
-                    preview_dialog.setLayout(layout)
-                    preview_dialog.show()
                     aics_preview_ok = True
                 finally:
                     if hasattr(lif_reader, 'close'):
@@ -2758,12 +2791,17 @@ class ND2ConversionTab(QWidget):
                 preview_dialog.setMinimumSize(900, 700)
                 preview_dialog.setModal(False)
                 layout = QVBoxLayout()
-                self._create_unified_preview_ui(
-                    preview_dialog, layout, all_frames, n_load, n_ch, num_z, file_path,
-                    **self._get_bleach_preview_kwargs()
+                from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+                show_file_conversion_preview(
+                    self,
+                    all_frames=all_frames,
+                    num_time=n_load,
+                    num_channels=n_ch,
+                    num_z=num_z,
+                    file_path=file_path,
+                    nd2_axis_keys=None,
                 )
-                preview_dialog.setLayout(layout)
-                preview_dialog.show()
                 return
             except Exception as e:
                 import traceback
@@ -2778,11 +2816,11 @@ class ND2ConversionTab(QWidget):
             QMessageBox.critical(self, "Error Previewing LIF", f"Could not preview LIF file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
-    def _preview_czi(self):
+    def _preview_czi(self, file_path: Optional[Path] = None):
         """Preview CZI file in a dialog with frame navigation. Uses BioIO when available, then czifile."""
         try:
             import numpy as np
-            file_path = self.file_path.text()
+            file_path = str(file_path) if file_path is not None else self.file_path.text()
             if not file_path:
                 QMessageBox.warning(self, "No File", "Please select a CZI file or folder first.")
                 return
@@ -2798,20 +2836,20 @@ class ND2ConversionTab(QWidget):
             max_z_proj = self.max_z_projection.isChecked() if hasattr(self, "max_z_projection") else False
             data = bioio_load_data(path, max_frames=max_f, use_first_z_only=not max_z_proj, max_z_projection=max_z_proj)
             if data is not None and data.size > 0:
-                preview_dialog = QDialog(self)
-                preview_dialog.setWindowTitle("File Preview")
-                preview_dialog.setMinimumSize(900, 700)
-                preview_dialog.setModal(False)
-                layout = QVBoxLayout()
                 num_time, num_channels = data.shape[0], data.shape[1]
                 num_z = 1
                 all_frames = np.ascontiguousarray(data).copy()
-                self._create_unified_preview_ui(
-                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                    **self._get_bleach_preview_kwargs()
+                from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+                show_file_conversion_preview(
+                    self,
+                    all_frames=all_frames,
+                    num_time=num_time,
+                    num_channels=num_channels,
+                    num_z=num_z,
+                    file_path=file_path,
+                    nd2_axis_keys=None,
                 )
-                preview_dialog.setLayout(layout)
-                preview_dialog.show()
                 return
             import czifile
         except ImportError:
@@ -2822,11 +2860,6 @@ class ND2ConversionTab(QWidget):
             )
             return
         try:
-            preview_dialog = QDialog(self)
-            preview_dialog.setWindowTitle("File Preview")
-            preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)
-            layout = QVBoxLayout()
             all_frames = None
             num_time = num_channels = num_z = 1
             with czifile.CziFile(file_path) as czi_file:
@@ -2866,48 +2899,48 @@ class ND2ConversionTab(QWidget):
             if len(all_frames.shape) == 2:
                 all_frames = all_frames[np.newaxis, ...]
             all_frames = np.ascontiguousarray(all_frames).copy()
-            self._create_unified_preview_ui(
-                preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                **self._get_bleach_preview_kwargs()
+            from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+            show_file_conversion_preview(
+                self,
+                all_frames=all_frames,
+                num_time=num_time,
+                num_channels=num_channels,
+                num_z=num_z,
+                file_path=file_path,
+                nd2_axis_keys=None,
             )
-            preview_dialog.setLayout(layout)
-            preview_dialog.show()
         except Exception as e:
             QMessageBox.critical(self, "Error Previewing CZI", f"Could not preview CZI file:\n{str(e)}")
             self.parent_window.log_output(f"Error: {str(e)}\n")
     
-    def _preview_tiff(self):
+    def _preview_tiff(self, file_path: Optional[Path] = None):
         """Preview TIFF file in a dialog with frame navigation. Uses BioIO when available, then tifffile."""
         try:
             import numpy as np
-            file_path = self.file_path.text()
+            file_path = str(file_path) if file_path is not None else self.file_path.text()
             max_f = self.max_frames.value() if hasattr(self, "max_frames") else 500
             data = bioio_load_data(Path(file_path), max_frames=max_f, use_first_z_only=True)
             if data is not None and data.size > 0:
-                preview_dialog = QDialog(self)
-                preview_dialog.setWindowTitle("File Preview")
-                preview_dialog.setMinimumSize(900, 700)
-                preview_dialog.setModal(False)
-                layout = QVBoxLayout()
                 num_time, num_channels = data.shape[0], data.shape[1]
                 num_z = 1
                 all_frames = np.ascontiguousarray(data).copy()
-                self._create_unified_preview_ui(
-                    preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                    **self._get_bleach_preview_kwargs()
+                from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+                show_file_conversion_preview(
+                    self,
+                    all_frames=all_frames,
+                    num_time=num_time,
+                    num_channels=num_channels,
+                    num_z=num_z,
+                    file_path=file_path,
+                    nd2_axis_keys=None,
                 )
-                preview_dialog.setLayout(layout)
-                preview_dialog.show()
                 return
             import tifffile
             import matplotlib.pyplot as plt
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
             from matplotlib.figure import Figure
-            preview_dialog = QDialog(self)
-            preview_dialog.setWindowTitle("File Preview")
-            preview_dialog.setMinimumSize(900, 700)
-            preview_dialog.setModal(False)
-            layout = QVBoxLayout()
             all_frames = safe_imread(file_path)
             
             # Determine dimensions
@@ -2979,10 +3012,16 @@ class ND2ConversionTab(QWidget):
             
             # Own a contiguous copy so preview/bleach code never touches file-backed memory (avoids segfault on .copy()).
             all_frames = np.ascontiguousarray(all_frames).copy()
-            # Use unified preview UI with full LUT controls (and optional bleach preview)
-            self._create_unified_preview_ui(
-                preview_dialog, layout, all_frames, num_time, num_channels, num_z, file_path,
-                **self._get_bleach_preview_kwargs()
+            from bactimate.gui.preview.file_conversion_preview import show_file_conversion_preview
+
+            show_file_conversion_preview(
+                self,
+                all_frames=all_frames,
+                num_time=num_time,
+                num_channels=num_channels,
+                num_z=num_z,
+                file_path=file_path,
+                nd2_axis_keys=None,
             )
             
         except Exception as e:
@@ -3048,19 +3087,58 @@ class ND2ConversionTab(QWidget):
         # Check for Z-stack and prompt user if max projection is not enabled
         if self.file_info and self.file_info.get('num_z', 1) > 1:
             if not self.max_z_projection.isChecked():
-                reply = QMessageBox.information(
-                    self, 
-                    "Z-Stack Detected",
-                    f"This file has Z={self.file_info['num_z']} slices.\n\n"
-                    "By default, only the first Z-slice (Z=1) will be used.\n\n"
-                    "To combine all Z-slices into one image, please check:\n"
-                    "\"Max intensity projection for multiple Z stack\"\n\n"
-                    "Would you like to enable max Z-projection now?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.Yes
-                )
-                if reply == QMessageBox.StandardButton.Yes:
+                num_z = int(self.file_info["num_z"])
+                default_z = (num_z + 1) // 2  # 1-based middle slice (e.g. 5->3, 7->4)
+
+                dlg = QDialog(self)
+                dlg.setWindowTitle("Z-Stack Detected")
+                v = QVBoxLayout(dlg)
+
+                v.addWidget(QLabel(
+                    f"This file has Z={num_z} slices.\n\n"
+                    "Choose how to handle Z during conversion:"
+                ))
+
+                rb_mip = QRadioButton("Enable max intensity projection (combine all Z slices)")
+                rb_slice = QRadioButton("Use a single Z-slice")
+                rb_slice.setChecked(True)
+                v.addWidget(rb_mip)
+                v.addWidget(rb_slice)
+
+                slice_row = QHBoxLayout()
+                slice_row.addWidget(QLabel("Z-slice:"))
+                z_spin = QSpinBox()
+                z_spin.setRange(1, num_z)
+                z_spin.setValue(default_z)
+                z_spin.setToolTip(f"Pick which slice to use (1–{num_z}).")
+                slice_row.addWidget(z_spin)
+                slice_row.addStretch(1)
+                v.addLayout(slice_row)
+
+                def _sync_enabled() -> None:
+                    z_spin.setEnabled(rb_slice.isChecked())
+
+                rb_mip.toggled.connect(_sync_enabled)
+                rb_slice.toggled.connect(_sync_enabled)
+                _sync_enabled()
+
+                buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+                buttons.accepted.connect(dlg.accept)
+                buttons.rejected.connect(dlg.reject)
+                v.addWidget(buttons)
+
+                if dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+
+                if rb_mip.isChecked():
                     self.max_z_projection.setChecked(True)
+                    self._selected_z_slice_for_conversion = None
+                else:
+                    self._selected_z_slice_for_conversion = int(z_spin.value())
+            else:
+                self._selected_z_slice_for_conversion = None
+        else:
+            self._selected_z_slice_for_conversion = None
         
         # Check if convert_nd2_to_tif.py exists (path from bactimate.gui.paths / constants)
         from bactimate.gui.constants import CONVERT_ND2_SCRIPT
@@ -3093,6 +3171,10 @@ class ND2ConversionTab(QWidget):
         # Max Z projection
         if self.max_z_projection.isChecked():
             cmd_args.append('--max-z-projection')
+        else:
+            z_sel = getattr(self, "_selected_z_slice_for_conversion", None)
+            if z_sel is not None:
+                cmd_args.extend(['--z-slice', str(int(z_sel))])
         
         # All channels are converted (no single-channel selection)
         if self.drift_correct.isChecked():
@@ -3292,6 +3374,10 @@ class ND2ConversionTab(QWidget):
                 cmd_args.append('--combine-channels')
             if self.max_z_projection.isChecked():
                 cmd_args.append('--max-z-projection')
+            else:
+                z_sel = getattr(self, "_selected_z_slice_for_conversion", None)
+                if z_sel is not None:
+                    cmd_args.extend(['--z-slice', str(int(z_sel))])
             if self.drift_correct.isChecked():
                 cmd_args.append('--drift-correct')
             if self.bleach_correct.isChecked():
@@ -4252,4 +4338,3 @@ class ND2ConversionTab(QWidget):
                             self.zproject_channel_checks[i].setChecked(bool(checked))
             except (TypeError, ValueError):
                 pass
-

@@ -62,10 +62,43 @@ class AnalyzeTab(AnalyzeMasksBase):
     def _wire_stage_buttons(self) -> None:
         # No preview button in Analyze section
         try:
-            self.preview_btn.setVisible(False)
+            self.preview_action_btn.setVisible(False)
         except Exception:
             pass
-        self.analyze_btn.clicked.connect(self.analyze_masks)
+        self._analysis_in_progress = False
+        self._cancel_analysis_requested = False
+        self._analysis_worker: WorkerThread | None = None
+        self.primary_action_btn.clicked.connect(self._on_analyze_or_cancel_clicked)
+
+    def _on_analyze_or_cancel_clicked(self) -> None:
+        # Stateful action button: acts as Cancel while analysis is running.
+        if bool(getattr(self, "_analysis_in_progress", False)):
+            self._cancel_analysis_requested = True
+            w = getattr(self, "_analysis_worker", None)
+            if w is not None and w.isRunning():
+                try:
+                    w.terminate_process()
+                except Exception:
+                    pass
+            try:
+                self.primary_action_btn.setEnabled(False)
+                self.primary_action_btn.setText("Cancelling…")
+            except Exception:
+                pass
+            return
+        self.analyze_masks()
+
+    def _log_analysis_run_params(self, *, selected_files: list[Path] | None = None) -> None:
+        params = dict(self.get_session_params())
+        params["selected_file_count"] = len(selected_files or [])
+        params["selected_files"] = [Path(p).name for p in (selected_files or [])]
+        lines = ["Analyze Masks run parameters:"]
+        for key, value in sorted(params.items()):
+            lines.append(f"  {key}: {value}")
+        if hasattr(self.parent_window, "log_output"):
+            self.parent_window.log_output("\n".join(lines) + "\n")
+        if getattr(self.parent_window, "_save_session_log", None):
+            self.parent_window._save_session_log()
 
     # ---- file group override (use filtered masks + live hint) --------
     def _build_file_group(self) -> QWidget:
@@ -144,107 +177,179 @@ class AnalyzeTab(AnalyzeMasksBase):
 
     # ---- analyze-stage panel (FI + contour + colocalization controls) -
     def _build_stage_analysis_subpanel(self) -> Optional[QWidget]:
+        """
+        Compact FI + Colocalization controls for Section 3.
+
+        Layout overview:
+            ┌─ Fluorescence intensity (FI) ─────────────────────────────────┐
+            │ [ ] Analyze FI [info]   Channels: ( ) One file (•) Match name │
+            │ [Select FI file…]     [ ] Contour FI   Thickness: [1] px      │
+            │ ┌ feedback box (visible only while Analyze FI is on) ────────┐│
+            │ └─────────────────────────────────────────────────────────────┘│
+            └────────────────────────────────────────────────────────────────┘
+            ┌─ Colocalization ──────────────────────────────────────────────┐
+            │ [✓] Add colocalization sheets per *_foci channel pair  [info] │
+            │ Max distance: [8.0] px  Threshold: [4.0] px  [✓] Same cell    │
+            └────────────────────────────────────────────────────────────────┘
+        """
         outer = QWidget()
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 6, 0, 0)
         outer_layout.setSpacing(6)
 
-        # Analyze FI toggle
-        fi_toggle_row = QHBoxLayout()
+        # ---- Fluorescence intensity (FI) -----------------------------
+        self._single_fi_path: Optional[Path] = None
+
+        fi_group = QGroupBox("Fluorescence intensity (FI)")
+        fi_layout = QVBoxLayout()
+        fi_layout.setSpacing(4)
+        fi_layout.setContentsMargins(8, 6, 8, 6)
+
+        # Top row: Analyze FI toggle + channel mode (radios)
+        fi_top = QHBoxLayout()
+        fi_top.setSpacing(8)
         self.analyze_fi = QCheckBox("Analyze FI")
         self.analyze_fi.setChecked(False)
-        fi_toggle_row.addWidget(self.analyze_fi)
-        fi_toggle_row.addWidget(
+        fi_top.addWidget(self.analyze_fi)
+        fi_top.addWidget(
             create_info_icon(
                 "Analyze fluorescence intensity (FI) from a separate channel.\n\n"
                 "Match by name will search for `stem_fi.tif` / `stem_fi_*` next to the mask.",
                 parent_widget=self,
             )
         )
-        fi_toggle_row.addStretch()
-        outer_layout.addLayout(fi_toggle_row)
-
-        fi_group = QGroupBox("FI channels")
-        fi_layout = QVBoxLayout()
-        self.fi_mode_one_file = QRadioButton("One FI file for all masks")
-        self.fi_mode_match_by_name = QRadioButton("Match FI channel(s) by name")
+        fi_top.addSpacing(16)
+        ch_label = QLabel("Channels:")
+        ch_label.setStyleSheet("color: #9e9e9e;")
+        fi_top.addWidget(ch_label)
+        self.fi_mode_one_file = QRadioButton("One file for all masks")
+        self.fi_mode_match_by_name = QRadioButton("Match by name")
         self.fi_mode_match_by_name.setChecked(True)
         self.fi_mode_group = QButtonGroup(self)
         self.fi_mode_group.addButton(self.fi_mode_one_file)
         self.fi_mode_group.addButton(self.fi_mode_match_by_name)
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(self.fi_mode_one_file)
-        mode_row.addWidget(self.fi_mode_match_by_name)
-        mode_row.addStretch()
-        fi_layout.addLayout(mode_row)
+        fi_top.addWidget(self.fi_mode_one_file)
+        fi_top.addWidget(self.fi_mode_match_by_name)
+        fi_top.addStretch()
+        fi_layout.addLayout(fi_top)
 
-        self._single_fi_path: Optional[Path] = None
+        # Second row: Select FI file (when "one file" mode) + Contour FI inline
+        fi_aux = QHBoxLayout()
+        fi_aux.setSpacing(10)
         self.fi_select_btn = QPushButton("Select FI file…")
         self.fi_select_btn.setFixedWidth(140)
         self.fi_select_btn.clicked.connect(self._select_fi_file)
-        fi_layout.addWidget(self.fi_select_btn)
-
-        self.fi_feedback = QTextEdit()
-        self.fi_feedback.setReadOnly(True)
-        self.fi_feedback.setMaximumHeight(140)
-        self.fi_feedback.setPlaceholderText("Set mask path and choose FI mode to see what will be analyzed.")
-        fi_layout.addWidget(self.fi_feedback)
-
-        contour_group = QGroupBox("Contour FI")
-        contour_row = QHBoxLayout()
+        fi_aux.addWidget(self.fi_select_btn)
+        fi_aux.addSpacing(8)
         self.analyze_fi_contour = QCheckBox("Contour FI")
         self.analyze_fi_contour.setChecked(False)
+        self.analyze_fi_contour.setToolTip(
+            "Compute FI on a thin contour ring around each cell instead of the full mask."
+        )
+        fi_aux.addWidget(self.analyze_fi_contour)
+        thickness_label = QLabel("Thickness:")
+        thickness_label.setStyleSheet("color: #9e9e9e;")
+        fi_aux.addWidget(thickness_label)
         self.fi_contour_thickness = QSpinBox()
         self.fi_contour_thickness.setRange(1, 10)
         self.fi_contour_thickness.setValue(1)
+        self.fi_contour_thickness.setSuffix(" px")
         self.fi_contour_thickness.setEnabled(False)
         self.fi_contour_thickness.setFixedWidth(80)
-        contour_row.addWidget(self.analyze_fi_contour)
-        contour_row.addWidget(QLabel("Contour thickness (pixels):"))
-        contour_row.addWidget(self.fi_contour_thickness)
-        contour_row.addStretch()
-        contour_group.setLayout(contour_row)
+        fi_aux.addWidget(self.fi_contour_thickness)
+        fi_aux.addStretch()
+        fi_layout.addLayout(fi_aux)
 
-        fi_layout.addWidget(contour_group)
+        # Feedback (visible only while Analyze FI is on)
+        self.fi_feedback = QTextEdit()
+        self.fi_feedback.setReadOnly(True)
+        self.fi_feedback.setMaximumHeight(110)
+        self.fi_feedback.setPlaceholderText("Set mask path and choose FI mode to see what will be analyzed.")
+        fi_layout.addWidget(self.fi_feedback)
+
         fi_group.setLayout(fi_layout)
         outer_layout.addWidget(fi_group)
 
-        coloc_group = QGroupBox("Colocalization (multi-FI merge)")
+        # ---- Colocalization ------------------------------------------
+        coloc_group = QGroupBox("Colocalization")
         coloc_outer = QVBoxLayout()
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Max distance (px):"))
+        coloc_outer.setSpacing(4)
+        coloc_outer.setContentsMargins(8, 6, 8, 6)
+
+        # Toggle row (gates the parameter row below)
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(8)
+        self.coloc_calc_all_pairs = QCheckBox("Add colocalization sheets per *_foci channel pair")
+        self.coloc_calc_all_pairs.setChecked(True)
+        self.coloc_calc_all_pairs.setToolTip(
+            "After a successful analysis, append one colocalization sheet per *_foci channel "
+            "pair to *_analysis.xlsx (from existing foci CSVs)."
+        )
+        toggle_row.addWidget(self.coloc_calc_all_pairs)
+        toggle_row.addWidget(
+            create_info_icon(
+                "Colocalization is computed from existing foci CSV artifacts (no re-detection).\n"
+                "One sheet is appended per channel pair to *_analysis.xlsx.",
+                parent_widget=self,
+            )
+        )
+        toggle_row.addStretch()
+        coloc_outer.addLayout(toggle_row)
+
+        # Parameter row
+        params_row = QHBoxLayout()
+        params_row.setSpacing(10)
+        params_row.addWidget(QLabel("Max distance:"))
         self.coloc_merge_max_distance = QDoubleSpinBox()
         self.coloc_merge_max_distance.setRange(0.1, 500.0)
         self.coloc_merge_max_distance.setDecimals(1)
         self.coloc_merge_max_distance.setValue(8.0)
-        row.addWidget(self.coloc_merge_max_distance)
-        row.addWidget(QLabel("Threshold (px):"))
+        self.coloc_merge_max_distance.setSuffix(" px")
+        self.coloc_merge_max_distance.setFixedWidth(90)
+        params_row.addWidget(self.coloc_merge_max_distance)
+        params_row.addSpacing(8)
+        params_row.addWidget(QLabel("Threshold:"))
         self.coloc_merge_threshold = QDoubleSpinBox()
         self.coloc_merge_threshold.setRange(0.1, 500.0)
         self.coloc_merge_threshold.setDecimals(1)
         self.coloc_merge_threshold.setValue(4.0)
-        row.addWidget(self.coloc_merge_threshold)
+        self.coloc_merge_threshold.setSuffix(" px")
+        self.coloc_merge_threshold.setFixedWidth(90)
+        params_row.addWidget(self.coloc_merge_threshold)
+        params_row.addSpacing(8)
         self.coloc_merge_same_cell_only = QCheckBox("Same cell only")
         self.coloc_merge_same_cell_only.setChecked(True)
-        row.addWidget(self.coloc_merge_same_cell_only)
-        row.addStretch()
-        coloc_outer.addLayout(row)
-        self.coloc_calc_all_pairs = QCheckBox(
-            "After successful analysis, add one colocalization sheet per *_foci channel pair to *_analysis.xlsx (from existing foci CSVs)"
+        params_row.addWidget(self.coloc_merge_same_cell_only)
+        params_row.addStretch()
+        coloc_outer.addLayout(params_row)
+        self._coloc_param_widgets = (
+            self.coloc_merge_max_distance,
+            self.coloc_merge_threshold,
+            self.coloc_merge_same_cell_only,
         )
-        self.coloc_calc_all_pairs.setChecked(True)
-        coloc_outer.addWidget(self.coloc_calc_all_pairs)
+
         coloc_group.setLayout(coloc_outer)
         outer_layout.addWidget(coloc_group)
 
-        # Wire FI UI state
+        # ---- Wire dynamic enable/disable state -----------------------
         self.analyze_fi.toggled.connect(self._update_fi_ui_state)
         self.fi_mode_one_file.toggled.connect(self._update_fi_ui_state)
         self.fi_mode_match_by_name.toggled.connect(self._update_fi_ui_state)
         self.analyze_fi_contour.toggled.connect(self._update_fi_contour_state)
+        self.coloc_calc_all_pairs.toggled.connect(self._update_coloc_param_state)
         self.file_path.textChanged.connect(self._update_fi_feedback)
         self._update_fi_ui_state()
+        self._update_coloc_param_state()
         return outer
+
+    def _update_coloc_param_state(self, *_args) -> None:
+        """Grey out colocalization parameters when the feature is disabled."""
+        on = bool(getattr(self, "coloc_calc_all_pairs", None) and self.coloc_calc_all_pairs.isChecked())
+        for w in getattr(self, "_coloc_param_widgets", ()) or ():
+            try:
+                w.setEnabled(on)
+            except Exception:
+                pass
 
     def _select_fi_file(self) -> None:
         from PyQt6.QtWidgets import QFileDialog
@@ -260,15 +365,33 @@ class AnalyzeTab(AnalyzeMasksBase):
         return bool(getattr(self, "fi_mode_match_by_name", None) and self.fi_mode_match_by_name.isChecked())
 
     def _update_fi_contour_state(self, *_args) -> None:
+        analyze_fi_on = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
         try:
-            self.fi_contour_thickness.setEnabled(bool(self.analyze_fi.isChecked() and self.analyze_fi_contour.isChecked()))
+            self.analyze_fi_contour.setEnabled(analyze_fi_on)
+        except Exception:
+            pass
+        try:
+            self.fi_contour_thickness.setEnabled(bool(analyze_fi_on and self.analyze_fi_contour.isChecked()))
         except Exception:
             pass
 
     def _update_fi_ui_state(self, _checked=None) -> None:
         analyze_fi_on = bool(getattr(self, "analyze_fi", None) and self.analyze_fi.isChecked())
+        # Grey out the channel-mode radios when Analyze FI is off so the section
+        # reads as visually inactive.
+        for w in (
+            getattr(self, "fi_mode_one_file", None),
+            getattr(self, "fi_mode_match_by_name", None),
+        ):
+            if w is None:
+                continue
+            try:
+                w.setEnabled(analyze_fi_on)
+            except Exception:
+                pass
         try:
             self.fi_select_btn.setVisible(analyze_fi_on and not self._is_match_by_name_mode())
+            self.fi_select_btn.setEnabled(analyze_fi_on)
         except Exception:
             pass
         try:
@@ -305,6 +428,8 @@ class AnalyzeTab(AnalyzeMasksBase):
 
     # ---- analysis runner (ported; foci detection removed) -------------
     def analyze_masks(self) -> None:
+        if bool(getattr(self, "_analysis_in_progress", False)):
+            return
         if not self.file_path.text():
             QMessageBox.warning(self, "No Selection", "Please select a mask file or folder first.")
             return
@@ -353,8 +478,11 @@ class AnalyzeTab(AnalyzeMasksBase):
                 )
                 return
 
-            self.analyze_btn.setEnabled(False)
-            self.analyze_btn.setText(f"Analyzing... (0/{len(selected_files)})")
+            self._analysis_in_progress = True
+            self._cancel_analysis_requested = False
+            self.analyze_btn.setEnabled(True)
+            self.analyze_btn.setText("Cancel Analysis")
+            self.analyze_btn.setToolTip("Stop the current analysis job.")
 
             self.folder_files = selected_files
             self.folder_results = []
@@ -410,6 +538,7 @@ class AnalyzeTab(AnalyzeMasksBase):
                 self.analyze_btn.setText(self._primary_button_label())
                 return
 
+            self._log_analysis_run_params(selected_files=list(selected_files))
             self.current_task_index = 0
             self._process_next_folder_file()
             return
@@ -451,16 +580,110 @@ class AnalyzeTab(AnalyzeMasksBase):
                     suffix = self._fi_output_suffix(fi_path, stem)
                     self.folder_fi_tasks.append((mask_path, fi_path, analysis_dir / f"{stem}_analysis{suffix}.xlsx"))
 
-            self.analyze_btn.setEnabled(False)
-            self.analyze_btn.setText(f"Analyzing... (0/{len(self.folder_fi_tasks)})")
+            self._analysis_in_progress = True
+            self._cancel_analysis_requested = False
+            self.analyze_btn.setEnabled(True)
+            self.analyze_btn.setText("Cancel Analysis")
+            self.analyze_btn.setToolTip("Stop the current analysis job.")
             self.current_task_index = 0
+            self._log_analysis_run_params(selected_files=[mask_path])
             self._process_next_folder_file()
             return
 
         fi_path = None
         if self.analyze_fi.isChecked() and not self._is_match_by_name_mode():
             fi_path = getattr(self, "_single_fi_path", None)
+        self._analysis_in_progress = True
+        self._cancel_analysis_requested = False
+        try:
+            self.analyze_btn.setEnabled(True)
+            self.analyze_btn.setText("Cancel Analysis")
+            self.analyze_btn.setToolTip("Stop the current analysis job.")
+        except Exception:
+            pass
+        self._log_analysis_run_params(selected_files=[mask_path])
         self._run_one_analysis_task(mask_path, fi_path, out)
+
+    def _write_analysis_foci_visualizations_for_masks(self, mask_paths: list[Path]) -> None:
+        """
+        Best-effort: write per-channel foci visualization TIFFs into the mask's `_analysis/` folder,
+        using preferred foci CSV artifacts (filtered when enabled, else canonical/legacy).
+        """
+        try:
+            from bactimate.gui.artifact_paths import (
+                foci_csv_path,
+                filtered_foci_csv_path,
+                legacy_foci_csv_candidates,
+                raw_foci_csv_path,
+            )
+            from bactimate.gui.foci_overlay_artifacts import read_foci_csv_rows, write_foci_overlay_tif
+        except Exception:
+            return
+
+        prefer_filtered = bool(getattr(self, "use_filtered_masks_cb", None) and self.use_filtered_masks_cb.isChecked())
+
+        def _choose_csv(pipeline_dir: Path, *, mask_path: Path, src: Path) -> Path | None:
+            try:
+                filt = filtered_foci_csv_path(pipeline_dir, mask_path=mask_path, foci_source_path=src)
+                if prefer_filtered and filt.exists():
+                    return filt
+                canon = foci_csv_path(pipeline_dir, mask_path=mask_path, foci_source_path=src)
+                if canon.exists():
+                    return canon
+                legacy = raw_foci_csv_path(pipeline_dir, mask_path=mask_path, foci_source_path=src)
+                if legacy.exists():
+                    return legacy
+                for cand in legacy_foci_csv_candidates(pipeline_dir, mask_path=mask_path, foci_source_path=src):
+                    if cand.exists():
+                        return cand
+            except Exception:
+                return None
+            return None
+
+        for mp in mask_paths or []:
+            try:
+                mask_path = Path(mp).resolve()
+                if not mask_path.exists():
+                    continue
+                base_dir = base_dir_for_mask(mask_path)
+                analysis_dir = analysis_dir_from_base(base_dir)
+                analysis_dir.mkdir(parents=True, exist_ok=True)
+                pipeline_dir = mask_path.parent
+            except Exception:
+                continue
+
+            try:
+                sources = self._resolve_foci_paths_for_mask(mask_path)
+            except Exception:
+                sources = []
+            if not sources:
+                continue
+
+            mask_stem = mask_path.stem.replace("_masks", "")
+            for src in sources:
+                try:
+                    src = Path(src)
+                    csv_p = _choose_csv(pipeline_dir, mask_path=mask_path, src=src)
+                    if csv_p is None:
+                        continue
+                    rows = read_foci_csv_rows(csv_p)
+                    tag = None
+                    try:
+                        tag = self._extract_channel_tag_for_mask_stem(src.stem, mask_stem)
+                    except Exception:
+                        tag = None
+                    suffix = f"_{tag}" if tag else ""
+                    out_path = analysis_dir / f"{mask_path.stem}_foci_visualization{suffix}.tif"
+                    ok = write_foci_overlay_tif(
+                        foci_image_path=src,
+                        output_path=out_path,
+                        rows=rows,
+                        mask_path=mask_path,
+                    )
+                    if ok and hasattr(self.parent_window, "log_output"):
+                        self.parent_window.log_output(f"[Analyze] Wrote foci visualization: {out_path}\n")
+                except Exception:
+                    continue
 
     def _run_one_analysis_task(self, mask_path: Path, fi_path: Path | None, out_path: Path) -> None:
         ok, _missing = paths_exist([mask_path] + ([fi_path] if fi_path is not None else []))
@@ -476,6 +699,19 @@ class AnalyzeTab(AnalyzeMasksBase):
         cmd_args = self._build_analyze_cell_areas_args(mask_path=mask_path, out_path=out_path, fi_path=fi_path)
 
         def _done(ok: bool, msg: str) -> None:
+            # Clear worker handle first (avoid double-cancel attempts).
+            try:
+                self._analysis_worker = None
+            except Exception:
+                pass
+            cancelled = bool(getattr(self, "_cancel_analysis_requested", False))
+            self._analysis_in_progress = False
+            try:
+                self.analyze_btn.setEnabled(True)
+                self.analyze_btn.setText(self._primary_button_label())
+                self.analyze_btn.setToolTip(self._primary_button_tooltip())
+            except Exception:
+                pass
             # Verify the expected artifact exists when the script reported success.
             try:
                 if ok and out_path is not None and isinstance(out_path, Path) and not out_path.exists():
@@ -487,27 +723,61 @@ class AnalyzeTab(AnalyzeMasksBase):
                 pass
             if hasattr(self.parent_window, "log_output") and msg:
                 self.parent_window.log_output(msg + ("\n" if not msg.endswith("\n") else ""))
-            QMessageBox.information(
-                self,
-                "Analysis complete" if ok else "Analysis failed",
-                msg or ("Done" if ok else "Failed"),
-            )
+            if cancelled:
+                QMessageBox.information(self, "Analysis cancelled", "Analysis was cancelled.")
+            else:
+                QMessageBox.information(
+                    self,
+                    "Analysis complete" if ok else "Analysis failed",
+                    msg or ("Done" if ok else "Failed"),
+                )
+            # Best-effort: foci visualizations (CSV-driven) for this mask.
+            try:
+                if ok:
+                    self._write_analysis_foci_visualizations_for_masks([Path(mask_path)])
+            except Exception:
+                pass
 
         # Use existing WorkerThread subprocess runner (expects script_path + cmd_args)
         # We run analyze_cell_areas as a module: script_path="-m", cmd_args=[module, ...args]
         t = WorkerThread("-m", cmd_args, parent=self)
+        self._analysis_worker = t
         t.finished.connect(_done)
         if hasattr(t, "progress") and hasattr(self.parent_window, "log_output"):
             t.progress.connect(lambda s: self.parent_window.log_output(str(s)))
         t.start()
 
     def _process_next_folder_file(self) -> None:
+        if bool(getattr(self, "_cancel_analysis_requested", False)):
+            # Stop queue promptly.
+            self._analysis_in_progress = False
+            try:
+                self.analyze_btn.setEnabled(True)
+                self.analyze_btn.setText(self._primary_button_label())
+                self.analyze_btn.setToolTip(self._primary_button_tooltip())
+            except Exception:
+                pass
+            return
         tasks = getattr(self, "folder_fi_tasks", []) or []
         idx = int(getattr(self, "current_task_index", 0))
         if idx >= len(tasks):
             # Done; optionally merge FI channels
             try:
                 self._merge_fi_channels_into_one_excel()
+            except Exception:
+                pass
+            # Best-effort: write foci visualizations for masks that succeeded.
+            try:
+                results = getattr(self, "folder_results", []) or []
+                ok_masks: list[Path] = []
+                by_mask: dict[Path, list[bool]] = {}
+                for (m, _fi, _out), ok in zip(tasks, results, strict=False):
+                    by_mask.setdefault(Path(m), []).append(bool(ok))
+                for m, oks in by_mask.items():
+                    if oks and all(oks):
+                        ok_masks.append(Path(m))
+                if ok_masks:
+                    self._write_analysis_foci_visualizations_for_masks(ok_masks)
             except Exception:
                 pass
             # Post-analysis colocalization (CSV-driven, no re-detection)
@@ -546,16 +816,31 @@ class AnalyzeTab(AnalyzeMasksBase):
                     )
             except Exception:
                 pass
-            self.analyze_btn.setEnabled(True)
-            self.analyze_btn.setText(self._primary_button_label())
+            self._analysis_in_progress = False
+            try:
+                self.analyze_btn.setEnabled(True)
+                self.analyze_btn.setText(self._primary_button_label())
+                self.analyze_btn.setToolTip(self._primary_button_tooltip())
+            except Exception:
+                pass
             return
         mask_path, fi_path, out_path = tasks[idx]
-        self.analyze_btn.setText(f"Analyzing... ({idx+1}/{len(tasks)})")
+        try:
+            self.analyze_btn.setEnabled(True)
+            self.analyze_btn.setText("Cancel Analysis")
+            self.analyze_btn.setToolTip("Stop the current analysis job.")
+        except Exception:
+            pass
 
         cmd_args = self._build_analyze_cell_areas_args(mask_path=mask_path, out_path=out_path, fi_path=fi_path)
         th = WorkerThread("-m", cmd_args, parent=self)
+        self._analysis_worker = th
 
         def _on_done(success: bool, message: str):
+            try:
+                self._analysis_worker = None
+            except Exception:
+                pass
             # Verify the expected output exists; treat missing artifact as failure.
             try:
                 if success and out_path is not None and not Path(out_path).exists():
@@ -1127,4 +1412,3 @@ class AnalyzeTab(AnalyzeMasksBase):
             except Exception:
                 self._single_fi_path = None
         self._update_fi_ui_state()
-
