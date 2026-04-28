@@ -242,6 +242,9 @@ def show_filter_preview(tab, path_text: str) -> None:
     r3.addWidget(QLabel("(focus mean / rest-of-cell mean)"))
     r3.addStretch()
     foci_layout.addLayout(r3)
+    w_foci_excl_outside = QCheckBox("Filter foci outside cells")
+    w_foci_excl_outside.setChecked(bool(fs0.get("foci_exclude_outside_cells", False)))
+    foci_layout.addWidget(w_foci_excl_outside)
     foci_layout.addStretch()
 
     settings_layout.addWidget(cell_morph_group, 1)
@@ -955,6 +958,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                 fs = request_settings
                 prob_thr = float(fs.get("foci_prob_thresh", 0.5)) if bool(fs.get("foci_prob_enabled", False)) else None
                 min_raw = float(fs.get("foci_min_int", 0.0)) if bool(fs.get("foci_min_int_enabled", False)) else None
+                exclude_outside = bool(fs.get("foci_exclude_outside_cells", False))
                 filtered = []
                 for r in frame_rows:
                     try:
@@ -973,6 +977,12 @@ def show_filter_preview(tab, path_text: str) -> None:
                             prob = float(pr)
                         except Exception:
                             prob = None
+                    if exclude_outside:
+                        h, w = mask_2d.shape[:2]
+                        if y < 0 or y >= h or x < 0 or x >= w:
+                            continue
+                        if int(mask_2d[y, x]) <= 0:
+                            continue
                     if prob_thr is not None and prob is not None and prob < float(prob_thr):
                         continue
                     if min_raw is not None and intensity < float(min_raw):
@@ -1404,6 +1414,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                     "foci_min_int": float(w_minint.value()),
                     "foci_per_cell_ratio_enabled": bool(w_ratio_en.isChecked()),
                     "foci_per_cell_ratio": float(w_ratio.value()),
+                    "foci_exclude_outside_cells": bool(w_foci_excl_outside.isChecked()),
                 }
             )
 
@@ -1429,7 +1440,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                     w.blockSignals(True)
                 except Exception:
                     pass
-            for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en):
+            for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside):
                 try:
                     cb.blockSignals(True)
                 except Exception:
@@ -1452,6 +1463,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                 w_minint.setValue(float(fs.get("foci_min_int", 0.0) or 0.0))
                 w_ratio_en.setChecked(bool(fs.get("foci_per_cell_ratio_enabled", False)))
                 w_ratio.setValue(float(fs.get("foci_per_cell_ratio", 2.0) or 2.0))
+                w_foci_excl_outside.setChecked(bool(fs.get("foci_exclude_outside_cells", False)))
             finally:
                 for w in (
                     w_pixel,
@@ -1472,7 +1484,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                         w.blockSignals(False)
                     except Exception:
                         pass
-                for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en):
+                for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside):
                     try:
                         cb.blockSignals(False)
                     except Exception:
@@ -1498,7 +1510,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                 w.valueChanged.connect(lambda *_: _ui_to_settings())
             except Exception:
                 pass
-        for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en):
+        for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside):
             try:
                 cb.toggled.connect(lambda *_: _ui_to_settings())
             except Exception:
@@ -1532,6 +1544,7 @@ def show_filter_preview(tab, path_text: str) -> None:
                 "foci_prob_enabled": w_prob_en,
                 "foci_min_int_enabled": w_minint_en,
                 "foci_per_cell_ratio_enabled": w_ratio_en,
+                "foci_exclude_outside_cells": w_foci_excl_outside,
             }
         except Exception:
             pass

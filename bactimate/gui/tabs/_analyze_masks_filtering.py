@@ -166,6 +166,7 @@ class FilteringTab(AnalyzeMasksBase):
             "foci_min_int": 0.0,
             "foci_per_cell_ratio_enabled": False,
             "foci_per_cell_ratio": 2.0,
+            "foci_exclude_outside_cells": False,
         }
 
     def _ensure_filter_settings(self) -> dict[str, Any]:
@@ -236,6 +237,7 @@ class FilteringTab(AnalyzeMasksBase):
         per_cell_ratio = (
             float(fs.get("foci_per_cell_ratio", 2.0)) if bool(fs.get("foci_per_cell_ratio_enabled", False)) else None
         )
+        exclude_outside_cells = bool(fs.get("foci_exclude_outside_cells", False))
 
         self._filtering_in_progress = True
         self._cancel_filtering_requested = False
@@ -257,7 +259,12 @@ class FilteringTab(AnalyzeMasksBase):
         progress.show()
         QApplication.processEvents()
 
-        from bactimate.gui.artifact_paths import filtered_mask_path_for_mask, filtered_foci_csv_path, raw_foci_csv_path
+        from bactimate.gui.artifact_paths import (
+            filtered_mask_path_for_mask,
+            filtered_foci_csv_path,
+            legacy_foci_csv_candidates,
+            raw_foci_csv_path,
+        )
 
         try:
             from bactimate.scripts.analyze_cell_areas import calculate_cell_properties, filter_rod_shaped_cells, filter_by_size
@@ -281,6 +288,7 @@ class FilteringTab(AnalyzeMasksBase):
             refine_spotiflow_peaks = None
             coerce_stack_to_tyx = None
             coerce_plane_to_2d = None
+        helper_skip_logged = False
 
         def _read_raw_foci_csv(csv_path: Path) -> list[dict]:
             if not csv_path.exists():
@@ -400,6 +408,12 @@ class FilteringTab(AnalyzeMasksBase):
             if not foci_sources:
                 continue
             if refine_spotiflow_peaks is None or coerce_stack_to_tyx is None or coerce_plane_to_2d is None:
+                if not helper_skip_logged and hasattr(self.parent_window, "log_output"):
+                    self.parent_window.log_output(
+                        "[Filtering] Skipping foci CSV filtering: required helper imports are unavailable "
+                        "(refine_spotiflow_peaks/coerce_stack_to_tyx/coerce_plane_to_2d).\n"
+                    )
+                    helper_skip_logged = True
                 continue
             for src in foci_sources:
                 try:
@@ -408,10 +422,24 @@ class FilteringTab(AnalyzeMasksBase):
                     csv_new = foci_csv_path(mask_path.parent, mask_path=mask_path, foci_source_path=src)
                     csv_legacy = raw_foci_csv_path(mask_path.parent, mask_path=mask_path, foci_source_path=src)
                     raw_rows = _read_raw_foci_csv(csv_new)
+                    chosen_csv = csv_new if raw_rows else None
                     if not raw_rows:
                         raw_rows = _read_raw_foci_csv(csv_legacy)
+                        if raw_rows:
+                            chosen_csv = csv_legacy
+                    if not raw_rows:
+                        for cand in legacy_foci_csv_candidates(mask_path.parent, mask_path=mask_path, foci_source_path=src):
+                            raw_rows = _read_raw_foci_csv(cand)
+                            if raw_rows:
+                                chosen_csv = cand
+                                break
                     if not raw_rows:
                         continue
+                    if chosen_csv is not None and chosen_csv not in (csv_new, csv_legacy):
+                        if hasattr(self.parent_window, "log_output"):
+                            self.parent_window.log_output(
+                                f"[Filtering] Using legacy foci CSV fallback: {chosen_csv.name}\n"
+                            )
                     foci_stack = np.asarray(safe_imread(str(src)))
                     foci_tyx = coerce_stack_to_tyx(foci_stack)
                     if foci_tyx is None or foci_tyx.size == 0:
@@ -421,6 +449,22 @@ class FilteringTab(AnalyzeMasksBase):
                     # Apply CSV-only filters first (probability/min raw)
                     filtered_rows = []
                     for r in raw_rows:
+                        try:
+                            fi_idx = int(float(r.get("frame", 0) or 0))
+                        except Exception:
+                            fi_idx = 0
+                        if exclude_outside_cells:
+                            try:
+                                mask_idx = max(0, min(int(fi_idx), int(out.shape[0]) - 1))
+                                y = int(float(r.get("y", 0) or 0))
+                                x = int(float(r.get("x", 0) or 0))
+                                h, w = out[mask_idx].shape[:2]
+                                if y < 0 or y >= h or x < 0 or x >= w:
+                                    continue
+                                if int(out[mask_idx, y, x]) <= 0:
+                                    continue
+                            except Exception:
+                                continue
                         if prob_thresh is not None and r.get("probability") is not None and float(r["probability"]) < float(prob_thresh):
                             continue
                         if min_peak_raw is not None and float(r.get("intensity", 0.0) or 0.0) < float(min_peak_raw):

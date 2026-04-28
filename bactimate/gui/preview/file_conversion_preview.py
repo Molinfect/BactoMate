@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 import numpy as np
-from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QCheckBox, QLabel, QVBoxLayout, QWidget
 
 from bactimate.gui.image_utils import scale_for_preview, to_qpixmap
@@ -170,6 +169,8 @@ def show_file_conversion_preview(
     # Initial state
     nav.set_state(PreviewNavState(source_key=None, frame_idx=0, channel_idx=0, z_idx=0), emit=False)
 
+    has_z_nav = bool(model.nd2_axis_keys is not None and "Z" in model.nd2_axis_keys and model.num_z > 1)
+
     # ---- renderer ------------------------------------------------------
     def _render(state) -> RenderResult:
         z_idx = 0
@@ -205,7 +206,12 @@ def show_file_conversion_preview(
             view_txt = f"Bleach corrected ({dn})"
 
         ch_txt = f" | Channel {int(state.channel_idx) + 1}" if model.num_channels > 1 else ""
-        z_txt = f" | Z {int(z_idx) + 1}" if (model.nd2_axis_keys is not None and "Z" in model.nd2_axis_keys and model.num_z > 1) else ""
+        z_txt = ""
+        if has_z_nav:
+            if model.showing_corrected:
+                z_txt = " | Z fixed to 1 (corrected preview)"
+            else:
+                z_txt = f" | Z {int(z_idx) + 1}"
 
         title = f"Timepoint {int(state.frame_idx) + 1} of {model.num_time}  |  {model.file_path}"
         info = f"View: {view_txt}{ch_txt}{z_txt} | LUT: [{state.vmin:.1f}, {state.vmax:.1f}]" if (state.vmin is not None and state.vmax is not None) else f"View: {view_txt}{ch_txt}{z_txt}"
@@ -287,6 +293,24 @@ def show_file_conversion_preview(
         return np.asarray(corrected), method, channels_tuple, disp
 
     if bleach_check is not None and bleach_status is not None:
+        def _set_z_nav_for_mode(*, corrected: bool) -> None:
+            if not has_z_nav:
+                return
+            st = nav.state()
+            # Corrected preview uses first-Z projection; hide Z control to avoid misleading interaction.
+            spec2 = replace(nav.spec(), show_z=(not corrected), z_count=(1 if corrected else model.num_z))
+            nav.set_spec(spec2, emit_init=False)
+            nav.set_state(
+                PreviewNavState(
+                    source_key=st.source_key,
+                    frame_idx=st.frame_idx,
+                    channel_idx=st.channel_idx,
+                    z_idx=(0 if corrected else st.z_idx),
+                ),
+                emit=False,
+            )
+            dlg.set_extra("z_idx", 0 if corrected else int(st.z_idx))
+
         def _apply_bleach_view(checked: bool) -> None:
             if checked:
                 corrected, method, channels_tuple, disp = _compute_corrected_from_tab()
@@ -300,33 +324,16 @@ def show_file_conversion_preview(
                 model.bleach_display_name = disp
                 bleach_status.setText(f"View: Bleach corrected ({disp})")
                 bleach_status.setStyleSheet("color: #4CAF50; font-size: 10pt;")
+                _set_z_nav_for_mode(corrected=True)
             else:
                 model.showing_corrected = False
                 bleach_status.setText("View: Raw")
                 bleach_status.setStyleSheet("color: #9E9E9E; font-size: 10pt;")
+                _set_z_nav_for_mode(corrected=False)
             _reset_lut()
             dlg.refresh()
 
         bleach_check.toggled.connect(_apply_bleach_view)
-
-        def _poll_settings() -> None:
-            if not bleach_check.isChecked():
-                return
-            corrected, method, channels_tuple, disp = _compute_corrected_from_tab()
-            if corrected is None:
-                return
-            if method != model.bleach_method_used or channels_tuple != model.bleach_channels_used:
-                model.corrected_frames = corrected
-                model.bleach_method_used = method
-                model.bleach_channels_used = channels_tuple
-                model.bleach_display_name = disp
-                bleach_status.setText(f"View: Bleach corrected ({disp})")
-                dlg.refresh()
-
-        sync_timer = QTimer(dlg)
-        sync_timer.timeout.connect(_poll_settings)
-        sync_timer.start(500)
-        dlg._fileconv_bleach_sync_timer = sync_timer  # keep reference
 
     # Initial draw
     dlg.set_frame_idx(0)
@@ -340,4 +347,3 @@ def show_file_conversion_preview(
     except Exception:
         pass
     return dlg
-

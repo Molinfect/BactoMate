@@ -37,7 +37,7 @@ from bactimate.gui.tabs._analyze_masks_base import AnalyzeMasksBase
 
 
 class AnalyzeTab(AnalyzeMasksBase):
-    """Section 3: Analyze (FI / contour / colocalization reporting; writes *_analysis*.xlsx)."""
+    """Section 3: Analyze (cell/FI analysis + optional colocalization reporting; writes *_analysis*.xlsx)."""
 
     # ---- base hooks ---------------------------------------------------
     def _stage_key(self) -> str:
@@ -178,7 +178,7 @@ class AnalyzeTab(AnalyzeMasksBase):
     # ---- analyze-stage panel (FI + contour + colocalization controls) -
     def _build_stage_analysis_subpanel(self) -> Optional[QWidget]:
         """
-        Compact FI + Colocalization controls for Section 3.
+        Analyze controls for Section 3.
 
         Layout overview:
             ┌─ Fluorescence intensity (FI) ─────────────────────────────────┐
@@ -282,14 +282,16 @@ class AnalyzeTab(AnalyzeMasksBase):
         self.coloc_calc_all_pairs = QCheckBox("Add colocalization sheets per *_foci channel pair")
         self.coloc_calc_all_pairs.setChecked(True)
         self.coloc_calc_all_pairs.setToolTip(
-            "After a successful analysis, append one colocalization sheet per *_foci channel "
-            "pair to *_analysis.xlsx (from existing foci CSVs)."
-        )
+                "After a successful analysis, append one colocalization sheet per *_foci channel "
+                "pair to *_analysis.xlsx (from existing foci CSVs).\n\n"
+                "This is independent from 'Analyze FI'."
+            )
         toggle_row.addWidget(self.coloc_calc_all_pairs)
         toggle_row.addWidget(
             create_info_icon(
                 "Colocalization is computed from existing foci CSV artifacts (no re-detection).\n"
-                "One sheet is appended per channel pair to *_analysis.xlsx.",
+                "One sheet is appended per channel pair to *_analysis.xlsx.\n"
+                "It can run even when 'Analyze FI' is disabled.",
                 parent_widget=self,
             )
         )
@@ -405,7 +407,10 @@ class AnalyzeTab(AnalyzeMasksBase):
         if not getattr(self, "fi_feedback", None):
             return
         if not self.analyze_fi.isChecked():
-            self.fi_feedback.setPlainText("Analyze FI is off. Enable it to see FI pairings.")
+            self.fi_feedback.setPlainText(
+                "Analyze FI is off. Enable it to see FI pairings.\n"
+                "Colocalization remains available and runs from existing foci CSV artifacts."
+            )
             return
         if self._is_match_by_name_mode():
             masks = self._get_mask_files_for_feedback()
@@ -549,9 +554,15 @@ class AnalyzeTab(AnalyzeMasksBase):
             try:
                 name_lower = input_file.name.lower()
                 if name_lower.endswith(("_masks.tif", "_masks.tiff")) and "_mask_filtered" not in name_lower:
-                    candidate = input_file.parent / (stem_from_mask_path(input_file) + "_mask_filtered.tif")
-                    if candidate.exists():
-                        input_file = candidate
+                    stem = stem_from_mask_path(input_file)
+                    candidates = [
+                        input_file.parent / f"{stem}_mask_filtered.tif",
+                        input_file.parent / f"{stem}_mask_filtered.tiff",
+                    ]
+                    for candidate in candidates:
+                        if candidate.exists():
+                            input_file = candidate
+                            break
             except Exception:
                 pass
 
@@ -735,6 +746,14 @@ class AnalyzeTab(AnalyzeMasksBase):
             try:
                 if ok:
                     self._write_analysis_foci_visualizations_for_masks([Path(mask_path)])
+            except Exception:
+                pass
+            # Best-effort: append post-analysis colocalization sheets for single-file runs.
+            try:
+                if ok and hasattr(self, "coloc_calc_all_pairs") and self.coloc_calc_all_pairs.isChecked():
+                    from bactimate.gui.tabs._analyze_masks_colocalization import run_post_analysis_colocalization_for_masks
+
+                    run_post_analysis_colocalization_for_masks(self, [Path(mask_path)])
             except Exception:
                 pass
 
@@ -1146,6 +1165,26 @@ class AnalyzeTab(AnalyzeMasksBase):
                 continue
             analysis_dir = group[0][0].parent
             merged_path = analysis_dir / f"{stem}_analysis.xlsx"
+            pre_coloc_sheets: list[str] = []
+            try:
+                if merged_path.exists():
+                    from openpyxl import load_workbook
+
+                    wb_pre = load_workbook(merged_path, read_only=True)
+                    pre_coloc_sheets = [
+                        s for s in list(wb_pre.sheetnames) if isinstance(s, str) and s.startswith("Colocalization ")
+                    ]
+                    wb_pre.close()
+            except Exception:
+                pre_coloc_sheets = []
+            try:
+                if pre_coloc_sheets and hasattr(self.parent_window, "log_output"):
+                    self.parent_window.log_output(
+                        f"[Analyze/Merge] {merged_path.name} currently has {len(pre_coloc_sheets)} "
+                        f"Colocalization sheet(s); FI merge rewrites workbook before post-colocalization append.\n"
+                    )
+            except Exception:
+                pass
 
             try:
                 summary_df = None
@@ -1364,6 +1403,27 @@ class AnalyzeTab(AnalyzeMasksBase):
                             continue
                         ch_df = pd.concat(parts, ignore_index=True, sort=False)
                         ch_df.to_excel(writer, sheet_name=f"Foci [{ch}]", index=False)
+                try:
+                    from openpyxl import load_workbook
+
+                    wb_post = load_workbook(merged_path, read_only=True)
+                    post_names = list(wb_post.sheetnames)
+                    post_coloc = [
+                        s for s in post_names if isinstance(s, str) and s.startswith("Colocalization ")
+                    ]
+                    wb_post.close()
+                    if hasattr(self.parent_window, "log_output"):
+                        self.parent_window.log_output(
+                            f"[Analyze/Merge] Wrote {merged_path.name}: sheets={len(post_names)}, "
+                            f"coloc_sheets_after_merge={len(post_coloc)}.\n"
+                        )
+                        if pre_coloc_sheets and not post_coloc:
+                            self.parent_window.log_output(
+                                "[Analyze/Merge] Existing Colocalization sheets were removed by merge rewrite; "
+                                "they should be re-added by post-analysis colocalization step.\n"
+                            )
+                except Exception:
+                    pass
             except Exception:
                 get_logger().exception("Merge FI channels failed")
                 continue

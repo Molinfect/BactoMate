@@ -206,10 +206,10 @@ def _foci_detect_draw_channel(
                 pd["foci_channel"] = channel_label
             peaks_out.append(pd)
         return (n_foci, n_drawn, peaks_out, raw_median_fi, min_rel, mode_txt)
-    except Exception:
+    except Exception as e:
         if detection_mode == 2:
             raise
-        return (0, 0, [], None, None, "")
+        raise RuntimeError(f"Foci preview detection failed: {e}") from e
 
 
 def build_preview_vis(
@@ -307,8 +307,8 @@ def build_preview_vis(
                 vis_fi[contour_mask, 1] = (vis_fi[contour_mask, 1].astype(np.float32) * (1 - alpha) + 0 * alpha).astype(np.uint8)
                 vis_fi[contour_mask, 2] = (vis_fi[contour_mask, 2].astype(np.float32) * (1 - alpha) + 255 * alpha).astype(np.uint8)
             vis[:] = vis_fi[:]
-        except Exception:
-            pass
+        except Exception as e:
+            raise RuntimeError(f"FI background preview failed: {e}") from e
 
     if run_foci and (fi_image is not None or (multi_foci_fi_2d and len(multi_foci_fi_2d) > 0)):
         if progress_callback:

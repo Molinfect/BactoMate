@@ -283,7 +283,7 @@ class HistogramLUTWidget(QWidget):
             # no raw frame cached; can't draw histogram bars
             self._ax.set_xlabel("Intensity", color="white", fontsize=9)
             self._ax.set_ylabel("Log(Count+1)", color="white", fontsize=9)
-            self._canvas.draw()
+            self._canvas.draw_idle()
             return
 
         flat = np.asarray(frame_2d, dtype=np.float64).ravel()
@@ -377,7 +377,7 @@ class HistogramLUTWidget(QWidget):
                 self._hist_vmin_line.set_xdata([float(self._vmin), float(self._vmin)])
             if self._hist_vmax_line is not None:
                 self._hist_vmax_line.set_xdata([float(self._vmax), float(self._vmax)])
-            self._canvas.draw()
+            self._canvas.draw_idle()
         finally:
             self._is_updating = False
 
@@ -596,4 +596,3 @@ class PreviewDialogBase(QDialog):
         self._state.vmax = float(vmax)
         # Renderers generally need to redraw when LUT changes.
         self.refresh()
-

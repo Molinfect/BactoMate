@@ -1579,16 +1579,19 @@ class OmniposeSegTab(QWidget):
         output_csv: Path,
         prob_thresh: Optional[float] = None,
         spotiflow_params: dict[str, Any] | None = None,
-    ) -> None:
-        """Run Spotiflow detection per frame and write raw CSV."""
+    ) -> tuple[bool, str]:
+        """Run Spotiflow detection per frame and write raw CSV.
+
+        Returns ``(ok, reason)`` where ``ok=False`` indicates Spotiflow/import/predict failure.
+        """
         try:
             from bactimate.modules.image_stack_utils import coerce_stack_to_tyx, coerce_plane_to_2d
             from bactimate.modules.foci_utils import detect_peaks_spotiflow
-        except Exception:
-            return
+        except Exception as e:
+            return False, f"imports failed: {e}"
         arr = coerce_stack_to_tyx(np.asarray(foci_stack))
         if arr is None or arr.size == 0:
-            return
+            return False, "empty or invalid foci stack"
         include_frame = bool(arr.shape[0] > 1)
         rows: list[dict] = []
         params = self._get_spotiflow_detection_params()
@@ -1602,12 +1605,15 @@ class OmniposeSegTab(QWidget):
             peaks = detect_peaks_spotiflow(
                 plane,
                 **params,
-            ) or []
+            )
+            if peaks is None:
+                return False, f"Spotiflow unavailable or prediction failed at frame {fi}"
             for p in peaks:
                 q = dict(p)
                 q["frame"] = fi
                 rows.append(q)
         self._write_raw_foci_csv(output_csv=output_csv, rows=rows, include_frame=include_frame)
+        return True, ""
 
     def _update_button_states(self):
         """Update button enabled states: path must exist and be a file or directory."""
@@ -4946,7 +4952,16 @@ class OmniposeSegTab(QWidget):
                                 continue
                             csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
                             self.parent_window.log_output(f"Detecting foci (CSV): {src.name} → {csv_path.name}\n")
-                            self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None)
+                            ok_foci, reason = self._detect_foci_for_stack_and_write_csv(
+                                foci_stack=stack,
+                                output_csv=csv_path,
+                                prob_thresh=None,
+                            )
+                            if not ok_foci:
+                                self.parent_window.log_output(
+                                    f"[Foci] Detection failed for {src.name}: {reason}. CSV not written.\n"
+                                )
+                                continue
                             # Best-effort: also write a foci overlay artifact next to the CSV.
                             try:
                                 from bactimate.gui.foci_overlay_artifacts import (
@@ -5143,7 +5158,16 @@ class OmniposeSegTab(QWidget):
                                 continue
                             csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
                             self.parent_window.log_output(f"Detecting foci (CSV): {src.name} → {csv_path.name}\n")
-                            self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None)
+                            ok_foci, reason = self._detect_foci_for_stack_and_write_csv(
+                                foci_stack=stack,
+                                output_csv=csv_path,
+                                prob_thresh=None,
+                            )
+                            if not ok_foci:
+                                self.parent_window.log_output(
+                                    f"[Foci] Detection failed for {src.name}: {reason}. CSV not written.\n"
+                                )
+                                continue
                             # Best-effort: also write a foci overlay artifact next to the CSV.
                             try:
                                 from bactimate.gui.foci_overlay_artifacts import (
