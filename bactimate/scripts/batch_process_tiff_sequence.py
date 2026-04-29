@@ -404,158 +404,244 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
         else:
             raise
     
-    masks = []
+    # NOTE: This function is called by the GUI through WorkerThread. All stdout is captured and
+    # displayed in the GUI log, so we use print() for structured, greppable debugging output.
+    #
+    # The previous implementation pre-loaded *all* frames into memory before batching, which
+    # caused large peak RAM usage and increased the likelihood of GPU OOM (CUDA/MPS). We now
+    # stream frames per batch and add adaptive batch-size backoff for OOM-like failures.
+
+    def _device_label() -> str:
+        if not use_gpu:
+            return "cpu(--no-gpu)"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+            if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+
+    def _is_oom_error(exc: BaseException) -> bool:
+        s = str(exc).lower()
+        # CUDA: typically "CUDA out of memory"; MPS: varies, but commonly includes "mps" + allocation wording.
+        return ("out of memory" in s) or ("cuda" in s and "memory" in s) or ("mps" in s and ("memory" in s or "allocated" in s))
+
+    def _clear_accelerator_cache() -> None:
+        try:
+            import torch
+            if use_gpu and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        # MPS has fewer stable cache management hooks; best-effort is simply to retry with smaller batches.
+
+    def _log_cuda_mem(prefix: str) -> None:
+        try:
+            import torch
+            if use_gpu and torch.cuda.is_available():
+                alloc = float(torch.cuda.memory_allocated(0)) / (1024.0**2)
+                rsvd = float(torch.cuda.memory_reserved(0)) / (1024.0**2)
+                print(f"[mem] {prefix} cuda_alloc_mb={alloc:.1f} cuda_reserved_mb={rsvd:.1f}")
+        except Exception:
+            pass
+
+    kind = "USER_MODEL" if pretrained_model else "BUILTIN"
+    model_id = str(pretrained_model) if pretrained_model else str(model_type)
+    base_bs = max(1, int(batch_size) if batch_size else 1)
     num_frames_total = len(frame_paths)
-    num_batches = (num_frames_total + batch_size - 1) // batch_size  # Ceiling division
-    print(f"Processing {num_frames_total} frames in {num_batches} batch(es) of {batch_size}...")
-    
-    # Pre-load all frames into memory for faster batch processing
-    print(f"Loading {num_frames_total} frames into memory...")
-    images_list = []
-    for i, frame_path in enumerate(tqdm(frame_paths, desc="Loading frames", **tqdm_kwargs), 1):
-        try:
-            image = imread(frame_path)
-            # Ensure image is properly formatted
-            if image.ndim == 2:
-                # 2D grayscale - keep as is, Omnipose will handle it
-                pass
-            elif image.ndim == 3:
-                # Could be (Y, X, C) or (C, Y, X)
-                if image.shape[0] < 10:  # Channels first
-                    image = image.transpose(1, 2, 0)  # (Y, X, C)
-            images_list.append(image)
-        except Exception as e:
-            print(f"\nERROR loading {frame_path}: {e}")
-            # Use first image shape if available, otherwise create dummy
-            if len(images_list) > 0:
-                empty_image = np.zeros_like(images_list[0])
-            else:
-                # Try to read to get shape
-                try:
-                    dummy = imread(frame_paths[0])
-                    empty_image = np.zeros(dummy.shape[:2], dtype=np.uint8)
-                except:
-                    empty_image = np.zeros((512, 512), dtype=np.uint8)
-            images_list.append(empty_image)
-    
-    # Process frames in batches for better GPU utilization
-    num_frames = len(images_list)
-    batch_num = 0
-    for batch_start in range(0, num_frames, batch_size):
-        batch_num += 1
-        batch_end = min(batch_start + batch_size, num_frames)
-        batch_images = images_list[batch_start:batch_end]
-        frames_in_batch = len(batch_images)
-        
-        # Clear progress message showing actual frame numbers
-        print(f"Processing batch {batch_num}/{num_batches}: frames {batch_start+1}-{batch_end} of {num_frames_total} ({frames_in_batch} frames)")
-        
-        try:
-            # Process batch - model.eval can handle lists of images
-            # This is much faster than processing one at a time
-            result = model.eval(
-                batch_images,  # Pass list of images for batch processing
-                channels=channels,
-                diameter=diameter,
-                flow_threshold=flow_threshold,
-                mask_threshold=mask_threshold,
-                omni=omni,
-                cluster=cluster,
-                net_avg=False,  # Faster, omni models don't support net_avg anyway
-                resample=False,  # Disable resampling for speed (was True)
-                tile=False,  # Disable tiling for speed (if GPU memory allows)
-                verbose=verbose
-            )
-            
-            # Handle different return formats
-            if isinstance(result, tuple):
-                batch_masks = result[0]  # First element is always the masks
-            else:
-                batch_masks = result
-            
-            # batch_masks might be a list or array
-            if isinstance(batch_masks, list):
-                masks.extend(batch_masks)
-            elif isinstance(batch_masks, np.ndarray):
-                # If single array, might be stacked - check dimensions
-                if batch_masks.ndim == 2:
-                    # Single mask
-                    masks.append(batch_masks)
-                else:
-                    # Multiple masks - split them
-                    for i in range(len(batch_images)):
-                        if batch_masks.ndim == 3:
-                            masks.append(batch_masks[i])
-                        else:
-                            masks.append(batch_masks)
-            else:
-                # Fallback: try to iterate
-                try:
-                    masks.extend(batch_masks)
-                except:
-                    masks.append(batch_masks)
-            
-            # Debug log after first batch (same format as Preview dialog for comparison)
-            if batch_num == 1:
-                try:
-                    first_masks = batch_masks if isinstance(batch_masks, list) else [batch_masks[i] for i in range(len(batch_images))] if batch_masks.ndim >= 3 else [batch_masks]
-                    n_cells_first = sum(len(np.unique(m)) - 1 for m in first_masks) if first_masks else 0
-                    kind = "USER_MODEL" if pretrained_model else "BUILTIN"
-                    model_id = str(pretrained_model) if pretrained_model else model_type
-                    _append_omni_debug(
-                        f"eval kind={kind} model={model_id!r} diameter={diameter} flow_thr={flow_threshold} mask_thr={mask_threshold} "
-                        f"batch_frames={len(batch_images)} -> n_cells_first_batch={n_cells_first}"
-                    )
-                except Exception:
-                    pass
-            
-            # Progress update after batch completion
-            frames_completed = len(masks)
-            progress_pct = int((frames_completed / num_frames_total) * 100)
-            print(f"✓ Batch {batch_num}/{num_batches} complete: {frames_completed}/{num_frames_total} frames ({progress_pct}%)")
-            
-            # Memory management: clear GPU cache between batches to prevent fragmentation
-            # This allows memory pooling to work better and can enable larger batch sizes
+    print(f"[run] device={_device_label()} use_gpu={bool(use_gpu)} kind={kind} model={model_id!r}")
+    print(f"[run] frames_total={num_frames_total} base_batch_size={base_bs} diameter={diameter} flow_thr={flow_threshold} mask_thr={mask_threshold} cluster={bool(cluster)}")
+
+    masks: list = []
+    t0_all = time.time() if "time" in globals() else None
+    try:
+        import time as _time_mod
+        t0_all = _time_mod.time()
+    except Exception:
+        t0_all = None
+
+    batch_idx = 0
+    frame_idx = 0
+    while frame_idx < num_frames_total:
+        batch_idx += 1
+        attempt_bs = min(base_bs, num_frames_total - frame_idx)
+        retries = 0
+
+        while True:
+            batch_paths = frame_paths[frame_idx: frame_idx + attempt_bs]
+            batch_start_1 = frame_idx + 1
+            batch_end_1 = frame_idx + len(batch_paths)
+
+            # Load only the current batch into memory.
+            t_load0 = None
             try:
-                import torch
-                if use_gpu and torch.cuda.is_available():
-                    # Clear unused memory but keep allocated memory pools
-                    # This helps with memory fragmentation without losing the benefits of pooling
-                    torch.cuda.empty_cache()
-            except:
-                pass
-            
-        except Exception as e:
-            print(f"\nERROR processing batch {batch_start}-{batch_end}: {e}")
-            # Fallback to individual processing for this batch
-            print(f"Falling back to individual frame processing for this batch...")
-            for i, image in enumerate(batch_images):
+                import time as _time_mod
+                t_load0 = _time_mod.time()
+            except Exception:
+                t_load0 = None
+
+            batch_images = []
+            first_shape = None
+            for p in batch_paths:
                 try:
-                    result = model.eval(
-                        image,
-                        channels=channels,
-                        diameter=diameter,
-                        flow_threshold=flow_threshold,
-                        mask_threshold=mask_threshold,
-                        omni=omni,
-                        cluster=cluster,
-                        net_avg=False,
-                        resample=False,
-                        verbose=verbose
-                    )
-                    if isinstance(result, tuple):
-                        mask = result[0]
+                    img = imread(p)
+                    if img.ndim == 3 and img.shape[0] < 10:
+                        img = img.transpose(1, 2, 0)  # (Y, X, C) when channels-first
+                    if first_shape is None:
+                        first_shape = getattr(img, "shape", None)
+                    batch_images.append(img)
+                except Exception as e:
+                    print(f"[load] ERROR path={p!r} err={type(e).__name__}: {e}")
+                    if first_shape is None:
+                        try:
+                            dummy = imread(batch_paths[0])
+                            first_shape = dummy.shape
+                        except Exception:
+                            first_shape = (512, 512)
+                    empty = np.zeros(first_shape[:2], dtype=np.uint8)
+                    batch_images.append(empty)
+
+            load_s = None
+            if t_load0 is not None:
+                try:
+                    import time as _time_mod
+                    load_s = _time_mod.time() - t_load0
+                except Exception:
+                    load_s = None
+
+            print(f"[batch] idx={batch_idx} frames={batch_start_1}-{batch_end_1}/{num_frames_total} n={len(batch_images)} bs={attempt_bs} retry={retries}" + (f" load_s={load_s:.2f}" if load_s is not None else ""))
+            _log_cuda_mem(prefix=f"pre_eval batch={batch_idx}")
+
+            # Run segmentation; on OOM, back off batch size and retry.
+            try:
+                t_eval0 = None
+                try:
+                    import time as _time_mod
+                    t_eval0 = _time_mod.time()
+                except Exception:
+                    t_eval0 = None
+
+                result = model.eval(
+                    batch_images,
+                    channels=channels,
+                    diameter=diameter,
+                    flow_threshold=flow_threshold,
+                    mask_threshold=mask_threshold,
+                    omni=omni,
+                    cluster=cluster,
+                    net_avg=False,
+                    resample=False,
+                    tile=False,
+                    verbose=verbose,
+                )
+
+                eval_s = None
+                if t_eval0 is not None:
+                    try:
+                        import time as _time_mod
+                        eval_s = _time_mod.time() - t_eval0
+                    except Exception:
+                        eval_s = None
+
+                batch_masks = result[0] if isinstance(result, tuple) else result
+
+                out_masks = []
+                if isinstance(batch_masks, list):
+                    out_masks = batch_masks
+                elif isinstance(batch_masks, np.ndarray):
+                    if batch_masks.ndim == 2:
+                        out_masks = [batch_masks]
+                    elif batch_masks.ndim == 3:
+                        out_masks = [batch_masks[i] for i in range(min(batch_masks.shape[0], len(batch_images)))]
                     else:
-                        mask = result
-                    masks.append(mask)
-                except Exception as e2:
-                    print(f"ERROR processing frame {batch_start + i}: {e2}")
-                    # Create empty mask
-                    if len(masks) > 0:
-                        empty_mask = np.zeros_like(masks[0])
+                        out_masks = [batch_masks]
+                else:
+                    try:
+                        out_masks = list(batch_masks)
+                    except Exception:
+                        out_masks = [batch_masks]
+
+                # Ensure we produce exactly one mask per input frame in the batch.
+                if len(out_masks) != len(batch_images):
+                    print(f"[warn] mask_count_mismatch batch={batch_idx} got={len(out_masks)} expected={len(batch_images)}; padding/truncating")
+                    if len(out_masks) > len(batch_images):
+                        out_masks = out_masks[: len(batch_images)]
                     else:
-                        empty_mask = np.zeros(image.shape[:2], dtype=np.uint16)
-                    masks.append(empty_mask)
+                        # Pad with empty masks.
+                        ref = out_masks[0] if out_masks else np.zeros(batch_images[0].shape[:2], dtype=np.uint16)
+                        while len(out_masks) < len(batch_images):
+                            out_masks.append(np.zeros_like(ref))
+
+                masks.extend(out_masks)
+
+                # Debug log after first batch (same format as Preview dialog for comparison)
+                if batch_idx == 1:
+                    try:
+                        n_cells_first = sum(len(np.unique(m)) - 1 for m in out_masks) if out_masks else 0
+                        _append_omni_debug(
+                            f"eval kind={kind} model={model_id!r} diameter={diameter} flow_thr={flow_threshold} mask_thr={mask_threshold} "
+                            f"batch_frames={len(batch_images)} -> n_cells_first_batch={n_cells_first}"
+                        )
+                    except Exception:
+                        pass
+
+                _log_cuda_mem(prefix=f"post_eval batch={batch_idx}")
+                frames_completed = len(masks)
+                progress_pct = int((frames_completed / max(1, num_frames_total)) * 100)
+                msg = f"[batch] ok idx={batch_idx} done={frames_completed}/{num_frames_total} pct={progress_pct}%"
+                if eval_s is not None:
+                    msg += f" eval_s={eval_s:.2f}"
+                print(msg)
+
+                # Release batch arrays as soon as possible.
+                del batch_images
+                del out_masks
+                _clear_accelerator_cache()
+
+                frame_idx += len(batch_paths)
+                break
+
+            except Exception as e:
+                # Always log the raw exception for cross-platform debugging (CUDA/MPS wording varies).
+                print(f"[batch] ERROR idx={batch_idx} frames={batch_start_1}-{batch_end_1} err={type(e).__name__}: {e}")
+                if _is_oom_error(e) and attempt_bs > 1:
+                    new_bs = max(1, attempt_bs // 2)
+                    retries += 1
+                    print(f"[oom] backoff batch={batch_idx} bs={attempt_bs}->{new_bs} retry={retries}")
+                    _clear_accelerator_cache()
+                    attempt_bs = new_bs
+                    continue
+
+                # Non-OOM (or OOM at bs=1): fall back to per-frame processing for this batch.
+                print(f"[batch] falling_back mode=per_frame idx={batch_idx} n={len(batch_images)}")
+                for i, image in enumerate(batch_images):
+                    try:
+                        result = model.eval(
+                            image,
+                            channels=channels,
+                            diameter=diameter,
+                            flow_threshold=flow_threshold,
+                            mask_threshold=mask_threshold,
+                            omni=omni,
+                            cluster=cluster,
+                            net_avg=False,
+                            resample=False,
+                            verbose=verbose,
+                        )
+                        mask = result[0] if isinstance(result, tuple) else result
+                        masks.append(mask)
+                    except Exception as e2:
+                        print(f"[frame] ERROR idx={frame_idx + i + 1}/{num_frames_total} err={type(e2).__name__}: {e2}")
+                        ref_shape = (masks[0].shape if masks else image.shape[:2])
+                        masks.append(np.zeros(ref_shape, dtype=np.uint16))
+
+                del batch_images
+                _clear_accelerator_cache()
+                frame_idx += len(batch_paths)
+                break
     
     # Final memory cleanup
     try:

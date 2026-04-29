@@ -4734,6 +4734,9 @@ class OmniposeSegTab(QWidget):
             else:
                 model_arg = _mt or self.model_combo.currentText()
             run_diameter, run_flow = self._get_run_diameter_and_flow()
+            # Safer default: batch size 32 can OOM on CUDA/MPS depending on image size and GPU VRAM.
+            # The script implements adaptive backoff, but starting smaller reduces crash risk.
+            default_batch_size = "16"
             cmd_args = [
                 self.file_path.text(),
                 '--output', str(output_dir),
@@ -4741,7 +4744,7 @@ class OmniposeSegTab(QWidget):
                 '--diameter', str(run_diameter),
                 '--flow-threshold', str(run_flow),
                 '--mask-threshold', str(self._get_effective_mask_threshold()),
-                '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
+                '--batch-size', default_batch_size,
             ]
             
             if not self.use_gpu.isChecked():
@@ -4756,6 +4759,12 @@ class OmniposeSegTab(QWidget):
             self.process_btn.setText("Cancel")
             self.parent_window.log_output(f"Starting single file processing: {self.file_path.text()}\n")
             self.parent_window.log_output(f"Output directory: {output_dir}\n")
+            try:
+                self.parent_window.log_output(
+                    f"Omnipose params: batch_size={default_batch_size} use_gpu={self.use_gpu.isChecked()} cluster={self.cluster.isChecked()} overlay={self.create_overlay.isChecked()}\n"
+                )
+            except Exception:
+                pass
             self._log_segmentation_run_params(selected_files=[input_file])
         else:
             # Folder mode - show file selection dialog first
@@ -4893,6 +4902,7 @@ class OmniposeSegTab(QWidget):
         else:
             model_arg = _mt or self.model_combo.currentText()
         run_diameter, run_flow = self._get_run_diameter_and_flow()
+        default_batch_size = "16"
         cmd_args = [
             str(tiff_file),
             '--output', str(output_dir),
@@ -4900,7 +4910,7 @@ class OmniposeSegTab(QWidget):
             '--diameter', str(run_diameter),
             '--flow-threshold', str(run_flow),
             '--mask-threshold', str(self._get_effective_mask_threshold()),
-            '--batch-size', '32',  # Increased batch size for faster GPU processing (adjust if OOM errors occur)
+            '--batch-size', default_batch_size,
         ]
         
         if not self.use_gpu.isChecked():
@@ -4911,6 +4921,12 @@ class OmniposeSegTab(QWidget):
             cmd_args.append('--no-overlay')
         
         self.parent_window.log_output(f"Output directory: {output_dir}\n")
+        try:
+            self.parent_window.log_output(
+                f"Omnipose params: batch_size={default_batch_size} use_gpu={self.use_gpu.isChecked()} cluster={self.cluster.isChecked()} overlay={self.create_overlay.isChecked()}\n"
+            )
+        except Exception:
+            pass
         
         # Reset current file progress when starting a new file
         self.current_file_progress = 0.0

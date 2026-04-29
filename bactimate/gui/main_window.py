@@ -550,6 +550,13 @@ class MainWindow(QMainWindow):
                 "Omnipose processing is still running. Wait for it to finish or cancel it, then close the application.",
             ),
             (
+                getattr(self, "omnipose_seg_tab", None),
+                "_omnipose_train_worker",
+                "Waiting for Omnipose training to finish…",
+                300000,
+                "Omnipose training is still running. Wait for it to finish, then close the application.",
+            ),
+            (
                 getattr(self, "nd2_tab", None),
                 "worker",
                 "Waiting for file conversion to finish…",

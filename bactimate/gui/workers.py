@@ -203,6 +203,12 @@ class WorkerThread(QThread):
             return False
 
     def run(self) -> None:
+        # Ensure fallback logic in the exception handler is always safe to reference.
+        packaged_like = False
+        force_inproc = False
+        python_is_app_launcher = False
+        def _run_known_in_process() -> bool:
+            return False
         try:
             # When running from .app (or frozen): subprocess often has no numpy. Run scripts in-process.
             # Use sys.frozen, app-bundle path, or script path inside BactiMate.app so in-process works.
@@ -211,36 +217,44 @@ class WorkerThread(QThread):
             sp = Path(self.script_path) if self.script_path else Path("")
             sp_str = str(self.script_path)
             script_in_app = "BactiMate.app" in sp_str and "Contents" in sp_str
-            if from_app or frozen or script_in_app:
+            packaged_like = bool(from_app or frozen or script_in_app)
+
+            def _run_known_in_process() -> bool:
+                """Run known heavy scripts in-process (fallback path for packaged builds)."""
                 if "convert_nd2_to_tif" in sp.name or "convert_nd2_to_tif" in sp_str:
                     self._run_convert_nd2_in_process()
-                    return
+                    return True
                 if "batch_process_tiff_sequence" in sp.name or "batch_process_tiff_sequence" in sp_str:
                     self._run_batch_tiff_in_process()
-                    return
+                    return True
                 if self.script_path == "-m" and self.cmd_args:
                     first = str(self.cmd_args[0])
                     if "analyze_cell_areas" in first:
                         self._run_analyze_cell_areas_in_process()
-                        return
+                        return True
                     if "unet_analyze_patch_config" in first:
                         self._run_module_main_in_process("bactimate.scripts.unet_analyze_patch_config", "unet_analyze_patch_config")
-                        return
+                        return True
                     if "unet_train_patches" in first:
                         self._run_module_main_in_process("bactimate.scripts.unet_train_patches", "unet_train_patches")
-                        return
+                        return True
                     if "unet_predict_patches" in first:
                         self._run_module_main_in_process("bactimate.scripts.unet_predict_patches", "unet_predict_patches")
-                        return
+                        return True
+                return False
+
+            # Operator override: force legacy in-process execution when needed.
+            force_inproc = str(os.environ.get("BACTIMATE_FORCE_INPROCESS_WORKERS", "")).strip().lower() in {"1", "true", "yes", "on"}
+
             python_exe = get_python_executable_for_subprocess()
-            # Never use the .app launcher as subprocess Python: it would start a second GUI. Force in-process for our scripts.
+            # Never use the .app launcher as subprocess Python: it would start a second GUI.
             exe_str = str(python_exe).lower()
-            if "bactimate" in exe_str and ("macos" in exe_str or exe_str.endswith("bactimate")):
-                if "convert_nd2_to_tif" in sp.name or "convert_nd2_to_tif" in sp_str:
-                    self._run_convert_nd2_in_process()
-                    return
-                if "batch_process_tiff_sequence" in sp.name or "batch_process_tiff_sequence" in sp_str:
-                    self._run_batch_tiff_in_process()
+            python_is_app_launcher = ("bactimate" in exe_str and ("macos" in exe_str or exe_str.endswith("bactimate")))
+
+            # In packaged builds, prefer subprocess for isolation when safe; fall back to in-process
+            # only when explicitly forced or when the only Python available is the GUI launcher.
+            if packaged_like and (force_inproc or python_is_app_launcher):
+                if _run_known_in_process():
                     return
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
@@ -302,12 +316,34 @@ class WorkerThread(QThread):
             if process.returncode == 0:
                 self.finished.emit(True, output)
             else:
+                # Packaged builds sometimes have an incomplete subprocess env (missing numpy/torch/etc).
+                # For known heavy scripts, fall back to the in-process runner once when the output
+                # looks like an import/dependency failure.
+                if packaged_like and (not force_inproc) and (not python_is_app_launcher):
+                    out_l = (output or "").lower()
+                    looks_like_import_failure = (
+                        "modulenotfounderror" in out_l
+                        or "importerror" in out_l
+                        or "no module named" in out_l
+                        or "cellpose_omni not found" in out_l
+                        or "cellpose-omni not found" in out_l
+                        or "cannot import name" in out_l
+                    )
+                    if looks_like_import_failure and _run_known_in_process():
+                        return
                 write_crash_log("Worker script failed (exit %s):\n%s" % (process.returncode, output))
                 self.finished.emit(False, output)
         except Exception as e:
             self._process = None
             log_exception(get_logger(), "WorkerThread.run failed")
             error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+            # If subprocess failed to start in a packaged context, try legacy in-process fallback
+            # for known scripts before surfacing the error.
+            try:
+                if packaged_like and (not force_inproc) and _run_known_in_process():
+                    return
+            except Exception:
+                pass
             write_crash_log("WorkerThread.run exception:\n" + error_msg)
             self.finished.emit(False, error_msg)
 
