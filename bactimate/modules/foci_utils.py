@@ -22,6 +22,45 @@ DEFAULT_BG_RADIUS = 5
 DEFAULT_SHARPEN_RADIUS = 1.0
 DEFAULT_SHARPEN_AMOUNT = 1.5
 
+_SPOTIFLOW_MODEL_CACHE: Dict[Tuple[str, str], Any] = {}
+
+
+def _spotiflow_cache_key(model_name: str = "general", model_path: Optional[str] = None) -> Tuple[str, str]:
+    mp = (model_path or "").strip()
+    if mp:
+        from pathlib import Path
+        try:
+            mp = str(Path(mp).expanduser().resolve())
+        except Exception:
+            pass
+    return ((model_name or "general").strip() or "general", mp)
+
+
+def clear_spotiflow_model_cache() -> None:
+    """Clear cached Spotiflow model instances. Intended for tests and explicit memory cleanup."""
+    _SPOTIFLOW_MODEL_CACHE.clear()
+
+
+def load_spotiflow_model(model_name: str = "general", model_path: Optional[str] = None) -> Any:
+    """
+    Load and cache a Spotiflow model by name or folder path.
+
+    Spotiflow model construction is expensive; callers that process stacks should
+    load once and pass the model to ``detect_peaks_spotiflow`` for each frame.
+    """
+    key = _spotiflow_cache_key(model_name=model_name, model_path=model_path)
+    if key in _SPOTIFLOW_MODEL_CACHE:
+        return _SPOTIFLOW_MODEL_CACHE[key]
+    from spotiflow.model import Spotiflow
+
+    _model_name, mp = key
+    if mp:
+        model = Spotiflow.from_folder(mp, map_location="auto")
+    else:
+        model = Spotiflow.from_pretrained(_model_name, map_location="auto")
+    _SPOTIFLOW_MODEL_CACHE[key] = model
+    return model
+
 
 def enhance_foci_image(
     image: np.ndarray,
@@ -784,6 +823,7 @@ def detect_peaks_spotiflow(
     *,
     model_name: str = "general",
     model_path: Optional[str] = None,
+    spotiflow_model: Any = None,
     use_optimized_threshold: bool = True,
     prob_thresh: Optional[float] = None,
     min_distance: int = 1,
@@ -808,13 +848,14 @@ def detect_peaks_spotiflow(
 
     ``blur_sigma`` and ``bg_subtract_radius`` are applied to a working copy of the image before inference.
     """
-    try:
-        from spotiflow.model import Spotiflow
-        from spotiflow.utils import normalize as sf_normalize
-    except ImportError:
-        if raise_on_error:
-            raise RuntimeError("Spotiflow import failed. Install spotiflow in the active environment.")
-        return None
+    sf_normalize = None
+    if normalize:
+        try:
+            from spotiflow.utils import normalize as sf_normalize
+        except ImportError:
+            if raise_on_error:
+                raise RuntimeError("Spotiflow import failed. Install spotiflow in the active environment.")
+            return None
     raw = np.asarray(coerce_plane_to_2d(image), dtype=np.float64)
     if raw.ndim != 2 or raw.size == 0:
         return []
@@ -851,11 +892,9 @@ def detect_peaks_spotiflow(
         n_tiles = (ny, nx)
 
     try:
-        mp = (model_path or "").strip()
-        if mp:
-            model = Spotiflow.from_folder(mp, map_location="auto")
-        else:
-            model = Spotiflow.from_pretrained(model_name, map_location="auto")
+        model = spotiflow_model
+        if model is None:
+            model = load_spotiflow_model(model_name=model_name, model_path=model_path)
         spots, _ = model.predict(
             img_work,
             prob_thresh=prob_kw,
@@ -865,6 +904,10 @@ def detect_peaks_spotiflow(
             normalizer=normalizer if normalize else None,
             verbose=verbose,
         )
+    except ImportError as e:
+        if raise_on_error:
+            raise RuntimeError("Spotiflow import failed. Install spotiflow in the active environment.") from e
+        return None
     except Exception as e:
         if raise_on_error:
             raise RuntimeError(f"Spotiflow prediction failed: {e}") from e

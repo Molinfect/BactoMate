@@ -1586,7 +1586,7 @@ class OmniposeSegTab(QWidget):
         """
         try:
             from bactimate.modules.image_stack_utils import coerce_stack_to_tyx, coerce_plane_to_2d
-            from bactimate.modules.foci_utils import detect_peaks_spotiflow
+            from bactimate.modules.foci_utils import detect_peaks_spotiflow, load_spotiflow_model
         except Exception as e:
             return False, f"imports failed: {e}"
         arr = coerce_stack_to_tyx(np.asarray(foci_stack))
@@ -1600,10 +1600,18 @@ class OmniposeSegTab(QWidget):
         if prob_thresh is not None:
             params["use_optimized_threshold"] = False
             params["prob_thresh"] = float(prob_thresh)
+        try:
+            spotiflow_model = load_spotiflow_model(
+                model_name=str(params.get("model_name") or "general"),
+                model_path=str(params.get("model_path") or "") or None,
+            )
+        except Exception as e:
+            return False, f"Spotiflow model load failed: {e}"
         for fi, frame in enumerate(arr):
             plane = np.asarray(coerce_plane_to_2d(np.asarray(frame)), dtype=np.float64)
             peaks = detect_peaks_spotiflow(
                 plane,
+                spotiflow_model=spotiflow_model,
                 **params,
             )
             if peaks is None:
@@ -2425,7 +2433,7 @@ class OmniposeSegTab(QWidget):
                         refresh_image_display()
                         return
                     try:
-                        from bactimate.modules.foci_utils import detect_peaks_spotiflow
+                        from bactimate.modules.foci_utils import detect_peaks_spotiflow, load_spotiflow_model
                         from bactimate.modules.image_stack_utils import coerce_plane_to_2d
                     except Exception as e:
                         get_logger().warning(
@@ -2440,9 +2448,11 @@ class OmniposeSegTab(QWidget):
                         # Raw point detections only (no blob threshold / postfilters).
                         try:
                             prob_kw = None if _sf_opt else float(_sf_prob)
+                            spotiflow_model = load_spotiflow_model(model_name="general")
                             result = detect_peaks_spotiflow(
                                 plane,
                                 model_name="general",
+                                spotiflow_model=spotiflow_model,
                                 use_optimized_threshold=bool(_sf_opt),
                                 prob_thresh=prob_kw,
                                 min_distance=int(_sf_min_dist),

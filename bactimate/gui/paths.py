@@ -4,6 +4,7 @@ Works in development (repo root), frozen .app bundle, and pip-installed layout.
 """
 import os
 import sys
+import shutil
 from pathlib import Path
 
 
@@ -155,17 +156,45 @@ def _get_user_data_models_base() -> Path:
     return base / "BactiMate" / "Models"
 
 
+def _copy_legacy_model_files(legacy_dir: Path, target_dir: Path) -> None:
+    """
+    Best-effort migration for older frozen builds that stored models in the app bundle.
+
+    Existing target files win; this avoids overwriting user-trained models after upgrades.
+    """
+    try:
+        legacy = Path(legacy_dir)
+        target = Path(target_dir)
+        if legacy.resolve() == target.resolve() or not legacy.is_dir():
+            return
+        target.mkdir(parents=True, exist_ok=True)
+        for src in legacy.iterdir():
+            if not src.is_file():
+                continue
+            dest = target / src.name
+            if dest.exists():
+                continue
+            try:
+                shutil.copy2(src, dest)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def get_omnipose_user_models_dir() -> Path:
     """
     Directory for user-trained Omnipose models (.pth). Created if missing.
-    - Installed: e.g. ~/Library/Application Support/BactiMate/Models/omnipose_user_models (macOS).
-    - Dev/frozen: get_app_root() / "omnipose_user_models".
+    - Installed/frozen: e.g. ~/Library/Application Support/BactiMate/Models/omnipose_user_models (macOS).
+    - Dev: get_app_root() / "omnipose_user_models".
     """
-    if _is_installed():
+    if _is_installed() or _is_frozen():
         path = _get_user_data_models_base() / "omnipose_user_models"
     else:
         path = get_app_root() / "omnipose_user_models"
     path.mkdir(parents=True, exist_ok=True)
+    if _is_frozen():
+        _copy_legacy_model_files(get_app_root() / "omnipose_user_models", path)
     return path
 
 
@@ -173,14 +202,16 @@ def get_omnipose_pretrained_cache_dir() -> Path:
     """
     Directory where BactiMate mirrors built-in Omnipose checkpoints after first download.
     Same layout as cellpose_omni's MODEL_DIR filenames (e.g. bact_phase_omnitorch_0).
-    - Installed: .../BactiMate/Models/omnipose_pretrained
-    - Dev/frozen: get_app_root() / "omnipose_pretrained"
+    - Installed/frozen: .../BactiMate/Models/omnipose_pretrained
+    - Dev: get_app_root() / "omnipose_pretrained"
     """
-    if _is_installed():
+    if _is_installed() or _is_frozen():
         path = _get_user_data_models_base() / "omnipose_pretrained"
     else:
         path = get_app_root() / "omnipose_pretrained"
     path.mkdir(parents=True, exist_ok=True)
+    if _is_frozen():
+        _copy_legacy_model_files(get_app_root() / "omnipose_pretrained", path)
     return path
 
 
@@ -192,14 +223,16 @@ def get_user_models_dir() -> Path:
 def get_unet_models_dir() -> Path:
     """
     Directory for user-trained U-Net models (.keras + patch_config.json). Created if missing.
-    - Installed: e.g. ~/Library/Application Support/BactiMate/Models/unet_user_models (macOS).
-    - Dev/frozen: get_app_root() / "unet_user_models".
+    - Installed/frozen: e.g. ~/Library/Application Support/BactiMate/Models/unet_user_models (macOS).
+    - Dev: get_app_root() / "unet_user_models".
     """
-    if _is_installed():
+    if _is_installed() or _is_frozen():
         path = _get_user_data_models_base() / "unet_user_models"
     else:
         path = get_app_root() / "unet_user_models"
     path.mkdir(parents=True, exist_ok=True)
+    if _is_frozen():
+        _copy_legacy_model_files(get_app_root() / "unet_user_models", path)
     return path
 
 
