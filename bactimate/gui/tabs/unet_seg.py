@@ -13,7 +13,6 @@ from typing import Any, Optional
 
 import numpy as np
 import tifffile
-from skimage.measure import label
 
 _ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
@@ -1126,7 +1125,10 @@ class UNetSegmentTab(QWidget):
         frame_counts: list[int] = []
         for i in range(arr.shape[0]):
             frame = arr[i]
-            labeled = label(frame > 0, connectivity=1)
+            # Lazy import: skimage is relatively heavy and not needed for startup.
+            from skimage.measure import label as sk_label
+
+            labeled = sk_label(frame > 0, connectivity=1)
             n_cells = int(labeled.max()) if labeled.size else 0
             frame_counts.append(n_cells)
         return {

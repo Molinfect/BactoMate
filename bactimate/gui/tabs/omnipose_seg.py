@@ -62,17 +62,6 @@ from bactimate.gui.mask_utils import (
 )
 from bactimate.gui.omnipose_utils import ensure_omni_in_model_path, inspect_omnipose_checkpoint
 from bactimate.gui.utils import safe_imread
-from bactimate.scripts.check_omnipose_pipeline import (
-    ensure_builtin_model_cached,
-    get_checkable_model_path,
-    _check_model,
-    _check_training_data,
-    _check_inference,
-    format_model_report,
-    format_training_report,
-    format_inference_report,
-    run_checkpoint_comparison,
-)
 from bactimate.gui.widgets import (
     ClickableTooltip,
     TooltipClickFilter,
@@ -4358,6 +4347,17 @@ class OmniposeSegTab(QWidget):
             QVBoxLayout,
         )
         from PyQt6.QtGui import QFont
+        # Lazy import: only needed when opening the diagnostic dialog.
+        from bactimate.scripts.check_omnipose_pipeline import (
+            get_checkable_model_path,
+            _check_model,
+            _check_training_data,
+            _check_inference,
+            format_model_report,
+            format_training_report,
+            format_inference_report,
+            run_checkpoint_comparison,
+        )
 
         d = QDialog(self)
         d.setWindowTitle("Check Omnipose pipeline")

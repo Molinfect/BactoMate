@@ -5,9 +5,24 @@ Handles --version, --smoke-test, patches, logging, then launches the GUI.
 import sys
 import traceback
 import warnings
+from time import perf_counter
 
 
 def run() -> None:
+    t0 = perf_counter()
+    t_last = t0
+
+    def _mark(log, label: str) -> None:
+        nonlocal t_last
+        try:
+            now = perf_counter()
+            dt_total_ms = (now - t0) * 1000.0
+            dt_step_ms = (now - t_last) * 1000.0
+            t_last = now
+            log.info("[startup] %s step_ms=%.1f total_ms=%.1f", label, dt_step_ms, dt_total_ms)
+        except Exception:
+            pass
+
     # Show "BactiMate" in macOS menu bar (and Dock/Activity Monitor) when run from .app bundle
     try:
         import setproctitle
@@ -69,9 +84,12 @@ def run() -> None:
 
     try:
         log = get_logger()
+        _mark(log, "logging_ready")
         log.info("Starting BactiMate")
         log.info("Loading GUI (PyQt6 and tabs; can take 1–2 min on first launch from app bundle)...")
+        _mark(log, "before_import_main_window")
         from bactimate.gui.main_window import main
+        _mark(log, "after_import_main_window")
         log.info("GUI modules loaded, creating window...")
         main()
     except ModuleNotFoundError as e:

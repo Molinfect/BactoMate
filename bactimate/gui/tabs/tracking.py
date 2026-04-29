@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-import pandas as pd
+
+
+def _pd():
+    """Lazy pandas import (avoids heavy import cost during GUI startup)."""
+    import pandas as pd
+
+    return pd
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut
@@ -862,7 +868,7 @@ class TrackingTab(QWidget):
         displacement_px, displacement_um, path_length_px, path_length_um,
         mean_speed_px_frame, mean_speed_um_min, straight_line_speed_px_frame, straight_line_speed_um_min, straightness."""
         if tracks_df.empty or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
-            return pd.DataFrame()
+            return _pd().DataFrame()
         need_xy = "y" in tracks_df.columns and "x" in tracks_df.columns
         rows = []
         for tid, g in tracks_df.groupby("track_id"):
@@ -907,7 +913,7 @@ class TrackingTab(QWidget):
                 "straight_line_speed_um_min": straight_line_speed_um_min,
                 "straightness": straightness,
             })
-        return pd.DataFrame(rows)
+        return _pd().DataFrame(rows)
 
     @staticmethod
     def _apply_track_filters(metrics_df: pd.DataFrame, params: dict[str, Any]) -> set[int]:
@@ -1667,7 +1673,7 @@ class TrackingTab(QWidget):
                 errors.append(f"{traj_path.name}: no {tracks_csv.name} found")
                 continue
             try:
-                tracks_df = pd.read_csv(tracks_csv)
+                tracks_df = _pd().read_csv(tracks_csv)
             except Exception as e:
                 errors.append(f"{traj_path.name}: could not read CSV ({e})")
                 continue
@@ -1686,7 +1692,7 @@ class TrackingTab(QWidget):
                 if "Cell_ID" in tracks_df.columns and not filtered_metrics.empty:
                     first_cell = tracks_df.groupby("track_id")["Cell_ID"].first()
                     cell_id_per_track = filtered_metrics["track_id"].map(first_cell)
-                export_df = pd.DataFrame()
+                export_df = _pd().DataFrame()
                 if not filtered_metrics.empty:
                     export_df["Cell_ID"] = cell_id_per_track if cell_id_per_track is not None else filtered_metrics["track_id"]
                     export_df["TrackID"] = filtered_metrics["track_id"].values
@@ -1711,7 +1717,7 @@ class TrackingTab(QWidget):
                     export_df["straight_line_speed_um_s"] = np.round(straight_um_min / 60.0, 2)
                     export_df["straightness"] = np.round(filtered_metrics["straightness"].values, 2)
                 else:
-                    export_df = pd.DataFrame(columns=[
+                    export_df = _pd().DataFrame(columns=[
                         "Cell_ID", "TrackID", "trajectory_length", "duration_frames", "duration_min",
                         "first_frame", "last_frame", "displacement_px", "displacement_um",
                         "path_length_px", "path_length_um", "mean_speed_px_frame", "mean_speed_um_min", "mean_speed_um_s",
@@ -1719,7 +1725,7 @@ class TrackingTab(QWidget):
                     ])
                 out_excel = out_dir / f"{stem}_filtered_tracks.xlsx"
                 try:
-                    with pd.ExcelWriter(out_excel, engine="openpyxl") as writer:
+                    with _pd().ExcelWriter(out_excel, engine="openpyxl") as writer:
                         export_df.to_excel(writer, sheet_name="Filtered tracks", index=False)
                     done += 1
                     if hasattr(self, "parent_window") and hasattr(self.parent_window, "log_output"):
@@ -1930,7 +1936,7 @@ class TrajectoryPreviewDialog(QDialog):
             )
             return
         try:
-            tracks_df = pd.read_csv(self._tracks_csv)
+            tracks_df = _pd().read_csv(self._tracks_csv)
         except Exception as e:
             QMessageBox.critical(self._main_window(), "Load error", f"Could not read tracks CSV:\n{e}")
             return

@@ -10,6 +10,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Tuple, Type
 
 from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QTimer, QUrl
@@ -229,10 +230,16 @@ class MainWindow(QMainWindow):
 
     def init_ui(self) -> None:
         self.setWindowTitle("BactiMate")
-        # Ensure user model dirs exist on first launch (dev: repo/omnipose_user_models, unet_user_models; installed: BactiMate/Models/...)
-        get_omnipose_user_models_dir()
-        get_omnipose_pretrained_cache_dir()
-        get_unet_models_dir()
+        # Ensure user model dirs exist (can touch filesystem); defer until after first paint.
+        def _ensure_model_dirs() -> None:
+            try:
+                get_omnipose_user_models_dir()
+                get_omnipose_pretrained_cache_dir()
+                get_unet_models_dir()
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, _ensure_model_dirs)
         min_width, min_height = 1200, 700
         # Taller default on large displays; _initial_window_dimensions clamps to available screen.
         preferred_width, preferred_height = 1200, 1100
@@ -1112,7 +1119,22 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     log = get_logger()
+    t0 = perf_counter()
+    t_last = t0
+
+    def _mark(label: str) -> None:
+        nonlocal t_last
+        try:
+            now = perf_counter()
+            dt_total_ms = (now - t0) * 1000.0
+            dt_step_ms = (now - t_last) * 1000.0
+            t_last = now
+            log.info("[startup] %s step_ms=%.1f total_ms=%.1f", label, dt_step_ms, dt_total_ms)
+        except Exception:
+            pass
+
     log.info("Creating application and main window...")
+    _mark("main_window_main_enter")
     if sys.platform == "darwin":
         plugins_dir = os.environ.get("QT_PLUGIN_PATH")
         if plugins_dir:
@@ -1143,7 +1165,9 @@ def main() -> None:
     sys.excepthook = pyqt6_exception_handler
 
     try:
+        _mark("before_QApplication")
         app = QApplication(sys.argv)
+        _mark("after_QApplication")
         app.setApplicationName("BactiMate")
         app.setApplicationDisplayName("BactiMate")
         if sys.platform == "darwin":
@@ -1159,7 +1183,9 @@ def main() -> None:
             if sys.platform == "darwin":
                 _set_macos_dock_icon(icon_path)
         app.setStyle("Fusion")
+        _mark("before_stylesheet")
         app.setStyleSheet(get_modern_stylesheet())
+        _mark("after_stylesheet")
         # Route Qt messages (e.g. QThread destroyed while running) to the same GUI log
         try:
             from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
@@ -1191,10 +1217,14 @@ def main() -> None:
                 apply_after_ui(app)
             except Exception:
                 pass
+        _mark("before_MainWindow")
         window = MainWindow()
+        _mark("after_MainWindow")
         if icon_path is not None:
             window.setWindowIcon(QIcon(str(icon_path)))
+        _mark("before_window_show")
         window.show()
+        _mark("after_window_show")
         # Bring to front (macOS often opens behind other windows when launched from Dock/Finder)
         if sys.platform == "darwin":
             try:

@@ -22,7 +22,6 @@ if QT_AVAILABLE:
     from bactimate.gui.tabs.unet_seg import UNetSegmentTab
     from bactimate.gui.tabs.segmentation import SegmentationTab
     from bactimate.gui.tabs.training import TrainingTab
-    from bactimate.gui.tabs.cellpose_sam_train import CellposeSamTrainWidget
 
 __all__ = []
 if QT_AVAILABLE:
@@ -38,5 +37,4 @@ if QT_AVAILABLE:
         "UNetSegmentTab",
         "SegmentationTab",
         "TrainingTab",
-        "CellposeSamTrainWidget",
     ]
