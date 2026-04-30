@@ -1,4 +1,4 @@
-name: Build BactiMate (macOS)
+name: Build BactiMate (macOS + Windows)
 
 on:
   workflow_dispatch:
@@ -62,5 +62,84 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: dist/BactiMate.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    name: Build Windows Executable (CUDA 12.8)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Create virtual environment
+        shell: cmd
+        run: |
+          python -m venv venv
+          call venv\Scripts\activate.bat
+          python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          pip install --use-deprecated=legacy-resolver -r requirements.txt
+          pip install -e .
+
+      - name: Install PyTorch (CUDA 12.8)
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          pip uninstall torch torchvision torchaudio -y
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+      - name: Apply BactiMate compatibility patches
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          python setup\apply_all_patches.py
+
+      - name: Smoke test (before build)
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          python main.py --version
+          python main.py --smoke-test
+
+      - name: Install PyInstaller
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          pip install "pyinstaller>=6.0,<7.0"
+
+      - name: Build Windows executable
+        shell: cmd
+        run: |
+          call venv\Scripts\activate.bat
+          pyinstaller --noconfirm --clean --log-level=INFO build\BactiMate.spec
+
+      - name: Zip distribution
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\BactiMate -DestinationPath dist\BactiMate-windows-cu128.zip -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: BactiMate-Windows-cu128
+          path: dist/BactiMate-windows-cu128.zip
+          retention-days: 30
+
+      - name: Upload Windows build (release)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/BactiMate-windows-cu128.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

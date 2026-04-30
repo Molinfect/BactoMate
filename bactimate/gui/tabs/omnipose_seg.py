@@ -3170,6 +3170,66 @@ class OmniposeSegTab(QWidget):
                     self._is_frozen = is_frozen
                     self._is_cellpose_sam = is_cellpose_sam
 
+                def _eval_omni(self, seg_frame):
+                    """Run cellpose_omni eval on the given seg_frame. Returns mask (no upsample)."""
+                    if self._is_frozen:
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                mask, flows, styles, diams = self._model.eval(
+                                    seg_frame,
+                                    channels=[0, 0],
+                                    diameter=self._diameter_seg if (self._diameter_seg and self._diameter_seg > 0) else 30.0,
+                                    flow_threshold=self._flow_threshold,
+                                    mask_threshold=self._mask_threshold,
+                                    cellprob_threshold=0.0,
+                                    do_3D=False,
+                                    omni=True,
+                                    cluster=self._cluster,
+                                    net_avg=False,
+                                    resample=False,
+                                    verbose=False,
+                                )
+                                return mask
+                            except TypeError as e:
+                                if ("'>' not supported" in str(e) or "'<' not supported" in str(e)) and attempt < max_retries - 1:
+                                    d = 30.0 + (attempt * 5.0)
+                                    self._diameter_seg = (d * self._seg_scale) if self._seg_scale < 1.0 else d
+                                    continue
+                                raise
+                    mask, flows, styles, diams = self._model.eval(
+                        seg_frame,
+                        channels=[0, 0],
+                        diameter=self._diameter_seg,
+                        flow_threshold=self._flow_threshold,
+                        mask_threshold=self._mask_threshold,
+                        cellprob_threshold=0.0,
+                        do_3D=False,
+                        omni=True,
+                        cluster=self._cluster,
+                        net_avg=False,
+                        resample=False,
+                        verbose=False,
+                    )
+                    return mask
+
+                def _crop_to_multiple_of(self, arr, divisor: int):
+                    """Crop bottom/right rows so each side is a multiple of `divisor` (no resize, label-safe)."""
+                    h, w = arr.shape[:2]
+                    new_h = max(divisor, (h // divisor) * divisor)
+                    new_w = max(divisor, (w // divisor) * divisor)
+                    if new_h == h and new_w == w:
+                        return arr
+                    if arr.ndim == 2:
+                        return np.ascontiguousarray(arr[:new_h, :new_w])
+                    return np.ascontiguousarray(arr[:new_h, :new_w, ...])
+
+                def _is_broadcast_shape_error(self, exc: BaseException) -> bool:
+                    s = str(exc)
+                    return ("could not broadcast" in s and "shape" in s) or (
+                        "operands could not be broadcast" in s
+                    )
+
                 def run(self):
                     mask, error_str = None, ""
                     try:
@@ -3196,49 +3256,55 @@ class OmniposeSegTab(QWidget):
                                 mask = np.asarray(batch_masks[0], dtype=np.uint16)
                             if self._seg_scale < 1.0 and mask is not None:
                                 mask = upsample_mask_to_shape(mask, self._orig_h, self._orig_w)
-                        elif self._is_frozen:
-                            max_retries = 3
-                            for attempt in range(max_retries):
-                                try:
-                                    mask, flows, styles, diams = self._model.eval(
-                                        self._seg_frame,
-                                        channels=[0, 0],
-                                        diameter=self._diameter_seg if (self._diameter_seg and self._diameter_seg > 0) else 30.0,
-                                        flow_threshold=self._flow_threshold,
-                                        mask_threshold=self._mask_threshold,
-                                        cellprob_threshold=0.0,
-                                        do_3D=False,
-                                        omni=True,
-                                        cluster=self._cluster,
-                                        net_avg=False,
-                                        resample=False,
-                                        verbose=False,
-                                    )
-                                    break
-                                except TypeError as e:
-                                    if ("'>' not supported" in str(e) or "'<' not supported" in str(e)) and attempt < max_retries - 1:
-                                        d = 30.0 + (attempt * 5.0)
-                                        self._diameter_seg = (d * self._seg_scale) if self._seg_scale < 1.0 else d
-                                        continue
-                                    raise
                         else:
-                            mask, flows, styles, diams = self._model.eval(
-                                self._seg_frame,
-                                channels=[0, 0],
-                                diameter=self._diameter_seg,
-                                flow_threshold=self._flow_threshold,
-                                mask_threshold=self._mask_threshold,
-                                cellprob_threshold=0.0,
-                                do_3D=False,
-                                omni=True,
-                                cluster=self._cluster,
-                                net_avg=False,
-                                resample=False,
-                                verbose=False,
-                            )
+                            # Try with the original (downsampled) seg_frame.
+                            try:
+                                mask = self._eval_omni(self._seg_frame)
+                            except ValueError as e:
+                                # cellpose_omni internal bug: extra=3 padding output not always cropped back,
+                                # producing e.g. "could not broadcast (H+6, W+6) into (H, W)" for some sizes.
+                                # Workaround: crop seg_frame to a multiple of 16 (which avoids the upstream
+                                # padding code path that triggers the broadcast).
+                                if not self._is_broadcast_shape_error(e):
+                                    raise
+                                seg_h, seg_w = self._seg_frame.shape[:2]
+                                cropped = self._crop_to_multiple_of(self._seg_frame, 16)
+                                if cropped.shape[:2] == (seg_h, seg_w):
+                                    # Already multiple-of-16: nudge it down by 16 to break the alignment.
+                                    nh = max(16, seg_h - 16)
+                                    nw = max(16, seg_w - 16)
+                                    cropped = (
+                                        np.ascontiguousarray(self._seg_frame[:nh, :nw])
+                                        if self._seg_frame.ndim == 2
+                                        else np.ascontiguousarray(self._seg_frame[:nh, :nw, ...])
+                                    )
+                                print(
+                                    f"[preview] broadcast error on shape={self._seg_frame.shape} -> "
+                                    f"retry with cropped shape={cropped.shape} ({e})"
+                                )
+                                mask = self._eval_omni(cropped)
+                                if mask is not None and mask.shape[:2] != (seg_h, seg_w):
+                                    # Pad mask back up to seg_frame size with zeros (no detections in cropped strip).
+                                    padded = np.zeros((seg_h, seg_w), dtype=mask.dtype)
+                                    mh, mw = mask.shape[:2]
+                                    padded[:mh, :mw] = mask
+                                    mask = padded
                         if self._seg_scale < 1.0 and mask is not None:
                             mask = upsample_mask_to_shape(mask, self._orig_h, self._orig_w)
                     except Exception as e:
+                        # Print full traceback + shapes for debugging; surface a concise error to the UI.
+                        try:
+                            print(
+                                f"[preview] segmentation failed: err={type(e).__name__}: {e} "
+                                f"seg_frame_shape={getattr(self._seg_frame, 'shape', None)} "
+                                f"orig=({self._orig_h},{self._orig_w}) "
+                                f"diameter_seg={self._diameter_seg} seg_scale={self._seg_scale} "
+                                f"is_cellpose_sam={self._is_cellpose_sam} is_frozen={self._is_frozen}"
+                            )
+                            print("[preview] traceback:")
+                            traceback.print_exc()
+                        except Exception:
+                            pass
                         error_str = str(e)
                     self.finished.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
 

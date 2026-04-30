@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import sys
+import traceback
 import warnings
 import numpy as np
 import tifffile
@@ -607,6 +608,9 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
             except Exception as e:
                 # Always log the raw exception for cross-platform debugging (CUDA/MPS wording varies).
                 print(f"[batch] ERROR idx={batch_idx} frames={batch_start_1}-{batch_end_1} err={type(e).__name__}: {e}")
+                # Full traceback (essential for diagnosing things like `int(None)` deep inside omnipose).
+                print("[batch] traceback:")
+                traceback.print_exc()
                 if _is_oom_error(e) and attempt_bs > 1:
                     new_bs = max(1, attempt_bs // 2)
                     retries += 1
@@ -635,6 +639,9 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
                         masks.append(mask)
                     except Exception as e2:
                         print(f"[frame] ERROR idx={frame_idx + i + 1}/{num_frames_total} err={type(e2).__name__}: {e2}")
+                        # Full traceback so we can see where (e.g., omnipose.compute_masks) the error originated.
+                        print("[frame] traceback:")
+                        traceback.print_exc()
                         ref_shape = (masks[0].shape if masks else image.shape[:2])
                         masks.append(np.zeros(ref_shape, dtype=np.uint16))
 

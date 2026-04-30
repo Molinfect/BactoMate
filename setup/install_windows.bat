@@ -88,8 +88,32 @@ echo.
 
 :: Step 6: PyTorch CUDA (optional)
 echo [Step 6/7] Detecting NVIDIA GPU for PyTorch CUDA wheel...
+
+:: 6a) Skip if a CUDA-enabled torch is already installed.
+set "TORCH_CUDA_OK="
+set "TORCH_TMP=%TEMP%\bactimate_torch_check.txt"
+del /q "%TORCH_TMP%" >nul 2>&1
+python -c "import torch; print('OK' if torch.cuda.is_available() else 'NO', torch.version.cuda or '')" 1>"%TORCH_TMP%" 2>nul
+if exist "%TORCH_TMP%" (
+    set /p TORCH_LINE=<"%TORCH_TMP%"
+)
+del /q "%TORCH_TMP%" >nul 2>&1
+echo %TORCH_LINE% | findstr /b "OK" >nul && set "TORCH_CUDA_OK=1"
+if defined TORCH_CUDA_OK (
+    echo   PyTorch CUDA already installed: %TORCH_LINE%
+    echo   Skipping CUDA wheel install.
+    goto :step6_done
+)
+
+:: 6b) Detect CUDA wheel index via temp file (avoids `for /f ('...')` parsing issues).
 set "CU_INDEX="
-for /f "delims=" %%a in ('python "%SETUP_DIR%get_cuda_wheel_index.py" 2^>nul') do set "CU_INDEX=%%a"
+set "CU_TMP=%TEMP%\bactimate_cuda_index.txt"
+del /q "%CU_TMP%" >nul 2>&1
+python "%SETUP_DIR%get_cuda_wheel_index.py" 1>"%CU_TMP%" 2>nul
+if exist "%CU_TMP%" (
+    set /p CU_INDEX=<"%CU_TMP%"
+)
+del /q "%CU_TMP%" >nul 2>&1
 if defined CU_INDEX (
     echo   Detected CUDA index: %CU_INDEX%
     echo   Installing PyTorch with GPU support...
@@ -105,6 +129,18 @@ if defined CU_INDEX (
 ) else (
     echo   No nvidia-smi or no GPU; skipping PyTorch CUDA. BactiMate will use CPU.
     echo   To add GPU later: see docs/INSTALL_AND_LAUNCH_windows.md
+)
+:step6_done
+echo.
+
+:: Step 6.5: Apply BactiMate compatibility patches (cellpose_omni, omnipose, etc.)
+echo [Step 6.5] Applying BactiMate compatibility patches...
+python "%SETUP_DIR%apply_all_patches.py"
+if errorlevel 1 (
+    echo [WARNING] Some patches failed to apply. Segmentation may fail with errors like
+    echo   "Cellpose.__init__() got an unexpected keyword argument 'pretrained_model'".
+    echo   You can re-run the patches manually with:
+    echo     venv\Scripts\activate ^&^& python setup\apply_all_patches.py
 )
 echo.
 

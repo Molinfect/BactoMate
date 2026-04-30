@@ -297,6 +297,52 @@ def patch_cellpose_omni_dynamics() -> bool:
     return True
 
 
+def patch_cellpose_omni_dynamics_niter_none() -> bool:
+    """Patch cellpose_omni/dynamics.py so that niter=None never reaches np.uint32(niter).
+
+    On Windows/CUDA in some cellpose_omni versions, _run_cp can pass niter=None into
+    compute_masks -> follow_flows when the user model has no diam_labels and diameter is 0,
+    triggering: TypeError: int() argument ... not 'NoneType' at `niter = np.uint32(niter)`.
+
+    We add a defensive default of 200 (omnipose default) at every np.uint32(niter) site.
+    """
+    dynamics_file = _find_in_syspath("cellpose_omni/dynamics.py")
+    if not dynamics_file:
+        print("  WARNING: Could not find cellpose_omni/dynamics.py")
+        return False
+
+    content = dynamics_file.read_text()
+    sentinel = "# BactiMate: default niter to 200 if None"
+    if sentinel in content:
+        print("  ✓ cellpose_omni dynamics (niter None default) already patched")
+        return True
+
+    target = "niter = np.uint32(niter)"
+    if target not in content:
+        print("  WARNING: Could not find `niter = np.uint32(niter)` in cellpose_omni/dynamics.py")
+        return False
+
+    new_content = content
+    occurrences = 0
+    out_lines: list[str] = []
+    for line in new_content.splitlines(keepends=True):
+        if target in line and sentinel not in line:
+            indent = line[: len(line) - len(line.lstrip())]
+            out_lines.append(f"{indent}if niter is None: niter = 200  {sentinel}\n")
+            out_lines.append(line)
+            occurrences += 1
+        else:
+            out_lines.append(line)
+
+    if occurrences == 0:
+        print("  WARNING: No `niter = np.uint32(niter)` lines patched in cellpose_omni/dynamics.py")
+        return False
+
+    dynamics_file.write_text("".join(out_lines))
+    print(f"  ✓ Patched cellpose_omni dynamics (niter None default) at {occurrences} site(s)")
+    return True
+
+
 def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
     """Patch resnet_torch load_model to accept checkpoints with 'state_dict' + nchan/nclasses (BactiMate-trained)."""
     resnet_file = _find_in_syspath("cellpose_omni/resnet_torch.py")
@@ -1415,6 +1461,7 @@ PATCH_LIST = [
     ("transforms", "cellpose_omni transforms: nchan trim", patch_cellpose_omni_transforms),
     ("io", "cellpose_omni io: NumPy 2.0 TIFF read", patch_cellpose_omni_io),
     ("dynamics", "cellpose_omni dynamics: steps2D tr", patch_cellpose_omni_dynamics),
+    ("dynamics_niter_none", "cellpose_omni dynamics: niter=None default to 200", patch_cellpose_omni_dynamics_niter_none),
     ("resnet_load", "cellpose_omni resnet_torch: load checkpoint unwrap", patch_cellpose_omni_resnet_load_checkpoint),
     ("omnipose_gpu_mps", "omnipose gpu: MPS (Apple Silicon) detection + log GPU exception", patch_omnipose_gpu_mps),
     ("omnipose_gpu_empty_except", "[DEBUG] omnipose gpu: fix empty except SyntaxError only", patch_omnipose_gpu_empty_except),
