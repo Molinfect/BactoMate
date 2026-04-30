@@ -236,7 +236,7 @@ See **[RELEASE_NOTES.md](RELEASE_NOTES.md)** for a version-by-version list of ch
 
 ## License
 
-[Add your license information here]
+MIT. See `../LICENSE`.
 
 ## References
 

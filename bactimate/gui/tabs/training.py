@@ -74,6 +74,26 @@ class TrainingTab(QWidget):
         dataset_layout = QVBoxLayout()
         dataset_layout.setSpacing(6)
 
+        # Short, non-expert explanation at the top
+        dataset_hint_row = QHBoxLayout()
+        dataset_hint = QLabel("Pick a folder with paired training images and mask images (ground-truth).")
+        dataset_hint.setWordWrap(True)
+        dataset_hint.setStyleSheet("color: #9e9e9e;")
+        dataset_hint_row.addWidget(dataset_hint, 1)
+        dataset_hint_row.addWidget(
+            create_info_icon(
+                "Training dataset = example images + their correct segmentation masks.\n\n"
+                "You need pairs:\n"
+                "- Image: the raw microscopy image\n"
+                "- Mask: a label image where pixels belong to cell(s) (often >0 = cell)\n\n"
+                "BactiMate uses these pairs to:\n"
+                "- (optional) create augmented copies for more variety\n"
+                "- train / fine-tune a segmentation model (backend) so it works on your data",
+                parent_widget=self,
+            )
+        )
+        dataset_layout.addLayout(dataset_hint_row)
+
         def _on_drop_training_dir(dropped_path: str) -> None:
             p = Path(dropped_path)
             if p.is_dir():
@@ -88,6 +108,20 @@ class TrainingTab(QWidget):
         )
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("Training directory:"))
+        path_row.addWidget(
+            create_info_icon(
+                "Choose a folder containing BOTH images and masks.\n\n"
+                "Typical layout:\n"
+                "  mydata/\n"
+                "    sample_001.tif\n"
+                "    sample_001_mask.tif\n"
+                "    sample_002.tif\n"
+                "    sample_002_mask.tif\n\n"
+                "Tip: You can drag & drop a folder (or any file inside the folder) into this box.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.train_dir_edit = QLineEdit()
         self.train_dir_edit.setPlaceholderText("Folder with images + masks (or drag and drop)")
         path_row.addWidget(self.train_dir_edit, 1)
@@ -99,12 +133,34 @@ class TrainingTab(QWidget):
 
         filt_row = QHBoxLayout()
         filt_row.addWidget(QLabel("Image filter:"))
+        filt_row.addWidget(
+            create_info_icon(
+                "Optional filename hint used to find training images.\n\n"
+                "If empty, BactiMate tries to use all images in the folder.\n"
+                "If set (e.g. `_img`), only files containing that text are treated as images.\n\n"
+                "Example:\n"
+                "- Image filter `_img` matches: `sample_01_img.tif`",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.img_filter_edit = QLineEdit()
         self.img_filter_edit.setPlaceholderText("empty or _img")
         self.img_filter_edit.setMinimumWidth(110)
         filt_row.addWidget(self.img_filter_edit)
         filt_row.addSpacing(8)
         filt_row.addWidget(QLabel("Mask filter:"))
+        filt_row.addWidget(
+            create_info_icon(
+                "Filename hint used to find the corresponding mask for each image.\n\n"
+                "Example (common pattern):\n"
+                "- Image: `sample_01.tif`\n"
+                "- Mask:  `sample_01_mask.tif`  → mask filter `_mask`\n\n"
+                "Use “Validate pairs” to check whether images and masks match.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.mask_filter_edit = QLineEdit()
         self.mask_filter_edit.setText("_mask")
         self.mask_filter_edit.setMinimumWidth(110)
@@ -124,12 +180,41 @@ class TrainingTab(QWidget):
         aug_layout = QVBoxLayout()
         aug_layout.setSpacing(6)
 
+        aug_hint_row = QHBoxLayout()
+        aug_hint = QLabel("Optional: create slightly modified copies of your training data to improve robustness.")
+        aug_hint.setWordWrap(True)
+        aug_hint.setStyleSheet("color: #9e9e9e;")
+        aug_hint_row.addWidget(aug_hint, 1)
+        aug_hint_row.addWidget(
+            create_info_icon(
+                "Data augmentation makes extra training examples by transforming your images (and masks) in simple ways.\n\n"
+                "Why it helps:\n"
+                "- Makes the model less sensitive to small changes (orientation, noise, illumination)\n"
+                "- Useful when you have only a small dataset\n\n"
+                "Important:\n"
+                "- Geometric transforms (rotate/flip) are applied to BOTH image and mask\n"
+                "- Intensity transforms (noise/brightness) change the image only (mask stays the same)\n\n"
+                "Preview first if you're unsure.",
+                parent_widget=self,
+            )
+        )
+        aug_layout.addLayout(aug_hint_row)
+
         aug_opts_row = QHBoxLayout()
         self.aug_enable = QCheckBox("Enable augmentation")
         self.aug_enable.setChecked(False)
         aug_opts_row.addWidget(self.aug_enable)
         aug_opts_row.addSpacing(12)
         aug_opts_row.addWidget(QLabel("Copies per image:"))
+        aug_opts_row.addWidget(
+            create_info_icon(
+                "How many augmented versions to create for each original image.\n\n"
+                "Example: 50 originals × 4 copies → up to 200 extra images (and 200 masks).\n\n"
+                "More copies = more variety, but also more disk usage and longer training.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.aug_num_spin = QSpinBox()
         self.aug_num_spin.setRange(1, 500)
         self.aug_num_spin.setValue(4)
@@ -143,10 +228,26 @@ class TrainingTab(QWidget):
         self.aug_rotate.setChecked(True)
         self.aug_rotate.setEnabled(False)
         geom_row.addWidget(self.aug_rotate)
+        geom_row.addWidget(
+            create_info_icon(
+                "Rotate images by 0°, 90°, 180°, or 270°.\n\n"
+                "Good default for microscopy because cells don't have a fixed orientation.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.aug_flip = QCheckBox("Flip")
         self.aug_flip.setChecked(True)
         self.aug_flip.setEnabled(False)
         geom_row.addWidget(self.aug_flip)
+        geom_row.addWidget(
+            create_info_icon(
+                "Randomly flip left↔right and/or up↔down.\n\n"
+                "Usually safe for microscopy. Disable if your images have a meaningful direction.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         geom_row.addStretch(1)
         aug_layout.addLayout(geom_row)
 
@@ -207,6 +308,15 @@ class TrainingTab(QWidget):
 
         out_row = QHBoxLayout()
         out_row.addWidget(QLabel("Output directory (optional):"))
+        out_row.addWidget(
+            create_info_icon(
+                "Where to write the augmented images/masks.\n\n"
+                "If left empty, files are written INTO the training directory.\n"
+                "If you want to keep your original dataset clean, choose a separate output folder.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.aug_out_dir = QLineEdit()
         self.aug_out_dir.setPlaceholderText("If empty, augmented data is written into the training directory")
         self.aug_out_dir.setEnabled(False)
@@ -222,10 +332,26 @@ class TrainingTab(QWidget):
         self.aug_preview_btn.setEnabled(False)
         self.aug_preview_btn.clicked.connect(self._preview_augmentation)
         run_row.addWidget(self.aug_preview_btn)
+        run_row.addWidget(
+            create_info_icon(
+                "Show a before/after example using one random image + mask pair.\n\n"
+                "Use this to confirm the transformations look reasonable before generating many files.",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         self.aug_run_btn = QPushButton("Run augmentation")
         self.aug_run_btn.setEnabled(False)
         self.aug_run_btn.clicked.connect(self._run_augmentation)
         run_row.addWidget(self.aug_run_btn)
+        run_row.addWidget(
+            create_info_icon(
+                "Generate augmented files on disk.\n\n"
+                "This creates new image/mask pairs in the output directory (or training directory if output is empty).",
+                parent_widget=self,
+                compact=True,
+            )
+        )
         run_row.addStretch(1)
         aug_layout.addLayout(run_row)
 
@@ -243,6 +369,24 @@ class TrainingTab(QWidget):
         method_group = QGroupBox("Training backend")
         method_layout = QVBoxLayout()
         method_layout.setSpacing(6)
+
+        backend_hint_row = QHBoxLayout()
+        backend_hint = QLabel("Choose which training method to use (different model families).")
+        backend_hint.setWordWrap(True)
+        backend_hint.setStyleSheet("color: #9e9e9e;")
+        backend_hint_row.addWidget(backend_hint, 1)
+        backend_hint_row.addWidget(
+            create_info_icon(
+                "Backend = the segmentation model family and training code.\n\n"
+                "Which one should I pick?\n"
+                "- Omnipose: strong general bacterial segmentation; good starting point.\n"
+                "- Cellpose-SAM: fine-tune Cellpose-SAM (good if you already use Cellpose).\n"
+                "- U-Net: classic deep learning model; more configuration but very flexible.\n\n"
+                "You can train multiple backends and compare what works best for your images.",
+                parent_widget=self,
+            )
+        )
+        method_layout.addLayout(backend_hint_row)
 
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(list(self.BACKENDS))
