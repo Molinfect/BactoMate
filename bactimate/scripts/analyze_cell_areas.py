@@ -1438,6 +1438,59 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
             mean_foci_per_cell.append(n_foci / n_cells if n_cells > 0 else np.nan)
         df_main['Total Foci'] = total_foci
         df_main['Mean Foci per Cell'] = mean_foci_per_cell
+
+        def _foci_row_summary_frame(r: dict) -> object:
+            fr = r.get("frame")
+            if isinstance(fr, int):
+                return int(fr) + 1
+            try:
+                if fr is not None and isinstance(fr, (float, np.floating)) and np.isfinite(fr):
+                    return int(fr) + 1
+            except Exception:
+                pass
+            return fr
+
+        chans = sorted(
+            {
+                str(r.get("channel_name") or fi_channel_name or "FI").strip() or "FI"
+                for r in foci_table
+            },
+            key=lambda s: s.lower(),
+        )
+        if len(chans) > 1:
+            for ch in chans:
+                col_total = f"Total Foci Count ({ch})"
+                col_in = f"Total Foci Count within Cells ({ch})"
+                tot_list: list[int] = []
+                in_list: list[int] = []
+                for _, row in df_main.iterrows():
+                    f = int(row["Frame"])
+                    n_tot = 0
+                    n_in = 0
+                    for r in foci_table:
+                        rch = str(r.get("channel_name") or fi_channel_name or "FI").strip() or "FI"
+                        if rch != ch:
+                            continue
+                        try:
+                            sf = _foci_row_summary_frame(r)
+                            if sf is None or (isinstance(sf, float) and not np.isfinite(sf)):
+                                continue
+                            sf_i = int(sf)
+                        except Exception:
+                            continue
+                        if sf_i != f:
+                            continue
+                        n_tot += 1
+                        if bool(r.get("in_cell")) and r.get("cell_id") not in (None, "", "None"):
+                            try:
+                                if int(r["cell_id"]) > 0:
+                                    n_in += 1
+                            except Exception:
+                                pass
+                    tot_list.append(int(n_tot))
+                    in_list.append(int(n_in))
+                df_main[col_total] = tot_list
+                df_main[col_in] = in_list
     
     # Create Excel writer
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:

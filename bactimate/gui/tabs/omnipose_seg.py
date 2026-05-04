@@ -272,6 +272,10 @@ class OmniposeSegTab(QWidget):
         self._trained_models_this_session: list[str] = []  # for session log when user trains a model
         self._performed_this_session = False  # True if user ran segmentation this session (for Re-run only same steps)
         self._segment_filename_filter = ""  # e.g. "phase" to select all TIF files containing "phase"; saved in session for Re-run
+        # Spotiflow foci: mutable copy used by batch + preview; preview widgets sync into this dict.
+        self._spotiflow_detection_params: dict[str, Any] = dict(SPOTIFLOW_DETECTION_DEFAULTS)
+        # Post-filter on written CSV (same semantics as preview "Show prob ≥" when > 0).
+        self._foci_csv_min_probability: float = 0.0
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -1596,6 +1600,7 @@ class OmniposeSegTab(QWidget):
             )
         except Exception as e:
             return False, f"Spotiflow model load failed: {e}"
+        min_prob_csv = float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0)
         for fi, frame in enumerate(arr):
             plane = np.asarray(coerce_plane_to_2d(np.asarray(frame)), dtype=np.float64)
             peaks = detect_peaks_spotiflow(
@@ -1605,6 +1610,12 @@ class OmniposeSegTab(QWidget):
             )
             if peaks is None:
                 return False, f"Spotiflow unavailable or prediction failed at frame {fi}"
+            if min_prob_csv > 0:
+                peaks = [
+                    p
+                    for p in peaks
+                    if (p.get("probability") is None or float(p.get("probability") or 0.0) >= min_prob_csv)
+                ]
             for p in peaks:
                 q = dict(p)
                 q["frame"] = fi
@@ -1812,8 +1823,34 @@ class OmniposeSegTab(QWidget):
         return self._get_omnipose_segmentation_folder_name()
 
     def _get_spotiflow_detection_params(self) -> dict[str, Any]:
-        """Return Spotiflow parameters used by batch foci detection."""
-        return dict(SPOTIFLOW_DETECTION_DEFAULTS)
+        """Return Spotiflow parameters used by batch foci detection and preview (merged with defaults)."""
+        merged = dict(SPOTIFLOW_DETECTION_DEFAULTS)
+        custom = getattr(self, "_spotiflow_detection_params", None)
+        if isinstance(custom, dict):
+            merged.update(custom)
+        return merged
+
+    def _sync_spotiflow_from_preview_dialog(self, dlg: QWidget) -> None:
+        """Persist Spotiflow + probability-display knobs from the segmentation preview into tab state."""
+        try:
+            if getattr(dlg, "_sf_normalize_cb", None) is not None:
+                self._spotiflow_detection_params["normalize"] = bool(dlg._sf_normalize_cb.isChecked())
+            if getattr(dlg, "_sf_perc_low", None) is not None:
+                self._spotiflow_detection_params["perc_low"] = float(dlg._sf_perc_low.value())
+            if getattr(dlg, "_sf_perc_high", None) is not None:
+                self._spotiflow_detection_params["perc_high"] = float(dlg._sf_perc_high.value())
+            if getattr(dlg, "_sf_use_optimized", None) is not None:
+                self._spotiflow_detection_params["use_optimized_threshold"] = bool(dlg._sf_use_optimized.isChecked())
+            if getattr(dlg, "_sf_prob_thresh", None) is not None:
+                self._spotiflow_detection_params["prob_thresh"] = float(dlg._sf_prob_thresh.value())
+            if getattr(dlg, "_sf_min_distance", None) is not None:
+                self._spotiflow_detection_params["min_distance"] = int(dlg._sf_min_distance.value())
+            if getattr(dlg, "_sf_subpix", None) is not None:
+                self._spotiflow_detection_params["subpix"] = bool(dlg._sf_subpix.isChecked())
+            if getattr(dlg, "_foci_prob_spin", None) is not None:
+                self._foci_csv_min_probability = float(dlg._foci_prob_spin.value() or 0.0)
+        except Exception:
+            get_logger().debug("sync spotiflow from preview failed", exc_info=True)
 
     def _get_segmentation_run_params(self, *, selected_files: list[Path] | None = None) -> dict[str, Any]:
         """Return the effective segmentation/foci parameters for the run about to start."""
@@ -1873,6 +1910,8 @@ class OmniposeSegTab(QWidget):
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
         self.detect_foci.setChecked(False)
+        self._spotiflow_detection_params = dict(SPOTIFLOW_DETECTION_DEFAULTS)
+        self._foci_csv_min_probability = 0.0
         try:
             self._sync_mask_threshold_spinbox_for_model()
         except Exception:
@@ -1893,6 +1932,7 @@ class OmniposeSegTab(QWidget):
         spotiflow_params = self._get_spotiflow_detection_params()
         for key, value in spotiflow_params.items():
             out[f"spotiflow_{key}"] = value
+        out["foci_csv_min_probability"] = float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0)
         out["trained_models_this_session"] = list(self._trained_models_this_session)
         path_txt = (self.file_path.text() or "").strip()
         if path_txt:
@@ -1955,6 +1995,17 @@ class OmniposeSegTab(QWidget):
             self._performed_this_session = bool(data["performed"])
         if "segment_filename_filter" in data and data["segment_filename_filter"] is not None:
             self._segment_filename_filter = str(data["segment_filename_filter"]).strip() or ""
+        if any(isinstance(k, str) and k.startswith("spotiflow_") for k in (data or {}).keys()):
+            merged_sf = dict(SPOTIFLOW_DETECTION_DEFAULTS)
+            for k, v in (data or {}).items():
+                if isinstance(k, str) and k.startswith("spotiflow_"):
+                    merged_sf[k[len("spotiflow_") :]] = v
+            self._spotiflow_detection_params = merged_sf
+        if "foci_csv_min_probability" in data:
+            try:
+                self._foci_csv_min_probability = float(data["foci_csv_min_probability"] or 0.0)
+            except Exception:
+                pass
 
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
@@ -2372,37 +2423,30 @@ class OmniposeSegTab(QWidget):
                 if src_idx < 0 or src_idx >= len(sources):
                     _clear_peaks()
                     return
-                # Cache key includes Spotiflow parameters so toggling them recomputes.
-                try:
-                    _sf_opt = bool(getattr(preview_dialog, "_sf_use_optimized", None) and preview_dialog._sf_use_optimized.isChecked())
-                except Exception:
-                    _sf_opt = True
-                try:
-                    _sf_prob = float(getattr(preview_dialog, "_sf_prob_thresh", None).value()) if getattr(preview_dialog, "_sf_prob_thresh", None) is not None else 0.5
-                except Exception:
-                    _sf_prob = 0.5
-                try:
-                    _sf_min_dist = int(getattr(preview_dialog, "_sf_min_distance", None).value()) if getattr(preview_dialog, "_sf_min_distance", None) is not None else 1
-                except Exception:
-                    _sf_min_dist = 1
-                try:
-                    _sf_subpix = bool(getattr(preview_dialog, "_sf_subpix", None) and preview_dialog._sf_subpix.isChecked())
-                except Exception:
-                    _sf_subpix = True
-                try:
-                    _sf_norm = bool(getattr(preview_dialog, "_sf_normalize_cb", None) and preview_dialog._sf_normalize_cb.isChecked())
-                except Exception:
-                    _sf_norm = True
-                try:
-                    _sf_pl = float(getattr(preview_dialog, "_sf_perc_low", None).value()) if getattr(preview_dialog, "_sf_perc_low", None) is not None else 1.0
-                except Exception:
-                    _sf_pl = 1.0
-                try:
-                    _sf_ph = float(getattr(preview_dialog, "_sf_perc_high", None).value()) if getattr(preview_dialog, "_sf_perc_high", None) is not None else 99.8
-                except Exception:
-                    _sf_ph = 99.8
+                # Keep tab state aligned with the preview controls (used by Process File/Folder foci CSV).
+                self._sync_spotiflow_from_preview_dialog(preview_dialog)
+                sf = self._get_spotiflow_detection_params()
+                _sf_opt = bool(sf.get("use_optimized_threshold", True))
+                _sf_prob = float(sf.get("prob_thresh") if sf.get("prob_thresh") is not None else 0.5)
+                _sf_min_dist = int(sf.get("min_distance", 1) or 1)
+                _sf_subpix = bool(sf.get("subpix", True))
+                _sf_norm = bool(sf.get("normalize", True))
+                _sf_pl = float(sf.get("perc_low", 1.0) or 1.0)
+                _sf_ph = float(sf.get("perc_high", 99.8) or 99.8)
+                _csv_minp = float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0)
 
-                key = (src_idx, int(frame_idx), _sf_opt, _sf_prob, _sf_min_dist, _sf_subpix, _sf_norm, _sf_pl, _sf_ph)
+                key = (
+                    src_idx,
+                    int(frame_idx),
+                    _sf_opt,
+                    _sf_prob,
+                    _sf_min_dist,
+                    _sf_subpix,
+                    _sf_norm,
+                    _sf_pl,
+                    _sf_ph,
+                    _csv_minp,
+                )
                 cache = getattr(preview_dialog, "_foci_peaks_cache", None)
                 spotiflow_available = True
                 peaks: list
@@ -2437,19 +2481,22 @@ class OmniposeSegTab(QWidget):
                         # Raw point detections only (no blob threshold / postfilters).
                         try:
                             prob_kw = None if _sf_opt else float(_sf_prob)
-                            spotiflow_model = load_spotiflow_model(model_name="general")
+                            mn = str(sf.get("model_name") or "general")
+                            mp = str(sf.get("model_path") or "").strip() or None
+                            spotiflow_model = load_spotiflow_model(model_name=mn, model_path=mp)
+                            det_kw = {k: v for k, v in sf.items() if k not in ("model_name", "model_path", "raise_on_error")}
+                            det_kw["use_optimized_threshold"] = bool(_sf_opt)
+                            det_kw["prob_thresh"] = prob_kw
+                            det_kw["min_distance"] = int(_sf_min_dist)
+                            det_kw["subpix"] = bool(_sf_subpix)
+                            det_kw["normalize"] = bool(_sf_norm)
+                            det_kw["perc_low"] = float(_sf_pl)
+                            det_kw["perc_high"] = float(_sf_ph)
+                            det_kw["raise_on_error"] = False
                             result = detect_peaks_spotiflow(
                                 plane,
-                                model_name="general",
                                 spotiflow_model=spotiflow_model,
-                                use_optimized_threshold=bool(_sf_opt),
-                                prob_thresh=prob_kw,
-                                min_distance=int(_sf_min_dist),
-                                subpix=bool(_sf_subpix),
-                                normalize=bool(_sf_norm),
-                                perc_low=float(_sf_pl),
-                                perc_high=float(_sf_ph),
-                                raise_on_error=False,
+                                **det_kw,
                             )
                         except Exception as e:
                             get_logger().warning(
@@ -2468,18 +2515,13 @@ class OmniposeSegTab(QWidget):
                         # Only cache successful runs — don't poison the cache with
                         # zero-peak results caused by a missing install.
                         cache[key] = list(peaks)
-                # Optional preview probability filter
-                prob_spin = getattr(preview_dialog, "_foci_prob_spin", None)
-                if prob_spin is not None:
-                    try:
-                        thr = float(prob_spin.value() or 0.0)
-                    except Exception:
-                        thr = 0.0
-                    if thr > 0:
-                        peaks = [
-                            p for p in peaks
-                            if (p.get("probability") is None or float(p.get("probability") or 0.0) >= thr)
-                        ]
+                # Optional probability filter (same threshold as written to CSV when > 0)
+                thr = float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0)
+                if thr > 0:
+                    peaks = [
+                        p for p in peaks
+                        if (p.get("probability") is None or float(p.get("probability") or 0.0) >= thr)
+                    ]
                 preview_dialog._foci_peaks_for_current = peaks
                 if not spotiflow_available:
                     _set_status(
@@ -3792,16 +3834,20 @@ class OmniposeSegTab(QWidget):
                 prob_spin.setRange(0.0, 1.0)
                 prob_spin.setSingleStep(0.05)
                 prob_spin.setDecimals(2)
-                prob_spin.setValue(0.0)
-                prob_spin.setToolTip("Preview filter only. Set 0 to show all.")
+                prob_spin.setValue(float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0))
+                prob_spin.setToolTip(
+                    "Minimum Spotiflow probability to show peaks and to include in the exported foci CSV "
+                    "(0 = no filter). Values are saved for Process File/Folder."
+                )
                 prob_spin.setFixedWidth(94)
                 nav_layout.addWidget(prob_spin)
 
                 # Spotiflow detection parameters (basic)
+                p_sf = self._get_spotiflow_detection_params()
                 nav_layout.addSpacing(8)
                 nav_layout.addWidget(QLabel("SF normalize"))
                 sf_norm_cb = QCheckBox("")
-                sf_norm_cb.setChecked(True)
+                sf_norm_cb.setChecked(bool(p_sf.get("normalize", True)))
                 sf_norm_cb.setToolTip("Apply percentile normalization before Spotiflow inference.")
                 nav_layout.addWidget(sf_norm_cb)
                 nav_layout.addWidget(QLabel("pLow"))
@@ -3809,7 +3855,7 @@ class OmniposeSegTab(QWidget):
                 sf_plow.setRange(0.0, 49.0)
                 sf_plow.setDecimals(1)
                 sf_plow.setSingleStep(0.5)
-                sf_plow.setValue(1.0)
+                sf_plow.setValue(float(p_sf.get("perc_low", 1.0) or 1.0))
                 sf_plow.setFixedWidth(70)
                 nav_layout.addWidget(sf_plow)
                 nav_layout.addWidget(QLabel("pHigh"))
@@ -3817,12 +3863,12 @@ class OmniposeSegTab(QWidget):
                 sf_phigh.setRange(51.0, 100.0)
                 sf_phigh.setDecimals(1)
                 sf_phigh.setSingleStep(0.5)
-                sf_phigh.setValue(99.8)
+                sf_phigh.setValue(float(p_sf.get("perc_high", 99.8) or 99.8))
                 sf_phigh.setFixedWidth(74)
                 nav_layout.addWidget(sf_phigh)
 
                 sf_use_opt = QCheckBox("Optimized thr")
-                sf_use_opt.setChecked(True)
+                sf_use_opt.setChecked(bool(p_sf.get("use_optimized_threshold", True)))
                 sf_use_opt.setToolTip("When on, Spotiflow uses its optimized threshold; prob_thresh is ignored.")
                 nav_layout.addWidget(sf_use_opt)
                 nav_layout.addWidget(QLabel("thr"))
@@ -3830,7 +3876,8 @@ class OmniposeSegTab(QWidget):
                 sf_prob.setRange(0.0, 1.0)
                 sf_prob.setDecimals(2)
                 sf_prob.setSingleStep(0.05)
-                sf_prob.setValue(0.5)
+                _pt = p_sf.get("prob_thresh")
+                sf_prob.setValue(float(_pt) if _pt is not None else 0.5)
                 sf_prob.setFixedWidth(70)
                 sf_prob.setEnabled(not sf_use_opt.isChecked())
                 nav_layout.addWidget(sf_prob)
@@ -3839,12 +3886,12 @@ class OmniposeSegTab(QWidget):
                 sf_min_dist = QSpinBox()
                 sf_min_dist.setRange(1, 50)
                 sf_min_dist.setSingleStep(1)
-                sf_min_dist.setValue(1)
+                sf_min_dist.setValue(int(p_sf.get("min_distance", 1) or 1))
                 sf_min_dist.setFixedWidth(64)
                 nav_layout.addWidget(sf_min_dist)
 
                 sf_subpix = QCheckBox("subpix")
-                sf_subpix.setChecked(True)
+                sf_subpix.setChecked(bool(p_sf.get("subpix", True)))
                 nav_layout.addWidget(sf_subpix)
             else:
                 foci_combo = None
@@ -4030,6 +4077,7 @@ class OmniposeSegTab(QWidget):
             if foci_sources:
                 def _sf_ui_changed(*_a):
                     try:
+                        self._sync_spotiflow_from_preview_dialog(preview_dialog)
                         try:
                             sf_prob.setEnabled(bool(foci_sources) and (not sf_use_opt.isChecked()))
                         except Exception:
@@ -4044,12 +4092,14 @@ class OmniposeSegTab(QWidget):
 
                 foci_combo.currentIndexChanged.connect(
                     lambda *_: (
+                        self._sync_spotiflow_from_preview_dialog(preview_dialog),
                         _compute_foci_peaks_for_current(preview_dialog.current_frame, allow_detect=False),
                         refresh_image_display(),
                     )
                 )
                 prob_spin.valueChanged.connect(
                     lambda *_: (
+                        self._sync_spotiflow_from_preview_dialog(preview_dialog),
                         _compute_foci_peaks_for_current(preview_dialog.current_frame, allow_detect=False),
                         refresh_image_display(),
                     )
@@ -4280,6 +4330,9 @@ class OmniposeSegTab(QWidget):
             )
             status_label.setText("Segmenting first frame...")
             loading_progress.close()
+            preview_dialog.finished.connect(
+                lambda _result=0, pd=preview_dialog: self._sync_spotiflow_from_preview_dialog(pd)
+            )
             preview_dialog.show()
             preview_dialog.raise_()
             preview_dialog.activateWindow()
