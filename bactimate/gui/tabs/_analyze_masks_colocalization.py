@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+from collections import defaultdict
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -95,14 +96,145 @@ def _load_mask_frames(mask_path: Path) -> dict[int, np.ndarray]:
     return {}
 
 
-def _update_per_cell_data_counts(
+def _infer_frame_shift(
+    *,
+    per_cell_frames: set[int],
+    channel_rows: list[tuple[str, list[dict[str, Any]]]],
+    pair_tables: list[tuple[str, str, Any, int]],
+) -> int:
+    """0 if Summary Frame matches CSV/assigned frame; 1 if Summary is 1-based and CSV is 0-based."""
+    import pandas as pd
+
+    if not per_cell_frames:
+        return 0
+    observed_frames: set[int] = set()
+    for _lbl, rows in channel_rows or []:
+        for r in rows or []:
+            try:
+                observed_frames.add(int(r.get("frame", 0) or 0))
+            except Exception:
+                continue
+    for _la, _lb, df, _count in pair_tables or []:
+        try:
+            if df is None or df.empty or "frame" not in df.columns:
+                continue
+            for v in df["frame"].tolist():
+                if v is None or pd.isna(v):
+                    continue
+                observed_frames.add(int(v))
+        except Exception:
+            continue
+    if not observed_frames:
+        return 0
+    try:
+        overlap_raw = len(per_cell_frames.intersection(observed_frames))
+        overlap_plus1 = len(per_cell_frames.intersection({f + 1 for f in observed_frames}))
+        if overlap_plus1 > overlap_raw:
+            return 1
+    except Exception:
+        return 0
+    return 0
+
+
+_SUMMARY_COL_PREFIXES = (
+    "Total Foci Count (",
+    "Total Foci Count within Cells (",
+    "Valid Pairs Count (",
+)
+
+
+def _strip_managed_summary_columns(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Remove columns written by post-colocalization Summary updates so reruns do not leave stale values."""
+    drop = [
+        c
+        for c in df.columns
+        if isinstance(c, str) and any(c.startswith(p) for p in _SUMMARY_COL_PREFIXES)
+    ]
+    if drop:
+        return df.drop(columns=drop, errors="ignore")
+    return df
+
+
+def _pair_column_name(la: str, lb: str) -> str:
+    a, b = sorted((str(la), str(lb)), key=lambda s: s.lower())
+    return f"Valid Pairs Count ({a}×{b})"
+
+
+def _valid_pairs_counts_by_summary_frame(
+    *,
+    df: Any,
+    frame_shift: int,
+    same_cell_only: bool,
+    rows_a: list[dict[str, Any]],
+    rows_b: list[dict[str, Any]],
+    summary_frames: set[int],
+) -> dict[int, int]:
+    """Map Summary Frame -> valid pair count for one channel pair."""
+    import pandas as pd
+
+    out: dict[int, int] = defaultdict(int)
+    if df is None or df.empty or ("message" in df.columns and len(df.columns) == 1):
+        return dict(out)
+    if "cell_id_primary" not in df.columns:
+        return dict(out)
+
+    def _row_ok(row: Any) -> bool:
+        try:
+            if "is_valid" in df.columns and not bool(row.get("is_valid", True)):
+                return False
+            if same_cell_only and "same_cell" in df.columns and not bool(row.get("same_cell", False)):
+                return False
+            return True
+        except Exception:
+            return False
+
+    has_frame_col = (
+        "frame" in df.columns
+        and len(df) > 0
+        and bool(df["frame"].notna().any())
+    )
+    if has_frame_col:
+        for _, row in df.iterrows():
+            if not _row_ok(row):
+                continue
+            try:
+                fr_i = int(row.get("frame", 0) or 0) + int(frame_shift)
+            except Exception:
+                continue
+            out[fr_i] += 1
+        return dict(out)
+
+    # Single-frame analysis: pair rows have no 'frame' — attribute counts to Summary frame(s) from foci rows.
+    try:
+        cand = set()
+        for r in rows_a or []:
+            cand.add(int(r.get("frame", 0) or 0) + int(frame_shift))
+        for r in rows_b or []:
+            cand.add(int(r.get("frame", 0) or 0) + int(frame_shift))
+        cand = {f for f in cand if f in summary_frames}
+        if len(cand) == 1:
+            only = next(iter(cand))
+            total = sum(1 for _, row in df.iterrows() if _row_ok(row))
+            out[only] = int(total)
+            return dict(out)
+    except Exception:
+        pass
+    total = sum(1 for _, row in df.iterrows() if _row_ok(row))
+    if summary_frames:
+        first = min(summary_frames)
+        out[int(first)] = int(total)
+    return dict(out)
+
+
+def _persist_workbook_count_updates(
     *,
     analysis_path: Path,
     channel_rows: list[tuple[str, list[dict[str, Any]]]],
-    pair_tables: list[tuple[str, str, "pd.DataFrame", int]],
-    same_cell_only: bool = True,
+    raw_counts: dict[tuple[str, int], int],
+    pair_tables: list[tuple[str, str, Any, int]],
+    same_cell_only: bool,
 ) -> None:
-    """Add per-cell foci/coloc counts to 'Per-Cell Data' with stale-value reset."""
+    """Update Per-Cell Data foci/coloc counts and Summary per-frame foci / valid-pair columns (single write)."""
     import pandas as pd
 
     analysis_path = Path(analysis_path)
@@ -121,9 +253,12 @@ def _update_per_cell_data_counts(
         return
     has_frame = "Frame" in per_cell.columns
 
-    # Some foci CSV pipelines store frame as 0-based while Per-Cell Data uses 1-based.
-    # Infer the most likely alignment by comparing raw-vs-shifted frame overlap.
-    frame_shift = 0
+    try:
+        summary = pd.read_excel(analysis_path, sheet_name="Summary")
+    except Exception:
+        summary = None
+
+    per_cell_frames: set[int] = set()
     if has_frame:
         try:
             per_cell_frames = {
@@ -131,31 +266,14 @@ def _update_per_cell_data_counts(
                 for v in per_cell["Frame"].tolist()
                 if v is not None and pd.notna(v)
             }
-            observed_frames: set[int] = set()
-            for _lbl, rows in (channel_rows or []):
-                for r in rows or []:
-                    try:
-                        observed_frames.add(int(r.get("frame", 0) or 0))
-                    except Exception:
-                        continue
-            for _la, _lb, df, _count in (pair_tables or []):
-                try:
-                    if df is None or df.empty or "frame" not in df.columns:
-                        continue
-                    for v in df["frame"].tolist():
-                        if v is None or pd.isna(v):
-                            continue
-                        observed_frames.add(int(v))
-                except Exception:
-                    continue
-
-            if per_cell_frames and observed_frames:
-                overlap_raw = len(per_cell_frames.intersection(observed_frames))
-                overlap_plus1 = len(per_cell_frames.intersection({f + 1 for f in observed_frames}))
-                if overlap_plus1 > overlap_raw:
-                    frame_shift = 1
         except Exception:
-            frame_shift = 0
+            per_cell_frames = set()
+
+    frame_shift = _infer_frame_shift(
+        per_cell_frames=per_cell_frames,
+        channel_rows=channel_rows,
+        pair_tables=pair_tables,
+    )
 
     # Reset existing count columns so reruns cannot leave stale values.
     existing_foci_cols = [c for c in per_cell.columns if str(c).endswith("_foci_count")]
@@ -168,7 +286,7 @@ def _update_per_cell_data_counts(
         per_cell[coloc_col] = 0
 
     # Foci per cell per channel.
-    for label, rows in (channel_rows or []):
+    for label, rows in channel_rows or []:
         col = f"{_safe_col_key(label)}_foci_count"
         counts: dict[tuple[int, int], int] = {}
         for r in rows or []:
@@ -209,7 +327,7 @@ def _update_per_cell_data_counts(
 
     # Coloc pairs per cell: count valid pairs; optionally require same-cell.
     coloc_counts: dict[tuple[int, int], int] = {}
-    for _la, _lb, df, _count in (pair_tables or []):
+    for _la, _lb, df, _count in pair_tables or []:
         try:
             if df is None or df.empty or "message" in df.columns:
                 continue
@@ -259,8 +377,63 @@ def _update_per_cell_data_counts(
             for cid in per_cell[cell_col]
         ]
 
-    # Write back updated Per-Cell Data (preserve other sheets)
+    # --- Summary sheet: per-channel totals and per-pair valid counts ---
+    if summary is not None and not summary.empty and "Frame" in summary.columns:
+        summary = _strip_managed_summary_columns(summary)
+        summary_frames: set[int] = set()
+        try:
+            summary_frames = {
+                int(v)
+                for v in summary["Frame"].tolist()
+                if v is not None and pd.notna(v)
+            }
+        except Exception:
+            summary_frames = set()
+
+        rows_by_label = {lbl: rows for lbl, rows in channel_rows}
+
+        for label in rows_by_label:
+            col_total = f"Total Foci Count ({label})"
+            col_in = f"Total Foci Count within Cells ({label})"
+            totals: dict[int, int] = defaultdict(int)
+            within: dict[int, int] = defaultdict(int)
+            for F in summary_frames:
+                csv_fr = int(F) - int(frame_shift)
+                totals[F] = int(raw_counts.get((label, csv_fr), 0))
+            for r in rows_by_label[label] or []:
+                try:
+                    if not bool(r.get("in_cell", False)):
+                        continue
+                    cid = r.get("cell_id", None)
+                    if cid in (None, "", "None") or int(cid) <= 0:
+                        continue
+                    fr_sum = int(r.get("frame", 0) or 0) + int(frame_shift)
+                    if fr_sum in summary_frames:
+                        within[fr_sum] += 1
+                except Exception:
+                    continue
+            summary[col_total] = summary["Frame"].map(lambda f: int(totals.get(int(f), 0)) if f is not None and pd.notna(f) else 0)
+            summary[col_in] = summary["Frame"].map(lambda f: int(within.get(int(f), 0)) if f is not None and pd.notna(f) else 0)
+
+        for la, lb, df, _count in pair_tables or []:
+            rows_a = rows_by_label.get(la) or []
+            rows_b = rows_by_label.get(lb) or []
+            col_name = _pair_column_name(la, lb)
+            per_fr = _valid_pairs_counts_by_summary_frame(
+                df=df,
+                frame_shift=frame_shift,
+                same_cell_only=same_cell_only,
+                rows_a=rows_a,
+                rows_b=rows_b,
+                summary_frames=summary_frames,
+            )
+            summary[col_name] = summary["Frame"].map(
+                lambda f: int(per_fr.get(int(f), 0)) if f is not None and pd.notna(f) else 0
+            )
+
     with pd.ExcelWriter(analysis_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        if summary is not None and not summary.empty:
+            summary.to_excel(writer, sheet_name="Summary", index=False)
         per_cell.to_excel(writer, sheet_name="Per-Cell Data", index=False)
 
 
@@ -414,6 +587,7 @@ def _run_all_pairs_for_mask(tab, mask_path: Path) -> tuple[int, list[str]]:
 
     used_labels: set[str] = set()
     channel_rows: list[tuple[str, list[dict[str, Any]]]] = []
+    raw_by_label_frame: dict[tuple[str, int], int] = defaultdict(int)
     for src in sources:
         lbl = _channel_label_for_source(tab, mask_path, src, used_labels)
         csv_path = _csv_path_for_source(pipeline_dir, mask_path=mask_path, foci_source_path=src, prefer_filtered=prefer_filtered)
@@ -424,6 +598,12 @@ def _run_all_pairs_for_mask(tab, mask_path: Path) -> tuple[int, list[str]]:
         if not rows:
             log_lines.append(f"[Coloc] Source {Path(src).name} -> CSV {csv_path.name} has no rows.\n")
             continue
+        for r in rows:
+            try:
+                fr_csv = int(r.get("frame", 0) or 0)
+            except Exception:
+                fr_csv = 0
+            raw_by_label_frame[(lbl, fr_csv)] += 1
         frames = sorted({int(r.get("frame", 0) or 0) for r in rows})
         assigned_all: list[dict[str, Any]] = []
         max_mask_idx = max(mask_frames.keys()) if mask_frames else 0
@@ -487,16 +667,18 @@ def _run_all_pairs_for_mask(tab, mask_path: Path) -> tuple[int, list[str]]:
             f"[Coloc] No sheet write: need >=2 channels with data, got {len(channel_rows)}.\n"
         )
 
-    # Always update Per-Cell Data with per-channel foci counts; coloc count is 0 if no pair tables.
-    try:
-        _update_per_cell_data_counts(
-            analysis_path=analysis_path,
-            channel_rows=channel_rows,
-            pair_tables=pair_tables,
-            same_cell_only=same_cell_only,
-        )
-    except Exception:
-        pass
+    # Update Per-Cell Data, Summary foci/pair counts, and (below) Colocalization sheets.
+    if channel_rows:
+        try:
+            _persist_workbook_count_updates(
+                analysis_path=analysis_path,
+                channel_rows=channel_rows,
+                raw_counts=dict(raw_by_label_frame),
+                pair_tables=pair_tables,
+                same_cell_only=same_cell_only,
+            )
+        except Exception:
+            pass
 
     if not pair_tables:
         # No coloc sheets to write, but Per-Cell counts may still have been updated.
