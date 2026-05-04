@@ -6,6 +6,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+  - [macOS: DMG install only](#macos-dmg-install-only)
 - [Graphical User Interface](#graphical-user-interface)
 - [Command Line Usage](#command-line-usage)
 - [Batch Processing](#batch-processing)
@@ -86,6 +87,21 @@ python -m bactimate.scripts.batch_process_folder /path/to/folder \
 - **Omnipose Version**: 1.0.6
 - **GUI Framework**: PyQt6
 - **Virtual Environment**: `venv/`
+
+### macOS: DMG install only
+
+Use this if someone gave you **only** `BactiMate.dmg` (no project folder, no Terminal, no Python install).
+
+1. Double-click **BactiMate.dmg**. A Finder window opens; inside you will see **BactiMate** (the app), a shortcut to **Applications**, **00 - READ THIS FIRST (macOS install).txt** (same steps in plain language), and **Open BactiMate.command**.
+2. Drag **BactiMate** onto **Applications** (or into your Applications folder).
+3. If macOS says the app is **“damaged”** or **cannot be verified**, that is a security message for apps outside the App Store, not proof the file is corrupted. Do **one** of the following **once**:
+   - Double-click **Open BactiMate.command** (works from the DMG window or after the app is in Applications), **or**
+   - In **Applications**, Control-click **BactiMate** → **Open** → confirm **Open**.
+4. After that, start BactiMate like any other app from Applications or the Dock.
+
+On **organization-managed Macs**, users may need IT to allow the app or **Open Anyway** under **System Settings → Privacy & Security**.
+
+The same content as step 1’s text file ships **inside** the DMG so recipients who never open GitHub still see instructions.
 
 ### Project structure
 
@@ -174,7 +190,7 @@ BactiMate can be packaged into a macOS `.app` bundle (venv + project files, no N
 1. **Setup:** `./setup/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
 2. **Icon (required for distributable app):** Ensure `img/logo2.png` is your desired app icon, then run `./build/create_icons.sh`. The build will fail with a clear error if no valid icon ends up in the bundle.
 3. **Build:** `./build/build_app_bundle.sh` → `BactiMate.app` (build verifies launcher, script, Python, and icon)
-4. **DMG:** `./build/create_dmg.sh` → `dist/BactiMate.dmg` (app + Applications symlink + **Open BactiMate.command** for first-time open on new Macs)
+4. **DMG:** `./build/create_dmg.sh` → `dist/BactiMate.dmg` (app + Applications symlink + **00 - READ THIS FIRST (macOS install).txt** + **Open BactiMate.command** for first-time open on new Macs)
 
 **Distribution checklist** (before shipping the DMG):
 

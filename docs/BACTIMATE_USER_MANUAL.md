@@ -38,7 +38,7 @@ This manual describes **every way a user can interact with BactiMate** through i
 - **Buttons and actions:** What each button does, when it is enabled, and what dialogs or outputs result.
 - **Outputs:** Where files are written, naming conventions, and how to open or reuse them in other tabs.
 
-It is intended as a **deep reference**, not a quick start. For a shorter overview and installation, see the main project `README.md`.
+It is intended as a **deep reference**, not a quick start. For a shorter overview and installation, see the main project `README.md`. If you were given **only** the macOS disk image **BactiMate.dmg**, use **README → macOS: DMG install only** and the **00 - READ THIS FIRST** file inside the DMG.
 
 ### 1.2 How to use this manual
 
