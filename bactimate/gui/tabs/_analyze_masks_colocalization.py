@@ -677,8 +677,11 @@ def _run_all_pairs_for_mask(tab, mask_path: Path) -> tuple[int, list[str]]:
                 pair_tables=pair_tables,
                 same_cell_only=same_cell_only,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            log_lines.append(
+                f"[Coloc] Warning: could not update Per-Cell Data / Summary counts in "
+                f"{analysis_path.name}: {type(exc).__name__}: {exc}\n"
+            )
 
     if not pair_tables:
         # No coloc sheets to write, but Per-Cell counts may still have been updated.
