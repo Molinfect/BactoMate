@@ -207,6 +207,7 @@ class WorkerThread(QThread):
         packaged_like = False
         force_inproc = False
         python_is_app_launcher = False
+        frozen_same_exe = False
         def _run_known_in_process() -> bool:
             return False
         try:
@@ -250,12 +251,29 @@ class WorkerThread(QThread):
             # Never use the .app launcher as subprocess Python: it would start a second GUI.
             exe_str = str(python_exe).lower()
             python_is_app_launcher = ("bactimate" in exe_str and ("macos" in exe_str or exe_str.endswith("bactimate")))
+            # PyInstaller (and similar): sys.executable is the GUI binary (e.g. BactiMate.exe), not python.exe.
+            # Spawning it with a script path starts another GUI instead of running the script.
+            try:
+                frozen_same_exe = frozen and os.path.normcase(
+                    os.path.abspath(str(python_exe))
+                ) == os.path.normcase(os.path.abspath(str(sys.executable)))
+            except (OSError, ValueError):
+                frozen_same_exe = frozen and str(python_exe) == str(sys.executable)
 
-            # In packaged builds, prefer subprocess for isolation when safe; fall back to in-process
-            # only when explicitly forced or when the only Python available is the GUI launcher.
+            # In packaged builds, prefer subprocess for isolation when safe; use in-process when the
+            # interpreter path is the GUI entrypoint (macOS .app) or the frozen exe (Windows one-folder).
             if packaged_like and (force_inproc or python_is_app_launcher):
                 if _run_known_in_process():
                     return
+            if packaged_like and frozen_same_exe:
+                if _run_known_in_process():
+                    return
+                msg = (
+                    "This job cannot run in the packaged app (no standalone Python interpreter). "
+                    "Run BactiMate from source (see setup\\install_windows.bat) or use a feature supported in-process."
+                )
+                self.finished.emit(False, msg)
+                return
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
             # Scripts import ``bactimate.*``; subprocess does not inherit sys.path from the GUI.

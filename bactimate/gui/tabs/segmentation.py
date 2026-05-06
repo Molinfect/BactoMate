@@ -141,7 +141,7 @@ class SegmentationTab(QWidget):
 
     def _on_backend_finished(self, backend: str, ok: bool) -> None:
         if not ok:
-            self._update_analyze_gate()
+            self._update_stage_gates()
             return
         out_dir = self._infer_output_dir_for_backend(backend)
         if out_dir is not None:
@@ -207,4 +207,3 @@ class SegmentationTab(QWidget):
         self.analyze_tab.setEnabled(True)
         self.filtering_group.setEnabled(True)
         self.analyze_group.setEnabled(True)
-

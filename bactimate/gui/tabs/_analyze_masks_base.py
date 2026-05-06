@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -502,6 +502,41 @@ class AnalyzeMasksBase(QWidget):
             self.pixel_size_indicator.setText("")
             self.pixel_size_indicator.setFixedWidth(0)
             self.pixel_size_indicator.hide()
+
+    def _open_output_folder(self, folder: Path | str | None) -> None:
+        if folder is None:
+            return
+        try:
+            p = Path(folder)
+            if p.is_file():
+                p = p.parent
+            if p.exists():
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+        except Exception:
+            pass
+
+    def _show_finished_dialog_with_output_folder(
+        self,
+        *,
+        title: str,
+        message: str,
+        output_folder: Path | str | None = None,
+        icon: QMessageBox.Icon = QMessageBox.Icon.Information,
+    ) -> None:
+        msg = QMessageBox(self)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        msg.setIcon(icon)
+        open_btn = None
+        try:
+            if output_folder is not None and Path(output_folder).exists():
+                open_btn = msg.addButton("Open output folder", QMessageBox.ButtonRole.ActionRole)
+        except Exception:
+            open_btn = None
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
+        if open_btn is not None and msg.clickedButton() == open_btn:
+            self._open_output_folder(output_folder)
 
     def reset_analysis_defaults(self) -> None:
         self.pixel_size.setValue(float(0.108))

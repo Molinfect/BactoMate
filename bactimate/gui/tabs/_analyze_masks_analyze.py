@@ -8,6 +8,7 @@ from typing import Any, Optional
 import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QDoubleSpinBox,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -99,6 +101,56 @@ class AnalyzeTab(AnalyzeMasksBase):
             self.parent_window.log_output("\n".join(lines) + "\n")
         if getattr(self.parent_window, "_save_session_log", None):
             self.parent_window._save_session_log()
+
+    def _start_analysis_progress(self, total: int, label: str = "Analyzing masks...") -> None:
+        try:
+            total = max(1, int(total))
+            progress = QProgressDialog(label, None, 0, total, self)
+            progress.setWindowTitle("Analyze")
+            progress.setAutoClose(False)
+            progress.setAutoReset(False)
+            progress.setValue(0)
+            progress.show()
+            self._analysis_progress_dialog = progress
+            QApplication.processEvents()
+        except Exception:
+            self._analysis_progress_dialog = None
+
+    def _update_analysis_progress(self, value: int, label: str | None = None) -> None:
+        progress = getattr(self, "_analysis_progress_dialog", None)
+        if progress is None:
+            return
+        try:
+            if label:
+                progress.setLabelText(label)
+            progress.setValue(value)
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _close_analysis_progress(self, final_value: int | None = None) -> None:
+        progress = getattr(self, "_analysis_progress_dialog", None)
+        if progress is None:
+            return
+        try:
+            if final_value is not None:
+                progress.setValue(final_value)
+            progress.close()
+        except Exception:
+            pass
+        self._analysis_progress_dialog = None
+
+    def _analysis_output_folder_from_paths(self, paths: list[str | Path] | None) -> Path | None:
+        try:
+            output_dirs = {Path(p).parent.resolve() for p in (paths or []) if p}
+            if len(output_dirs) == 1:
+                return next(iter(output_dirs))
+            if output_dirs:
+                selected = Path(self.file_path.text())
+                return selected if selected.is_dir() else selected.parent
+        except Exception:
+            pass
+        return None
 
     # ---- file group override (use filtered masks + live hint) --------
     def _build_file_group(self) -> QWidget:
@@ -539,12 +591,18 @@ class AnalyzeTab(AnalyzeMasksBase):
                         validation_errors.append(f"{mask_path.name}: {err}")
             if validation_errors:
                 QMessageBox.warning(self, "Validation failed", "Cannot start analysis:\n\n" + "\n".join(validation_errors[:10]))
+                self._analysis_in_progress = False
                 self.analyze_btn.setEnabled(True)
                 self.analyze_btn.setText(self._primary_button_label())
+                self.analyze_btn.setToolTip(self._primary_button_tooltip())
                 return
 
             self._log_analysis_run_params(selected_files=list(selected_files))
             self.current_task_index = 0
+            self._start_analysis_progress(
+                len(self.folder_fi_tasks),
+                f"Analyzing {len(self.folder_fi_tasks)} task(s)...",
+            )
             self._process_next_folder_file()
             return
 
@@ -598,6 +656,10 @@ class AnalyzeTab(AnalyzeMasksBase):
             self.analyze_btn.setToolTip("Stop the current analysis job.")
             self.current_task_index = 0
             self._log_analysis_run_params(selected_files=[mask_path])
+            self._start_analysis_progress(
+                len(self.folder_fi_tasks),
+                f"Analyzing {len(self.folder_fi_tasks)} task(s)...",
+            )
             self._process_next_folder_file()
             return
 
@@ -699,15 +761,31 @@ class AnalyzeTab(AnalyzeMasksBase):
     def _run_one_analysis_task(self, mask_path: Path, fi_path: Path | None, out_path: Path) -> None:
         ok, _missing = paths_exist([mask_path] + ([fi_path] if fi_path is not None else []))
         if not ok:
+            self._analysis_in_progress = False
+            try:
+                self.analyze_btn.setEnabled(True)
+                self.analyze_btn.setText(self._primary_button_label())
+                self.analyze_btn.setToolTip(self._primary_button_tooltip())
+            except Exception:
+                pass
             QMessageBox.warning(self, "Not Found", "One or more inputs do not exist.")
             return
         if fi_path is not None:
             ok, err = mask_fi_spatial_shape_match(mask_path, fi_path)
             if not ok and err:
+                self._analysis_in_progress = False
+                try:
+                    self.analyze_btn.setEnabled(True)
+                    self.analyze_btn.setText(self._primary_button_label())
+                    self.analyze_btn.setToolTip(self._primary_button_tooltip())
+                except Exception:
+                    pass
                 QMessageBox.warning(self, "Validation failed", err)
                 return
 
         cmd_args = self._build_analyze_cell_areas_args(mask_path=mask_path, out_path=out_path, fi_path=fi_path)
+        self.folder_output_paths = [str(out_path)]
+        self._start_analysis_progress(1, f"Analyzing {mask_path.name}...")
 
         def _done(ok: bool, msg: str) -> None:
             # Clear worker handle first (avoid double-cancel attempts).
@@ -734,14 +812,10 @@ class AnalyzeTab(AnalyzeMasksBase):
                 pass
             if hasattr(self.parent_window, "log_output") and msg:
                 self.parent_window.log_output(msg + ("\n" if not msg.endswith("\n") else ""))
+            self._close_analysis_progress(1)
             if cancelled:
                 QMessageBox.information(self, "Analysis cancelled", "Analysis was cancelled.")
-            else:
-                QMessageBox.information(
-                    self,
-                    "Analysis complete" if ok else "Analysis failed",
-                    msg or ("Done" if ok else "Failed"),
-                )
+                return
             # Best-effort: foci visualizations (CSV-driven) for this mask.
             try:
                 if ok:
@@ -756,6 +830,12 @@ class AnalyzeTab(AnalyzeMasksBase):
                     run_post_analysis_colocalization_for_masks(self, [Path(mask_path)])
             except Exception:
                 pass
+            self._show_finished_dialog_with_output_folder(
+                title="Analysis complete" if ok else "Analysis failed",
+                message=msg or ("Done" if ok else "Failed"),
+                output_folder=out_path.parent if out_path is not None else None,
+                icon=QMessageBox.Icon.Information if ok else QMessageBox.Icon.Warning,
+            )
 
         # Use existing WorkerThread subprocess runner (expects script_path + cmd_args)
         # We run analyze_cell_areas as a module: script_path="-m", cmd_args=[module, ...args]
@@ -770,6 +850,7 @@ class AnalyzeTab(AnalyzeMasksBase):
         if bool(getattr(self, "_cancel_analysis_requested", False)):
             # Stop queue promptly.
             self._analysis_in_progress = False
+            self._close_analysis_progress()
             try:
                 self.analyze_btn.setEnabled(True)
                 self.analyze_btn.setText(self._primary_button_label())
@@ -819,6 +900,7 @@ class AnalyzeTab(AnalyzeMasksBase):
                 pass
 
             # Surface failures to the user (folder runs otherwise only log).
+            failures = []
             try:
                 failures = getattr(self, "_folder_failures", []) or []
                 if failures:
@@ -826,12 +908,10 @@ class AnalyzeTab(AnalyzeMasksBase):
                     tail = ""
                     if len(failures) > 3:
                         tail = f"\n\n(+{len(failures) - 3} more; see log)"
-                    QMessageBox.warning(
-                        self,
-                        "Analysis finished with errors",
+                    self._analysis_finished_error_text = (
                         "One or more analysis tasks failed or produced no output.\n\n"
                         + head
-                        + tail,
+                        + tail
                     )
             except Exception:
                 pass
@@ -842,8 +922,31 @@ class AnalyzeTab(AnalyzeMasksBase):
                 self.analyze_btn.setToolTip(self._primary_button_tooltip())
             except Exception:
                 pass
+            self._close_analysis_progress(len(tasks))
+            output_folder = self._analysis_output_folder_from_paths(getattr(self, "folder_output_paths", []) or [])
+            if failures:
+                self._show_finished_dialog_with_output_folder(
+                    title="Analysis finished with errors",
+                    message=getattr(
+                        self,
+                        "_analysis_finished_error_text",
+                        "One or more analysis tasks failed or produced no output.",
+                    ),
+                    output_folder=output_folder,
+                    icon=QMessageBox.Icon.Warning,
+                )
+            else:
+                self._show_finished_dialog_with_output_folder(
+                    title="Analysis complete",
+                    message=f"Analysis finished. {len(tasks)} task(s) completed.",
+                    output_folder=output_folder,
+                )
             return
         mask_path, fi_path, out_path = tasks[idx]
+        self._update_analysis_progress(
+            idx,
+            f"Analyzing {Path(mask_path).name} ({idx + 1}/{len(tasks)})...",
+        )
         try:
             self.analyze_btn.setEnabled(True)
             self.analyze_btn.setText("Cancel Analysis")
@@ -880,6 +983,10 @@ class AnalyzeTab(AnalyzeMasksBase):
                 except Exception:
                     pass
             self.current_task_index = idx + 1
+            self._update_analysis_progress(
+                idx + 1,
+                f"Finished {Path(mask_path).name} ({idx + 1}/{len(tasks)})...",
+            )
             self._process_next_folder_file()
 
         th.finished.connect(_on_done)
