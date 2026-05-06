@@ -124,12 +124,24 @@ def _apply_qt_paths() -> None:
         return
 
     if getattr(sys, "frozen", False) or hasattr(sys, "__compiled__"):
-        plugin_candidate = os.path.join(base_path, "PyQt6", "Qt6", "plugins")
-        if os.path.exists(plugin_candidate):
-            abs_plugin_path = os.path.abspath(plugin_candidate)
-            if sys.platform == "darwin":
-                lib_candidate = os.path.join(base_path, "PyQt6", "Qt6", "lib")
-                abs_lib_dir = os.path.abspath(lib_candidate) if os.path.exists(lib_candidate) else None
+        frozen_bases = []
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            frozen_bases.append(meipass)
+        frozen_bases.extend(
+            [
+                base_path,
+                os.path.join(base_path, "_internal"),
+            ]
+        )
+        for frozen_base in frozen_bases:
+            plugin_candidate = os.path.join(frozen_base, "PyQt6", "Qt6", "plugins")
+            if os.path.exists(plugin_candidate):
+                abs_plugin_path = os.path.abspath(plugin_candidate)
+                lib_candidate = os.path.join(frozen_base, "PyQt6", "Qt6", "lib")
+                if os.path.exists(lib_candidate):
+                    abs_lib_dir = os.path.abspath(lib_candidate)
+                break
     else:
         script_dir = base_path
         python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"

@@ -78,9 +78,21 @@ def run() -> None:
     warnings.filterwarnings("ignore", category=FutureWarning, message=".*area_threshold.*")
 
     from bactimate.gui.constants import LOGS_DIR
-    from bactimate.gui.log_config import setup_logging, get_logger
+    from bactimate.gui.log_config import setup_logging, get_logger, get_gui_log_path, write_crash_log
     import logging
     setup_logging(logging.INFO, logs_dir=LOGS_DIR)
+
+    # In windowed PyInstaller builds there is no console. Enable faulthandler to
+    # the GUI log so native crashes during heavy imports leave a traceback.
+    try:
+        import faulthandler
+        _fault_path = get_gui_log_path()
+        if _fault_path is not None:
+            _fault_path.parent.mkdir(parents=True, exist_ok=True)
+            _fault_file = open(_fault_path, "a", encoding="utf-8")
+            faulthandler.enable(file=_fault_file, all_threads=True)
+    except Exception:
+        pass
 
     try:
         log = get_logger()
@@ -98,6 +110,9 @@ def run() -> None:
             print("Install dependencies with: pip install -r requirements.txt", file=sys.stderr)
             print("Or use a virtual environment and run: ./launch_gui.sh", file=sys.stderr)
             sys.exit(1)
+        raise
+    except BaseException:
+        write_crash_log("Fatal startup error:\n" + traceback.format_exc())
         raise
 
 

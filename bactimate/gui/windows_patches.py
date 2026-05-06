@@ -18,7 +18,7 @@ DLL / PyTorch on Windows:
 from __future__ import annotations
 
 import sys
-from typing import Any, TextIO
+from typing import Any, Optional, TextIO
 
 
 # Unicode symbols that often appear in our log/print output and cause cp1252 encode errors on Windows.
@@ -41,18 +41,24 @@ def _safe_encode_text(s: str) -> str:
 class _WindowsSafeStream:
     """Wraps a text stream and replaces Unicode symbols that fail on Windows console encoding."""
 
-    def __init__(self, stream: TextIO) -> None:
+    def __init__(self, stream: Optional[TextIO]) -> None:
         self._stream = stream
 
     def write(self, s: str) -> int:
         if isinstance(s, str):
             s = _safe_encode_text(s)
+        if self._stream is None:
+            return len(s)
         return self._stream.write(s)
 
     def flush(self) -> None:
+        if self._stream is None:
+            return
         self._stream.flush()
 
     def __getattr__(self, name: str) -> Any:
+        if self._stream is None:
+            raise AttributeError(name)
         return getattr(self._stream, name)
 
 

@@ -13,6 +13,17 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Tuple, Type
 
+from bactimate.gui.log_config import get_logger, log_exception, write_crash_log, write_gui_log_line
+
+
+def _startup_import_log(message: str) -> None:
+    try:
+        write_gui_log_line("main-window-import", message)
+    except Exception:
+        pass
+
+
+_startup_import_log("before PyQt6 imports")
 from PyQt6.QtCore import QEvent, Qt, QCoreApplication, QObject, QTimer, QUrl
 from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices, QGuiApplication
 from PyQt6.QtWidgets import (
@@ -34,14 +45,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+_startup_import_log("after PyQt6 imports")
+
+_startup_import_log("before constants/preferences imports")
 from bactimate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
-from bactimate.gui.log_config import get_logger, log_exception, write_crash_log, write_gui_log_line
 from bactimate.gui.preferences import (
     get_last_dir,
     get_state,
     set_last_dir,
     set_state,
 )
+_startup_import_log("after constants/preferences imports")
+_startup_import_log("before tabs import")
 from bactimate.gui.tabs import (
     AnalyzeTab,
     FilteringTab,
@@ -54,6 +69,8 @@ from bactimate.gui.tabs import (
     TrainingTab,
     UNetSegmentTab,
 )
+_startup_import_log("after tabs import")
+_startup_import_log("before paths/styles imports")
 from bactimate.gui.paths import (
     get_app_root,
     get_omnipose_pretrained_cache_dir,
@@ -62,6 +79,7 @@ from bactimate.gui.paths import (
     _running_from_app_bundle,
 )
 from bactimate.gui.styles import get_modern_stylesheet
+_startup_import_log("after paths/styles imports")
 
 
 def _get_app_icon_path() -> Path | None:
@@ -101,13 +119,14 @@ def _initial_window_dimensions(
     preferred_w: int,
     preferred_h: int,
     screen_margin: int = 48,
+    size_ratio: float | None = None,
 ) -> tuple[int, int, int, int]:
     """
     Fit initial window size to the screen under the cursor (or primary screen).
 
     Returns (effective_min_w, effective_min_h, initial_w, initial_h).
-    Preferred size can be larger than the old 700px-tall default on big monitors; it is
-    never larger than availableGeometry minus margin. Effective minimums are capped by
+    When size_ratio is provided, the initial size is that fraction of availableGeometry
+    minus margin. Otherwise the preferred size is used. Effective minimums are capped by
     usable width/height so we do not force a minimum wider/taller than a small laptop screen.
     """
     app = QApplication.instance()
@@ -124,8 +143,13 @@ def _initial_window_dimensions(
     # Do not require a minimum larger than what fits (avoids clipped chrome on 11" / low-res).
     eff_min_w = min(min_w, uw)
     eff_min_h = min(min_h, uh)
-    init_w = min(preferred_w, uw)
-    init_h = min(preferred_h, uh)
+    if size_ratio is not None:
+        ratio = max(0.1, min(float(size_ratio), 1.0))
+        init_w = int(round(uw * ratio))
+        init_h = int(round(uh * ratio))
+    else:
+        init_w = min(preferred_w, uw)
+        init_h = min(preferred_h, uh)
     init_w = max(eff_min_w, init_w)
     init_h = max(eff_min_h, init_h)
     init_w = min(init_w, uw)
@@ -248,7 +272,7 @@ class MainWindow(QMainWindow):
             min_width += 190
             preferred_width += 190
         eff_min_w, eff_min_h, initial_width, initial_height = _initial_window_dimensions(
-            min_width, min_height, preferred_width, preferred_height
+            min_width, min_height, preferred_width, preferred_height, size_ratio=0.90
         )
         self.setMinimumSize(eff_min_w, eff_min_h)
         # Window size/position always starts from defaults below (geometry is not restored from last session).

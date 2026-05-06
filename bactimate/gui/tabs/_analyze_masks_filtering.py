@@ -556,10 +556,20 @@ class FilteringTab(AnalyzeMasksBase):
                 self.parent_window.log_output("[Filtering] Cancelled by user.\n")
             QMessageBox.information(self, "Filtering cancelled", "Filtering was cancelled.")
         else:
-            QMessageBox.information(
-                self,
-                "Filtering complete",
-                "Filtering finished. Filtered artifacts were written next to the masks.",
+            output_folder = None
+            try:
+                output_dirs = {Path(m).parent.resolve() for m in mask_files}
+                if len(output_dirs) == 1:
+                    output_folder = next(iter(output_dirs))
+                else:
+                    selected_path = Path(raw_path)
+                    output_folder = selected_path if selected_path.is_dir() else selected_path.parent
+            except Exception:
+                output_folder = None
+            self._show_finished_dialog_with_output_folder(
+                title="Filtering complete",
+                message="Filtering finished. Filtered artifacts were written next to the masks.",
+                output_folder=output_folder,
             )
 
     # ---- session params extension ------------------------------------

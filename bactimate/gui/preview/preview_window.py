@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCursor, QGuiApplication
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -87,6 +88,44 @@ class WorkerGuard:
             self._disconnect()
         except Exception:
             return
+
+
+def _initial_dialog_dimensions(
+    parent: Optional[QWidget],
+    min_w: int,
+    min_h: int,
+    *,
+    size_ratio: float = 0.85,
+    screen_margin: int = 48,
+) -> tuple[int, int, int, int]:
+    """
+    Return (effective_min_w, effective_min_h, initial_w, initial_h) for a preview dialog.
+
+    Preview dialogs open as a fraction of the available desktop on the active screen,
+    while minimums are capped so small displays are still usable.
+    """
+    screen = None
+    try:
+        if parent is not None:
+            screen = parent.screen()
+    except Exception:
+        screen = None
+    if screen is None:
+        screen = QGuiApplication.screenAt(QCursor.pos())
+    if screen is None:
+        screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        return (int(min_w), int(min_h), int(min_w), int(min_h))
+
+    avail = screen.availableGeometry()
+    uw = max(0, avail.width() - screen_margin)
+    uh = max(0, avail.height() - screen_margin)
+    eff_min_w = min(int(min_w), uw)
+    eff_min_h = min(int(min_h), uh)
+    ratio = max(0.1, min(float(size_ratio), 1.0))
+    init_w = min(uw, max(eff_min_w, int(round(uw * ratio))))
+    init_h = min(uh, max(eff_min_h, int(round(uh * ratio))))
+    return (eff_min_w, eff_min_h, init_w, init_h)
 
 
 class CollapsibleSection(QWidget):
@@ -409,7 +448,14 @@ class PreviewDialogBase(QDialog):
         super().__init__(parent)
         self.setWindowTitle(str(title))
         self.setModal(False)
-        self.setMinimumSize(int(minimum_size[0]), int(minimum_size[1]))
+        eff_min_w, eff_min_h, initial_w, initial_h = _initial_dialog_dimensions(
+            parent,
+            int(minimum_size[0]),
+            int(minimum_size[1]),
+            size_ratio=0.85,
+        )
+        self.setMinimumSize(eff_min_w, eff_min_h)
+        self.resize(initial_w, initial_h)
 
         self._state = PreviewState()
         self._worker_guard = worker_guard

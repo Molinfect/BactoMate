@@ -95,6 +95,9 @@ def get_python_executable_for_subprocess() -> str:
     When running from the .app bundle, the main process is the embedded launcher (Contents/MacOS/BactiMate),
     which always runs main.py and ignores script args. Using it would open a second GUI. So we use the
     venv Python inside the bundle instead. In dev, use sys.executable.
+
+    On Windows one-folder PyInstaller builds, ``sys.executable`` is ``BactiMate.exe`` (same as the GUI).
+    WorkerThread detects that case and runs supported scripts in-process instead of spawning a child.
     """
     if _running_from_app_bundle():
         root = get_app_root()
