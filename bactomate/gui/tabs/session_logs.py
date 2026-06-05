@@ -28,10 +28,43 @@ from PyQt6.QtWidgets import (
 
 from bactomate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS
 from bactomate.gui.preferences import get_default_browse_dir
+from bactomate.gui.styles import COMPACT_BROWSE_BUTTON_STYLESHEET, MODULE_ACTION_BUTTON_STYLESHEET
 from bactomate.gui.widgets import create_info_icon
 
 
 _RECENT_LOGS_SHOWN = 5
+
+_SESSION_LOG_LIST_STYLESHEET = (
+    "QListWidget {"
+    " background-color: #1f1f1f;"
+    " color: #dce6f2;"
+    " border: 1px solid #2d3a47;"
+    " border-radius: 6px;"
+    " padding: 2px;"
+    " margin: 0;"
+    " outline: none;"
+    "}"
+    "QListWidget::item { padding: 2px 6px; border-radius: 4px; }"
+    "QListWidget::item:selected { background-color: #2d3a47; color: #ffffff; }"
+    "QListWidget::item:hover { background-color: #263241; }"
+)
+
+_SESSION_LOG_TEXT_STYLESHEET = (
+    "QTextEdit {"
+    " background-color: #1f1f1f;"
+    " color: #dce6f2;"
+    " border: 1px solid #2d3a47;"
+    " border-radius: 6px;"
+    " padding: 6px 8px;"
+    " font-size: 10px;"
+    "}"
+    "QTextEdit:focus { border-color: #4a9eff; background-color: #252525; }"
+)
+
+_SESSION_LOG_COMPACT_BUTTON_STYLESHEET = (
+    COMPACT_BROWSE_BUTTON_STYLESHEET
+    + "QPushButton { min-height: 22px; max-height: 24px; min-width: 92px; padding: 1px 10px; }"
+)
 
 # Default values for session params (matches initial widget values). Used to show " (default)" in overview.
 # Only params listed here are annotated; others are shown without a default hint.
@@ -193,11 +226,7 @@ class SessionLogsPanel(QWidget):
             rerun_btn = QPushButton("Re-run analysis from session…")
             rerun_btn.setMinimumHeight(42)
             rerun_btn.setMinimumWidth(160)
-            rerun_btn.setStyleSheet(
-                "QPushButton { background-color: #4a9eff; color: #ffffff; font-size: 12pt; "
-                "padding: 8px 16px; border-radius: 6px; border: none; }"
-                "QPushButton:hover { background-color: #5aa9ff; }"
-            )
+            rerun_btn.setStyleSheet(MODULE_ACTION_BUTTON_STYLESHEET)
             rerun_btn.setToolTip(
                 "Choose a session log (JSON). Uses the current File conversion path as the new input folder or file."
             )
@@ -217,7 +246,7 @@ class SessionLogsPanel(QWidget):
         # Fixed height for exactly 5 items so no scroll (avoids scroll gap below last entry)
         self.log_list.setFixedHeight(22 * _RECENT_LOGS_SHOWN + 4)
         self.log_list.setUniformItemSizes(True)
-        self.log_list.setStyleSheet("QListWidget { padding: 0; margin: 0; outline: none; }")
+        self.log_list.setStyleSheet(_SESSION_LOG_LIST_STYLESHEET)
         self.log_list.setToolTip(
             f"Last {_RECENT_LOGS_SHOWN} reusable session recipe files. One JSON is created per app launch and updated while you work. Up to {MAX_SESSION_LOGS} are kept on disk."
         )
@@ -232,18 +261,18 @@ class SessionLogsPanel(QWidget):
         self.content_text.setPlaceholderText("Select a log above or click Load other...")
         self.content_text.setMinimumHeight(70)
         self.content_text.setMaximumHeight(105)
-        self.content_text.setStyleSheet("font-size: 10px;")
+        self.content_text.setStyleSheet(_SESSION_LOG_TEXT_STYLESHEET)
         content_row.addWidget(self.content_text, 1)
         btn_col = QVBoxLayout()
         load_btn = QPushButton("Load other...")
         load_btn.setToolTip("Open a session log file not in the list")
         load_btn.setMaximumHeight(22)
-        load_btn.setStyleSheet("font-size: 11px;")
+        load_btn.setStyleSheet(_SESSION_LOG_COMPACT_BUTTON_STYLESHEET)
         load_btn.clicked.connect(self._load_other)
         self.apply_btn = QPushButton("Apply")
         self.apply_btn.setToolTip("Apply parameters from the selected log to current session (parameters only)")
         self.apply_btn.setMaximumHeight(22)
-        self.apply_btn.setStyleSheet("font-size: 11px;")
+        self.apply_btn.setStyleSheet(_SESSION_LOG_COMPACT_BUTTON_STYLESHEET)
         self.apply_btn.setEnabled(False)
         self.apply_btn.clicked.connect(self._apply_now)
         btn_col.addWidget(load_btn)
