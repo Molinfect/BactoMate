@@ -135,6 +135,17 @@ _PIPELINE_NAV_BAR: tuple[tuple[str, str], ...] = (
     (MODULE_TRAINING, "Training"),
 )
 
+_STATUS_LOG_TEXT_STYLESHEET = (
+    "QTextEdit {"
+    " background-color: #1f1f1f;"
+    " color: #dce6f2;"
+    " border: 1px solid #2d3a47;"
+    " border-radius: 6px;"
+    " padding: 6px 8px;"
+    "}"
+    "QTextEdit:focus { border-color: #4a9eff; background-color: #252525; }"
+)
+
 
 def _get_app_icon_path() -> Path | None:
     """App icon: img/logo2.png or BactoMate.icns under get_app_root()."""
@@ -511,10 +522,12 @@ class MainWindow(QMainWindow):
         self._log_content = QWidget()
         log_content_layout = QHBoxLayout(self._log_content)
         log_content_layout.setContentsMargins(0, 0, 0, 0)
+        log_content_layout.setSpacing(14)
         # Left half: status / progress / log output
         left_log = QWidget()
         left_log_layout = QVBoxLayout(left_log)
         left_log_layout.setContentsMargins(0, 0, 0, 0)
+        left_log_layout.setSpacing(6)
         status_title = QLabel("Status (all modules)")
         status_title.setStyleSheet("font-weight: bold; color: #aeb6c2;")
         status_title.setToolTip(
@@ -541,6 +554,7 @@ class MainWindow(QMainWindow):
         self.log_text.setFont(monospace_font)
         self.log_text.setMinimumHeight(70)
         self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.log_text.setStyleSheet(_STATUS_LOG_TEXT_STYLESHEET)
         log_size_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.log_text.setSizePolicy(log_size_policy)
         left_log_layout.addWidget(self.log_text, 1)
@@ -1552,7 +1566,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = "2.0"
+            version = "2.1"
         QMessageBox.about(
             self,
             "About BactoMate",

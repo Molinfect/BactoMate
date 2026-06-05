@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+_TEXT_ENCODING = "utf-8"
+
 
 def _find_in_syspath(relative_path: str) -> Optional[Path]:
     """Return first existing path under sys.path, or None."""
@@ -118,7 +120,7 @@ def patch_peakdetect() -> bool:
     if not peakdetect_file:
         return False  # not installed; skip silently (no warning)
 
-    content = peakdetect_file.read_text()
+    content = peakdetect_file.read_text(encoding=_TEXT_ENCODING)
     if "except ImportError:" in content and "scipy.fft" in content:
         print("  ✓ peakdetect is already patched")
         return True
@@ -138,10 +140,10 @@ except ImportError:
 
     backup = peakdetect_file.with_suffix(".py.backup")
     if not backup.exists():
-        backup.write_text(content)
+        backup.write_text(content, encoding=_TEXT_ENCODING)
         print(f"  Created backup at: {backup}")
     content = content.replace(old_import, new_import)
-    peakdetect_file.write_text(content)
+    peakdetect_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched peakdetect (scipy compatibility)")
     return True
 
@@ -153,7 +155,7 @@ def patch_cellpose_omni() -> bool:
         print("  WARNING: Could not find cellpose_omni/models.py")
         return False
 
-    content = models_file.read_text()
+    content = models_file.read_text(encoding=_TEXT_ENCODING)
     original = content
     changed = False
 
@@ -231,9 +233,9 @@ def patch_cellpose_omni() -> bool:
 
     backup = Path(str(models_file) + ".backup")
     if not backup.exists():
-        backup.write_text(original)
+        backup.write_text(original, encoding=_TEXT_ENCODING)
         print(f"  Created backup at: {backup}")
-    models_file.write_text(content)
+    models_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni (model_type + model URL)")
     return True
 
@@ -245,7 +247,7 @@ def patch_cellpose_omni_transforms() -> bool:
         print("  WARNING: Could not find cellpose_omni/transforms.py")
         return False
 
-    content = transforms_file.read_text()
+    content = transforms_file.read_text(encoding=_TEXT_ENCODING)
     old = "        x = reshape(x, channels=channels, channel_axis=channel_axis)\n        # print('AAA',x.shape,channels)\n    else:"
     new = "        x = reshape(x, channels=channels, channel_axis=channel_axis)\n        if x.shape[-1] > nchan and x.ndim > dim:\n            x = x[..., :nchan]\n        # print('AAA',x.shape,channels)\n    else:"
 
@@ -257,7 +259,7 @@ def patch_cellpose_omni_transforms() -> bool:
         return False
 
     content = content.replace(old, new)
-    transforms_file.write_text(content)
+    transforms_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni transforms (nchan trim)")
     return True
 
@@ -269,7 +271,7 @@ def patch_cellpose_omni_dynamics() -> bool:
         print("  WARNING: Could not find cellpose_omni/dynamics.py")
         return False
 
-    content = dynamics_file.read_text()
+    content = dynamics_file.read_text(encoding=_TEXT_ENCODING)
     old = """    shape = p.shape[1:]
     if calc_trace:
         Ly = shape[0]
@@ -292,7 +294,7 @@ def patch_cellpose_omni_dynamics() -> bool:
         return False
 
     content = content.replace(old, new)
-    dynamics_file.write_text(content)
+    dynamics_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni dynamics (steps2D tr when calc_trace=False)")
     return True
 
@@ -311,7 +313,7 @@ def patch_cellpose_omni_dynamics_niter_none() -> bool:
         print("  WARNING: Could not find cellpose_omni/dynamics.py")
         return False
 
-    content = dynamics_file.read_text()
+    content = dynamics_file.read_text(encoding=_TEXT_ENCODING)
     sentinel = "# BactoMate: default niter to 200 if None"
     if sentinel in content:
         print("  ✓ cellpose_omni dynamics (niter None default) already patched")
@@ -338,7 +340,7 @@ def patch_cellpose_omni_dynamics_niter_none() -> bool:
         print("  WARNING: No `niter = np.uint32(niter)` lines patched in cellpose_omni/dynamics.py")
         return False
 
-    dynamics_file.write_text("".join(out_lines))
+    dynamics_file.write_text("".join(out_lines), encoding=_TEXT_ENCODING)
     print(f"  ✓ Patched cellpose_omni dynamics (niter None default) at {occurrences} site(s)")
     return True
 
@@ -350,7 +352,7 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
         print("  WARNING: Could not find cellpose_omni/resnet_torch.py")
         return False
 
-    content = resnet_file.read_text()
+    content = resnet_file.read_text(encoding=_TEXT_ENCODING)
     # GPU branch: unwrap checkpoint so load_state_dict gets state_dict only
     old_gpu = """            self.load_state_dict(torch.load(filename,
                                             map_location=torch_GPU,
@@ -368,7 +370,7 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
             "            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt\n            if state_dict and next(iter(state_dict.keys()), '').startswith('module.'):\n                state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}\n            self.load_state_dict(state_dict, strict=False)",
         )
         if "strict=False" in content:
-            resnet_file.write_text(content)
+            resnet_file.write_text(content, encoding=_TEXT_ENCODING)
             print("  ✓ cellpose_omni resnet_torch (added module. strip + strict=False)")
             return True
     if "state_dict = ckpt.get('state_dict'" in content and "strict=False" in content:
@@ -393,7 +395,7 @@ def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
             "            ckpt = torch.load(filename, map_location=torch_CPU, weights_only=False)\n            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt",
             "            ckpt = torch.load(filename, map_location=torch_CPU, weights_only=False)\n            state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt\n            if state_dict and next(iter(state_dict.keys()), '').startswith('module.'):\n                state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}",
         )
-    resnet_file.write_text(content)
+    resnet_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni resnet_torch (load checkpoint with nchan/nclasses)")
     return True
 
@@ -404,7 +406,7 @@ def patch_omnipose_gpu_empty_except() -> bool:
     if not gpu_file:
         print("  WARNING: Could not find omnipose/gpu.py")
         return False
-    content = gpu_file.read_text()
+    content = gpu_file.read_text(encoding=_TEXT_ENCODING)
     content, repaired = _repair_omnipose_gpu_bactomate_pass_fallback(content)
     patched = repaired
     lines = content.splitlines(keepends=True)
@@ -444,7 +446,7 @@ def patch_omnipose_gpu_empty_except() -> bool:
             patched = True
             break
     if patched:
-        gpu_file.write_text(content)
+        gpu_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched omnipose gpu.py (empty except block fixed)")
     else:
         print("  ✓ omnipose gpu.py: no empty except block found (already OK)")
@@ -457,7 +459,7 @@ def patch_omnipose_gpu_mps() -> bool:
     if not gpu_file:
         print("  WARNING: Could not find omnipose/gpu.py")
         return False
-    content = gpu_file.read_text()
+    content = gpu_file.read_text(encoding=_TEXT_ENCODING)
     patched = False
     content, repaired = _repair_omnipose_gpu_bactomate_pass_fallback(content)
     if repaired:
@@ -560,7 +562,7 @@ def patch_omnipose_gpu_mps() -> bool:
             patched = True
             break
     if patched:
-        gpu_file.write_text(content)
+        gpu_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched omnipose gpu.py (MPS ARM detection and/or GPU exception logging)")
     elif "not installed/working: %s" in content or new_arm in content:
         print("  ✓ omnipose gpu.py (MPS) already patched")
@@ -585,13 +587,13 @@ def patch_omnipose_core_bce_boundary_range() -> bool:
             bd_loss = self.BCELoss(bd_prob, boundary_float)"""
     patched = False
     for core_file in core_files:
-        content = core_file.read_text()
+        content = core_file.read_text(encoding=_TEXT_ENCODING)
         if "bd_prob = torch.sigmoid(bd)" in content and "boundary_float = boundary.float()" in content:
             continue
         if old not in content:
             continue
         content = content.replace(old, new)
-        core_file.write_text(content)
+        core_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched omnipose core (BCE boundary range fix): {}".format(core_file))
         patched = True
     if patched:
@@ -607,7 +609,7 @@ def patch_omnipose_core_grid_sample_dtype() -> bool:
         print("  WARNING: Could not find omnipose/core.py")
         return False
 
-    content = core_file.read_text()
+    content = core_file.read_text(encoding=_TEXT_ENCODING)
     old = """    for k in range(d): 
         pt[...,k] = 2*pt[...,k]/shape[k] - 1 
         flow[:,k] = 2*flow[:,k]/shape[k]
@@ -628,7 +630,7 @@ def patch_omnipose_core_grid_sample_dtype() -> bool:
         return False
 
     content = content.replace(old, new)
-    core_file.write_text(content)
+    core_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched omnipose core (grid_sample Float/Double fix)")
     return True
 
@@ -640,7 +642,7 @@ def patch_omnipose_core_follow_flows_dtype() -> bool:
         print("  WARNING: Could not find omnipose/core.py")
         return False
 
-    content = core_file.read_text()
+    content = core_file.read_text(encoding=_TEXT_ENCODING)
     old = "final_points[cell_px] = final_p.squeeze()"
     new = "final_points[cell_px] = final_p.squeeze().to(final_points.dtype)"
     if ".to(final_points.dtype)" in content:
@@ -651,7 +653,7 @@ def patch_omnipose_core_follow_flows_dtype() -> bool:
         return False
 
     content = content.replace(old, new)
-    core_file.write_text(content)
+    core_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched omnipose core (follow_flows Float/Double fix)")
     return True
 
@@ -663,7 +665,7 @@ def patch_cellpose_omni_io() -> bool:
         print("  WARNING: Could not find cellpose_omni/io.py")
         return False
 
-    content = io_file.read_text()
+    content = io_file.read_text(encoding=_TEXT_ENCODING)
     # Patch the .tif/.tiff branch to catch newbyteorder AttributeError and fall back to PIL
     old_block = """    if ext== '.tif' or ext=='.tiff':
         img = tifffile.imread(filename)
@@ -703,9 +705,9 @@ def patch_cellpose_omni_io() -> bool:
     content = content.replace(old_block, new_block)
     backup = Path(str(io_file) + ".backup")
     if not backup.exists():
-        backup.write_text(io_file.read_text())
+        backup.write_text(io_file.read_text(encoding=_TEXT_ENCODING), encoding=_TEXT_ENCODING)
         print(f"  Created backup at: {backup}")
-    io_file.write_text(content)
+    io_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni io (NumPy 2.0 TIFF read)")
     return True
 
@@ -717,7 +719,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
     if not models_file:
         print("  WARNING: Could not find cellpose_omni/models.py")
         return False
-    content = models_file.read_text()
+    content = models_file.read_text(encoding=_TEXT_ENCODING)
     # Repair broken debug write (unterminated string) if present. Run first so broken files get fixed
     # before any "already patched" logic. Match: try block containing _f.write("...state_dict_sample=%s)
     # then newline then " % ( (syntax error). Replace whole try/except with safe one-line write.
@@ -740,7 +742,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
     )
     if broken_try_re.search(content):
         content = broken_try_re.sub(new_try_block, content, count=1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Repaired cellpose_omni models.py (unterminated debug string)")
         return True
     # Exact string repair (for same newline/indent as in repo)
@@ -763,7 +765,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         )
         if old_try_block in content:
             content = content.replace(old_try_block, new_try_block, 1)
-            models_file.write_text(content)
+            models_file.write_text(content, encoding=_TEXT_ENCODING)
             print("  ✓ Repaired cellpose_omni models.py (unterminated debug string)")
             return True
     # 1) Add pretrained_model=None to Cellpose.__init__ signature (support use_torch or torch param name)
@@ -1080,7 +1082,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         else:"""
     if old_no_size in content and "size_model_path('bact_phase_omni'" not in content:
         content = content.replace(old_no_size, new_with_size, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (added size model for user models, diameter=0)")
         return True
     # Upgrade: already have size model block but silent except -> add logging so we see why size model fails
@@ -1124,12 +1126,12 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         else:"""
     if "size_model_path('bact_phase_omni'" in content and logging_except in content and "created fallback size model" not in content:
         content = content.replace(logging_except, fallback_except, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (404 fallback: create local size model)")
         return True
     if "size_model_path('bact_phase_omni'" in content and silent_except in content and "BactoMate: could not load size model" not in content:
         content = content.replace(silent_except, logging_except, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (size model failure now logged)")
         return True
     # Upgrade: already patched but with narrow nchan inference (only 'conv' in key); relax to encoder/.0./any 4D
@@ -1159,23 +1161,23 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                                         break"""
     if old_inner_loop in content:
         content = content.replace(old_inner_loop, new_inner_loop, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (relaxed nchan inference for encoder/.0./any 4D weight)")
         return True
     # Try vanilla upstream block (torch= first, then use_torch=), then older BactoMate block (with FIX)
     if old_block_torch in content:
         content = content.replace(old_block_torch, new_block_torch, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni Cellpose (pretrained_model path, vanilla upstream torch=)")
         return True
     if old_block in content:
         content = content.replace(old_block, new_block, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni Cellpose (pretrained_model path, vanilla upstream)")
         return True
     if old_block_with_fix in content:
         content = content.replace(old_block_with_fix, new_block, 1)
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni Cellpose (pretrained_model path, with FIX block)")
         return True
     # Upgrade: had top-level-only nchan inference; add state_dict lookup and nclasses from checkpoint
@@ -1245,7 +1247,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                                     nchan=user_nchan,
                                     nclasses=user_nclasses)""",
         )
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (nchan/nclasses from state_dict + top-level)")
         return True
     # Upgrade: had nclasses=3 but no nchan inference (causes size mismatch for 2-channel checkpoints)
@@ -1261,7 +1263,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         else:"""
     if old_patch_no_nchan in content:
         content = content.replace(old_patch_no_nchan, new_block[:new_block.index("        else:") + len("        else:")])
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (added nchan inference from checkpoint)")
         return True
     # Upgrade previous patch (had pretrained_model but missing nclasses=3) to avoid NoneType + int
@@ -1282,7 +1284,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                                     nclasses=3)
             self.cp.model_type = 'bact_phase_omni'""",
         )
-        models_file.write_text(content)
+        models_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Updated cellpose_omni Cellpose patch (added nclasses=3)")
         return True
     if old_block not in content:
@@ -1291,9 +1293,9 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
     content = content.replace(old_block, new_block)
     backup = Path(str(models_file) + ".backup")
     if not backup.exists():
-        backup.write_text(models_file.read_text())
+        backup.write_text(models_file.read_text(encoding=_TEXT_ENCODING), encoding=_TEXT_ENCODING)
         print(f"  Created backup at: {backup}")
-    models_file.write_text(content)
+    models_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni Cellpose (pretrained_model path for user models)")
     return True
 
@@ -1304,13 +1306,13 @@ def patch_cellpose_omni_main_train_channels() -> bool:
     if not main_file:
         print("  WARNING: Could not find cellpose_omni/__main__.py")
         return False
-    content = main_file.read_text()
+    content = main_file.read_text(encoding=_TEXT_ENCODING)
     # 1) Fix model.train(..., channels=None, ...) so it passes the channels variable (required for nchan==2 grayscale).
     train_call_none = "channels=None,  # or channels if you prefer"
     train_call_var = "channels=channels,"
     if train_call_none in content:
         content = content.replace(train_call_none, train_call_var, 1)
-        main_file.write_text(content)
+        main_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni __main__ (train channels: pass channels to model.train)")
         return True
     if train_call_var in content:
@@ -1347,7 +1349,7 @@ def patch_cellpose_omni_main_train_channels() -> bool:
     if not replaced:
         print("  WARNING: Could not find expected 'channels = None' in cellpose_omni/__main__.py")
         return False
-    main_file.write_text(content)
+    main_file.write_text(content, encoding=_TEXT_ENCODING)
     print("  ✓ Patched cellpose_omni __main__ (train channels for nchan==2)")
     return True
 
@@ -1359,7 +1361,7 @@ def patch_cellpose_omni_core_save_model() -> bool:
     if not core_file:
         print("  WARNING: Could not find cellpose_omni/core.py")
         return False
-    content = core_file.read_text()
+    content = core_file.read_text(encoding=_TEXT_ENCODING)
     # Already fully patched: single-line safe call or two-line (net = ...; net.save_model)
     if "self.net.save_model(file_name)" not in content and (
         "(self.net.module if hasattr(self.net, 'module') else self.net).save_model(file_name)" in content
@@ -1377,10 +1379,10 @@ def patch_cellpose_omni_core_save_model() -> bool:
     if block_old in content:
         backup = core_file.with_suffix(".py.backup")
         if not backup.exists():
-            backup.write_text(content)
+            backup.write_text(content, encoding=_TEXT_ENCODING)
             print(f"  Created backup at: {backup}")
         content = content.replace(block_old, block_new, 1)
-        core_file.write_text(content)
+        core_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni core (DataParallel save_model, if/else variant)")
         return True
     # Variant B: single line
@@ -1389,10 +1391,10 @@ def patch_cellpose_omni_core_save_model() -> bool:
     if old in content:
         backup = core_file.with_suffix(".py.backup")
         if not backup.exists():
-            backup.write_text(content)
+            backup.write_text(content, encoding=_TEXT_ENCODING)
             print(f"  Created backup at: {backup}")
         content = content.replace(old, new, 1)
-        core_file.write_text(content)
+        core_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni core (DataParallel save_model)")
         return True
     print("  WARNING: Could not find save_model block in cellpose_omni/core.py")
@@ -1407,7 +1409,7 @@ def patch_cellpose_omni_core_mps_device() -> bool:
     if not core_file:
         print("  WARNING: Could not find cellpose_omni/core.py")
         return False
-    content = core_file.read_text()
+    content = core_file.read_text(encoding=_TEXT_ENCODING)
     old_line = "device = torch.device(f'mps:{gpu_number}') if ARM else torch.device(f'cuda:{gpu_number}')"
     new_line = "device = torch.device('mps') if ARM else torch.device(f'cuda:{gpu_number}')"
     if new_line in content:
@@ -1415,13 +1417,13 @@ def patch_cellpose_omni_core_mps_device() -> bool:
         return True
     if old_line in content:
         content = content.replace(old_line, new_line, 1)
-        core_file.write_text(content)
+        core_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni core (MPS device string: use 'mps' not 'mps:True')")
         return True
     old_alt = 'device = torch.device(f"mps:{gpu_number}") if ARM else torch.device(f"cuda:{gpu_number}")'
     if old_alt in content:
         content = content.replace(old_alt, new_line, 1)
-        core_file.write_text(content)
+        core_file.write_text(content, encoding=_TEXT_ENCODING)
         print("  ✓ Patched cellpose_omni core (MPS device string: use 'mps' not 'mps:True')")
         return True
     # No device-assignment line in core; device may come from omnipose.gpu.get_device() (patched in omnipose_gpu_mps)
@@ -1440,7 +1442,7 @@ def patch_cellpose_omni_core_ntrain_label() -> bool:
         return False
     patched_any = False
     for core_file in core_files:
-        content = core_file.read_text()
+        content = core_file.read_text(encoding=_TEXT_ENCODING)
         if "ntrain_img =" in content:
             print("  ✓ cellpose_omni core (ntrain_img label) already patched")
             patched_any = True
@@ -1448,7 +1450,7 @@ def patch_cellpose_omni_core_ntrain_label() -> bool:
         if "ntrain =" not in content:
             continue
         content = content.replace(">>>> ntrain = ", ">>>> ntrain_img = ", 2)
-        core_file.write_text(content)
+        core_file.write_text(content, encoding=_TEXT_ENCODING)
         patched_any = True
         print("  ✓ Patched cellpose_omni core (log label ntrain -> ntrain_img)")
     return patched_any
@@ -1501,6 +1503,12 @@ def main() -> bool:
         if unknown:
             print("Unknown patch names: {}. Use --list to see available names.".format(unknown))
             return False
+
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     print("=" * 50)
     print("Applying BactoMate compatibility patches" + (" (selected only)" if only_names else ""))

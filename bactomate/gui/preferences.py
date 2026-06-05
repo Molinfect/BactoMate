@@ -148,3 +148,45 @@ def delete_montage_preset(name: str) -> bool:
     del presets[key]
     set_montage_presets(presets)
     return True
+
+
+def get_growth_graph_presets() -> Dict[str, Any]:
+    """Return saved growth-graph appearance presets keyed by name."""
+    raw = _settings().value("growth_graph_presets", "{}")
+    try:
+        data = json.loads(str(raw or "{}"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def set_growth_graph_presets(presets: Dict[str, Any]) -> None:
+    _settings().setValue("growth_graph_presets", json.dumps(presets))
+
+
+def list_growth_graph_preset_names() -> list[str]:
+    return sorted(get_growth_graph_presets().keys(), key=lambda s: s.lower())
+
+
+def save_growth_graph_preset(name: str, payload: Dict[str, Any]) -> None:
+    key = str(name or "").strip()
+    if not key:
+        return
+    presets = get_growth_graph_presets()
+    presets[key] = payload
+    set_growth_graph_presets(presets)
+
+
+def load_growth_graph_preset(name: str) -> Optional[Dict[str, Any]]:
+    data = get_growth_graph_presets().get(str(name or "").strip())
+    return data if isinstance(data, dict) else None
+
+
+def delete_growth_graph_preset(name: str) -> bool:
+    key = str(name or "").strip()
+    presets = get_growth_graph_presets()
+    if key not in presets:
+        return False
+    del presets[key]
+    set_growth_graph_presets(presets)
+    return True

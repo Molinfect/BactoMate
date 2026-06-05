@@ -2,7 +2,7 @@
 
 Integrated microscopy analysis platform: file conversion, segmentation (Omnipose, U-Net, Cellpose-SAM), mask analysis, tracking, training, and reporting.
 
-**v2.0 is source-first:** clone this repo, run the install script for your OS, then launch locally. Standalone DMG/EXE installers are planned for a later release.
+**v2.1 is source-first:** clone this repo, run the install script for your OS, then launch locally. Standalone DMG/EXE installers are planned for a later release.
 
 ## Clone
 
@@ -26,7 +26,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.0
+python main.py --version    # BactoMate 2.1
 python main.py --smoke-test # Smoke test OK
 ```
 

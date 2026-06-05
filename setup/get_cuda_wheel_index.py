@@ -30,16 +30,17 @@ def main() -> int:
         print("", end="")
         return 0
     major, minor = int(m.group(1)), int(m.group(2))
-    # Map to known PyTorch indices
-    if major >= 12:
+    # Map driver-reported CUDA version to a PyTorch wheel index.
+    # nvidia-smi reports the max CUDA level the driver supports, not a local toolkit.
+    if major >= 13:
+        print("cu128", end="")
+    elif major >= 12:
         if minor >= 8:
             print("cu128", end="")
         elif minor >= 6:
             print("cu126", end="")
         elif minor >= 4:
             print("cu124", end="")
-        elif minor >= 1:
-            print("cu121", end="")
         else:
             print("cu121", end="")
     elif major == 11 and minor >= 8:
