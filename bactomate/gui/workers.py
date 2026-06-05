@@ -31,6 +31,69 @@ _TRACKASTRA_MODEL_CACHE: dict[tuple[str, str], Any] = {}
 _TRACKASTRA_MODEL_CACHE_LOCK = threading.Lock()
 _TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE = 384
 
+DEFAULT_GROWTH_GRAPH_STYLE: dict[str, Any] = {
+    "x_label": "Time [min]",
+    "y_label": "rel. cell area",
+    "axis_label_font_size": 36,
+    "tick_font_size": 24,
+    "font_weight": "bold",
+    "line_width": 8.0,
+    "marker_size": 200.0,
+    "marker_edge_width": 2.0,
+    "axis_stroke_width": 3.5,
+    "tick_stroke_width": 2.0,
+    "show_grid": True,
+    "grid_line_width": 1.5,
+    "grid_alpha": 0.4,
+}
+
+DEFAULT_GROWTH_Y_COLUMN = "Total Cell Area (Relative)"
+VIDEO_FI_LAYOUT_MERGED = "merged"
+VIDEO_FI_LAYOUT_SEPARATE = "separate_tiles"
+DEFAULT_VIDEO_FI_LAYOUT = VIDEO_FI_LAYOUT_MERGED
+VIDEO_FI_OVERLAY_TILE_LABELS = frozenset({"Phase", "Merged"})
+PREFERRED_GROWTH_Y_COLUMNS: tuple[str, ...] = (
+    "Total Cell Area (Relative)",
+    "Total Cell Area (µm²)",
+    "Number of Cells",
+    "Total Foci",
+    "Mean Foci per Cell",
+)
+
+BUILTIN_GROWTH_GRAPH_PRESETS: dict[str, dict[str, Any]] = {
+    "Paper": {
+        "axis_label_font_size": 28,
+        "tick_font_size": 18,
+        "line_width": 4.0,
+        "marker_size": 120.0,
+        "marker_edge_width": 1.5,
+        "axis_stroke_width": 2.5,
+        "tick_stroke_width": 1.5,
+        "show_grid": True,
+        "grid_line_width": 1.0,
+        "grid_alpha": 0.25,
+    },
+    "Presentation": {
+        "axis_label_font_size": 44,
+        "tick_font_size": 30,
+        "line_width": 10.0,
+        "marker_size": 260.0,
+        "marker_edge_width": 2.5,
+        "axis_stroke_width": 4.0,
+        "tick_stroke_width": 2.5,
+        "show_grid": True,
+        "grid_line_width": 2.0,
+        "grid_alpha": 0.35,
+    },
+    "Minimal": {
+        "show_grid": False,
+        "line_width": 5.0,
+        "marker_size": 140.0,
+        "axis_stroke_width": 2.0,
+        "tick_stroke_width": 1.5,
+    },
+}
+
 
 class _InProcessStdoutMirror:
     """Duplicate stdout/stderr to a buffer and emit each completed line to ``WorkerThread.progress``."""
@@ -3512,12 +3575,21 @@ def _to_thw_single_channel_stack(arr: np.ndarray) -> np.ndarray:
 
 def _load_growth_curve_multi_file_rgb(paths: Sequence[Path]) -> np.ndarray:
     """Several TIFF stacks (one per channel), same T/H/W -> LUT merge -> (T, H, W, 3) uint8."""
-    stacks = []
+    stacks = _load_growth_curve_multi_file_thw_stacks(paths)
+    tcyx = np.stack(stacks, axis=1)
+    return _merge_tcyx_to_rgb_uint8(tcyx)
+
+
+def _load_growth_curve_multi_file_thw_stacks(paths: Sequence[Path]) -> list[np.ndarray]:
+    """Load several single-channel TIFF stacks as a list of (T, H, W) arrays."""
+    stacks: list[np.ndarray] = []
     for p in paths:
         if not p.is_file():
             raise ValueError(f"Not a file: {p}")
         arr, _ = _read_tiff_series_array_and_axes(p)
         stacks.append(_to_thw_single_channel_stack(arr))
+    if not stacks:
+        raise ValueError("No channel TIFF stacks loaded.")
     t0 = stacks[0].shape[0]
     h0, w0 = stacks[0].shape[1], stacks[0].shape[2]
     for i, s in enumerate(stacks):
@@ -3526,8 +3598,232 @@ def _load_growth_curve_multi_file_rgb(paths: Sequence[Path]) -> np.ndarray:
                 "All channel TIFFs must have the same number of frames and image size.\n"
                 f"Expected ({t0}, {h0}, {w0}), got ({s.shape[0]}, {s.shape[1]}, {s.shape[2]}) for {paths[i]}."
             )
-    tcyx = np.stack(stacks, axis=1)
+    return stacks
+
+
+_GROWTH_VIDEO_CHANNEL_SUFFIXES: tuple[tuple[str, str], ...] = (
+    ("_phase60x", "Phase"),
+    ("_phase40x", "Phase"),
+    ("_phase100x", "Phase"),
+    ("_phase", "Phase"),
+    ("_Phase60X", "Phase"),
+    ("_Phase", "Phase"),
+    ("_brightfield", "Phase"),
+    ("_bf", "Phase"),
+    ("_dic", "Phase"),
+    ("_gfp", "GFP"),
+    ("_GFP", "GFP"),
+    ("_egfp", "GFP"),
+    ("_mscarlet", "mScarlet"),
+    ("_mScarlet", "mScarlet"),
+    ("_dsred", "dsRED"),
+    ("_dsRed", "dsRED"),
+    ("_mcherry", "mCherry"),
+    ("_rfp", "RFP"),
+    ("_561", "561nm"),
+    ("_orange", "Orange"),
+    ("_yfp", "YFP"),
+    ("_YFP", "YFP"),
+    ("_venus", "Venus"),
+    ("_cfp", "CFP"),
+    ("_cyan", "Cyan"),
+    ("_fi", "FI"),
+    ("_FI", "FI"),
+    ("_foci", "FI"),
+)
+
+
+def _infer_growth_video_channel_label(path: Path) -> str:
+    """Human-readable channel label from a TIFF filename."""
+    stem = path.stem
+    if "_fi_" in stem:
+        return stem.partition("_fi_")[2].strip("_") or "FI"
+    if "_foci_" in stem:
+        return stem.partition("_foci_")[2].strip("_") or "FI"
+    stem_lower = stem.lower()
+    for suffix, label in _GROWTH_VIDEO_CHANNEL_SUFFIXES:
+        if stem_lower.endswith(suffix.lower()):
+            return label
+    if "phase" in stem_lower or stem_lower.endswith("_bf"):
+        return "Phase"
+    for token in ("gfp", "rfp", "mcherry", "mscarlet", "cy5", "yfp", "cfp"):
+        if token in stem_lower:
+            return token.upper() if len(token) <= 3 else token.replace("mscarlet", "mScarlet").replace("mcherry", "mCherry")
+    return stem
+
+
+def _infer_growth_video_channel_role(path: Path) -> str:
+    """Return ``phase``, ``fi``, or ``unknown`` based on filename tokens."""
+    label = _infer_growth_video_channel_label(path)
+    label_lower = label.lower()
+    if label_lower in {"phase", "bf", "brightfield", "dic", "transmission"}:
+        return "phase"
+    if "phase" in path.stem.lower() or path.stem.lower().endswith("_bf"):
+        return "phase"
+    if label_lower in {"fi", "foci"}:
+        return "fi"
+    for token in (
+        "gfp", "egfp", "rfp", "mcherry", "mscarlet", "dsred", "cy5", "yfp", "cfp",
+        "561", "orange", "venus", "cyan", "foci", "_fi",
+    ):
+        if token in path.stem.lower():
+            return "fi"
+    return "unknown"
+
+
+def _assign_growth_video_channel_roles(paths: Sequence[Path]) -> list[tuple[Path, str, str]]:
+    """Assign phase/FI roles; fall back to first file as phase when inference is unclear."""
+    items: list[tuple[Path, str, str]] = []
+    for path in paths:
+        role = _infer_growth_video_channel_role(path)
+        label = _infer_growth_video_channel_label(path)
+        items.append((path, role, label))
+
+    if not items:
+        return items
+
+    has_phase = any(role == "phase" for _, role, _ in items)
+    if not has_phase:
+        path, _, label = items[0]
+        phase_label = "Phase" if label.lower() in {"fi", "foci", "unknown"} or label == path.stem else label
+        items[0] = (path, "phase", phase_label if phase_label != path.stem else "Phase")
+
+    for idx, (path, role, label) in enumerate(items):
+        if role == "unknown":
+            if idx == 0 and not has_phase:
+                continue
+            items[idx] = (path, "fi", label if label != path.stem else f"Ch{idx + 1}")
+    return items
+
+
+def _thw_stack_to_lut_rgb_uint8(stack_thw: np.ndarray, *, lut_index: int = 0) -> np.ndarray:
+    """Colorize one (T, H, W) stack using the growth-video LUT palette."""
+    t, h, w = stack_thw.shape
+    lut_index = max(0, int(lut_index))
+    if lut_index == 0:
+        tcyx = stack_thw[:, np.newaxis, :, :]
+    else:
+        tcyx = np.zeros((t, lut_index + 1, h, w), dtype=stack_thw.dtype)
+        tcyx[:, lut_index, :, :] = stack_thw
     return _merge_tcyx_to_rgb_uint8(tcyx)
+
+
+def _order_separate_video_tiles(tiles: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndarray]]:
+    """Order tiles as Phase, FI channels, then Merged."""
+    phase: list[tuple[str, np.ndarray]] = []
+    fi: list[tuple[str, np.ndarray]] = []
+    merged: list[tuple[str, np.ndarray]] = []
+    for label, frames in tiles:
+        label_lower = label.lower()
+        if label_lower == "merged":
+            merged.append((label, frames))
+        elif "phase" in label_lower or label_lower in {"bf", "brightfield"}:
+            phase.append((label, frames))
+        else:
+            fi.append((label, frames))
+    if not phase and fi:
+        phase.append(fi.pop(0))
+        if phase[0][0].lower() not in {"phase", "bf"}:
+            phase = [("Phase", phase[0][1])]
+    return phase + fi + merged
+
+
+def _load_growth_curve_separate_tiles(paths: Sequence[Path]) -> list[tuple[str, np.ndarray]]:
+    """Build named RGB tile stacks for separate-FI video layout."""
+    paths = [Path(p) for p in paths if str(p).strip()]
+    if not paths:
+        raise ValueError("No video path(s) provided.")
+
+    if len(paths) == 1:
+        path = paths[0]
+        if path.is_dir():
+            arr = _load_growth_curve_folder_rgb(path)
+            return [("Phase", arr), ("Merged", arr)]
+        if not path.is_file():
+            raise ValueError(f"Path not found: {path}")
+        raw, axes = _read_tiff_series_array_and_axes(path)
+        tcyx = _transpose_to_tcyx(raw, axes)
+        if tcyx is None:
+            tcyx = _heuristic_tchw(raw)
+        if tcyx is not None and tcyx.shape[1] >= 2:
+            tiles: list[tuple[str, np.ndarray]] = []
+            merge_stack = tcyx
+            for ci in range(tcyx.shape[1]):
+                label = "Phase" if ci == 0 else f"Ch{ci + 1}"
+                if ci == 0:
+                    rgb = _grayscale_stack_to_rgb_uint8(tcyx[:, ci, :, :])
+                else:
+                    rgb = _thw_stack_to_lut_rgb_uint8(tcyx[:, ci, :, :], lut_index=ci - 1)
+                tiles.append((label, rgb))
+            tiles.append(("Merged", _merge_tcyx_to_rgb_uint8(merge_stack)))
+            return _order_separate_video_tiles(tiles)
+        rgb = _load_growth_curve_single_file_rgb(path)
+        return [("Phase", rgb), ("Merged", rgb)]
+
+    roles = _assign_growth_video_channel_roles(paths)
+    stacks_thw = _load_growth_curve_multi_file_thw_stacks([p for p, _, _ in roles])
+    tiles = []
+    merge_stacks: list[np.ndarray] = []
+    fi_index = 0
+    for (path, role, label), thw in zip(roles, stacks_thw):
+        merge_stacks.append(thw)
+        if role == "phase":
+            display = "Phase" if label.lower() in {"fi", "foci"} else label
+            tiles.append((display, _grayscale_stack_to_rgb_uint8(thw)))
+        else:
+            display = label if label.lower() not in {"fi", "foci"} else f"Ch{fi_index + 1}"
+            tiles.append((display, _thw_stack_to_lut_rgb_uint8(thw, lut_index=fi_index)))
+            fi_index += 1
+    tcyx = np.stack(merge_stacks, axis=1)
+    tiles.append(("Merged", _merge_tcyx_to_rgb_uint8(tcyx)))
+    return _order_separate_video_tiles(tiles)
+
+
+@dataclass
+class GrowthCurveVideoSource:
+    """Loaded microscopy input for growth-curve preview/export."""
+
+    fi_layout: str
+    num_frames: int
+    reference_width: int
+    reference_height: int
+    merged_frames: Optional[np.ndarray] = None
+    tiles: Optional[list[tuple[str, np.ndarray]]] = None
+
+
+def load_growth_curve_video_source(
+    video_paths: Sequence[Path],
+    fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
+) -> GrowthCurveVideoSource:
+    """Load merged video or separate named channel tiles depending on layout mode."""
+    layout = fi_layout if fi_layout in (VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE) else DEFAULT_VIDEO_FI_LAYOUT
+    paths = [Path(p) for p in video_paths if str(p).strip()]
+    if not paths:
+        raise ValueError("No video path(s) provided.")
+
+    if layout == VIDEO_FI_LAYOUT_SEPARATE:
+        tiles = _load_growth_curve_separate_tiles(paths)
+        num_frames = int(tiles[0][1].shape[0])
+        ref_h, ref_w = int(tiles[0][1].shape[1]), int(tiles[0][1].shape[2])
+        return GrowthCurveVideoSource(
+            fi_layout=layout,
+            num_frames=num_frames,
+            reference_width=ref_w,
+            reference_height=ref_h,
+            merged_frames=None,
+            tiles=tiles,
+        )
+
+    merged = load_growth_curve_video_frames_rgb(paths)
+    _, ref_h, ref_w, _ = merged.shape
+    return GrowthCurveVideoSource(
+        fi_layout=layout,
+        num_frames=int(merged.shape[0]),
+        reference_width=int(ref_w),
+        reference_height=int(ref_h),
+        merged_frames=merged,
+        tiles=None,
+    )
 
 
 def _load_growth_curve_single_file_rgb(path: Path) -> np.ndarray:
@@ -3578,20 +3874,59 @@ def load_growth_curve_video_frames_rgb(video_paths: Sequence[Path]) -> np.ndarra
     return _load_growth_curve_multi_file_rgb(paths)
 
 
-def load_growth_curve_summary_data(excel_path: Path, time_interval: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Load Summary sheet columns for growth-curve graph (frames, areas, time in minutes)."""
+def list_growth_curve_excel_columns(excel_path: Path) -> list[str]:
+    """Numeric Summary-sheet columns usable as the growth-curve Y axis (excluding Frame)."""
     import pandas as pd
 
     df = pd.read_excel(excel_path, sheet_name="Summary")
-    if "Frame" not in df.columns or "Total Cell Area (Relative)" not in df.columns:
+    if "Frame" not in df.columns:
+        return []
+    numeric_cols: list[str] = []
+    for col in df.columns:
+        if str(col) == "Frame":
+            continue
+        series = pd.to_numeric(df[col], errors="coerce")
+        if series.notna().any():
+            numeric_cols.append(str(col))
+    ordered: list[str] = []
+    for pref in PREFERRED_GROWTH_Y_COLUMNS:
+        if pref in numeric_cols:
+            ordered.append(pref)
+    for col in numeric_cols:
+        if col not in ordered:
+            ordered.append(col)
+    return ordered
+
+
+def load_growth_curve_summary_data(
+    excel_path: Path,
+    time_interval: float,
+    y_column: Optional[str] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load Summary sheet columns for growth-curve graph (frames, Y values, time in minutes)."""
+    import pandas as pd
+
+    df = pd.read_excel(excel_path, sheet_name="Summary")
+    if "Frame" not in df.columns:
         raise ValueError(
-            "Excel file must contain 'Frame' and 'Total Cell Area (Relative)' columns.\n"
-            f"Found columns: {', '.join(df.columns)}"
+            "Excel Summary sheet must contain a 'Frame' column.\n"
+            f"Found columns: {', '.join(map(str, df.columns))}"
         )
-    frames = df["Frame"].values
-    relative_areas = df["Total Cell Area (Relative)"].values
+    available = list_growth_curve_excel_columns(excel_path)
+    if not available:
+        raise ValueError(
+            "Excel Summary sheet has no numeric columns for the growth graph.\n"
+            f"Found columns: {', '.join(map(str, df.columns))}"
+        )
+    y_col = str(y_column or DEFAULT_GROWTH_Y_COLUMN).strip()
+    if y_col not in available:
+        y_col = DEFAULT_GROWTH_Y_COLUMN if DEFAULT_GROWTH_Y_COLUMN in available else available[0]
+    frames = pd.to_numeric(df["Frame"], errors="coerce").values
+    y_values = pd.to_numeric(df[y_col], errors="coerce").values
+    if np.isnan(frames).all() or np.isnan(y_values).all():
+        raise ValueError(f"Column '{y_col}' has no usable numeric values.")
     time_minutes = (frames - 1) * float(time_interval)
-    return frames, relative_areas, time_minutes
+    return frames, y_values, time_minutes
 
 
 def _ensure_growth_curve_video_frame_rgb(video_frame: np.ndarray) -> np.ndarray:
@@ -3763,6 +4098,52 @@ def apply_video_montage_overlays(
     )
 
 
+def apply_video_montage_overlays_to_tiles(
+    tiles: Sequence[tuple[str, np.ndarray]],
+    *,
+    overlay_labels: Sequence[str] = VIDEO_FI_OVERLAY_TILE_LABELS,
+    mask_path: Optional[Path] = None,
+    foci_path: Optional[Path] = None,
+    show_mask_contours: bool = False,
+    show_foci: bool = False,
+) -> list[tuple[str, np.ndarray]]:
+    """Apply mask/foci overlays only to selected named tiles (Phase, Merged by default)."""
+    labels = set(overlay_labels)
+    if not show_mask_contours and not show_foci:
+        return [(label, frames) for label, frames in tiles]
+    result: list[tuple[str, np.ndarray]] = []
+    for label, frames in tiles:
+        if label in labels:
+            frames = apply_video_montage_overlays(
+                frames,
+                mask_path=mask_path,
+                foci_path=foci_path,
+                show_mask_contours=show_mask_contours,
+                show_foci=show_foci,
+            )
+        result.append((label, frames))
+    return result
+
+
+def _compose_separate_tiles_frame(
+    frame_idx: int,
+    tiles: Sequence[tuple[str, np.ndarray]],
+    *,
+    reference_width: int,
+) -> np.ndarray:
+    """Horizontally stack named tiles for one frame, scaling to keep total width near reference_width."""
+    import cv2
+
+    frame_list = [_ensure_growth_curve_video_frame_rgb(frames[frame_idx]) for _, frames in tiles]
+    if not frame_list:
+        raise ValueError("No video tiles available for separate-FI layout.")
+    h = int(frame_list[0].shape[0])
+    n = max(1, len(frame_list))
+    tile_w = max(64, int(reference_width) // n)
+    resized = [cv2.resize(frame, (tile_w, h), interpolation=cv2.INTER_LINEAR) for frame in frame_list]
+    return np.hstack(resized)
+
+
 def _render_growth_curve_graph_image(
     frame_idx: int,
     frames: np.ndarray,
@@ -3773,6 +4154,7 @@ def _render_growth_curve_graph_image(
     frame_height: int,
     yaxis_min: Optional[float],
     yaxis_max: Optional[float],
+    graph_style: Optional[dict[str, Any]] = None,
 ) -> np.ndarray:
     """Render the growth-curve plot for one frame index to (H, W, 3) uint8."""
     import numpy as np
@@ -3782,6 +4164,10 @@ def _render_growth_curve_graph_image(
 
     y_min = yaxis_min if yaxis_min is not None else max(0.0, float(relative_areas.min()) * 0.9)
     y_max = yaxis_max if yaxis_max is not None else float(relative_areas.max()) * 1.1
+    style = dict(DEFAULT_GROWTH_GRAPH_STYLE)
+    if graph_style:
+        style.update({k: v for k, v in graph_style.items() if v is not None})
+    font_weight = str(style.get("font_weight") or "bold")
 
     current_times = time_minutes[: frame_idx + 1]
     current_areas = relative_areas[: frame_idx + 1]
@@ -3789,32 +4175,50 @@ def _render_growth_curve_graph_image(
     fig = Figure(figsize=(graph_width / 100, frame_height / 100), dpi=100)
     canvas = FigureCanvasAgg(fig)
     ax = fig.add_subplot(111)
-    ax.plot(current_times, current_areas, "k-", linewidth=8)
+    ax.plot(current_times, current_areas, "k-", linewidth=float(style.get("line_width", 8.0)))
     ax.scatter(
         current_times[-1],
         current_areas[-1],
         color="black",
-        s=200,
+        s=float(style.get("marker_size", 200.0)),
         zorder=5,
         edgecolors="black",
-        linewidths=2,
+        linewidths=float(style.get("marker_edge_width", 2.0)),
     )
-    ax.set_xlabel("Time [min]", fontsize=36, fontweight="bold")
-    ax.set_ylabel("rel. cell area", fontsize=36, fontweight="bold")
+    ax.set_xlabel(
+        str(style.get("x_label") or "Time [min]"),
+        fontsize=int(style.get("axis_label_font_size", 36)),
+        fontweight=font_weight,
+    )
+    ax.set_ylabel(
+        str(style.get("y_label") or "rel. cell area"),
+        fontsize=int(style.get("axis_label_font_size", 36)),
+        fontweight=font_weight,
+    )
     ax.set_ylim(y_min, y_max)
     ax.set_xlim(0, float(time_minutes.max()) * 1.05)
-    ax.grid(True, alpha=0.4, linewidth=1.5)
+    ax.grid(
+        bool(style.get("show_grid", True)),
+        alpha=float(style.get("grid_alpha", 0.4)),
+        linewidth=float(style.get("grid_line_width", 1.5)),
+    )
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
-    ax.tick_params(axis="both", which="major", labelsize=24, width=2, colors="black")
-    ax.tick_params(axis="both", which="minor", labelsize=24, colors="black")
+    ax.tick_params(
+        axis="both",
+        which="major",
+        labelsize=int(style.get("tick_font_size", 24)),
+        width=float(style.get("tick_stroke_width", 2.0)),
+        colors="black",
+    )
+    ax.tick_params(axis="both", which="minor", labelsize=int(style.get("tick_font_size", 24)), colors="black")
     for label in ax.get_xticklabels() + ax.get_yticklabels():
-        label.set_fontweight("bold")
+        label.set_fontweight(font_weight)
     ax.xaxis.label.set_color("black")
     ax.yaxis.label.set_color("black")
     for spine in ax.spines.values():
         spine.set_color("black")
-        spine.set_linewidth(3.5)
+        spine.set_linewidth(float(style.get("axis_stroke_width", 3.5)))
 
     canvas.draw()
     try:
@@ -3837,22 +4241,37 @@ def _render_growth_curve_graph_image(
 
 def compose_growth_curve_combined_frame(
     frame_idx: int,
-    video_frames: np.ndarray,
-    frames: Optional[np.ndarray],
-    relative_areas: Optional[np.ndarray],
-    time_minutes: Optional[np.ndarray],
+    video_frames: Optional[np.ndarray] = None,
+    frames: Optional[np.ndarray] = None,
+    relative_areas: Optional[np.ndarray] = None,
+    time_minutes: Optional[np.ndarray] = None,
     *,
+    tiles: Optional[Sequence[tuple[str, np.ndarray]]] = None,
+    fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
+    reference_width: Optional[int] = None,
     yaxis_min: Optional[float] = None,
     yaxis_max: Optional[float] = None,
+    graph_style: Optional[dict[str, Any]] = None,
+    graph_width_ratio: float = 0.5,
 ) -> np.ndarray:
     """Compose one frame: graph + video when growth data exists, otherwise video only."""
     import numpy as np
 
-    video_frame = _ensure_growth_curve_video_frame_rgb(video_frames[frame_idx])
+    if fi_layout == VIDEO_FI_LAYOUT_SEPARATE and tiles:
+        video_frame = _compose_separate_tiles_frame(
+            frame_idx,
+            tiles,
+            reference_width=int(reference_width or tiles[0][1].shape[2]),
+        )
+    else:
+        if video_frames is None:
+            raise ValueError("Merged video frames are required for merged FI layout.")
+        video_frame = _ensure_growth_curve_video_frame_rgb(video_frames[frame_idx])
     if frames is None or relative_areas is None or time_minutes is None:
         return video_frame
     frame_height, frame_width = int(video_frame.shape[0]), int(video_frame.shape[1])
-    graph_width = frame_width
+    ratio = max(0.2, min(float(graph_width_ratio), 0.8))
+    graph_width = max(64, int(round(frame_width * ratio / max(1e-6, 1.0 - ratio))))
     graph_image = _render_growth_curve_graph_image(
         frame_idx,
         frames,
@@ -3862,6 +4281,7 @@ def compose_growth_curve_combined_frame(
         frame_height=frame_height,
         yaxis_min=yaxis_min,
         yaxis_max=yaxis_max,
+        graph_style=graph_style,
     )
     return np.hstack([graph_image, video_frame])
 
@@ -3877,33 +4297,70 @@ def build_growth_curve_output_frames(
     foci_path: Optional[Path] = None,
     show_mask_contours: bool = False,
     show_foci: bool = False,
+    graph_style: Optional[dict[str, Any]] = None,
+    graph_width_ratio: float = 0.5,
+    y_column: Optional[str] = None,
+    fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> tuple[list[np.ndarray], dict[str, int]]:
     """Load inputs and build all combined output frames."""
-    video_frames = load_growth_curve_video_frames_rgb(video_paths)
-    video_frames = apply_video_montage_overlays(
-        video_frames,
-        mask_path=mask_path,
-        foci_path=foci_path,
-        show_mask_contours=show_mask_contours,
-        show_foci=show_foci,
-    )
+    source = load_growth_curve_video_source(video_paths, fi_layout=fi_layout)
+    video_frames: Optional[np.ndarray] = None
+    tiles: Optional[list[tuple[str, np.ndarray]]] = None
+
+    if source.fi_layout == VIDEO_FI_LAYOUT_SEPARATE and source.tiles:
+        tiles = apply_video_montage_overlays_to_tiles(
+            source.tiles,
+            mask_path=mask_path,
+            foci_path=foci_path,
+            show_mask_contours=show_mask_contours,
+            show_foci=show_foci,
+        )
+    else:
+        video_frames = apply_video_montage_overlays(
+            source.merged_frames,
+            mask_path=mask_path,
+            foci_path=foci_path,
+            show_mask_contours=show_mask_contours,
+            show_foci=show_foci,
+        )
     frames: Optional[np.ndarray] = None
     relative_areas: Optional[np.ndarray] = None
     time_minutes: Optional[np.ndarray] = None
     if excel_path is not None and Path(excel_path).exists():
-        frames, relative_areas, time_minutes = load_growth_curve_summary_data(excel_path, time_interval)
-        num_frames = min(len(video_frames), len(frames))
+        frames, relative_areas, time_minutes = load_growth_curve_summary_data(
+            excel_path,
+            time_interval,
+            y_column=y_column,
+        )
+        num_frames = min(source.num_frames, len(frames))
         frames = frames[:num_frames]
         relative_areas = relative_areas[:num_frames]
         time_minutes = time_minutes[:num_frames]
     else:
-        num_frames = len(video_frames)
-    video_frames = video_frames[:num_frames]
+        num_frames = source.num_frames
+    if video_frames is not None:
+        video_frames = video_frames[:num_frames]
+    if tiles is not None:
+        tiles = [(label, stack[:num_frames]) for label, stack in tiles]
 
-    frame_height = int(video_frames.shape[1])
-    frame_width = int(video_frames.shape[2])
-    total_width = frame_width * (2 if frames is not None else 1)
+    frame_height = int(source.reference_height)
+    reference_width = int(source.reference_width)
+    if tiles is not None and tiles:
+        sample = _compose_separate_tiles_frame(0, tiles, reference_width=reference_width)
+        frame_height = int(sample.shape[0])
+        frame_width = int(sample.shape[1])
+    elif video_frames is not None:
+        frame_height = int(video_frames.shape[1])
+        frame_width = int(video_frames.shape[2])
+    else:
+        frame_width = reference_width
+    if frames is not None:
+        ratio = max(0.2, min(float(graph_width_ratio), 0.8))
+        graph_width = max(64, int(round(frame_width * ratio / max(1e-6, 1.0 - ratio))))
+        total_width = graph_width + frame_width
+    else:
+        total_width = frame_width
     output_frames: list[np.ndarray] = []
 
     for frame_idx in range(num_frames):
@@ -3914,12 +4371,17 @@ def build_growth_curve_output_frames(
         output_frames.append(
             compose_growth_curve_combined_frame(
                 frame_idx,
-                video_frames,
-                frames,
-                relative_areas,
-                time_minutes,
+                video_frames=video_frames,
+                frames=frames,
+                relative_areas=relative_areas,
+                time_minutes=time_minutes,
+                tiles=tiles,
+                fi_layout=source.fi_layout,
+                reference_width=reference_width,
                 yaxis_min=yaxis_min,
                 yaxis_max=yaxis_max,
+                graph_style=graph_style,
+                graph_width_ratio=graph_width_ratio,
             )
         )
 
@@ -3929,6 +4391,7 @@ def build_growth_curve_output_frames(
         "frame_width": frame_width,
         "total_width": total_width,
         "has_graph": int(frames is not None),
+        "fi_layout": source.fi_layout,
     }
     return output_frames, meta
 
@@ -3953,6 +4416,10 @@ class GrowthCurveVideoWorker(QThread):
         foci_path=None,
         show_mask_contours: bool = False,
         show_foci: bool = False,
+        graph_style: Optional[dict[str, Any]] = None,
+        graph_width_ratio: float = 0.5,
+        y_column: Optional[str] = None,
+        fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
     ):
         super().__init__(parent)
         self.setObjectName(type(self).__name__)
@@ -3968,6 +4435,10 @@ class GrowthCurveVideoWorker(QThread):
         self.foci_path = foci_path
         self.show_mask_contours = bool(show_mask_contours)
         self.show_foci = bool(show_foci)
+        self.graph_style = dict(graph_style or {})
+        self.graph_width_ratio = float(graph_width_ratio)
+        self.y_column = y_column
+        self.fi_layout = fi_layout
 
     def run(self) -> None:
         try:
@@ -3992,6 +4463,10 @@ class GrowthCurveVideoWorker(QThread):
                     foci_path=Path(self.foci_path) if self.foci_path else None,
                     show_mask_contours=self.show_mask_contours,
                     show_foci=self.show_foci,
+                    graph_style=self.graph_style,
+                    graph_width_ratio=self.graph_width_ratio,
+                    y_column=self.y_column,
+                    fi_layout=self.fi_layout,
                     progress_callback=_progress,
                 )
             except ValueError as e:

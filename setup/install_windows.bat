@@ -88,53 +88,80 @@ echo.
 
 :: Step 6: PyTorch CUDA (optional)
 echo [Step 6/7] Detecting NVIDIA GPU for PyTorch CUDA wheel...
-
-:: 6a) Skip if a CUDA-enabled torch is already installed.
-set "TORCH_CUDA_OK="
-set "TORCH_TMP=%TEMP%\bactomate_torch_check.txt"
-del /q "%TORCH_TMP%" >nul 2>&1
-python -c "import torch; print('OK' if torch.cuda.is_available() else 'NO', torch.version.cuda or '')" 1>"%TORCH_TMP%" 2>nul
-if exist "%TORCH_TMP%" (
-    set /p TORCH_LINE=<"%TORCH_TMP%"
-)
-del /q "%TORCH_TMP%" >nul 2>&1
-echo %TORCH_LINE% | findstr /b "OK" >nul && set "TORCH_CUDA_OK=1"
-if defined TORCH_CUDA_OK (
-    echo   PyTorch CUDA already installed: %TORCH_LINE%
-    echo   Skipping CUDA wheel install.
+set "PYEXE=venv\Scripts\python.exe"
+if not exist "%PYEXE%" (
+    echo [WARNING] venv python not found; skipping PyTorch CUDA step.
     goto :step6_done
 )
 
-:: 6b) Detect CUDA wheel index via temp file (avoids `for /f ('...')` parsing issues).
-set "CU_INDEX="
-set "CU_TMP=%TEMP%\bactomate_cuda_index.txt"
-del /q "%CU_TMP%" >nul 2>&1
-python "%SETUP_DIR%get_cuda_wheel_index.py" 1>"%CU_TMP%" 2>nul
-if exist "%CU_TMP%" (
-    set /p CU_INDEX=<"%CU_TMP%"
+:: 6a) Skip only when torch, torchvision, and torchaudio are a matched bundle (not just cuda.is_available).
+"%PYEXE%" "%SETUP_DIR%check_torch_cuda_bundle.py" >nul 2>&1
+if not errorlevel 1 (
+    echo   Matched torch/torchvision/torchaudio; skipping PyTorch reinstall.
+    goto :step6_done
 )
+echo   Realigning PyTorch (version mismatch detected)...
+
+:: 6b) Detect CUDA wheel index (unique temp name per run; for /f avoids set /p parse bugs).
+set "CU_INDEX="
+set "CU_TMP=%TEMP%\bactomate_cuda_%RANDOM%.txt"
 del /q "%CU_TMP%" >nul 2>&1
-if defined CU_INDEX (
-    echo   Detected CUDA index: %CU_INDEX%
-    echo   Installing PyTorch with GPU support...
-    pip uninstall torch torchvision torchaudio -y >nul 2>&1
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/%CU_INDEX%
+"%PYEXE%" "%SETUP_DIR%get_cuda_wheel_index.py" > "%CU_TMP%" 2>nul
+if exist "%CU_TMP%" for /f "usebackq delims=" %%I in ("%CU_TMP%") do set "CU_INDEX=%%I"
+if exist "%CU_TMP%" del /q "%CU_TMP%" >nul 2>&1
+if not defined CU_INDEX (
+    echo   No NVIDIA GPU detected; installing matched CPU PyTorch wheels...
+    pip install --force-reinstall "torch>=2.5.0,<3.0.0" "torchvision>=0.20.0,<1.0.0" torchaudio
     if errorlevel 1 (
-        echo [WARNING] PyTorch CUDA install failed. You can retry later with:
-        echo   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/%CU_INDEX%
-        echo   Or install VC++ Redistributable (64-bit) from Microsoft, then retry.
+        echo [WARNING] PyTorch CPU reinstall failed. Try manually:
+        echo   pip install --force-reinstall "torch>=2.5.0,<3.0.0" "torchvision>=0.20.0,<1.0.0" torchaudio
     ) else (
-        echo   PyTorch + %CU_INDEX% installed.
+        "%PYEXE%" "%SETUP_DIR%check_torch_cuda_bundle.py" >nul 2>&1
+        if not errorlevel 1 (
+            echo   Matched CPU PyTorch installed.
+        ) else (
+            echo [WARNING] PyTorch still mismatched after CPU reinstall.
+        )
     )
+    goto :step6_done
+)
+
+echo   Detected CUDA index: !CU_INDEX!
+echo   Installing PyTorch with GPU support...
+set "CU_INSTALLED="
+set "CU_USED="
+for %%I in (!CU_INDEX! cu128 cu126 cu124 cu121 cu118) do (
+    if not defined CU_INSTALLED (
+        echo   Trying wheel index %%I ...
+        pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/%%I
+        if not errorlevel 1 (
+            "%PYEXE%" -c "import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
+            if not errorlevel 1 (
+                set "CU_INSTALLED=1"
+                set "CU_USED=%%I"
+            )
+        )
+    )
+)
+if defined CU_INSTALLED (
+    echo   PyTorch + !CU_USED! installed.
 ) else (
-    echo   No nvidia-smi or no GPU; skipping PyTorch CUDA. BactoMate will use CPU.
-    echo   To add GPU later: see docs/INSTALL_AND_LAUNCH_windows.md
+    echo [WARNING] PyTorch CUDA install failed. You can retry later with:
+    echo   pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/!CU_INDEX!
+    echo   Or install VC++ Redistributable (64-bit) from Microsoft, then retry.
+    goto :step6_done
+)
+"%PYEXE%" "%SETUP_DIR%check_torch_cuda_bundle.py" >nul 2>&1
+if errorlevel 1 (
+    echo [WARNING] torch/torchvision/torchaudio still incompatible after CUDA install.
+    echo   Run: pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/!CU_USED!
 )
 :step6_done
 echo.
 
 :: Step 6.5: Apply BactoMate compatibility patches (cellpose_omni, omnipose, etc.)
 echo [Step 6.5] Applying BactoMate compatibility patches...
+set "PYTHONIOENCODING=utf-8"
 python "%SETUP_DIR%apply_all_patches.py"
 if errorlevel 1 (
     echo [WARNING] Some patches failed to apply. Segmentation may fail with errors like

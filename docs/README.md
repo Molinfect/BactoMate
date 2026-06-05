@@ -19,14 +19,14 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 
 ## Quick Start
 
-**v2.0 is source-first.** Clone the repo, install once, then launch:
+**v2.1 is source-first.** Clone the repo, install once, then launch:
 
 | Platform | Install | Launch |
 |----------|---------|--------|
 | macOS | `./setup/install_mac.sh` | `./launch_gui.sh` |
 | Windows | `setup\install_windows.bat` | `launch_windows.bat` or `bactomate` |
 
-Verify: `python main.py --version` (expect `BactoMate 2.0`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.1`) and `python main.py --smoke-test`.
 
 The root **[README](../README.md)** has copy-paste commands. Windows details: **[INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)**.
 

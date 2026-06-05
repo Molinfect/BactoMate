@@ -4,6 +4,31 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.1 (2026-06)
+
+### Post-processing — growth-curve video montage
+
+- **Graph appearance editor:** double-click the growth graph in preview to edit axis labels, fonts, stroke, and grid; save/load graph presets.
+- **Workflow controls:** Excel Y-column picker, graph width ratio, Y-axis quick actions (Auto, Fit data, Y min = 0), and export current preview frame as PNG.
+- **FI channel layouts:** choose **Merged overlay** (one colored microscopy tile) or **Separate FI tiles** (Phase, each FI channel, and Merged side by side); phase/FI roles inferred from filenames.
+- **Video overlays:** mask contours and foci markers on Phase/Merged tiles; improved small-screen preview with scrollable settings.
+- **Fix:** GUI startup crash when opening Post-processing before Excel path widgets were initialized.
+
+### UI
+
+- Session Logs and Status log areas restyled to match module UI.
+- Growth graph appearance dialog buttons use BactoMate compact styling.
+
+### Setup (Windows)
+
+- Improved CUDA/PyTorch bundle checks and install script reliability (`setup/check_torch_cuda_bundle.py`, `install_windows.bat`).
+
+### Documentation
+
+- Version metadata and docs updated to **2.1**.
+
+---
+
 ## v2.0 (2026-06)
 
 ### Release model
