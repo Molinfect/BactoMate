@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
 dist/
 downloads/
@@ -27,6 +26,11 @@ env/
 ENV/
 .venv
 
+# Build outputs (keep tracked shell scripts under build/)
+build/*
+!build/*.sh
+!build/*.spec
+
 # Nuitka
 *.build/
 *.dist/
@@ -48,16 +52,27 @@ ENV/
 
 # Application bundles (built)
 *.app/
-BactiMate.app/
+BactoMate.app/
 
-# Models (user-specific, don't commit)
+# Models and caches (user-specific or downloaded)
 models/
+omnipose_user_models/
+unet_user_models/
+embeddings/
+omnipose_pretrained/
 *.pth
 *.pt
+*.keras
 
-# Logs
+# Logs and session files
+Logs/
 *.log
 *_session.json
+
+# Test / tooling caches
+.pytest_cache/
+.pycache/
+.pycache_compile/
 
 # Temporary files
 *.tmp

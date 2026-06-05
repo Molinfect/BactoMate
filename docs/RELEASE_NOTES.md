@@ -1,6 +1,36 @@
-# BactiMate Release Notes
+# BactoMate Release Notes
 
 Append a new section for each release. Keep entries in release-note style (what changed, for whom).
+
+---
+
+## v2.0 (2026-06)
+
+### Release model
+
+- **Source-first release:** clone from GitHub, run `setup/install_mac.sh` (macOS) or `setup/install_windows.bat` (Windows), then launch with `launch_gui.sh` or `launch_windows.bat`.
+- **No DMG/EXE in this release:** binary packaging (macOS DMG, Windows zip/exe) is deferred to a follow-up release.
+- **Repository renamed** from `BactiMate` to `BactoMate`; Python package/import is `bactomate`.
+
+### Install and launch
+
+- macOS: `setup/setup_fresh_env.sh` and `setup/install_mac.sh` now run `pip install -e .` and a post-install smoke test.
+- Windows: `setup/install_windows.bat` documents VC++ Redistributable, CUDA optional install, patch application, and smoke test; see `docs/INSTALL_AND_LAUNCH_windows.md`.
+- Root `README.md` provides copy-paste clone/install/launch commands for both platforms.
+
+### UI and modules
+
+- **Dashboard layout:** modules (Conversion, Segmentation, Analysis, Tracking, Training, Post-processing, Session Logs) use a consistent shell instead of legacy tab names.
+- **Training module:** unified dataset/augmentation section with backend-specific training (Omnipose, Cellpose-SAM, U-Net) in one place.
+
+### CI
+
+- GitHub Actions runs source-install smoke tests on macOS and Windows (no binary build jobs until packaging scripts are restored).
+
+### Documentation
+
+- Updated user manual, README, and Windows install guide for v2.0 workflows.
+- Release notes and version metadata bumped to 2.0.
 
 ---
 
@@ -9,7 +39,7 @@ Append a new section for each release. Keep entries in release-note style (what 
 ### Logs (single GUI log + session logs)
 
 - **Session logs:** Unchanged; last 100 `*_session.json` files kept.
-- **Single GUI log:** One **bactimate_gui_YYYY-MM-DD_HH-MM-SS.log** per run (from `launch_gui.sh`). Only the last 20 GUI logs are kept so they don’t grow indefinitely. On macOS, `~/Library/Application Support/BactiMate/Logs/launch.log` still gets one line per launch with the path to the full GUI log.
+- **Single GUI log:** One **bactomate_gui_YYYY-MM-DD_HH-MM-SS.log** per run (from `launch_gui.sh`). Only the last 20 GUI logs are kept so they don’t grow indefinitely. On macOS, `~/Library/Application Support/BactoMate/Logs/launch.log` still gets one line per launch with the path to the full GUI log.
 - **Single GUI log (continued):** Crash tracebacks, Qt messages (e.g. QThread destroyed while running), and Omnipose/model debug lines are written to the same file by Python. No separate debug log.
 
 ### Analysis
@@ -23,7 +53,7 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ### Code structure
 
-- **Analysis paths:** Shared helpers in `bactimate.gui.analysis_paths` for “where analysis Excel lives” and “find analysis Excel for mask.” Used by Analyze Masks and Tracking; removes duplicate logic.
+- **Analysis paths:** Shared helpers in `bactomate.gui.analysis_paths` for “where analysis Excel lives” and “find analysis Excel for mask.” Used by Analyze Masks and Tracking; removes duplicate logic.
 - **GUI:** Phase 3 documentation of tab layout and shared patterns (log_output, progress_bar, session params). No behavior change.
 
 ### Cleanup & dependencies

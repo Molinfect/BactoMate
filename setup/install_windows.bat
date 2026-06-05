@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
-:: BactiMate Windows one-shot install. Run from anywhere; script dir is setup/, project root is parent.
+:: BactoMate Windows one-shot install. Run from anywhere; script dir is setup/, project root is parent.
 set "SETUP_DIR=%~dp0"
 set "ROOT=%SETUP_DIR%.."
 cd /d "%ROOT%"
 if not exist "requirements.txt" (
-    echo [ERROR] requirements.txt not found. This script must live in the BactiMate project.
+    echo [ERROR] requirements.txt not found. This script must live in the BactoMate project.
     echo Current dir: %CD%
     echo Setup dir: %SETUP_DIR%
     pause
@@ -13,7 +13,7 @@ if not exist "requirements.txt" (
 )
 
 echo.
-echo ========== BactiMate Windows Install ==========
+echo ========== BactoMate Windows Install ==========
 echo Project root: %ROOT%
 echo.
 
@@ -76,7 +76,7 @@ if errorlevel 1 (
 echo.
 
 :: Step 5: editable install
-echo [Step 5/7] Installing BactiMate in editable mode...
+echo [Step 5/7] Installing BactoMate in editable mode...
 pip install -e .
 if errorlevel 1 (
     echo [BREAK] pip install -e . failed.
@@ -91,7 +91,7 @@ echo [Step 6/7] Detecting NVIDIA GPU for PyTorch CUDA wheel...
 
 :: 6a) Skip if a CUDA-enabled torch is already installed.
 set "TORCH_CUDA_OK="
-set "TORCH_TMP=%TEMP%\bactimate_torch_check.txt"
+set "TORCH_TMP=%TEMP%\bactomate_torch_check.txt"
 del /q "%TORCH_TMP%" >nul 2>&1
 python -c "import torch; print('OK' if torch.cuda.is_available() else 'NO', torch.version.cuda or '')" 1>"%TORCH_TMP%" 2>nul
 if exist "%TORCH_TMP%" (
@@ -107,7 +107,7 @@ if defined TORCH_CUDA_OK (
 
 :: 6b) Detect CUDA wheel index via temp file (avoids `for /f ('...')` parsing issues).
 set "CU_INDEX="
-set "CU_TMP=%TEMP%\bactimate_cuda_index.txt"
+set "CU_TMP=%TEMP%\bactomate_cuda_index.txt"
 del /q "%CU_TMP%" >nul 2>&1
 python "%SETUP_DIR%get_cuda_wheel_index.py" 1>"%CU_TMP%" 2>nul
 if exist "%CU_TMP%" (
@@ -127,14 +127,14 @@ if defined CU_INDEX (
         echo   PyTorch + %CU_INDEX% installed.
     )
 ) else (
-    echo   No nvidia-smi or no GPU; skipping PyTorch CUDA. BactiMate will use CPU.
+    echo   No nvidia-smi or no GPU; skipping PyTorch CUDA. BactoMate will use CPU.
     echo   To add GPU later: see docs/INSTALL_AND_LAUNCH_windows.md
 )
 :step6_done
 echo.
 
-:: Step 6.5: Apply BactiMate compatibility patches (cellpose_omni, omnipose, etc.)
-echo [Step 6.5] Applying BactiMate compatibility patches...
+:: Step 6.5: Apply BactoMate compatibility patches (cellpose_omni, omnipose, etc.)
+echo [Step 6.5] Applying BactoMate compatibility patches...
 python "%SETUP_DIR%apply_all_patches.py"
 if errorlevel 1 (
     echo [WARNING] Some patches failed to apply. Segmentation may fail with errors like
@@ -142,6 +142,23 @@ if errorlevel 1 (
     echo   You can re-run the patches manually with:
     echo     venv\Scripts\activate ^&^& python setup\apply_all_patches.py
 )
+echo.
+
+:: Step 6.9: verify install
+echo [Step 6.9] Verifying install...
+python main.py --version
+if errorlevel 1 (
+    echo [BREAK] python main.py --version failed.
+    pause
+    exit /b 1
+)
+python main.py --smoke-test
+if errorlevel 1 (
+    echo [BREAK] Smoke test failed. See docs/INSTALL_AND_LAUNCH_windows.md
+    pause
+    exit /b 1
+)
+echo   Smoke test OK.
 echo.
 
 :: Step 7: create launch script
@@ -156,18 +173,18 @@ echo [Step 7/7] Creating launch_windows.bat...
     echo     exit /b 1
     echo ^)
     echo call venv\Scripts\activate.bat
-    echo bactimate
+    echo bactomate
     echo if errorlevel 1 pause
 ) > "%ROOT%\launch_windows.bat"
 if errorlevel 1 (
-    echo [WARNING] Could not write launch_windows.bat. You can launch with: venv\Scripts\activate then bactimate
+    echo [WARNING] Could not write launch_windows.bat. You can launch with: venv\Scripts\activate then bactomate
 ) else (
     echo   Created: %ROOT%\launch_windows.bat
 )
 echo.
 echo ========== Install complete ==========
-echo Run BactiMate by double-clicking launch_windows.bat or:
+echo Run BactoMate by double-clicking launch_windows.bat or:
 echo   venv\Scripts\activate
-echo   bactimate
+echo   bactomate
 echo.
 pause

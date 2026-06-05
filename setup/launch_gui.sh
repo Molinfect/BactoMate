@@ -17,7 +17,7 @@ else
 fi
 cd "$PROJECT_ROOT"
 
-# Use BactiMate Logs folder. When running from .app: try Logs inside the app first so logs appear in Contents/Resources/Logs
+# Use BactoMate Logs folder. When running from .app: try Logs inside the app first so logs appear in Contents/Resources/Logs
 if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]] || [[ "$PROJECT_ROOT" == *"/Contents/Resources"* ]]; then
     APP_LOGS="$PROJECT_ROOT/Logs"
     mkdir -p "$APP_LOGS" 2>/dev/null || true
@@ -25,11 +25,11 @@ if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]] || [[ "$PROJECT_ROOT" ==
         LOG_DIR="$APP_LOGS"
     else
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            LOG_DIR="$HOME/Library/Application Support/BactiMate/Logs"
+            LOG_DIR="$HOME/Library/Application Support/BactoMate/Logs"
         elif [[ "$OSTYPE" == "msys"* ]] || [[ "$OSTYPE" == "cygwin"* ]]; then
-            LOG_DIR="${APPDATA:-$HOME/AppData/Roaming}/BactiMate/Logs"
+            LOG_DIR="${APPDATA:-$HOME/AppData/Roaming}/BactoMate/Logs"
         else
-            LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/BactiMate/Logs"
+            LOG_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/BactoMate/Logs"
         fi
     fi
 else
@@ -38,15 +38,15 @@ fi
 mkdir -p "$LOG_DIR"
 # Single GUI log per run (launch + Python crash/Qt/debug all go here); keep last 20 (matches MAX_GUI_LOGS)
 GUI_LOG_KEEP=20
-for f in $(ls -t "$LOG_DIR"/bactimate_gui_*.log 2>/dev/null | tail -n +$((GUI_LOG_KEEP))); do
+for f in $(ls -t "$LOG_DIR"/bactomate_gui_*.log 2>/dev/null | tail -n +$((GUI_LOG_KEEP))); do
     rm -f "$f" 2>/dev/null || true
 done
-LOG_FILE="$LOG_DIR/bactimate_gui_$(date '+%Y-%m-%d_%H-%M-%S').log"
-export BACTIMATE_GUI_LOG="$LOG_FILE"
+LOG_FILE="$LOG_DIR/bactomate_gui_$(date '+%Y-%m-%d_%H-%M-%S').log"
+export BACTOMATE_GUI_LOG="$LOG_FILE"
 # On macOS also ensure Application Support exists and write one line there so "reopen didn't run" can be diagnosed
 CANONICAL_LOG=""
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    CANONICAL_LOG="$HOME/Library/Application Support/BactiMate/Logs/launch.log"
+    CANONICAL_LOG="$HOME/Library/Application Support/BactoMate/Logs/launch.log"
     mkdir -p "$(dirname "$CANONICAL_LOG")"
     echo "$(date '+%Y-%m-%dT%H:%M:%S') [from ${PROJECT_ROOT:-?}] full log: $LOG_FILE" >> "$CANONICAL_LOG" 2>/dev/null || true
     # Dock/reopen diagnostics: use same LOG_DIR (inside app or Application Support)
@@ -54,10 +54,10 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         DOCK_DEBUG="$LOG_DIR/dock_debug.txt"
         echo "" >> "$DOCK_DEBUG" 2>/dev/null || true
         echo "=== $(date '+%Y-%m-%dT%H:%M:%S') ===" >> "$DOCK_DEBUG" 2>/dev/null || true
-        echo "LAUNCH_SCRIPT pid=$$ ppid=$PPID  LAUNCHER_PID=${BACTIMATE_LAUNCHER_PID:-unknown}  (ppid should equal LAUNCHER_PID; if not, Reopen may fail)" >> "$DOCK_DEBUG" 2>/dev/null || true
+        echo "LAUNCH_SCRIPT pid=$$ ppid=$PPID  LAUNCHER_PID=${BACTOMATE_LAUNCHER_PID:-unknown}  (ppid should equal LAUNCHER_PID; if not, Reopen may fail)" >> "$DOCK_DEBUG" 2>/dev/null || true
     fi
 fi
-echo "$(date '+%Y-%m-%dT%H:%M:%S'): === BactiMate launch attempt ===" >> "$LOG_FILE"
+echo "$(date '+%Y-%m-%dT%H:%M:%S'): === BactoMate launch attempt ===" >> "$LOG_FILE"
 
 # If running interactively (from terminal), also show errors in terminal
 # Check if stderr is a terminal (not redirected)
@@ -83,8 +83,8 @@ echo "$(date): Looking for Python in: $PROJECT_ROOT/venv/bin/" >> "$LOG_FILE"
 # Use venv Python directly instead of activation (more reliable across machines).
 VENV_PYTHON="$PROJECT_ROOT/venv/bin/python3"
 VENV_PYTHONW="$PROJECT_ROOT/venv/bin/pythonw"
-# In .app mode prefer a BactiMate-named launcher binary so Dock identity stays on BactiMate.
-VENV_BACTIMATE="$PROJECT_ROOT/venv/bin/BactiMate"
+# In .app mode prefer a BactoMate-named launcher binary so Dock identity stays on BactoMate.
+VENV_BACTOMATE="$PROJECT_ROOT/venv/bin/BactoMate"
 
 # Debug: List what's in venv/bin
 if [ -d "$PROJECT_ROOT/venv/bin" ]; then
@@ -95,30 +95,30 @@ else
 fi
 
 # Verify venv Python exists and is executable
-if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ] && [ ! -f "$VENV_BACTIMATE" ]; then
+if [ ! -f "$VENV_PYTHON" ] && [ ! -f "$VENV_PYTHONW" ] && [ ! -f "$VENV_BACTOMATE" ]; then
     echo "$(date): ERROR: Python interpreter not found in venv: $PROJECT_ROOT/venv/bin/" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHON=$VENV_PYTHON" >> "$LOG_FILE"
     echo "$(date): VENV_PYTHONW=$VENV_PYTHONW" >> "$LOG_FILE"
-    echo "$(date): VENV_BACTIMATE=$VENV_BACTIMATE" >> "$LOG_FILE"
+    echo "$(date): VENV_BACTOMATE=$VENV_BACTOMATE" >> "$LOG_FILE"
     if [[ "$PROJECT_ROOT" != *".app/Contents/Resources"* ]]; then
-        MSG="BactiMate Error: Python environment not found. From the project folder run: ./setup/setup_fresh_env.sh then try again. Logs: $LOG_DIR"
+        MSG="BactoMate Error: Python environment not found. From the project folder run: ./setup/setup_fresh_env.sh then try again. Logs: $LOG_DIR"
     else
-        MSG="BactiMate Error: Python environment not found. The application may be corrupted. Logs: $LOG_DIR"
+        MSG="BactoMate Error: Python environment not found. The application may be corrupted. Logs: $LOG_DIR"
     fi
     osascript -e "display dialog \"$MSG\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 fi
 
 # Deterministic startup path:
-# - In .app mode we only allow the bundled BactiMate launcher binary.
+# - In .app mode we only allow the bundled BactoMate launcher binary.
 # - In project mode we use pythonw/python3 from the local venv.
 if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
-    if [ -f "$VENV_BACTIMATE" ] && [ -x "$VENV_BACTIMATE" ]; then
-        PYTHON_CMD="$VENV_BACTIMATE"
-        echo "$(date): Using bundled BactiMate binary: $PYTHON_CMD" >> "$LOG_FILE"
+    if [ -f "$VENV_BACTOMATE" ] && [ -x "$VENV_BACTOMATE" ]; then
+        PYTHON_CMD="$VENV_BACTOMATE"
+        echo "$(date): Using bundled BactoMate binary: $PYTHON_CMD" >> "$LOG_FILE"
     else
-        echo "$(date): ERROR: Required bundled launcher missing or not executable: $VENV_BACTIMATE" >> "$LOG_FILE"
-        osascript -e 'display dialog "BactiMate Error: App bundle is incomplete (missing venv/bin/BactiMate). Rebuild the app bundle." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+        echo "$(date): ERROR: Required bundled launcher missing or not executable: $VENV_BACTOMATE" >> "$LOG_FILE"
+        osascript -e 'display dialog "BactoMate Error: App bundle is incomplete (missing venv/bin/BactoMate). Rebuild the app bundle." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
         exit 1
     fi
 elif [ -f "$VENV_PYTHONW" ] && [ -x "$VENV_PYTHONW" ]; then
@@ -127,7 +127,7 @@ elif [ -f "$VENV_PYTHON" ] && [ -x "$VENV_PYTHON" ]; then
     PYTHON_CMD="$VENV_PYTHON"
 else
     echo "$(date): ERROR: Python interpreter is not executable: $VENV_PYTHON" >> "$LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: Python interpreter is not executable. The environment may be corrupted." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    osascript -e 'display dialog "BactoMate Error: Python interpreter is not executable. The environment may be corrupted." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 
@@ -162,7 +162,7 @@ if [ $PYTHON_TEST_EXIT -ne 0 ]; then
         otool -L "$PYTHON_CMD" | head -10 >> "$LOG_FILE" 2>&1 || true
     fi
 
-    osascript -e "display dialog \"BactiMate Error: Python launcher failed to start. Check logs: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+    osascript -e "display dialog \"BactoMate Error: Python launcher failed to start. Check logs: $LOG_DIR\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 fi
 
@@ -456,7 +456,7 @@ if [ "$PYQT6_OK" = false ]; then
         if [[ "$PROJECT_ROOT" == *".app/Contents/Resources"* ]]; then
             echo "$(date): Continuing to launch (from app); Python may show the real error." >> "$LOG_FILE"
         else
-            osascript -e "display dialog \"BactiMate Error: PyQt6 could not be loaded. Often fixed by rebuilding the app (clears quarantine).\n\nDetails in: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+            osascript -e "display dialog \"BactoMate Error: PyQt6 could not be loaded. Often fixed by rebuilding the app (clears quarantine).\n\nDetails in: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
             exit 1
         fi
     fi
@@ -519,11 +519,11 @@ echo "$(date): [DEBUG] Final PYTHONHOME before exec: ${PYTHONHOME:-<unset>}" >> 
 
 # If running from terminal, show a message
 if [ -t 0 ]; then
-    echo "Launching BactiMate GUI..." >&2
+    echo "Launching BactoMate GUI..." >&2
     echo "Log file: $LOG_FILE" >&2
 fi
 
-# Keep process name stable on macOS so Dock/menu bar stay on BactiMate.
+# Keep process name stable on macOS so Dock/menu bar stay on BactoMate.
 if [[ "$OSTYPE" == "darwin"* ]]; then
     if [ -n "${PYTHONHOME:-}" ]; then
         echo "$(date): [DEBUG] Passing PYTHONHOME to Python (app bundle mode)" >> "$LOG_FILE"
@@ -532,7 +532,7 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     fi
     export PYTHONHOME PATH QT_PLUGIN_PATH DYLD_FRAMEWORK_PATH QT_FRAMEWORK_PATH
     export QT_MAC_WANTS_LAYER=1 QT_AUTO_SCREEN_SCALE_FACTOR=1
-    exec -a BactiMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
+    exec -a BactoMate "$PYTHON_CMD" "$PROJECT_ROOT/main.py"
 else
     if [ -n "${PYTHONHOME:-}" ]; then
         exec "$PYTHON_CMD" "$PROJECT_ROOT/main.py"

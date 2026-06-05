@@ -3,13 +3,13 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bactimate"
-version = "1.9"
-description = "Batch processing and analysis GUI for microscopy (Omnipose, tracking)"
-readme = "docs/README.md"
+name = "bactomate"
+version = "2.0"
+description = "Integrated microscopy analysis platform: conversion, segmentation, tracking, training, and reporting"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "BactiMate" }]
+authors = [{ name = "BactoMate" }]
 keywords = ["microscopy", "omnipose", "segmentation", "tracking", "nd2", "gui"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -35,9 +35,9 @@ cuda = [
 # Base workflow: install from repo with pip install -r requirements.txt
 
 [project.scripts]
-bactimate = "bactimate.__main__:main"
+bactomate = "bactomate.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bactimate*"]
+include = ["bactomate*"]
 exclude = ["tests*", "Logs*"]

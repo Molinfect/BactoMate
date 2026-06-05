@@ -2,7 +2,7 @@
 """
 Test whether segmentation will use M-chip (Apple Silicon) GPU.
 Uses the same GPU check as Omnipose/cellpose_omni.
-Run with the same Python you use for BactiMate: python3 setup/test_mps_gpu.py
+Run with the same Python you use for BactoMate: python3 setup/test_mps_gpu.py
 """
 import sys
 

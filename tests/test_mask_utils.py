@@ -1,5 +1,5 @@
 """
-Tests for bactimate.gui.mask_utils (binary -> instance label conversion for Omnipose).
+Tests for bactomate.gui.mask_utils (binary -> instance label conversion for Omnipose).
 Run with: pytest tests/test_mask_utils.py -v
 """
 import sys
@@ -12,7 +12,7 @@ import tifffile
 # Project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bactimate.gui.mask_utils import convert_single_mask_to_omnipose, convert_masks_in_folder
+from bactomate.gui.mask_utils import convert_single_mask_to_omnipose, convert_masks_in_folder
 
 
 def test_convert_binary_mask_returns_converted():

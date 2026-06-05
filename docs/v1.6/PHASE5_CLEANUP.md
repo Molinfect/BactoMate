@@ -10,17 +10,17 @@ SAM2 segment tab is not in the UI (addTab commented out). We will not implement 
 
 | Item | Location | Action |
 |------|----------|--------|
-| Tab module | `bactimate/gui/tabs/sam2.py` | Delete file. |
-| Worker class | `bactimate/gui/workers.py` | Remove `SAM2SegmentWorker` (class and all its code). |
-| Main window | `bactimate/gui/main_window.py` | Remove import `SAM2SegmentTab`; remove from `_get_tab_classes()`; remove `self.sam2_tab = SAM2SegmentTab(self)`; remove line `# tabs.addTab(self.sam2_tab, "SAM2 Segment")`. |
-| Tabs __init__ | `bactimate/gui/tabs/__init__.py` | Remove import and export of `SAM2SegmentTab`. |
-| Constants | `bactimate/gui/constants.py` | Remove `"sam2": "sam2_tab"` from `TAB_WIDGET_ATTR`; remove or shorten comment about SAM2. |
+| Tab module | `bactomate/gui/tabs/sam2.py` | Delete file. |
+| Worker class | `bactomate/gui/workers.py` | Remove `SAM2SegmentWorker` (class and all its code). |
+| Main window | `bactomate/gui/main_window.py` | Remove import `SAM2SegmentTab`; remove from `_get_tab_classes()`; remove `self.sam2_tab = SAM2SegmentTab(self)`; remove line `# tabs.addTab(self.sam2_tab, "SAM2 Segment")`. |
+| Tabs __init__ | `bactomate/gui/tabs/__init__.py` | Remove import and export of `SAM2SegmentTab`. |
+| Constants | `bactomate/gui/constants.py` | Remove `"sam2": "sam2_tab"` from `TAB_WIDGET_ATTR`; remove or shorten comment about SAM2. |
 | Session/apply | Any code that uses `TAB_WIDGET_ATTR["sam2"]` or `getattr(..., "sam2_tab")` | After removing the key and the attribute, ensure no code assumes sam2_tab exists (e.g. apply_session_params already uses getattr(..., None)). |
 
 **Docs / copy:**
 
 - `main.py`: Remove “SAM2” from the one-line description if present.
-- `docs/BACTIMATE_USER_MANUAL.md`: Remove or shorten the note about the SAM2 tab; keep or clarify Tracking’s “general_2d_w_SAM2_features” (Trackastra model name, not the SAM2 tab).
+- `docs/BACTOMATE_USER_MANUAL.md`: Remove or shorten the note about the SAM2 tab; keep or clarify Tracking’s “general_2d_w_SAM2_features” (Trackastra model name, not the SAM2 tab).
 
 **Note:** Tracking tab’s combo option `general_2d_w_SAM2_features` is a Trackastra pretrained model that uses SAM2 features; it is independent of the SAM2 segment tab. Keep it unless you want to drop that model option.
 
@@ -30,8 +30,8 @@ SAM2 segment tab is not in the UI (addTab commented out). We will not implement 
 
 | Item | Location | Action |
 |------|----------|--------|
-| Class | `bactimate/gui/tabs/session_logs.py` | Remove class `SessionLogsTab` (never instantiated; only `SessionLogsPanel` is used). |
-| Tabs __init__ | `bactimate/gui/tabs/__init__.py` | Remove import and export of `SessionLogsTab`. |
+| Class | `bactomate/gui/tabs/session_logs.py` | Remove class `SessionLogsTab` (never instantiated; only `SessionLogsPanel` is used). |
+| Tabs __init__ | `bactomate/gui/tabs/__init__.py` | Remove import and export of `SessionLogsTab`. |
 | Main window | `main_window.py` | No change (already uses `SessionLogsPanel` only). |
 
 ---

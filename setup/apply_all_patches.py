@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apply all BactiMate compatibility patches in one place.
+Apply all BactoMate compatibility patches in one place.
 Patches applied:
 1. cellpose_omni - model_type parameter fix (architecture detection)
 2. cellpose_omni - model URL fix (GitHub instead of Cellpose server)
@@ -11,7 +11,7 @@ Patches applied:
    nchan/nclasses from checkpoint top-level only; nclasses 2 or 3 (default 3), never infer 4 from state_dict
 7. cellpose_omni __main__ - pass channels to model.train() when nchan==2 so grayscale is duplicated to 2 channels
 8. cellpose_omni core - DataParallel unwrap when saving model (self.net.module.save_model when wrapped)
-(peakdetect patch exists but is not in the default list; BactiMate uses skimage for foci, not the peakdetect package.)
+(peakdetect patch exists but is not in the default list; BactoMate uses skimage for foci, not the peakdetect package.)
 """
 
 import sys
@@ -51,9 +51,9 @@ def _omnipose_gpu_fallback_line(stripped: str) -> bool:
     return False
 
 
-def _repair_omnipose_gpu_bactimate_pass_fallback(content: str) -> tuple[str, bool]:
-    """Remove erroneous 'pass  # empty except fixed by BactiMate patch' before gpu_logger fallback and re-indent."""
-    marker = "pass  # empty except fixed by BactiMate patch"
+def _repair_omnipose_gpu_bactomate_pass_fallback(content: str) -> tuple[str, bool]:
+    """Remove erroneous 'pass  # empty except fixed by BactoMate patch' before gpu_logger fallback and re-indent."""
+    marker = "pass  # empty except fixed by BactoMate patch"
     if marker not in content:
         return content, False
     lines = content.splitlines(keepends=True)
@@ -112,7 +112,7 @@ def _repair_omnipose_gpu_bactimate_pass_fallback(content: str) -> tuple[str, boo
 
 def patch_peakdetect() -> bool:
     """Patch peakdetect/peakdetect.py to fix scipy ifft import (scipy >= 1.10).
-    BactiMate does not use the peakdetect package (foci use skimage.peak_local_max).
+    BactoMate does not use the peakdetect package (foci use skimage.peak_local_max).
     This patch is for environments that have peakdetect as a transitive dep; when absent we skip silently."""
     peakdetect_file = _find_in_syspath("peakdetect/peakdetect.py")
     if not peakdetect_file:
@@ -312,7 +312,7 @@ def patch_cellpose_omni_dynamics_niter_none() -> bool:
         return False
 
     content = dynamics_file.read_text()
-    sentinel = "# BactiMate: default niter to 200 if None"
+    sentinel = "# BactoMate: default niter to 200 if None"
     if sentinel in content:
         print("  ✓ cellpose_omni dynamics (niter None default) already patched")
         return True
@@ -344,7 +344,7 @@ def patch_cellpose_omni_dynamics_niter_none() -> bool:
 
 
 def patch_cellpose_omni_resnet_load_checkpoint() -> bool:
-    """Patch resnet_torch load_model to accept checkpoints with 'state_dict' + nchan/nclasses (BactiMate-trained)."""
+    """Patch resnet_torch load_model to accept checkpoints with 'state_dict' + nchan/nclasses (BactoMate-trained)."""
     resnet_file = _find_in_syspath("cellpose_omni/resnet_torch.py")
     if not resnet_file:
         print("  WARNING: Could not find cellpose_omni/resnet_torch.py")
@@ -405,7 +405,7 @@ def patch_omnipose_gpu_empty_except() -> bool:
         print("  WARNING: Could not find omnipose/gpu.py")
         return False
     content = gpu_file.read_text()
-    content, repaired = _repair_omnipose_gpu_bactimate_pass_fallback(content)
+    content, repaired = _repair_omnipose_gpu_bactomate_pass_fallback(content)
     patched = repaired
     lines = content.splitlines(keepends=True)
     for i, line in enumerate(lines):
@@ -423,7 +423,7 @@ def patch_omnipose_gpu_empty_except() -> bool:
         body_indent = except_indent + "    "
         # Case 1: next line has less indent -> truly empty except block
         if len(next_indent) < len(except_indent):
-            body = f"{body_indent}pass  # empty except fixed by BactiMate patch\n"
+            body = f"{body_indent}pass  # empty except fixed by BactoMate patch\n"
             if "Exception as" not in stripped:
                 lines[i] = line.replace("except:", "except Exception as e:", 1).replace("except :", "except Exception as e:", 1)
             lines.insert(i + 1, body)
@@ -459,7 +459,7 @@ def patch_omnipose_gpu_mps() -> bool:
         return False
     content = gpu_file.read_text()
     patched = False
-    content, repaired = _repair_omnipose_gpu_bactimate_pass_fallback(content)
+    content, repaired = _repair_omnipose_gpu_bactomate_pass_fallback(content)
     if repaired:
         patched = True
     # 1) Broaden ARM detection (platform.processor() can vary; platform.machine() == 'arm64' is reliable on Mac)
@@ -552,7 +552,7 @@ def patch_omnipose_gpu_mps() -> bool:
                 patched = True
                 break
             body_indent = except_indent + "    "
-            body = f"{body_indent}pass  # empty except fixed by BactiMate patch\n"
+            body = f"{body_indent}pass  # empty except fixed by BactoMate patch\n"
             if "Exception as" not in stripped:
                 lines[i] = line.replace("except:", "except Exception as e:", 1).replace("except :", "except Exception as e:", 1)
             lines.insert(i + 1, body)
@@ -711,7 +711,7 @@ def patch_cellpose_omni_io() -> bool:
 
 
 def patch_cellpose_omni_cellpose_pretrained() -> bool:
-    """Patch Cellpose.__init__ to accept pretrained_model=path for user-trained models (BactiMate)."""
+    """Patch Cellpose.__init__ to accept pretrained_model=path for user-trained models (BactoMate)."""
     import re
     models_file = _find_in_syspath("cellpose_omni/models.py")
     if not models_file:
@@ -723,7 +723,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
     # then newline then " % ( (syntax error). Replace whole try/except with safe one-line write.
     new_try_block = """            try:
                 import datetime as _dt
-                _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
+                _dp = os.environ.get("BACTOMATE_OMNI_DEBUG_LOG")
                 if _dp and _ckpt is not None and isinstance(_ckpt, dict):
                     _st = _ckpt.get('state_dict') or _ckpt.get('model_state_dict') or _ckpt
                     _sk = list(_st.keys())[:12] if isinstance(_st, dict) else []
@@ -734,7 +734,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                 pass"""
     # Regex: try block containing _f.write with newline inside the string (broken).
     broken_try_re = re.compile(
-        r'\s+try:\s+import datetime as _dt\s+_dp = os\.environ\.get\("BACTIMATE_OMNI_DEBUG_LOG"\).*?'
+        r'\s+try:\s+import datetime as _dt\s+_dp = os\.environ\.get\("BACTOMATE_OMNI_DEBUG_LOG"\).*?'
         r'with open\(_dp, "a", encoding="utf-8"\) as _f:\s+_f\.write\("\[%s\].*?state_dict_sample=%s\s+" % \(_ts, self\.pretrained_model, user_nchan, user_nclasses, list\(_ckpt\.keys\(\)\)\[:25\], _sk\)\)\s+except Exception:\s+pass',
         re.DOTALL,
     )
@@ -749,7 +749,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         old_try_block = (
             '            try:\n'
             '                import datetime as _dt\n'
-            '                _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")\n'
+            '                _dp = os.environ.get("BACTOMATE_OMNI_DEBUG_LOG")\n'
             '                if _dp and _ckpt is not None and isinstance(_ckpt, dict):\n'
             '                    _st = _ckpt.get(\'state_dict\') or _ckpt.get(\'model_state_dict\') or _ckpt\n'
             '                    _sk = list(_st.keys())[:12] if isinstance(_st, dict) else []\n'
@@ -866,7 +866,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
             self.sz.model_type = model_type
         else:
             self.pretrained_size = None"""
-    # 4-space block WITH model_type in CellposeModel (already-patched or older BactiMate)
+    # 4-space block WITH model_type in CellposeModel (already-patched or older BactoMate)
     old_block_with_fix = """        # for now, omni models cannot do net_avg 
         if self.omni:
             net_avg = False
@@ -902,12 +902,12 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
             self.sz.model_type = model_type
         else:
             self.pretrained_size = None"""
-    new_block = """        # BactiMate: load user-trained model by path when pretrained_model is a path
+    new_block = """        # BactoMate: load user-trained model by path when pretrained_model is a path
         if pretrained_model and isinstance(pretrained_model, str) and os.path.exists(pretrained_model):
             self.omni = True if omni is None else omni
             self.pretrained_model = pretrained_model
             self.diam_mean = 30.
-            # BactiMate: user checkpoints must use nchan/nclasses from checkpoint top-level only (Omnipose training uses nclasses=3).
+            # BactoMate: user checkpoints must use nchan/nclasses from checkpoint top-level only (Omnipose training uses nclasses=3).
             # Do NOT infer nclasses from state_dict (e.g. 4 output channels) or loader will show nclasses=4.
             user_nchan = 1
             user_nclasses = 3
@@ -926,7 +926,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                             n = int(_ckpt['nclasses'])
                             if n in (2, 3):
                                 user_nclasses = n
-                            # else: keep 3 (BactiMate/Omnipose default; avoid 4 which is wrong for our training)
+                            # else: keep 3 (BactoMate/Omnipose default; avoid 4 which is wrong for our training)
                         except (TypeError, ValueError):
                             pass
                     # If nchan not at top level, infer from first 4D weight in state_dict (training saves nested)
@@ -950,7 +950,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
             # Debug log for user-model load (compare with built-in in Logs/debug_*.log)
             try:
                 import datetime as _dt
-                _dp = os.environ.get("BACTIMATE_OMNI_DEBUG_LOG")
+                _dp = os.environ.get("BACTOMATE_OMNI_DEBUG_LOG")
                 if _dp and _ckpt is not None and isinstance(_ckpt, dict):
                     _st = _ckpt.get('state_dict') or _ckpt.get('model_state_dict') or _ckpt
                     _sk = list(_st.keys())[:12] if isinstance(_st, dict) else []
@@ -969,7 +969,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                                     nchan=user_nchan,
                                     nclasses=user_nclasses)
             self.cp.model_type = 'bact_phase_omni'
-            # BactiMate: use built-in size model so diameter=0 triggers estimation; on 404 create fallback
+            # BactoMate: use built-in size model so diameter=0 triggers estimation; on 404 create fallback
             try:
                 self.pretrained_size = size_model_path('bact_phase_omni', torch)
                 self.sz = SizeModel(device=self.device, pretrained_size=self.pretrained_size, cp_model=self.cp)
@@ -984,19 +984,19 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                             MODEL_DIR.mkdir(parents=True, exist_ok=True)
                             _params = {'A': np.zeros(256), 'smean': np.zeros(256), 'diam_mean': 30., 'ymean': 0.}
                             np.save(_fb_path, _params)
-                            models_logger.info('BactiMate: created fallback size model (remote 404): %s', _fb_path)
+                            models_logger.info('BactoMate: created fallback size model (remote 404): %s', _fb_path)
                         self.pretrained_size = _fb_path
                         self.sz = SizeModel(device=self.device, pretrained_size=self.pretrained_size, cp_model=self.cp)
                         self.sz.model_type = 'bact_phase_omni'
                     else:
                         try:
-                            models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                            models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                         except Exception:
                             pass
                         self.pretrained_size = None
                 except Exception:
                     try:
-                        models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                        models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                     except Exception:
                         pass
                     self.pretrained_size = None
@@ -1046,7 +1046,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
             self.pretrained_size = None
         else:"""
     new_with_size = """            self.cp.model_type = 'bact_phase_omni'
-            # BactiMate: use built-in size model so diameter=0 triggers estimation; on 404 create fallback
+            # BactoMate: use built-in size model so diameter=0 triggers estimation; on 404 create fallback
             try:
                 self.pretrained_size = size_model_path('bact_phase_omni', torch)
                 self.sz = SizeModel(device=self.device, pretrained_size=self.pretrained_size, cp_model=self.cp)
@@ -1061,19 +1061,19 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                             MODEL_DIR.mkdir(parents=True, exist_ok=True)
                             _params = {'A': np.zeros(256), 'smean': np.zeros(256), 'diam_mean': 30., 'ymean': 0.}
                             np.save(_fb_path, _params)
-                            models_logger.info('BactiMate: created fallback size model (remote 404): %s', _fb_path)
+                            models_logger.info('BactoMate: created fallback size model (remote 404): %s', _fb_path)
                         self.pretrained_size = _fb_path
                         self.sz = SizeModel(device=self.device, pretrained_size=self.pretrained_size, cp_model=self.cp)
                         self.sz.model_type = 'bact_phase_omni'
                     else:
                         try:
-                            models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                            models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                         except Exception:
                             pass
                         self.pretrained_size = None
                 except Exception:
                     try:
-                        models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                        models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                     except Exception:
                         pass
                     self.pretrained_size = None
@@ -1089,7 +1089,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         else:"""
     logging_except = """            except Exception as _e:
                 try:
-                    models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                    models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                 except Exception:
                     pass
                 self.pretrained_size = None
@@ -1105,19 +1105,19 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
                             MODEL_DIR.mkdir(parents=True, exist_ok=True)
                             _params = {'A': np.zeros(256), 'smean': np.zeros(256), 'diam_mean': 30., 'ymean': 0.}
                             np.save(_fb_path, _params)
-                            models_logger.info('BactiMate: created fallback size model (remote 404): %s', _fb_path)
+                            models_logger.info('BactoMate: created fallback size model (remote 404): %s', _fb_path)
                         self.pretrained_size = _fb_path
                         self.sz = SizeModel(device=self.device, pretrained_size=self.pretrained_size, cp_model=self.cp)
                         self.sz.model_type = 'bact_phase_omni'
                     else:
                         try:
-                            models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                            models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                         except Exception:
                             pass
                         self.pretrained_size = None
                 except Exception:
                     try:
-                        models_logger.warning("BactiMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
+                        models_logger.warning("BactoMate: could not load size model for user model (%s), diameter=0 will not rescale: %s", type(_e).__name__, _e)
                     except Exception:
                         pass
                     self.pretrained_size = None
@@ -1127,7 +1127,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         models_file.write_text(content)
         print("  ✓ Updated cellpose_omni Cellpose patch (404 fallback: create local size model)")
         return True
-    if "size_model_path('bact_phase_omni'" in content and silent_except in content and "BactiMate: could not load size model" not in content:
+    if "size_model_path('bact_phase_omni'" in content and silent_except in content and "BactoMate: could not load size model" not in content:
         content = content.replace(silent_except, logging_except, 1)
         models_file.write_text(content)
         print("  ✓ Updated cellpose_omni Cellpose patch (size model failure now logged)")
@@ -1162,7 +1162,7 @@ def patch_cellpose_omni_cellpose_pretrained() -> bool:
         models_file.write_text(content)
         print("  ✓ Updated cellpose_omni Cellpose patch (relaxed nchan inference for encoder/.0./any 4D weight)")
         return True
-    # Try vanilla upstream block (torch= first, then use_torch=), then older BactiMate block (with FIX)
+    # Try vanilla upstream block (torch= first, then use_torch=), then older BactoMate block (with FIX)
     if old_block_torch in content:
         content = content.replace(old_block_torch, new_block_torch, 1)
         models_file.write_text(content)
@@ -1455,7 +1455,7 @@ def patch_cellpose_omni_core_ntrain_label() -> bool:
 
 
 # Ordered list of (name, description, patch_func) for --only / --list. Names are used as: --only resnet_load,cellpose_pretrained
-# peakdetect omitted: BactiMate does not use it (foci use skimage); patch_peakdetect exists for --only peakdetect if needed
+# peakdetect omitted: BactoMate does not use it (foci use skimage); patch_peakdetect exists for --only peakdetect if needed
 PATCH_LIST = [
     ("cellpose_omni", "cellpose_omni: model_type + model URL", patch_cellpose_omni),
     ("transforms", "cellpose_omni transforms: nchan trim", patch_cellpose_omni_transforms),
@@ -1503,7 +1503,7 @@ def main() -> bool:
             return False
 
     print("=" * 50)
-    print("Applying BactiMate compatibility patches" + (" (selected only)" if only_names else ""))
+    print("Applying BactoMate compatibility patches" + (" (selected only)" if only_names else ""))
     print("=" * 50)
 
     results: dict[str, bool] = {}

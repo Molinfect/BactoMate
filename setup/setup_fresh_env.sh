@@ -1,5 +1,5 @@
 #!/bin/bash
-# Setup a completely fresh virtual environment for BactiMate
+# Setup a completely fresh virtual environment for BactoMate
 
 set -e  # Exit on error
 
@@ -8,7 +8,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo "=========================================="
-echo "Setting up fresh BactiMate environment"
+echo "Setting up fresh BactoMate environment"
 echo "=========================================="
 echo ""
 
@@ -45,7 +45,7 @@ for candidate in python3.11 python3.10 python3; do
     fi
 done
 if [ -z "$PYTHON_CMD" ]; then
-    echo "✗ Error: BactiMate requires Python 3.10 or 3.11."
+    echo "✗ Error: BactoMate requires Python 3.10 or 3.11."
     echo "  trackastra and other dependencies do not support Python 3.9."
     echo "  Install Python 3.11 from https://www.python.org/downloads/ or run: brew install python@3.11"
     echo "  Then run this script again (or use: python3.11 -m venv venv && source venv/bin/activate && pip install -r requirements.txt)"
@@ -71,6 +71,11 @@ echo "Installing requirements from requirements.txt..."
 if [ -f "requirements.txt" ]; then
     pip install -r requirements.txt
     echo "✓ Requirements installed"
+
+    echo ""
+    echo "Installing BactoMate in editable mode..."
+    pip install -e .
+    echo "✓ Editable install complete (bactomate CLI available in venv)"
     
     # Check for NVIDIA GPU and offer CUDA installation
     if command -v nvidia-smi &> /dev/null; then
@@ -158,9 +163,17 @@ else
 fi
 
 echo ""
+echo "Running install verification..."
+source "$PROJECT_ROOT/venv/bin/activate"
+python main.py --version
+python main.py --smoke-test
+echo "✓ Smoke test passed"
+
+echo ""
 echo "=========================================="
 echo "Setup complete!"
 echo "=========================================="
 echo ""
-echo "You can now run: ./launch_gui.sh (from project root)"
+echo "Verify anytime:  source venv/bin/activate && python main.py --smoke-test"
+echo "Launch GUI:      ./launch_gui.sh   (from project root)"
 echo ""

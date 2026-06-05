@@ -9,7 +9,7 @@ from pathlib import Path
 def test_backend_failure_path_uses_existing_stage_gate_updater():
     source_path = (
         Path(__file__).resolve().parent.parent
-        / "bactimate"
+        / "bactomate"
         / "gui"
         / "tabs"
         / "segmentation.py"

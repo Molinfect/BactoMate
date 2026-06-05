@@ -6,7 +6,7 @@
 
 ## 1. Shared module
 
-**`bactimate/gui/analysis_paths.py`**
+**`bactomate/gui/analysis_paths.py`**
 
 | Symbol | Purpose |
 |--------|--------|

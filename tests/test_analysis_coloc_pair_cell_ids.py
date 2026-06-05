@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_coloc_pair_records_include_cell_ids():
-    from bactimate.modules.analysis_coloc import ColocSettings, analyze_colocalization_foci_table
+    from bactomate.modules.analysis_coloc import ColocSettings, analyze_colocalization_foci_table
 
     settings = ColocSettings(
         coloc_max_distance=5.0,

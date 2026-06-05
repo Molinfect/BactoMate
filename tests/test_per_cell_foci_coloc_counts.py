@@ -12,7 +12,7 @@ def test_persist_workbook_count_updates_adds_columns(tmp_path: Path):
         # Optional dependency in some environments
         return
 
-    from bactimate.gui.tabs._analyze_masks_colocalization import _persist_workbook_count_updates
+    from bactomate.gui.tabs._analyze_masks_colocalization import _persist_workbook_count_updates
 
     xlsx = tmp_path / "out.xlsx"
     df = pd.DataFrame(
@@ -75,10 +75,61 @@ def test_persist_workbook_count_updates_adds_columns(tmp_path: Path):
 
     sm = pd.read_excel(xlsx, sheet_name="Summary")
     assert "Total Foci Count (GFP)" in sm.columns
-    assert "Total Foci Count within Cells (GFP)" in sm.columns
-    assert int(sm.loc[0, "Total Foci Count (GFP)"]) == 5
-    assert int(sm.loc[0, "Total Foci Count within Cells (GFP)"]) == 3
-    assert int(sm.loc[0, "Total Foci Count (dsRed)"]) == 3
-    assert int(sm.loc[0, "Total Foci Count within Cells (dsRed)"]) == 1
+    assert "Total Foci Count within Cells (GFP)" not in sm.columns
+    assert int(sm.loc[0, "Total Foci Count (GFP)"]) == 3
+    assert int(sm.loc[0, "Foci outside cells (GFP)"]) == 2
+    assert int(sm.loc[0, "Total Foci Count (dsRed)"]) == 1
+    assert int(sm.loc[0, "Foci outside cells (dsRed)"]) == 2
     assert "Valid Pairs Count (GFP×dsRed)" in sm.columns
+    assert int(sm.loc[0, "Valid Pairs Count (GFP×dsRed)"]) == 2
+
+
+def test_persist_coloc_single_frame_one_based_per_cell(tmp_path: Path) -> None:
+    """Frameless coloc tables must use the same frame as Summary (e.g. Per-Cell Frame=1, CSV frame=0)."""
+    try:
+        import openpyxl  # noqa: F401
+    except Exception:
+        return
+
+    from bactomate.gui.tabs._analyze_masks_colocalization import _persist_workbook_count_updates
+
+    xlsx = tmp_path / "one_based.xlsx"
+    per_cell = pd.DataFrame(
+        [
+            {"Frame": 1, "Cell_ID": 10, "Area": 5.0},
+            {"Frame": 1, "Cell_ID": 17, "Area": 6.0},
+            {"Frame": 1, "Cell_ID": 99, "Area": 7.0},
+        ]
+    )
+    summary = pd.DataFrame([{"Frame": 1, "Number of Cells": 3}])
+    with pd.ExcelWriter(xlsx, engine="openpyxl") as w:
+        per_cell.to_excel(w, sheet_name="Per-Cell Data", index=False)
+        summary.to_excel(w, sheet_name="Summary", index=False)
+
+    channel_rows = [
+        ("dsRed", [{"cell_id": 10, "in_cell": True, "frame": 0}]),
+        ("GFP", [{"cell_id": 17, "in_cell": True, "frame": 0}]),
+    ]
+    pair_df = pd.DataFrame(
+        [
+            {"cell_id_primary": 10, "same_cell": True, "is_valid": True},
+            {"cell_id_primary": 17, "same_cell": True, "is_valid": True},
+            {"cell_id_primary": 99, "same_cell": True, "is_valid": False},
+            {"cell_id_primary": 99, "same_cell": False, "is_valid": True},
+        ]
+    )
+    _persist_workbook_count_updates(
+        analysis_path=xlsx,
+        channel_rows=channel_rows,
+        raw_counts={("dsRed", 0): 1, ("GFP", 0): 1},
+        pair_tables=[("dsRed", "GFP", pair_df, len(pair_df))],
+        same_cell_only=True,
+    )
+
+    out = pd.read_excel(xlsx, sheet_name="Per-Cell Data")
+    assert int(out.loc[out["Cell_ID"] == 10, "coloc_pairs_count"].iloc[0]) == 1
+    assert int(out.loc[out["Cell_ID"] == 17, "coloc_pairs_count"].iloc[0]) == 1
+    assert int(out.loc[out["Cell_ID"] == 99, "coloc_pairs_count"].iloc[0]) == 0
+
+    sm = pd.read_excel(xlsx, sheet_name="Summary")
     assert int(sm.loc[0, "Valid Pairs Count (GFP×dsRed)"]) == 2

@@ -1,76 +1,20 @@
-name: Build BactiMate (macOS + Windows)
+name: BactoMate CI (source install)
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags:
       - 'v*'
-  release:
-    types: [created]
+  pull_request:
+    branches: [main]
 
 jobs:
-  build-macos:
-    name: Build macOS Application
+  smoke-macos:
+    name: macOS source install + smoke test
     runs-on: macos-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Create virtual environment
-        run: |
-          python3 -m venv --copies venv
-          source venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Smoke test (before build)
-        run: |
-          source venv/bin/activate
-          python main.py --version
-          python main.py --smoke-test
-
-      - name: Create icons
-        run: |
-          chmod +x build/create_icons.sh
-          ./build/create_icons.sh || echo "Icons already exist or creation failed"
-
-      - name: Build macOS application bundle
-        run: |
-          chmod +x build/build_app_bundle.sh
-          ./build/build_app_bundle.sh
-
-      - name: Create DMG
-        run: |
-          chmod +x build/create_dmg.sh
-          ./build/create_dmg.sh
-
-      - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
-        with:
-          name: BactiMate-macOS
-          path: dist/BactiMate.dmg
-          retention-days: 30
-
-      - name: Upload macOS DMG (release)
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/BactiMate.dmg
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-windows:
-    name: Build Windows Executable (CUDA 12.8)
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python 3.11
@@ -78,68 +22,59 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Create virtual environment
+      - name: Install dependencies
+        run: |
+          python3 -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+          python setup/apply_all_patches.py || true
+
+      - name: Smoke test
+        run: |
+          source venv/bin/activate
+          python main.py --version
+          python main.py --smoke-test
+
+      - name: Focused pytest
+        run: |
+          source venv/bin/activate
+          pip install pytest
+          pytest tests/test_analysis_paths.py tests/test_combined_summary.py tests/test_session_apply.py tests/test_patch_import.py -q --tb=short
+
+  smoke-windows:
+    name: Windows source install + smoke test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         shell: cmd
         run: |
           python -m venv venv
           call venv\Scripts\activate.bat
           python -m pip install --upgrade pip
-
-      - name: Install dependencies
-        shell: cmd
-        run: |
-          call venv\Scripts\activate.bat
           pip install --use-deprecated=legacy-resolver -r requirements.txt
           pip install -e .
-
-      - name: Install PyTorch (CUDA 12.8)
-        shell: cmd
-        run: |
-          call venv\Scripts\activate.bat
-          pip uninstall torch torchvision torchaudio -y
-          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-
-      - name: Apply BactiMate compatibility patches
-        shell: cmd
-        run: |
-          call venv\Scripts\activate.bat
           python setup\apply_all_patches.py
 
-      - name: Smoke test (before build)
+      - name: Smoke test
         shell: cmd
         run: |
           call venv\Scripts\activate.bat
           python main.py --version
           python main.py --smoke-test
 
-      - name: Install PyInstaller
+      - name: Focused pytest
         shell: cmd
         run: |
           call venv\Scripts\activate.bat
-          pip install "pyinstaller>=6.0,<7.0"
-
-      - name: Build Windows executable
-        shell: cmd
-        run: |
-          call venv\Scripts\activate.bat
-          pyinstaller --noconfirm --clean --log-level=INFO build\BactiMate.spec
-
-      - name: Zip distribution
-        shell: pwsh
-        run: |
-          Compress-Archive -Path dist\BactiMate -DestinationPath dist\BactiMate-windows-cu128.zip -Force
-
-      - name: Upload Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: BactiMate-Windows-cu128
-          path: dist/BactiMate-windows-cu128.zip
-          retention-days: 30
-
-      - name: Upload Windows build (release)
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/BactiMate-windows-cu128.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          pip install pytest
+          pytest tests/test_analysis_paths.py tests/test_combined_summary.py tests/test_session_apply.py tests/test_patch_import.py -q --tb=short

@@ -18,7 +18,7 @@ except ImportError:
 
 try:
     from PyQt6.QtWidgets import QApplication
-    from bactimate.gui.tabs.analyze_masks import AnalyzeTab
+    from bactomate.gui.tabs.analyze_masks import AnalyzeTab
     QT_AVAILABLE = True
 except Exception:
     QT_AVAILABLE = False

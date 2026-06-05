@@ -74,7 +74,7 @@ def _wait_until(predicate, timeout_s: float = 10.0, step_s: float = 0.05) -> boo
 
 
 def _build_tab(tmp_dir: Path):
-    from bactimate.gui.tabs._analyze_masks_filtering import FilteringTab
+    from bactomate.gui.tabs._analyze_masks_filtering import FilteringTab
 
     parent = QWidget()
     parent.show()
@@ -91,9 +91,35 @@ def _write_mask_tif(tmp_dir: Path) -> Path:
     return mask_path
 
 
-def _open_preview(tmp_dir: Path):
-    from bactimate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+def _write_phase_tif(tmp_dir: Path, *, pixel_size_um: float) -> Path:
+    phase_path = tmp_dir / "sample.tif"
+    stack = np.zeros((1, 64, 64), dtype=np.uint16)
+    tifffile.imwrite(
+        str(phase_path),
+        stack,
+        imagej=True,
+        metadata={"images": 1, "frames": 1, "unit": "micron"},
+        resolution=(1.0 / float(pixel_size_um), 1.0 / float(pixel_size_um)),
+        resolutionunit=1,
+    )
+    return phase_path
 
+
+def _open_preview(tmp_dir: Path):
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_dir)
+    tab, parent = _build_tab(tmp_dir)
+    show_filter_preview(tab, str(mask_path))
+    QCoreApplication.processEvents()
+    dlg = getattr(tab, "_filter_preview_dialog", None)
+    return tab, parent, dlg
+
+
+def _open_preview_with_calibrated_phase(tmp_dir: Path, *, pixel_size_um: float):
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    _write_phase_tif(tmp_dir, pixel_size_um=pixel_size_um)
     mask_path = _write_mask_tif(tmp_dir)
     tab, parent = _build_tab(tmp_dir)
     show_filter_preview(tab, str(mask_path))
@@ -117,6 +143,26 @@ def _shutdown(tab, parent):
     except Exception:
         pass
     QCoreApplication.processEvents()
+
+
+def test_preview_open_refresh_renders_baseline_pixmap():
+    """Opening the preview must paint the unfiltered baseline (no NameError in _render)."""
+
+    _qapp()
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        tab, parent, dlg = _open_preview(tmp_dir)
+        try:
+            assert dlg is not None
+            dlg.refresh()
+            QCoreApplication.processEvents()
+            pm = dlg.canvas.pixmap()
+            assert pm is not None and not pm.isNull(), (
+                "Initial refresh must set a canvas pixmap (regression: undefined "
+                "name in unfiltered _render info_text)"
+            )
+        finally:
+            _shutdown(tab, parent)
 
 
 def test_preview_apply_populates_last_preview_with_filtered_result():
@@ -176,6 +222,23 @@ def test_preview_apply_populates_last_preview_with_filtered_result():
             still_last = dict(getattr(dlg, "_last_preview", {}) or {})
             assert "mask_2d" in still_last
             assert set(int(x) for x in (still_last.get("rejected") or [])) == rejected
+        finally:
+            _shutdown(tab, parent)
+
+
+def test_preview_pixel_size_uses_metadata_from_original_phase_tiff():
+    """Preview pixel-size spinbox should not stay on the hard-coded default."""
+
+    _qapp()
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        tab, parent, dlg = _open_preview_with_calibrated_phase(tmp_dir, pixel_size_um=0.25)
+        try:
+            assert dlg is not None
+            spinboxes = getattr(dlg, "_pf_spinboxes", None)
+            assert spinboxes is not None and "pixel_size" in spinboxes
+            assert spinboxes["pixel_size"].value() == pytest.approx(0.25, abs=0.001)
+            assert tab.get_filter_settings()["pixel_size"] == pytest.approx(0.25, abs=0.001)
         finally:
             _shutdown(tab, parent)
 

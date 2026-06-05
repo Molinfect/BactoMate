@@ -10,7 +10,7 @@
 
 | Item | Location | Reason |
 |------|----------|--------|
-| `SessionLogsTab` | `bactimate/gui/tabs/session_logs.py` (class at ~line 301) | Never instantiated. Main window uses only `SessionLogsPanel` (compact widget in Status & Session logs). Docstring says "kept for backward compatibility if needed." |
+| `SessionLogsTab` | `bactomate/gui/tabs/session_logs.py` (class at ~line 301) | Never instantiated. Main window uses only `SessionLogsPanel` (compact widget in Status & Session logs). Docstring says "kept for backward compatibility if needed." |
 
 **Verification:** `SessionLogsPanel` is used in `main_window.py` (`self.logs_panel = SessionLogsPanel(self)`). No code does `SessionLogsTab(...)` or `addTab(..., SessionLogsTab)`.
 
@@ -37,7 +37,7 @@ The rules “analysis outputs live under `_analysis/`” and “file is `{stem}_
 
 ### 2.2 Pixel size / calibration
 
-- **Single source:** `bactimate.modules.tiff_metadata`: `read_calibration_from_path`, `read_metadata_from_path`, `read_calibration_from_path_or_original`.
+- **Single source:** `bactomate.modules.tiff_metadata`: `read_calibration_from_path`, `read_metadata_from_path`, `read_calibration_from_path_or_original`.
 - **Used by:** file_conversion, analyze_masks, post_processing, tracking, unet_seg, omnipose_seg, workers, convert_nd2_to_tif.
 - **Conclusion:** No duplicate implementation; one module, many call sites. No change needed for duplication.
 
@@ -61,7 +61,7 @@ The rules “analysis outputs live under `_analysis/`” and “file is `{stem}_
 
 | Item | Location | Notes |
 |------|----------|--------|
-| `get_scripts_dir()` | `paths.py`: returns `get_app_root() / "scripts"` | Points to top-level `scripts/`, which does not exist in repo (scripts are under `bactimate/scripts/`). Only used as fallback when package script path is missing. |
+| `get_scripts_dir()` | `paths.py`: returns `get_app_root() / "scripts"` | Points to top-level `scripts/`, which does not exist in repo (scripts are under `bactomate/scripts/`). Only used as fallback when package script path is missing. |
 
 **Conclusion:** Documented in Phase 1.1. Keep for fallback in installed/frozen layouts; no code removal.
 

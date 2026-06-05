@@ -8,17 +8,17 @@
 
 | Step | Status |
 |------|--------|
-| Remove SAM2 tab | ✓ Deleted `bactimate/gui/tabs/sam2.py` |
+| Remove SAM2 tab | ✓ Deleted `bactomate/gui/tabs/sam2.py` |
 | Remove SAM2 worker | ✓ Removed `SAM2SegmentWorker` from `workers.py` |
 | Main window | ✓ No SAM2 import, tab, or addTab |
 | Constants | ✓ Removed `"sam2"` from `TAB_WIDGET_ATTR` |
 | Tabs __init__ | ✓ No `SAM2SegmentTab` |
 | Remove SessionLogsTab | ✓ Removed class from `session_logs.py`, export from `__init__` |
-| Copy | ✓ `main.py`, `bactimate/__init__.py`, `session_logs.py` docstring |
+| Copy | ✓ `main.py`, `bactomate/__init__.py`, `session_logs.py` docstring |
 | requirements.txt | ✓ Removed `sam2` package and SAM2 comment; kept `huggingface_hub` for Trackastra |
 | pyproject.toml | ✓ Removed "SAM2" from description and the `[sam2]` optional extra |
 | docs/README.md | ✓ Removed SAM2 extra; document CUDA extra only |
-| docs/BACTIMATE_USER_MANUAL.md | ✓ Removed note about SAM2 Segment tab |
+| docs/BACTOMATE_USER_MANUAL.md | ✓ Removed note about SAM2 Segment tab |
 | docs/v1.6/PHASE3_GUI_STRUCTURE.md | ✓ Removed sam2 from tab/session lists |
 | Gate | Run Phase 1 tests in your venv (see below) |
 

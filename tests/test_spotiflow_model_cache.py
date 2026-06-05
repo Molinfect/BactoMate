@@ -7,7 +7,7 @@ import numpy as np
 
 
 def test_detect_peaks_spotiflow_reuses_cached_model(monkeypatch):
-    from bactimate.modules import foci_utils
+    from bactomate.modules import foci_utils
 
     foci_utils.clear_spotiflow_model_cache()
     calls = {"from_pretrained": 0}

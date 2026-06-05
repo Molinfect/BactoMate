@@ -12,7 +12,7 @@ user adjusted any spinbox/checkbox without clicking Apply again.
 
 The contract is now:
 
-* The cache is valid for a (frame_idx, source_key) pair.
+* Apply results are valid for a (mask, frame_idx) pair regardless of background View.
 * Unapplied UI tweaks MUST NOT invalidate the cache.
 * The cache is invalidated only by ``apply_current()`` (which clears
   ``_last_preview`` before the worker starts and refills it on success).
@@ -31,7 +31,10 @@ import numpy as np
 import pytest
 
 try:
-    from bactimate.gui.tabs._analyze_masks_preview_filtering import is_preview_cache_hit
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import (
+        is_filter_apply_cache_hit,
+        is_preview_cache_hit,
+    )
 except Exception as e:  # pragma: no cover - import guard for headless environments
     pytest.skip(f"PyQt6 import failed: {e}", allow_module_level=True)
 
@@ -77,7 +80,14 @@ def test_cache_miss_when_frame_differs():
     assert is_preview_cache_hit(last, 3, ("img", 0)) is False
 
 
-def test_cache_miss_when_source_differs():
+def test_filter_apply_cache_hit_when_only_view_source_differs():
+    """Changing background View must not drop applied cell/foci overlays."""
+    last = _cached_entry(frame_idx=0, source_key=("img", 0))
+    assert is_filter_apply_cache_hit(last, 0) is True
+    assert is_preview_cache_hit(last, 0, ("img", 1)) is False
+
+
+def test_cache_miss_when_source_differs_for_full_preview_hit():
     last = _cached_entry(frame_idx=0, source_key=("img", 0))
     assert is_preview_cache_hit(last, 0, ("img", 1)) is False
 

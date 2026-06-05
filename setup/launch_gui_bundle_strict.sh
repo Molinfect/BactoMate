@@ -12,7 +12,7 @@ else
 fi
 
 # Diagnostic for follow_build.py: who started this script (PPID = launcher or something else?)
-CHAIN_LOG="$HOME/Library/Logs/BactiMate/launch_chain.log"
+CHAIN_LOG="$HOME/Library/Logs/BactoMate/launch_chain.log"
 mkdir -p "$(dirname "$CHAIN_LOG")" 2>/dev/null || true
 echo "STRICT_LAUNCHER pid=$$ ppid=$PPID script=$0 root=$PROJECT_ROOT" >> "$CHAIN_LOG" 2>/dev/null || true
 
@@ -24,30 +24,30 @@ echo "$(date '+%Y-%m-%dT%H:%M:%S'): === Strict bundle launch attempt ==="
 echo "$(date): Script dir: $SCRIPT_DIR"
 echo "$(date): Project root: $PROJECT_ROOT"
 
-USER_LOG="$HOME/Library/Logs/BactiMate/launch.log"
+USER_LOG="$HOME/Library/Logs/BactoMate/launch.log"
 _log_user() { mkdir -p "$(dirname "$USER_LOG")" 2>/dev/null; echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$USER_LOG" 2>/dev/null; }
 
 if [[ "$PROJECT_ROOT" != *".app/Contents/Resources"* ]]; then
     echo "$(date): ERROR: strict bundle launcher was executed outside a .app bundle."
     _log_user "Launch failed (not run from .app). See: $LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: strict bundle launcher must run from BactiMate.app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    osascript -e 'display dialog "BactoMate Error: strict bundle launcher must run from BactoMate.app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 
-PYTHON_CMD="$PROJECT_ROOT/venv/bin/BactiMate"
+PYTHON_CMD="$PROJECT_ROOT/venv/bin/BactoMate"
 MAIN_PY="$PROJECT_ROOT/main.py"
 
 if [ ! -x "$PYTHON_CMD" ]; then
     echo "$(date): ERROR: Missing executable: $PYTHON_CMD"
-    _log_user "Launch failed: missing venv/bin/BactiMate. Full log: $LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: missing venv/bin/BactiMate in app bundle. Rebuild the app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    _log_user "Launch failed: missing venv/bin/BactoMate. Full log: $LOG_FILE"
+    osascript -e 'display dialog "BactoMate Error: missing venv/bin/BactoMate in app bundle. Rebuild the app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 
 if [ ! -f "$MAIN_PY" ]; then
     echo "$(date): ERROR: Missing main.py: $MAIN_PY"
     _log_user "Launch failed: missing main.py. Full log: $LOG_FILE"
-    osascript -e 'display dialog "BactiMate Error: missing main.py in app bundle. Rebuild the app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+    osascript -e 'display dialog "BactoMate Error: missing main.py in app bundle. Rebuild the app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 
@@ -55,7 +55,7 @@ PY_MM=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.vers
 if [ -z "${PY_MM:-}" ]; then
     echo "$(date): ERROR: Could not query Python version from $PYTHON_CMD"
     _log_user "Launch failed: Python not runnable. Full log: $LOG_FILE"
-    osascript -e "display dialog \"BactiMate Error: bundled launcher failed. Check: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+    osascript -e "display dialog \"BactoMate Error: bundled launcher failed. Check: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 fi
 
@@ -66,7 +66,7 @@ QT_FRAMEWORK_PATH="$QT_BASE/lib"
 if [ ! -d "$QT_PLUGIN_PATH" ]; then
     echo "$(date): ERROR: Missing Qt plugin path: $QT_PLUGIN_PATH"
     _log_user "Launch failed: missing Qt plugins. Full log: $LOG_FILE"
-    osascript -e "display dialog \"BactiMate Error: missing Qt plugins. Check: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
+    osascript -e "display dialog \"BactoMate Error: missing Qt plugins. Check: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
 fi
 

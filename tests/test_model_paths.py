@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_frozen_model_dirs_use_user_data_and_copy_legacy_files(monkeypatch, tmp_path):
-    from bactimate.gui import paths
+    from bactomate.gui import paths
 
     app_root = tmp_path / "AppRoot"
     user_models = tmp_path / "UserData" / "Models"
@@ -28,7 +28,7 @@ def test_frozen_model_dirs_use_user_data_and_copy_legacy_files(monkeypatch, tmp_
 
 
 def test_development_model_dirs_stay_repo_local(monkeypatch, tmp_path):
-    from bactimate.gui import paths
+    from bactomate.gui import paths
 
     app_root = tmp_path / "repo"
     monkeypatch.setattr(paths, "_is_installed", lambda: False)

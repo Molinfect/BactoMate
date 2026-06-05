@@ -16,7 +16,7 @@
 | `tracking_tab` | `TrackingTab` | Tracking |
 | `post_processing_tab` | `PostProcessingTab` | Post-processing |
 
-**Tab module:** Each tab lives in `bactimate/gui/tabs/<name>.py`. Exported via `bactimate/gui/tabs/__init__.py`. Main window imports from `bactimate.gui.tabs` and adds tabs in a fixed order.
+**Tab module:** Each tab lives in `bactomate/gui/tabs/<name>.py`. Exported via `bactomate/gui/tabs/__init__.py`. Main window imports from `bactomate.gui.tabs` and adds tabs in a fixed order.
 
 **Session / status:** `SessionLogsPanel` (not a tab) is used in the main window status/session area. `SessionLogsTab` exists in code but is never instantiated (Phase 1.2 dead code).
 
@@ -65,7 +65,7 @@ Most tabs use: top-level `QVBoxLayout` → `QScrollArea` → inner layout with `
 ## 3. Duplication already noted (Phase 1.2 / Phase 4)
 
 - **Analysis path rules** (“_analysis”, stem_analysis.xlsx, etc.): implemented in both `analyze_masks.py` and `tracking.py`. Phase 4 will extract to a single helper.
-- **Pixel size / calibration:** Already centralized in `bactimate.modules.tiff_metadata`; no GUI duplication.
+- **Pixel size / calibration:** Already centralized in `bactomate.modules.tiff_metadata`; no GUI duplication.
 
 ---
 

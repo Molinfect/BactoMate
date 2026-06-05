@@ -26,7 +26,7 @@ import pytest
 try:
     from PyQt6.QtCore import QObject
 
-    from bactimate.gui.analyze_masks_preview_worker import AnalyzeMasksPreviewWorker
+    from bactomate.gui.analyze_masks_preview_worker import AnalyzeMasksPreviewWorker
 except Exception as e:  # pragma: no cover
     pytest.skip(f"PyQt6 import failed: {e}", allow_module_level=True)
 

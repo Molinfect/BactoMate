@@ -1,4 +1,4 @@
-# BactiMate dependencies (stricter constraints to speed up pip resolver)
+# BactoMate dependencies (stricter constraints to speed up pip resolver)
 # - If pip says "Requirement already satisfied" for everything, your env is fine.
 #   For Zeiss CZI support only run:  pip install aicspylibczi
 # - If you get "resolution-too-deep" on a fresh install, try:
@@ -56,7 +56,7 @@ matplotlib>=3.10.0,<4.0.0
 # Utilities
 tqdm>=4.62.0,<5.0.0
 natsort>=8.0.0,<9.0.0
-setproctitle>=1.3.0,<2.0.0  # "BactiMate" in macOS menu bar when run from .app
+setproctitle>=1.3.0,<2.0.0  # "BactoMate" in macOS menu bar when run from .app
 
 # Testing (optional)
 pytest>=7.0.0,<9.0.0
@@ -69,11 +69,12 @@ torch>=2.5.0,<3.0.0
 torchvision>=0.20.0,<1.0.0
 
 # Cell tracking (zarr 3.x required by trackastra; bioio-ome-tiff 1.2+ is compatible)
-trackastra>=0.5.0,<1.0.0  # 0.5+: avoids resolver probing 0.1.x–0.4.x (long backtracking + old stacks)
+# [etultra]: trackastra_pretrained_feats for general_2d_w_SAM2_features model
+trackastra[etultra]>=0.5.0,<1.0.0  # 0.5+: avoids resolver probing 0.1.x–0.4.x (long backtracking + old stacks)
 zarr>=3.0.0
 
-# Model downloads (e.g. Trackastra pretrained models)
-huggingface_hub>=0.16.0,<1.0.0
+# Model downloads (Trackastra; transformers via trackastra[etultra] needs hub 1.5+)
+huggingface_hub>=1.5.0,<2.0.0
 
 # TensorFlow (U-NET Segment tab). GPU on Apple Silicon: tensorflow-metal (match TF version).
 tensorflow>=2.12.0,<2.17.0

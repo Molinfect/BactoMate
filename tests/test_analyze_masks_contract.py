@@ -17,7 +17,7 @@ except ImportError:
 
 try:
     from PyQt6.QtWidgets import QApplication
-    from bactimate.gui.tabs.analyze_masks import AnalyzeMasksTab, AnalyzeTab, FilteringTab
+    from bactomate.gui.tabs.analyze_masks import AnalyzeMasksTab, AnalyzeTab, FilteringTab
 
     QT_AVAILABLE = True
 except Exception:
@@ -39,7 +39,7 @@ def test_filtering_tab_exposes_only_filtering_controls():
     assert hasattr(tab, "filter_min_int_enabled")
     assert hasattr(tab, "filter_per_cell_ratio_enabled")
     assert not hasattr(tab, "analyze_fi")
-    assert tab.preview_btn.text() == "Select Filter"
+    assert tab.preview_btn.text() == "Preview filters"
     assert "Filter" in tab.analyze_btn.text()
 
 

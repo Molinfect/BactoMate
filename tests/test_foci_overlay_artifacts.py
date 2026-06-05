@@ -7,7 +7,7 @@ import tifffile
 
 
 def test_overlay_paths_from_csv_names() -> None:
-    from bactimate.gui.foci_overlay_artifacts import (
+    from bactomate.gui.foci_overlay_artifacts import (
         foci_overlay_path_for_csv,
         filtered_overlay_path_for_filtered_csv,
     )
@@ -22,7 +22,7 @@ def test_overlay_paths_from_csv_names() -> None:
 
 
 def test_write_foci_overlay_snapshot(tmp_path: Path) -> None:
-    from bactimate.gui.foci_overlay_artifacts import write_foci_overlay_tif
+    from bactomate.gui.foci_overlay_artifacts import write_foci_overlay_tif
 
     foci = np.zeros((64, 64), dtype=np.float32)
     foci[10, 11] = 100.0
@@ -50,7 +50,7 @@ def test_write_foci_overlay_snapshot(tmp_path: Path) -> None:
 
 
 def test_write_foci_overlay_time_sequence_frames(tmp_path: Path) -> None:
-    from bactimate.gui.foci_overlay_artifacts import write_foci_overlay_tif
+    from bactomate.gui.foci_overlay_artifacts import write_foci_overlay_tif
 
     foci = np.zeros((3, 32, 32), dtype=np.float32)
     foci[0, 1, 1] = 10.0

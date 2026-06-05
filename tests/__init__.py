@@ -1,1 +1,1 @@
-# BactiMate tests
+# BactoMate tests

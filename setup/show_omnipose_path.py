@@ -15,4 +15,4 @@ for p in sys.path:
         print("peakdetect/peakdetect.py:", peak.resolve())
 
 if "omnipose" not in str(sys.path):
-    print("(Run with the same Python you use for BactiMate so the paths match.)", file=sys.stderr)
+    print("(Run with the same Python you use for BactoMate so the paths match.)", file=sys.stderr)

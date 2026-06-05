@@ -29,7 +29,7 @@ pytest tests/test_combined_summary.py tests/test_merge_fi.py tests/test_session_
 
 ## 3. Code changes (Phase 2)
 
-- **`bactimate/gui/tabs/analyze_masks.py` – `_build_combined_summary_excel`:**
+- **`bactomate/gui/tabs/analyze_masks.py` – `_build_combined_summary_excel`:**
   - First loop: open each path with `pd.ExcelFile(p)`, read Summary and Per-Cell in one pass; store Per-Cell in `per_cell_cache`.
   - Add-sheets loop: use `per_cell_cache.get(p)` instead of `pd.read_excel(p, "Per-Cell Data")`.
   - Write: build `openpyxl.Workbook()` in memory, add "Combined Summary (wide)" and all Per-Cell sheets, then `wb.save(output_path)` once (no ExcelWriter + load_workbook reopen).
