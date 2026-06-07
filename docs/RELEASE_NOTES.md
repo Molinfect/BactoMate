@@ -4,6 +4,21 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3 (2026-06)
+
+### macOS packaging restored
+
+- **`build/create_icons.sh`** — generate `BactoMate.icns` from `img/logo2.png` (or a fallback icon).
+- **`build/build_app_bundle.sh`** — build `BactoMate.app` from source + `venv`; copy Python.framework when available; create relocatable `venv/bin/BactoMate` launcher; ad-hoc sign; verify `--version` and `--smoke-test`.
+- **`build/create_dmg.sh`** — unchanged wrapper now works again; produces `dist/BactoMate.dmg` with install readme and `Open BactoMate.command`.
+
+### Documentation
+
+- Version metadata and docs updated to **2.3**.
+- README and docs describe local macOS `.app`/DMG build steps. Windows standalone packaging remains deferred.
+
+---
+
 ## v2.2 (2026-06)
 
 ### Stabilization and workflow
@@ -26,7 +41,7 @@ Append a new section for each release. Keep entries in release-note style (what 
 ### Documentation
 
 - Version metadata and docs updated to **2.2**.
-- **Release model:** v2.2 remains **source-first for developers and researchers**; standalone installers are deferred. See root README for clone/install/launch.
+- **Release model:** v2.2 remains **source-first for developers and researchers**. See root README for clone/install/launch.
 
 ---
 
