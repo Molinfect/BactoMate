@@ -26,7 +26,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 | macOS | `./setup/install_mac.sh` | `./launch_gui.sh` |
 | Windows | `setup\install_windows.bat` | `launch_windows.bat` or `bactomate` |
 
-Verify: `python main.py --version` (expect `BactoMate 2.3.2`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.3.3`) and `python main.py --smoke-test`.
 
 macOS app/DMG packaging is restored for local builds:
 

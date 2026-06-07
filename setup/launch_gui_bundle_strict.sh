@@ -89,7 +89,6 @@ echo "$(date):   MAIN_PY=$MAIN_PY"
 echo "$(date):   QT_PLUGIN_PATH=$QT_PLUGIN_PATH"
 echo "STRICT_ABOUT_TO_RUN python_cmd=$PYTHON_CMD main_py=$MAIN_PY" >> "$CHAIN_LOG" 2>/dev/null || true
 
-# Run Python as child; do not exec. So the app's main process stays the bundle's launcher script,
-# and macOS never associates this app with Python.app (avoids reopen/redirect to Homebrew Python.app).
-"$PYTHON_CMD" "$MAIN_PY"
-exit $?
+# Replace the launcher with the Qt process. Keeping both the bundle launcher and
+# the PyQt process alive can make macOS show two BactoMate Dock entries.
+exec "$PYTHON_CMD" "$MAIN_PY"

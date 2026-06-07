@@ -27,6 +27,7 @@ def _startup_import_log(message: str) -> None:
 _startup_import_log("before PyQt6 imports")
 from PyQt6.QtCore import QByteArray, QEvent, Qt, QCoreApplication, QObject, QTimer, QUrl
 from PyQt6.QtGui import QCursor, QFont, QIcon, QPixmap, QAction, QKeySequence, QDesktopServices, QGuiApplication
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -209,6 +210,71 @@ def _set_macos_process_name(name: str) -> None:
         NSProcessInfo.processInfo().setProcessName_(name)
     except Exception:
         pass
+
+
+def _activate_macos_window(window: QMainWindow | None) -> None:
+    """Bring the existing main window forward for Dock/Finder reopen requests."""
+    if window is None:
+        return
+    try:
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        if sys.platform == "darwin":
+            try:
+                from AppKit import NSApp  # type: ignore[import-untyped]
+                NSApp.activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _notify_existing_macos_instance(server_name: str) -> bool:
+    """Return True when another BactoMate instance accepted an activation request."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        socket = QLocalSocket()
+        socket.connectToServer(server_name)
+        if not socket.waitForConnected(200):
+            return False
+        socket.write(b"activate\n")
+        socket.flush()
+        socket.waitForBytesWritten(200)
+        socket.disconnectFromServer()
+        return True
+    except Exception:
+        return False
+
+
+def _start_macos_single_instance_server(server_name: str, window_getter) -> QLocalServer | None:
+    """Listen for second launches and route them to the existing BactoMate window."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        server = QLocalServer()
+        if not server.listen(server_name):
+            QLocalServer.removeServer(server_name)
+            if not server.listen(server_name):
+                get_logger().warning("Could not start single-instance listener: %s", server.errorString())
+                return None
+
+        def _handle_connection() -> None:
+            while server.hasPendingConnections():
+                sock = server.nextPendingConnection()
+                if sock is not None:
+                    sock.disconnectFromServer()
+            window = window_getter()
+            if window is None:
+                QTimer.singleShot(250, lambda: _activate_macos_window(window_getter()))
+            else:
+                _activate_macos_window(window)
+
+        server.newConnection.connect(_handle_connection)
+        return server
+    except Exception:
+        return None
 
 
 # Main window sizing: responsive to screen (e.g. 1500×850); larger caps on big / ultrawide displays.
@@ -1738,7 +1804,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = "2.3.2"
+            version = "2.3.3"
         QMessageBox.about(
             self,
             "About BactoMate",
@@ -1986,6 +2052,16 @@ def main() -> None:
         _mark("after_QApplication")
         app.setApplicationName("BactoMate")
         app.setApplicationDisplayName("BactoMate")
+        single_instance_server = None
+        window_ref: list[QMainWindow | None] = [None]
+        if sys.platform == "darwin":
+            server_name = "de.hu-berlin.bactomate.single-instance"
+            if _notify_existing_macos_instance(server_name):
+                log.info("Existing BactoMate instance activated; exiting duplicate launch.")
+                sys.exit(0)
+            single_instance_server = _start_macos_single_instance_server(server_name, lambda: window_ref[0])
+            if single_instance_server is not None:
+                app._bactomate_single_instance_server = single_instance_server  # type: ignore[attr-defined]
         if sys.platform == "darwin":
             try:
                 import setproctitle
@@ -2035,6 +2111,7 @@ def main() -> None:
                 pass
         _mark("before_MainWindow")
         window = MainWindow()
+        window_ref[0] = window
         _mark("after_MainWindow")
         if icon_path is not None:
             window.setWindowIcon(QIcon(str(icon_path)))
@@ -2043,13 +2120,10 @@ def main() -> None:
         _mark("after_window_show")
         # Bring to front (macOS often opens behind other windows when launched from Dock/Finder)
         if sys.platform == "darwin":
-            try:
-                from AppKit import NSApp  # type: ignore[import-untyped]
-                NSApp.activateIgnoringOtherApps_(True)
-            except Exception:
-                pass
-        window.raise_()
-        window.activateWindow()
+            _activate_macos_window(window)
+        else:
+            window.raise_()
+            window.activateWindow()
         log.info("BactoMate window shown.")
         sys.exit(app.exec())
     except Exception as e:

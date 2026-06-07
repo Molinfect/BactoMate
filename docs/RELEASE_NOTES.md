@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.3 (2026-06)
+
+### macOS duplicate window/icon fix
+
+- **Single running instance:** a second Finder/Dock launch now activates the existing BactoMate window instead of opening another GUI.
+- **One Dock owner:** the app bundle launcher now replaces itself with the Qt process so macOS does not keep both the launcher and the GUI as separate BactoMate entries.
+
+---
+
 ## v2.3.2 (2026-06)
 
 ### macOS Dock icon/name fix
