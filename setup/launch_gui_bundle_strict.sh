@@ -34,14 +34,14 @@ if [[ "$PROJECT_ROOT" != *".app/Contents/Resources"* ]]; then
     exit 1
 fi
 
-PYTHON_CMD="$PROJECT_ROOT/venv/bin/BactoMate"
 PYTHON_BIN="$PROJECT_ROOT/venv/bin/python3"
 MAIN_PY="$PROJECT_ROOT/main.py"
+APP_MACOS_EXE="$(cd "$PROJECT_ROOT/../MacOS" && pwd)/BactoMate"
 
-if [ ! -x "$PYTHON_CMD" ]; then
-    echo "$(date): ERROR: Missing executable: $PYTHON_CMD"
-    _log_user "Launch failed: missing venv/bin/BactoMate. Full log: $LOG_FILE"
-    osascript -e 'display dialog "BactoMate Error: missing venv/bin/BactoMate in app bundle. Rebuild the app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "$(date): ERROR: Missing executable: $PYTHON_BIN"
+    _log_user "Launch failed: missing venv/bin/python3. Full log: $LOG_FILE"
+    osascript -e 'display dialog "BactoMate Error: missing bundled python3 in app bundle. Rebuild the app." buttons {"OK"} default button "OK" with icon stop' 2>/dev/null || true
     exit 1
 fi
 
@@ -84,11 +84,12 @@ if [ -d "$QT_FRAMEWORK_PATH" ]; then
 fi
 
 echo "$(date): Launching strict path:"
-echo "$(date):   PYTHON_CMD=$PYTHON_CMD"
+echo "$(date):   PYTHON_BIN=$PYTHON_BIN"
 echo "$(date):   MAIN_PY=$MAIN_PY"
+echo "$(date):   APP_MACOS_EXE=$APP_MACOS_EXE"
 echo "$(date):   QT_PLUGIN_PATH=$QT_PLUGIN_PATH"
-echo "STRICT_ABOUT_TO_RUN python_cmd=$PYTHON_CMD main_py=$MAIN_PY" >> "$CHAIN_LOG" 2>/dev/null || true
+echo "STRICT_ABOUT_TO_RUN python_bin=$PYTHON_BIN main_py=$MAIN_PY app_exe=$APP_MACOS_EXE" >> "$CHAIN_LOG" 2>/dev/null || true
 
-# Replace the launcher with the Qt process. Keeping both the bundle launcher and
-# the PyQt process alive can make macOS show two BactoMate Dock entries.
-exec "$PYTHON_CMD" "$MAIN_PY"
+export PYTHONEXECUTABLE="$APP_MACOS_EXE"
+# Keep argv[0] on the bundle executable so macOS does not hand off to Python.app.
+exec -a "$APP_MACOS_EXE" "$PYTHON_BIN" "$MAIN_PY"

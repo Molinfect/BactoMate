@@ -120,6 +120,13 @@ fi
 if [ -n "$FRAMEWORK_ROOT" ] && [ -d "$FRAMEWORK_ROOT" ]; then
     echo "Copying Python.framework..."
     rsync -a "$FRAMEWORK_ROOT/" "$FRAMEWORKS_DIR/Python.framework/"
+    (
+        cd "$FRAMEWORKS_DIR/Python.framework"
+        ln -sfn "$PY_MM" Versions/Current
+        ln -sfn "Versions/Current/Python" Python
+        ln -sfn "Versions/Current/Headers" Headers
+        ln -sfn "Versions/Current/Resources" Resources
+    )
 else
     echo "Warning: Python.framework not found. Bundle will only work where this venv's base Python exists."
 fi
@@ -158,13 +165,34 @@ exec "$PY" "$MAIN" "$@"
 EOF
 chmod +x "$RESOURCES_DIR/venv/bin/BactoMate"
 
-echo "Creating app launcher..."
-cat > "$MACOS_DIR/$APP_NAME" <<'EOF'
-#!/bin/bash
-APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-exec "$APP_DIR/Contents/Resources/setup/launch_gui_bundle_strict.sh"
-EOF
-chmod +x "$MACOS_DIR/$APP_NAME"
+echo "Creating native app launcher..."
+LAUNCHER_SRC="$SCRIPT_DIR/macos_launcher.c"
+LAUNCHER_BIN="$MACOS_DIR/$APP_NAME"
+PY_FRAMEWORK_DIR="$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM"
+PY_INCLUDE_DIR="$PY_FRAMEWORK_DIR/include/python${PY_MM}"
+LINK_FRAMEWORK_DIR="$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM"
+LINK_INCLUDE_DIR="$LINK_FRAMEWORK_DIR/include/python${PY_MM}"
+LAUNCHER_CFLAGS=(-O2 -Wall -Wextra -DBACTOMATE_PY_MM=\"$PY_MM\")
+LAUNCHER_LDFLAGS=(
+    -Wl,-rpath,@executable_path/../Frameworks/Python.framework/Versions/$PY_MM
+)
+
+if [ -d "$LINK_FRAMEWORK_DIR" ] && [ -f "$LINK_INCLUDE_DIR/Python.h" ] && [ -f "$LINK_FRAMEWORK_DIR/Python" ]; then
+    echo "  Linking launcher against Python.framework ($PY_MM)"
+    clang "${LAUNCHER_CFLAGS[@]}" -DBACTOMATE_LINK_PYTHON=1 \
+        -I"$LINK_INCLUDE_DIR" \
+        "$LINK_FRAMEWORK_DIR/Python" \
+        "${LAUNCHER_LDFLAGS[@]}" \
+        "$LAUNCHER_SRC" \
+        -o "$LAUNCHER_BIN"
+else
+    echo "  Warning: Python.framework headers not found; building exec fallback launcher."
+    clang "${LAUNCHER_CFLAGS[@]}" \
+        "${LAUNCHER_LDFLAGS[@]}" \
+        "$LAUNCHER_SRC" \
+        -o "$LAUNCHER_BIN"
+fi
+chmod +x "$LAUNCHER_BIN"
 chmod +x "$RESOURCES_DIR/setup/"*.sh 2>/dev/null || true
 
 echo "Creating Info.plist..."

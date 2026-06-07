@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.6 (2026-06)
+
+### macOS native launcher (no Python detour)
+
+- **Real app process:** `BactoMate.app` now uses a compiled native Mach-O launcher linked against the bundled `Python.framework` and runs the GUI in-process via `Py_Main`, instead of shell scripts that `exec` a separate `python3` binary.
+- **Why this matters:** the old launcher made macOS treat Python as a second app, causing mixed Dock icons (bundle icon, raw logo, then Python) and broken reopen behavior.
+
+---
+
 ## v2.3.5 (2026-06)
 
 ### macOS Dock identity cleanup
