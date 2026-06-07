@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.4 (2026-06)
+
+### macOS bundle dependency repair
+
+- **Build-time repair:** `build/build_app_bundle.sh` now installs missing macOS integration dependencies (`pyobjc-framework-Cocoa` for `AppKit`/`Foundation`, plus `setproctitle`) into the build venv before copying it into `BactoMate.app`.
+- **Fresh setup verification:** `setup/setup_fresh_env.sh` now verifies `AppKit`/`Foundation` during macOS setup so new environments are ready for Dock icon/name integration.
+
+---
+
 ## v2.3.3 (2026-06)
 
 ### macOS duplicate window/icon fix
