@@ -30,6 +30,7 @@ ENV/
 build/*
 !build/*.sh
 !build/*.spec
+!build/macos_launcher.c
 
 # Nuitka
 *.build/
