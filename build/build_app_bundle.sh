@@ -102,10 +102,20 @@ echo "Relinking bundled venv Python..."
 cat > "$RESOURCES_DIR/venv/bin/BactoMate" <<'EOF'
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PY="$SCRIPT_DIR/python3"
+MAIN="$SCRIPT_DIR/../../main.py"
+case "${1:-}" in
+  -c|-m)
+    exec "$PY" "$@"
+    ;;
+  --version|--smoke-test|-V|-v)
+    exec "$PY" "$MAIN" "$@"
+    ;;
+esac
 if [ "$#" -gt 0 ] && [ -f "$1" ]; then
-    exec "$SCRIPT_DIR/python3" "$@"
+    exec "$PY" "$@"
 fi
-exec "$SCRIPT_DIR/python3" "$SCRIPT_DIR/../../main.py" "$@"
+exec "$PY" "$MAIN" "$@"
 EOF
 chmod +x "$RESOURCES_DIR/venv/bin/BactoMate"
 

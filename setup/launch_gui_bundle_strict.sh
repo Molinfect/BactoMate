@@ -35,6 +35,7 @@ if [[ "$PROJECT_ROOT" != *".app/Contents/Resources"* ]]; then
 fi
 
 PYTHON_CMD="$PROJECT_ROOT/venv/bin/BactoMate"
+PYTHON_BIN="$PROJECT_ROOT/venv/bin/python3"
 MAIN_PY="$PROJECT_ROOT/main.py"
 
 if [ ! -x "$PYTHON_CMD" ]; then
@@ -51,9 +52,9 @@ if [ ! -f "$MAIN_PY" ]; then
     exit 1
 fi
 
-PY_MM=$("$PYTHON_CMD" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
+PY_MM=$("$PYTHON_BIN" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
 if [ -z "${PY_MM:-}" ]; then
-    echo "$(date): ERROR: Could not query Python version from $PYTHON_CMD"
+    echo "$(date): ERROR: Could not query Python version from $PYTHON_BIN"
     _log_user "Launch failed: Python not runnable. Full log: $LOG_FILE"
     osascript -e "display dialog \"BactoMate Error: bundled launcher failed. Check: $LOG_FILE\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
     exit 1
