@@ -185,6 +185,14 @@ if [ -d "$LINK_FRAMEWORK_DIR" ] && [ -f "$LINK_INCLUDE_DIR/Python.h" ] && [ -f "
         "${LAUNCHER_LDFLAGS[@]}" \
         "$LAUNCHER_SRC" \
         -o "$LAUNCHER_BIN"
+    if command -v install_name_tool >/dev/null 2>&1; then
+        PY_FRAMEWORK_ID="$(otool -D "$LINK_FRAMEWORK_DIR/Python" 2>/dev/null | sed -n '2p' || true)"
+        BUNDLED_PY_ID="@executable_path/../Frameworks/Python.framework/Versions/$PY_MM/Python"
+        install_name_tool -id "$BUNDLED_PY_ID" "$LINK_FRAMEWORK_DIR/Python" 2>/dev/null || true
+        if [ -n "$PY_FRAMEWORK_ID" ]; then
+            install_name_tool -change "$PY_FRAMEWORK_ID" "$BUNDLED_PY_ID" "$LAUNCHER_BIN" 2>/dev/null || true
+        fi
+    fi
 else
     echo "  Warning: Python.framework headers not found; building exec fallback launcher."
     clang "${LAUNCHER_CFLAGS[@]}" \

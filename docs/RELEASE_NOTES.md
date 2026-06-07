@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.7 (2026-06)
+
+### Portable native macOS launcher
+
+- **Bundled framework link:** native launcher and bundled `Python.framework` now use `@executable_path/...` install names, so the app does not depend on Homebrew Python paths after packaging.
+- **Same single-app behavior:** preserves the v2.3.6 in-process launcher fix that keeps BactoMate as the only Dock app identity.
+
+---
+
 ## v2.3.6 (2026-06)
 
 ### macOS native launcher (no Python detour)

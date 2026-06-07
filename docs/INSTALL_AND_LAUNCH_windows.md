@@ -58,7 +58,7 @@ python main.py --version
 python main.py --smoke-test
 ```
 
-You should see `BactoMate 2.3.6` and `Smoke test OK`.
+You should see `BactoMate 2.3.7` and `Smoke test OK`.
 
 ## Troubleshooting
 
