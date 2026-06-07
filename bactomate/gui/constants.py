@@ -34,7 +34,7 @@ SESSION_TAB_KEYS = [
 # MainWindow attribute name for each tab key (so we can get widget with getattr(main_window, TAB_WIDGET_ATTR[key])).
 TAB_WIDGET_ATTR = {
     "nd2": "nd2_tab",
-    "segmentation": "omnipose_seg_tab",
+    "segmentation": "segmentation_tab",
     "unet_segment": "unet_segment_tab",
     "analyze_masks": "analyze_tab",
     "tracking": "tracking_tab",

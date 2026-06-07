@@ -4,6 +4,32 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.2 (2026-06)
+
+### Stabilization and workflow
+
+- **Workflow replay:** session replay routes through the composed Segmentation tab and respects the active backend (Omnipose / Cellpose-SAM / U-Net) for output-folder resolution.
+- **Project files (schema v2):** persist module paths (conversion, segmentation backend/input, filtering/analyze, tracking, post-processing, training) with migration from schema v1.
+- **QThread shutdown:** cooperative stop/cancel helpers for module switching, preview replacement, app close, and growth-curve video export.
+- **Startup:** lazy tab imports to reduce cold-start cost; smoke test unchanged.
+
+### Post-processing and performance
+
+- Growth-curve video montage: merged/separate FI layouts, graph panel composition, overlay application, and cancel during export.
+- Foci overlay drawing extracted for reuse; filtering preview performance improvements.
+
+### CI and tests
+
+- GitHub Actions runs full `pytest tests/` with headless Qt (`QT_QPA_PLATFORM=offscreen`) on macOS and Windows.
+- New smoke/integration tests: workflow replay paths, conversion, video assembly, project model migration, boundary helpers, training dry-run, Qt thread utils.
+
+### Documentation
+
+- Version metadata and docs updated to **2.2**.
+- **Release model:** v2.2 remains **source-first for developers and researchers**; standalone installers are deferred. See root README for clone/install/launch.
+
+---
+
 ## v2.1 (2026-06)
 
 ### Post-processing — growth-curve video montage
@@ -26,6 +52,7 @@ Append a new section for each release. Keep entries in release-note style (what 
 ### Documentation
 
 - Version metadata and docs updated to **2.1**.
+- **Release model:** v2.1 remains **source-first for developers and researchers**; standalone installers are deferred. See root README for clone/install/launch.
 
 ---
 

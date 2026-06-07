@@ -1,6 +1,8 @@
 """Non-modal progress UI for filter-preview Apply (full-width Cancel)."""
 from __future__ import annotations
 
+import time
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout
 
@@ -72,6 +74,9 @@ class FilterApplyProgressDialog(QDialog):
         layout.addWidget(self._detail_label)
         layout.addWidget(self._bar)
         layout.addWidget(self._cancel)
+        self._processing_events = False
+        self._last_ui_update_ts = 0.0
+        self._min_ui_interval_s = 0.05
 
     def _resize_to_content(self) -> None:
         try:
@@ -85,25 +90,41 @@ class FilterApplyProgressDialog(QDialog):
 
     def set_progress(self, percent: int, step: str, detail: str = "") -> None:
         """Update overall percent, current step title, and optional sub-detail."""
+        if self._processing_events:
+            return
         try:
             prev = int(self._bar.value())
         except Exception:
             prev = 0
         pct = max(prev, max(0, min(100, int(percent))))
-        self._step_label.setText(str(step or "Working…").strip() or "Working…")
+        step_txt = str(step or "Working…").strip() or "Working…"
         detail_txt = str(detail or "").strip()
+        now = time.monotonic()
+        ui_changed = (
+            pct != prev
+            or self._step_label.text() != step_txt
+            or self._detail_label.text() != detail_txt
+        )
+        if not ui_changed and (now - self._last_ui_update_ts) < self._min_ui_interval_s:
+            return
+        self._step_label.setText(step_txt)
         self._detail_label.setText(detail_txt)
         self._detail_label.setVisible(bool(detail_txt))
         self._bar.setValue(pct)
         self._resize_to_content()
+        self._last_ui_update_ts = now
         try:
             from PyQt6.QtWidgets import QApplication
 
             app = QApplication.instance()
             if app is not None:
-                app.processEvents()
+                self._processing_events = True
+                try:
+                    app.processEvents()
+                finally:
+                    self._processing_events = False
         except Exception:
-            pass
+            self._processing_events = False
 
     def finish_and_close(self, delay_ms: int = 0) -> None:
         """Show 100% then close automatically (batch Filter File/Folder)."""

@@ -13,7 +13,12 @@ from typing import Any, Optional
 
 from bactomate.modules.image_stack_utils import coerce_plane_to_2d
 
-FOCI_CAP = 500
+from bactomate.gui.foci_overlay_draw import (
+    DEFAULT_FOCI_PREVIEW_RENDER_CAP,
+    draw_foci_blob_fill_and_edges_on_rgb,
+)
+
+FOCI_CAP = DEFAULT_FOCI_PREVIEW_RENDER_CAP
 
 FOCI_MULTI_COLORS = [
     np.array([255, 165, 0], dtype=np.uint8),
@@ -132,7 +137,7 @@ def _foci_detect_draw_channel(
             detect_peaks_cell_first_region_grow as _detect_foci_cell_first,
             detect_peaks_spotiflow as _detect_foci_spotiflow,
             refine_spotiflow_peaks,
-            get_focus_blob_mask,
+            spotiflow_inference_cache_key,
         )
     except ImportError as e:
         if detection_mode == 2:
@@ -160,12 +165,18 @@ def _foci_detect_draw_channel(
                 raise RuntimeError("Spotiflow detector is unavailable in this environment.")
             sf_kw = dict(sn.get("spotiflow") or {})
             sf_kw["raise_on_error"] = True
+            cache_key = spotiflow_inference_cache_key(fi_work, **sf_kw)
             try:
-                peaks = _detect_foci_spotiflow(fi_work, **sf_kw)
+                peaks = _detect_foci_spotiflow(
+                    fi_work,
+                    detect_cache_key=cache_key,
+                    **sf_kw,
+                )
             except TypeError:
                 peaks = _detect_foci_spotiflow(
                     fi_work,
                     model_name=str(sf_kw.get("model_name") or "general"),
+                    detect_cache_key=cache_key,
                     raise_on_error=True,
                 )
             if peaks is None:
@@ -248,36 +259,20 @@ def _foci_detect_draw_channel(
                 and mask[int(p["y"]), int(p["x"])] in accepted_labels
             ]
         n_foci = len(peaks)
-        h, w = vis.shape[:2]
         peaks_to_draw = peaks if peak_cap > 0 else []
-        if get_focus_blob_mask is not None:
-            from skimage.segmentation import find_boundaries
-
-            fi_f32 = fi_work.astype(np.float32)
-            for i, p in enumerate(peaks_to_draw):
-                if i >= peak_cap:
-                    break
-                yi, xi = int(p["y"]), int(p["x"])
-                blob = get_focus_blob_mask(fi_f32, yi, xi, threshold_frac=blob_thresh, max_radius=5, labeled_mask=mask)
-                if np.any(blob):
-                    vis[blob] = draw_color
-                    boundaries = find_boundaries(blob, mode="outer")
-                    if np.any(boundaries):
-                        vis[boundaries, 0] = 0
-                        vis[boundaries, 1] = 0
-                        vis[boundaries, 2] = 0
-        else:
-            for i, p in enumerate(peaks_to_draw):
-                if i >= peak_cap:
-                    break
-                yi, xi = int(p["y"]), int(p["x"])
-                r = max(2, min(5, int(round((max(1, p.get("size_px", 1)) / np.pi) ** 0.5))))
-                for dy in range(-r, r + 1):
-                    for dx in range(-r, r + 1):
-                        if dy * dy + dx * dx <= r * r:
-                            yk, xk = yi + dy, xi + dx
-                            if 0 <= yk < h and 0 <= xk < w:
-                                vis[yk, xk] = draw_color
+        if peak_cap > 0 and len(peaks_to_draw) > peak_cap:
+            peaks_to_draw = peaks_to_draw[: int(peak_cap)]
+        if peaks_to_draw:
+            draw_foci_blob_fill_and_edges_on_rgb(
+                vis,
+                fi_work,
+                mask,
+                peaks_to_draw,
+                draw_color,
+                threshold_frac=blob_thresh,
+                max_radius=5,
+                cap=int(peak_cap) if peak_cap > 0 else None,
+            )
         n_drawn = min(n_foci, max(0, int(peak_cap)))
         for p in peaks_to_draw[:max(0, int(peak_cap))]:
             pd = dict(p)

@@ -57,55 +57,85 @@ def draw_foci_blob_contours_on_rgb(
     plane: np.ndarray,
     settings: dict[str, Any],
     contour_rgb: tuple[int, int, int],
+    *,
+    cap: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """Draw intensity-grown focus boundaries on *target_rgb*; return peaks with no blob."""
-    from skimage.segmentation import find_boundaries
+    from bactomate.gui.foci_overlay_draw import (
+        draw_foci_blob_contours_on_rgb as _draw_fast,
+    )
 
-    from bactomate.modules.foci_utils import get_focus_blob_mask
+    return _draw_fast(
+        target_rgb,
+        mask_2d,
+        peaks,
+        plane,
+        settings,
+        contour_rgb,
+        cap=cap,
+    )
 
-    h0, w0 = int(mask_2d.shape[0]), int(mask_2d.shape[1])
-    h1, w1 = int(target_rgb.shape[0]), int(target_rgb.shape[1])
-    sx = (w1 / w0) if w0 else 1.0
-    sy = (h1 / h0) if h0 else 1.0
-    frac = foci_blob_threshold_frac(settings)
-    max_r = foci_blob_max_radius(settings)
-    label = np.asarray(mask_2d, dtype=np.int32)
-    work = np.asarray(plane, dtype=np.float64)
-    cr, cg, cb = contour_rgb
-    missed: list[dict[str, Any]] = []
-    if not peaks:
-        return missed
-    for p in peaks or []:
-        try:
-            hy = int(float(p.get("y", 0) or 0))
-            hx = int(float(p.get("x", 0) or 0))
-        except Exception:
-            continue
-        blob = get_focus_blob_mask(
-            work, hy, hx, threshold_frac=frac, max_radius=max_r, labeled_mask=label
-        )
-        if blob is None or not np.any(blob):
-            missed.append(p)
-            continue
-        ys, xs = np.nonzero(blob)
-        y2 = np.clip(np.round(ys.astype(np.float64) * sy).astype(np.int32), 0, h1 - 1)
-        x2 = np.clip(np.round(xs.astype(np.float64) * sx).astype(np.int32), 0, w1 - 1)
-        disp_mask = np.zeros((h1, w1), dtype=bool)
-        disp_mask[y2, x2] = True
-        if not np.any(disp_mask):
-            missed.append(p)
-            continue
-        try:
-            edge = find_boundaries(disp_mask, mode="outer")
-            if np.any(edge):
-                target_rgb[edge, 0] = int(cr)
-                target_rgb[edge, 1] = int(cg)
-                target_rgb[edge, 2] = int(cb)
-            else:
-                missed.append(p)
-        except Exception:
-            missed.append(p)
-    return missed
+
+class FociPassFailCache:
+    """Cache refined foci pass/fail lists keyed by frame/channel/filter signatures."""
+
+    __slots__ = ("_max_size", "_store")
+
+    def __init__(self, max_size: int = 48) -> None:
+        self._store: dict[tuple, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
+        self._max_size = max(8, int(max_size))
+
+    def lookup(self, key: tuple) -> Optional[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        hit = self._store.get(key)
+        if hit is None:
+            return None
+        return list(hit[0]), list(hit[1])
+
+    def store(
+        self,
+        key: tuple,
+        passing: list[dict[str, Any]],
+        failing: list[dict[str, Any]],
+    ) -> None:
+        self._store[key] = (list(passing), list(failing))
+        while len(self._store) > self._max_size:
+            try:
+                self._store.pop(next(iter(self._store)))
+            except StopIteration:
+                break
+
+    def get_or_compute(
+        self,
+        key: tuple,
+        compute_fn,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        hit = self.lookup(key)
+        if hit is not None:
+            return hit
+        passing, failing = compute_fn()
+        self.store(key, passing, failing)
+        return list(passing), list(failing)
+
+
+def foci_pass_fail_cache_key(
+    frame_idx: int,
+    mask_path_key: str | None,
+    channel_settings_sig: str,
+    accepted_cell_labels: Optional[set[int]],
+    channel_key: str,
+) -> tuple:
+    acc_key = (
+        frozenset(int(x) for x in accepted_cell_labels)
+        if accepted_cell_labels
+        else None
+    )
+    return (
+        int(frame_idx),
+        str(mask_path_key or ""),
+        str(channel_settings_sig or ""),
+        acc_key,
+        str(channel_key or ""),
+    )
 
 
 def accepted_cell_labels_cache_key(

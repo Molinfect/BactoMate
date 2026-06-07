@@ -1,6 +1,6 @@
 # BactoMate — Complete User Manual
 
-**Version:** 2.1  
+**Version:** 2.2  
 **Document type:** Detailed user manual (GUI reference)  
 **Approximate length:** 30–40 A4 pages when printed (body text ~12,000+ words; with headings and lists, fills 30–40 pages at normal font size).  
 **Audience:** Researchers and users who want a full, structured reference to every tab, setting, and workflow in BactoMate.  
@@ -38,7 +38,9 @@ This manual describes **every way a user can interact with BactoMate** through i
 - **Buttons and actions:** What each button does, when it is enabled, and what dialogs or outputs result.
 - **Outputs:** Where files are written, naming conventions, and how to open or reuse them in other tabs.
 
-It is intended as a **deep reference**, not a quick start. For a shorter overview and installation, see the main project `README.md`. If you were given **only** the macOS disk image **BactoMate.dmg**, use **README → macOS: DMG install only** and the **00 - READ THIS FIRST** file inside the DMG.
+It is intended as a **deep reference**, not a quick start. For a shorter overview and installation, see the main project `README.md`.
+
+**v2.2 distribution:** This release is **source-first** for **developers and researchers**. Install from the repository (see `README.md`); standalone DMG/EXE installers are not included in v2.2.
 
 ### 1.2 How to use this manual
 

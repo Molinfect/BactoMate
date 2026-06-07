@@ -122,6 +122,7 @@ class UNetSegmentTab(QWidget):
         self._preview_surface: Optional[Any] = None
         self._embedded_unet_preview: Optional[QDialog] = None
         self._folder_preview_pick: Optional[str] = None
+        self._performed_this_session = False
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -942,6 +943,9 @@ class UNetSegmentTab(QWidget):
                 self._image = np.asarray(image).copy()
 
             def run(self) -> None:
+                if self.isInterruptionRequested():
+                    self.finished.emit(self._request_id, self._frame_idx, None, "cancelled")
+                    return
                 mask, err = None, ""
                 try:
                     mask = predict_one_image(self._model, self._cfg, self._image)
@@ -1256,6 +1260,7 @@ class UNetSegmentTab(QWidget):
         ]
         self.parent_window.log_output(f"Running U-Net segmentation: {input_dir} -> {output_dir}\n")
         predict_worker = WorkerThread("-m", predict_cmd_args, parent=self)
+        self.worker = predict_worker
         result_holder = [None, None]  # success, message
         loop = QEventLoop(self)
         def on_predict_done(success: bool, message: str) -> None:
@@ -1267,6 +1272,7 @@ class UNetSegmentTab(QWidget):
         loop.exec()
         if result_holder[0]:
             self.parent_window.log_output(f"U-Net segmentation done: {output_dir}\n")
+            self._performed_this_session = True
             self._log_unet_result_summaries(path, output_dir)
             try:
                 self.workflow_step_finished.emit(True)
@@ -1288,6 +1294,10 @@ class UNetSegmentTab(QWidget):
             except Exception:
                 pass
             QMessageBox.warning(self, "Failed", result_holder[1] or "Unknown error")
+
+    def process_file_or_folder(self) -> None:
+        """Public entry for composed Segmentation tab and workflow replay."""
+        self._process_file_or_folder()
 
     def _summarize_unet_mask_file(self, mask_path: Path) -> Optional[dict[str, Any]]:
         try:
@@ -1347,6 +1357,7 @@ class UNetSegmentTab(QWidget):
         d["unet_img_filter"] = self.img_filter_edit.text().strip()
         d["unet_mask_filter"] = self.mask_filter_edit.text().strip()
         d["unet_model_name"] = self.model_name_edit.text().strip()
+        d["performed"] = bool(getattr(self, "_performed_this_session", False))
         return d
 
     def set_session_params(self, data: dict[str, Any]) -> None:
@@ -1366,3 +1377,5 @@ class UNetSegmentTab(QWidget):
             self.mask_filter_edit.setText(str(data["unet_mask_filter"]))
         if "unet_model_name" in data:
             self.model_name_edit.setText(str(data["unet_model_name"]))
+        if "performed" in data:
+            self._performed_this_session = bool(data["performed"])

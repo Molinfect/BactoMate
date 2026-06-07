@@ -475,7 +475,6 @@ class ModuleShellWidget(QWidget):
                 nav_btn = QPushButton(label)
                 nav_btn.setFlat(True)
                 nav_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                nav_btn.setToolTip(f"Open {label}")
                 nav_btn.setStyleSheet(_NAV_BTN_INACTIVE)
                 fnt = nav_btn.font()
                 fnt.setPointSize(12)

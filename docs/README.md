@@ -19,16 +19,28 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 
 ## Quick Start
 
-**v2.1 is source-first.** Clone the repo, install once, then launch:
+**v2.2 is source-first (developers & researchers).** Clone the repo, install once, then launch:
 
 | Platform | Install | Launch |
 |----------|---------|--------|
 | macOS | `./setup/install_mac.sh` | `./launch_gui.sh` |
 | Windows | `setup\install_windows.bat` | `launch_windows.bat` or `bactomate` |
 
-Verify: `python main.py --version` (expect `BactoMate 2.1`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.2`) and `python main.py --smoke-test`.
 
 The root **[README](../README.md)** has copy-paste commands. Windows details: **[INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)**.
+
+### Module shell (v2.0+)
+
+The GUI uses a **dashboard + module shell** layout (not legacy top-level tabs):
+
+- **File conversion** — ND2/LIF/CZI → TIFF
+- **Segmentation** — Omnipose, Cellpose-SAM, or U-Net in one module; filtering and analyze stages below
+- **Tracking** — Trackastra on mask time series
+- **Post-processing** — image montage, growth-curve video montage, scale bar
+- **Training** — shared dataset section + backend-specific training panels
+
+Each module opens in a shell with controls on the left and an optional preview surface on the right. Workspace projects (`bactomate_project.json`, schema v2) store module paths and UI state.
 
 ### Launch the GUI (after install)
 
@@ -101,7 +113,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### macOS: DMG install (future binary release)
 
-> **v2.0 note:** DMG distribution is not part of this release. Use the source install above.
+> **v2.2 note:** Binary DMG/EXE distribution is **not** part of this release. v2.2 is intended for **developers and researchers** using source install. The steps below apply when a future `BactoMate.dmg` is published.
 
 Use this section when a **`BactoMate.dmg`** binary is available (no project folder, no Terminal, no Python install).
 
@@ -197,6 +209,8 @@ When **Run foci analysis** is enabled (GUI: Analyze Masks → Analyze FI → Run
 When analyzing a **folder** with multiple FI channels, the merged Excel includes the Foci sheet from the first channel that has one. For a complete reference to parameters, filters, and workflows, see **[User Manual](BACTOMATE_USER_MANUAL.md)** Section 5.6a and 5.6b.
 
 ## Building App Bundles
+
+> **v2.2:** Binary packaging scripts are not maintained in this release. Use source install (see Quick Start). The notes below describe the intended future DMG workflow when `build/build_app_bundle.sh` is restored.
 
 BactoMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka) and a distributable DMG.
 

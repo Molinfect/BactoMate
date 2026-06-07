@@ -5,9 +5,9 @@ then enable the Analyze Masks workflow below.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from bactomate.gui.module_shell import PreviewSurface
+from bactomate.gui.qt_thread_utils import dismiss_embedded_segmentation_preview
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
 from bactomate.gui.widgets import create_info_icon
 from bactomate.gui.preview.preview_window import CollapsibleSection
@@ -43,10 +44,44 @@ _SEGMENTATION_ALGORITHM_INFO = (
 )
 
 
+_IMAGE_FILE_SUFFIXES = frozenset(
+    {".tif", ".tiff", ".ome.tif", ".ome.tiff", ".nd2", ".lif", ".czi"}
+)
+
+
+def _path_is_file_input(path: Path) -> bool:
+    """True when *path* refers to a file (exists or looks like an image path)."""
+    if path.is_file():
+        return True
+    if path.is_dir():
+        return False
+    suffix = path.suffix.lower()
+    if suffix in _IMAGE_FILE_SUFFIXES:
+        return True
+    name_lower = path.name.lower()
+    return name_lower.endswith(".ome.tif") or name_lower.endswith(".ome.tiff")
+
+
+class _SegmentationFilePathProxy:
+    """Proxy ``file_path`` edits to every backend panel (workflow replay path chaining)."""
+
+    def __init__(self, tab: "SegmentationTab") -> None:
+        self._tab = tab
+
+    def text(self) -> str:
+        return self._tab._active_segmentation_path_owner().file_path.text()
+
+    def setText(self, value: str) -> None:
+        self._tab._sync_segmentation_input_path(str(value or ""))
+
+
 class SegmentationTab(QWidget):
     """Top-to-bottom segmentation flow with algorithm selection + gated Analyze Masks section."""
 
+    workflow_step_finished = pyqtSignal(bool)
+
     BACKENDS = ("Omnipose", "Cellpose", "U-Net")
+    _BACKEND_KEYS = ("omnipose", "cellpose", "unet")
 
     def __init__(
         self,
@@ -73,6 +108,7 @@ class SegmentationTab(QWidget):
         # Separate owner instance dedicated to Cellpose-SAM inference panel
         self._cellpose_owner = OmniposeSegTab(parent, inference_mode="cellpose_sam")
 
+        self.file_path = _SegmentationFilePathProxy(self)
         self._init_ui()
         self._wire_signals()
         self._update_stage_gates()
@@ -501,22 +537,7 @@ class SegmentationTab(QWidget):
                 tab._restore_seg_tuning_to_left_panel()
             except Exception:
                 pass
-            prev = getattr(tab, "_embedded_segmentation_preview", None)
-            if prev is not None:
-                try:
-                    prev.close()
-                    prev.deleteLater()
-                except Exception:
-                    pass
-                tab._embedded_segmentation_preview = None
-            prev_u = getattr(tab, "_embedded_unet_preview", None)
-            if prev_u is not None:
-                try:
-                    prev_u.close()
-                    prev_u.deleteLater()
-                except Exception:
-                    pass
-                tab._embedded_unet_preview = None
+            dismiss_embedded_segmentation_preview(tab)
 
     def advance_to_filtering_stage(self) -> None:
         """Move the composed workflow from Segmentation to Filtering."""
@@ -615,9 +636,15 @@ class SegmentationTab(QWidget):
             pass
 
         # When a backend completes segmentation successfully, populate downstream stage paths.
-        self.omnipose_tab.workflow_step_finished.connect(lambda ok: self._on_backend_finished("omnipose", ok))
-        self._cellpose_owner.workflow_step_finished.connect(lambda ok: self._on_backend_finished("cellpose", ok))
-        self.unet_tab.workflow_step_finished.connect(lambda ok: self._on_backend_finished("unet", ok))
+        self.omnipose_tab.workflow_step_finished.connect(
+            lambda ok: self._on_owner_workflow_finished("omnipose", ok)
+        )
+        self._cellpose_owner.workflow_step_finished.connect(
+            lambda ok: self._on_owner_workflow_finished("cellpose", ok)
+        )
+        self.unet_tab.workflow_step_finished.connect(
+            lambda ok: self._on_owner_workflow_finished("unet", ok)
+        )
 
         for tab in self._segmentation_path_tabs():
             try:
@@ -631,6 +658,88 @@ class SegmentationTab(QWidget):
             self.filtering_tab.file_path.textChanged.connect(self.refresh_filtering_candidate_list)
         except Exception:
             pass
+
+    def _active_backend_key(self) -> str:
+        idx = int(self.backend_combo.currentIndex()) if hasattr(self, "backend_combo") else 0
+        if 0 <= idx < len(self._BACKEND_KEYS):
+            return self._BACKEND_KEYS[idx]
+        return "omnipose"
+
+    def _on_owner_workflow_finished(self, backend: str, ok: bool) -> None:
+        self._on_backend_finished(backend, ok)
+        if backend == self._active_backend_key():
+            try:
+                self.workflow_step_finished.emit(bool(ok))
+            except Exception:
+                pass
+
+    def process_file_or_folder(self) -> None:
+        """Run segmentation on the active backend (Omnipose / Cellpose / U-Net)."""
+        owner = self._active_segmentation_path_owner()
+        run_fn = getattr(owner, "process_file_or_folder", None)
+        if callable(run_fn):
+            run_fn()
+            return
+        run_fn = getattr(owner, "_process_file_or_folder", None)
+        if callable(run_fn):
+            run_fn()
+
+    def infer_segment_output_path(self, segment_input_path: str) -> Path:
+        """Return expected mask output folder for the active backend and input path."""
+        raw = (segment_input_path or "").strip()
+        folder = Path(raw) if raw else Path(".")
+        backend = self._active_backend_key()
+        if backend in ("omnipose", "cellpose"):
+            owner = self.omnipose_tab if backend == "omnipose" else self._cellpose_owner
+            folder_name = (
+                owner.get_segmentation_output_folder_name()
+                if hasattr(owner, "get_segmentation_output_folder_name")
+                else "_segmentation_omni"
+            )
+            return folder / folder_name
+        if backend == "unet":
+            if _path_is_file_input(folder):
+                if folder.parent.name.startswith("Tif_"):
+                    return folder.parent / "_segmentation_unet"
+                return folder.parent / f"{folder.stem}_unet_segmentation"
+            return folder / "_segmentation_unet"
+        return folder / "_segmentation_omni"
+
+    def get_session_params(self) -> dict[str, Any]:
+        """Session log: active backend + owner params + performed flag."""
+        backend = self._active_backend_key()
+        owner = self._active_segmentation_path_owner()
+        out: dict[str, Any] = {"segmentation_backend": backend}
+        if hasattr(owner, "get_session_params"):
+            try:
+                out.update(dict(owner.get_session_params() or {}))
+            except Exception:
+                pass
+        if "performed" not in out:
+            out["performed"] = bool(getattr(owner, "_performed_this_session", False))
+        return out
+
+    def set_session_params(self, data: dict[str, Any]) -> None:
+        """Restore backend choice and delegate params to each owner panel."""
+        if not isinstance(data, dict):
+            return
+        backend = str(data.get("segmentation_backend") or "").strip().lower()
+        if backend in self._BACKEND_KEYS:
+            idx = self._BACKEND_KEYS.index(backend)
+            if hasattr(self, "backend_combo"):
+                self.backend_combo.blockSignals(True)
+                try:
+                    self.backend_combo.setCurrentIndex(idx)
+                    self.stack.setCurrentIndex(idx)
+                    self._backend_combo_prev_index = idx
+                finally:
+                    self.backend_combo.blockSignals(False)
+        for tab in self._segmentation_path_tabs():
+            if hasattr(tab, "set_session_params"):
+                try:
+                    tab.set_session_params(data)
+                except Exception:
+                    pass
 
     def _on_backend_finished(self, backend: str, ok: bool) -> None:
         if not ok:
@@ -668,7 +777,7 @@ class SegmentationTab(QWidget):
                 p = Path(raw)
                 if p.is_dir():
                     return p / "_segmentation_unet"
-                if p.is_file():
+                if _path_is_file_input(p):
                     if p.parent.name.startswith("Tif_"):
                         return p.parent / "_segmentation_unet"
                     return p.parent / f"{p.stem}_unet_segmentation"

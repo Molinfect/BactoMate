@@ -52,6 +52,25 @@ VIDEO_FI_LAYOUT_MERGED = "merged"
 VIDEO_FI_LAYOUT_SEPARATE = "separate_tiles"
 DEFAULT_VIDEO_FI_LAYOUT = VIDEO_FI_LAYOUT_MERGED
 VIDEO_FI_OVERLAY_TILE_LABELS = frozenset({"Phase", "Merged"})
+MAX_VIDEO_FI_COLOR_CHANNELS = 6
+VIDEO_FI_AUTO_LUT_NAMES: tuple[str, ...] = ("Green", "Magenta", "Cyan", "Yellow", "Red", "Orange")
+VIDEO_OVERLAY_COLOR_PRESETS: dict[str, tuple[float, float, float]] = {
+    "Green": (0.0, 1.0, 0.0),
+    "Magenta": (1.0, 0.0, 1.0),
+    "Cyan": (0.0, 1.0, 1.0),
+    "Yellow": (1.0, 1.0, 0.0),
+    "Red": (1.0, 0.2, 0.2),
+    "Orange": (1.0, 0.55, 0.0),
+    "Gray": (0.85, 0.85, 0.85),
+    "White": (1.0, 1.0, 1.0),
+}
+DEFAULT_VIDEO_MASK_CONTOUR_RGB = (255, 215, 0)
+DEFAULT_VIDEO_FOCI_MARKER_RGB = (255, 80, 255)
+DEFAULT_VIDEO_OVERLAY_COLORS: dict[str, Any] = {
+    "fi_channels": ["auto"] * MAX_VIDEO_FI_COLOR_CHANNELS,
+    "mask_contour": "auto",
+    "foci_marker": "auto",
+}
 PREFERRED_GROWTH_Y_COLUMNS: tuple[str, ...] = (
     "Total Cell Area (Relative)",
     "Total Cell Area (µm²)",
@@ -3446,6 +3465,53 @@ def _read_tiff_series_array_and_axes(path: Path) -> tuple[np.ndarray, str]:
     return arr, axes
 
 
+def _read_video_channel_names_from_metadata(path: Path, count: int) -> list[str]:
+    """Best-effort channel names from TIFF/ND2 metadata."""
+    try:
+        from bactomate.modules.tiff_metadata import read_metadata_from_path
+
+        meta = read_metadata_from_path(path)
+        names = [str(n).strip() for n in (meta.get("channel_names") or []) if str(n).strip()]
+        if len(names) >= count:
+            return names[:count]
+    except Exception:
+        pass
+    return [f"Ch{i + 1}" for i in range(count)]
+
+
+def _video_channel_name_is_phase(name: str) -> bool:
+    text = str(name or "").lower()
+    return any(token in text for token in ("phase", "brightfield", "transmission", "dic", " bf"))
+
+
+def _display_video_channel_name(name: str) -> str:
+    text = str(name or "").strip()
+    lower = text.lower()
+    if "foci" in lower or "focus" in lower:
+        label = text
+        for token in ("_fi_foci_", "_fi_focus_", "_foci_", "_focus_", "foci_", "focus_"):
+            if token in lower:
+                pos = lower.find(token)
+                label = text[pos + len(token):] or text
+                break
+        label = label.replace("_", " ").strip()
+        return f"Foci {label}".strip() if label else "Foci"
+    return text.replace("_", " ").strip() or name
+
+
+def _align_fi_color_presets_to_channels(channel_names: Sequence[str], fi_presets: Sequence[Any]) -> list[Any]:
+    """Map FI-only presets onto all image channels, leaving phase-like channels on auto."""
+    aligned: list[Any] = []
+    fi_idx = 0
+    for name in channel_names:
+        if _video_channel_name_is_phase(str(name)):
+            aligned.append("auto")
+            continue
+        aligned.append(fi_presets[fi_idx] if fi_idx < len(fi_presets) else "auto")
+        fi_idx += 1
+    return aligned
+
+
 def _transpose_to_tcyx(arr: np.ndarray, axes: str) -> Optional[np.ndarray]:
     """If axes is exactly T,C,Y,X (no Z) return array shaped (T, C, Y, X)."""
     if arr.ndim != 4 or not axes or len(axes) != len(arr.shape):
@@ -3468,21 +3534,66 @@ def _heuristic_tchw(arr: np.ndarray) -> Optional[np.ndarray]:
     return None
 
 
-def _merge_tcyx_to_rgb_uint8(stack_tcyx: np.ndarray) -> np.ndarray:
+def normalize_video_overlay_colors(data: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Merge saved overlay color settings with defaults."""
+    merged: dict[str, Any] = {
+        "fi_channels": list(DEFAULT_VIDEO_OVERLAY_COLORS["fi_channels"]),
+        "mask_contour": "auto",
+        "foci_marker": "auto",
+    }
+    if not data:
+        return merged
+    raw_fi = data.get("fi_channels")
+    if isinstance(raw_fi, list):
+        for idx in range(MAX_VIDEO_FI_COLOR_CHANNELS):
+            if idx < len(raw_fi):
+                merged["fi_channels"][idx] = raw_fi[idx]
+    for key in ("mask_contour", "foci_marker"):
+        if key in data and data[key] is not None:
+            merged[key] = data[key]
+    return merged
+
+
+def _overlay_color_entry_to_rgb01(entry: Any, *, lut_index: int) -> tuple[float, float, float]:
+    """Resolve a preset name, auto, or [r,g,b] list to 0-1 RGB."""
+    if isinstance(entry, (list, tuple)) and len(entry) == 3:
+        vals = [float(v) for v in entry]
+        if max(vals) > 1.0:
+            vals = [v / 255.0 for v in vals]
+        return (vals[0], vals[1], vals[2])
+    text = str(entry or "auto").strip()
+    if text.lower() in {"", "auto", "default"}:
+        text = VIDEO_FI_AUTO_LUT_NAMES[lut_index % len(VIDEO_FI_AUTO_LUT_NAMES)]
+    preset = VIDEO_OVERLAY_COLOR_PRESETS.get(text)
+    if preset is not None:
+        return preset
+    return VIDEO_OVERLAY_COLOR_PRESETS[VIDEO_FI_AUTO_LUT_NAMES[lut_index % len(VIDEO_FI_AUTO_LUT_NAMES)]]
+
+
+def _overlay_marker_color_to_uint8(entry: Any, *, kind: str) -> tuple[int, int, int]:
+    """Resolve mask/foci overlay color presets to uint8 RGB."""
+    default = DEFAULT_VIDEO_MASK_CONTOUR_RGB if kind == "mask" else DEFAULT_VIDEO_FOCI_MARKER_RGB
+    if isinstance(entry, (list, tuple)) and len(entry) == 3:
+        return (int(entry[0]), int(entry[1]), int(entry[2]))
+    text = str(entry or "auto").strip()
+    if text.lower() in {"", "auto", "default"}:
+        return default
+    preset = VIDEO_OVERLAY_COLOR_PRESETS.get(text)
+    if preset is None:
+        return default
+    return (int(preset[0] * 255), int(preset[1] * 255), int(preset[2] * 255))
+
+
+def _merge_tcyx_to_rgb_uint8(
+    stack_tcyx: np.ndarray,
+    fi_channel_colors: Optional[Sequence[Any]] = None,
+) -> np.ndarray:
     """
     Composite C fluorescence channels into RGB using black-to-color LUTs (additive blend).
     stack_tcyx: (T, C, Y, X) numeric array.
     """
     from matplotlib.colors import LinearSegmentedColormap
 
-    luts = [
-        LinearSegmentedColormap.from_list("fluo_g", [(0, 0, 0), (0.0, 1.0, 0.0)]),
-        LinearSegmentedColormap.from_list("fluo_m", [(0, 0, 0), (1.0, 0.0, 1.0)]),
-        LinearSegmentedColormap.from_list("fluo_c", [(0, 0, 0), (0.0, 1.0, 1.0)]),
-        LinearSegmentedColormap.from_list("fluo_y", [(0, 0, 0), (1.0, 1.0, 0.0)]),
-        LinearSegmentedColormap.from_list("fluo_r", [(0, 0, 0), (1.0, 0.2, 0.2)]),
-        LinearSegmentedColormap.from_list("fluo_o", [(0, 0, 0), (1.0, 0.55, 0.0)]),
-    ]
     t, nc, h, w = stack_tcyx.shape
     out = np.zeros((t, h, w, 3), dtype=np.float32)
     scale = 1.0 / float(max(nc, 1))
@@ -3494,7 +3605,14 @@ def _merge_tcyx_to_rgb_uint8(stack_tcyx: np.ndarray) -> np.ndarray:
             if p_hi <= p_lo:
                 p_hi = p_lo + 1e-6
             norm = np.clip((ch - p_lo) / (p_hi - p_lo), 0.0, 1.0)
-            cmap = luts[ci % len(luts)]
+            preset = None
+            if fi_channel_colors is not None and ci < len(fi_channel_colors):
+                preset = fi_channel_colors[ci]
+            r01, g01, b01 = _overlay_color_entry_to_rgb01(preset, lut_index=ci)
+            cmap = LinearSegmentedColormap.from_list(
+                f"video_fi_{ci}",
+                [(0.0, 0.0, 0.0), (r01, g01, b01)],
+            )
             rgb = cmap(norm)[..., :3]
             acc += rgb * scale
         acc = np.clip(acc, 0.0, 1.0)
@@ -3529,16 +3647,21 @@ def _normalize_frame_to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
     return g
 
 
-def _load_growth_curve_folder_rgb(folder: Path) -> np.ndarray:
-    """Sequence of TIFF files in a folder -> (T, H, W, 3) uint8."""
-    import tifffile
-
-    tiff_files = (
+def _growth_curve_tiff_files_in_folder(folder: Path) -> list[Path]:
+    """Sorted TIFF files directly inside a folder."""
+    return (
         sorted(folder.glob("*.tif"))
         + sorted(folder.glob("*.tiff"))
         + sorted(folder.glob("*.TIF"))
         + sorted(folder.glob("*.TIFF"))
     )
+
+
+def _load_growth_curve_folder_thw(folder: Path) -> np.ndarray:
+    """Sequence of TIFF files in a folder -> (T, H, W) single-channel stack."""
+    import tifffile
+
+    tiff_files = _growth_curve_tiff_files_in_folder(folder)
     if not tiff_files:
         raise ValueError(f"No TIFF files found in folder: {folder}")
     video_frames = []
@@ -3550,8 +3673,12 @@ def _load_growth_curve_folder_rgb(folder: Path) -> np.ndarray:
             video_frames.append(frame[0])
         else:
             video_frames.append(frame.reshape(-1, frame.shape[-2], frame.shape[-1])[0])
-    stack = np.array(video_frames)
-    return _grayscale_stack_to_rgb_uint8(stack)
+    return np.array(video_frames)
+
+
+def _load_growth_curve_folder_rgb(folder: Path) -> np.ndarray:
+    """Sequence of TIFF files in a folder -> (T, H, W, 3) uint8."""
+    return _grayscale_stack_to_rgb_uint8(_load_growth_curve_folder_thw(folder))
 
 
 def _to_thw_single_channel_stack(arr: np.ndarray) -> np.ndarray:
@@ -3573,17 +3700,27 @@ def _to_thw_single_channel_stack(arr: np.ndarray) -> np.ndarray:
     raise ValueError(f"Unsupported TIFF shape for channel file: {arr.shape}")
 
 
-def _load_growth_curve_multi_file_rgb(paths: Sequence[Path]) -> np.ndarray:
+def _load_growth_curve_multi_file_rgb(
+    paths: Sequence[Path],
+    overlay_colors: Optional[dict[str, Any]] = None,
+) -> np.ndarray:
     """Several TIFF stacks (one per channel), same T/H/W -> LUT merge -> (T, H, W, 3) uint8."""
     stacks = _load_growth_curve_multi_file_thw_stacks(paths)
     tcyx = np.stack(stacks, axis=1)
-    return _merge_tcyx_to_rgb_uint8(tcyx)
+    colors = normalize_video_overlay_colors(overlay_colors)
+    roles = _assign_growth_video_channel_roles(paths)
+    channel_names = [label for _, _, label in roles] if roles else [p.stem for p in paths]
+    aligned_presets = _align_fi_color_presets_to_channels(channel_names, colors.get("fi_channels") or [])
+    return _merge_tcyx_to_rgb_uint8(tcyx, fi_channel_colors=aligned_presets)
 
 
 def _load_growth_curve_multi_file_thw_stacks(paths: Sequence[Path]) -> list[np.ndarray]:
     """Load several single-channel TIFF stacks as a list of (T, H, W) arrays."""
     stacks: list[np.ndarray] = []
     for p in paths:
+        if p.is_dir():
+            stacks.append(_load_growth_curve_folder_thw(p))
+            continue
         if not p.is_file():
             raise ValueError(f"Not a file: {p}")
         arr, _ = _read_tiff_series_array_and_axes(p)
@@ -3629,18 +3766,24 @@ _GROWTH_VIDEO_CHANNEL_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("_cyan", "Cyan"),
     ("_fi", "FI"),
     ("_FI", "FI"),
-    ("_foci", "FI"),
+    ("_foci", "Foci"),
+    ("_focus", "Foci"),
 )
 
 
 def _infer_growth_video_channel_label(path: Path) -> str:
     """Human-readable channel label from a TIFF filename."""
     stem = path.stem
+    stem_lower = stem.lower()
+    if "foci" in stem_lower or "focus" in stem_lower:
+        for token in ("_fi_foci_", "_fi_focus_", "_foci_", "_focus_"):
+            if token in stem_lower:
+                pos = stem_lower.find(token)
+                channel = stem[pos + len(token):].strip("_")
+                return f"Foci {channel.replace('_', ' ')}".strip() if channel else "Foci"
+        return "Foci"
     if "_fi_" in stem:
         return stem.partition("_fi_")[2].strip("_") or "FI"
-    if "_foci_" in stem:
-        return stem.partition("_foci_")[2].strip("_") or "FI"
-    stem_lower = stem.lower()
     for suffix, label in _GROWTH_VIDEO_CHANNEL_SUFFIXES:
         if stem_lower.endswith(suffix.lower()):
             return label
@@ -3660,7 +3803,7 @@ def _infer_growth_video_channel_role(path: Path) -> str:
         return "phase"
     if "phase" in path.stem.lower() or path.stem.lower().endswith("_bf"):
         return "phase"
-    if label_lower in {"fi", "foci"}:
+    if label_lower in {"fi", "foci"} or label_lower.startswith("foci "):
         return "fi"
     for token in (
         "gfp", "egfp", "rfp", "mcherry", "mscarlet", "dsred", "cy5", "yfp", "cfp",
@@ -3696,7 +3839,12 @@ def _assign_growth_video_channel_roles(paths: Sequence[Path]) -> list[tuple[Path
     return items
 
 
-def _thw_stack_to_lut_rgb_uint8(stack_thw: np.ndarray, *, lut_index: int = 0) -> np.ndarray:
+def _thw_stack_to_lut_rgb_uint8(
+    stack_thw: np.ndarray,
+    *,
+    lut_index: int = 0,
+    color_preset: Any = None,
+) -> np.ndarray:
     """Colorize one (T, H, W) stack using the growth-video LUT palette."""
     t, h, w = stack_thw.shape
     lut_index = max(0, int(lut_index))
@@ -3705,7 +3853,9 @@ def _thw_stack_to_lut_rgb_uint8(stack_thw: np.ndarray, *, lut_index: int = 0) ->
     else:
         tcyx = np.zeros((t, lut_index + 1, h, w), dtype=stack_thw.dtype)
         tcyx[:, lut_index, :, :] = stack_thw
-    return _merge_tcyx_to_rgb_uint8(tcyx)
+    channel_colors = [None] * tcyx.shape[1]
+    channel_colors[lut_index] = color_preset
+    return _merge_tcyx_to_rgb_uint8(tcyx, fi_channel_colors=channel_colors)
 
 
 def _order_separate_video_tiles(tiles: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndarray]]:
@@ -3728,11 +3878,16 @@ def _order_separate_video_tiles(tiles: list[tuple[str, np.ndarray]]) -> list[tup
     return phase + fi + merged
 
 
-def _load_growth_curve_separate_tiles(paths: Sequence[Path]) -> list[tuple[str, np.ndarray]]:
-    """Build named RGB tile stacks for separate-FI video layout."""
+def _load_growth_curve_separate_tiles(
+    paths: Sequence[Path],
+    overlay_colors: Optional[dict[str, Any]] = None,
+) -> list[tuple[str, np.ndarray]]:
+    """Build named RGB tile stacks for separate video-tile layout."""
     paths = [Path(p) for p in paths if str(p).strip()]
     if not paths:
         raise ValueError("No video path(s) provided.")
+    colors = normalize_video_overlay_colors(overlay_colors)
+    fi_presets = colors.get("fi_channels") or []
 
     if len(paths) == 1:
         path = paths[0]
@@ -3748,14 +3903,23 @@ def _load_growth_curve_separate_tiles(paths: Sequence[Path]) -> list[tuple[str, 
         if tcyx is not None and tcyx.shape[1] >= 2:
             tiles: list[tuple[str, np.ndarray]] = []
             merge_stack = tcyx
+            channel_names = _read_video_channel_names_from_metadata(path, int(tcyx.shape[1]))
+            aligned_presets = _align_fi_color_presets_to_channels(channel_names, fi_presets)
             for ci in range(tcyx.shape[1]):
-                label = "Phase" if ci == 0 else f"Ch{ci + 1}"
+                default_label = "Phase" if ci == 0 else f"Ch{ci + 1}"
+                label = _display_video_channel_name(channel_names[ci]) if ci < len(channel_names) else default_label
                 if ci == 0:
                     rgb = _grayscale_stack_to_rgb_uint8(tcyx[:, ci, :, :])
                 else:
-                    rgb = _thw_stack_to_lut_rgb_uint8(tcyx[:, ci, :, :], lut_index=ci - 1)
+                    fi_idx = ci - 1
+                    preset = aligned_presets[ci] if ci < len(aligned_presets) else "auto"
+                    rgb = _thw_stack_to_lut_rgb_uint8(
+                        tcyx[:, ci, :, :],
+                        lut_index=fi_idx,
+                        color_preset=preset,
+                    )
                 tiles.append((label, rgb))
-            tiles.append(("Merged", _merge_tcyx_to_rgb_uint8(merge_stack)))
+            tiles.append(("Merged", _merge_tcyx_to_rgb_uint8(merge_stack, fi_channel_colors=aligned_presets)))
             return _order_separate_video_tiles(tiles)
         rgb = _load_growth_curve_single_file_rgb(path)
         return [("Phase", rgb), ("Merged", rgb)]
@@ -3772,10 +3936,17 @@ def _load_growth_curve_separate_tiles(paths: Sequence[Path]) -> list[tuple[str, 
             tiles.append((display, _grayscale_stack_to_rgb_uint8(thw)))
         else:
             display = label if label.lower() not in {"fi", "foci"} else f"Ch{fi_index + 1}"
-            tiles.append((display, _thw_stack_to_lut_rgb_uint8(thw, lut_index=fi_index)))
+            preset = fi_presets[fi_index] if fi_index < len(fi_presets) else "auto"
+            tiles.append(
+                (
+                    display,
+                    _thw_stack_to_lut_rgb_uint8(thw, lut_index=fi_index, color_preset=preset),
+                )
+            )
             fi_index += 1
     tcyx = np.stack(merge_stacks, axis=1)
-    tiles.append(("Merged", _merge_tcyx_to_rgb_uint8(tcyx)))
+    merge_presets = ["auto"] + list(fi_presets[: max(0, tcyx.shape[1] - 1)])
+    tiles.append(("Merged", _merge_tcyx_to_rgb_uint8(tcyx, fi_channel_colors=merge_presets)))
     return _order_separate_video_tiles(tiles)
 
 
@@ -3794,6 +3965,7 @@ class GrowthCurveVideoSource:
 def load_growth_curve_video_source(
     video_paths: Sequence[Path],
     fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
+    overlay_colors: Optional[dict[str, Any]] = None,
 ) -> GrowthCurveVideoSource:
     """Load merged video or separate named channel tiles depending on layout mode."""
     layout = fi_layout if fi_layout in (VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE) else DEFAULT_VIDEO_FI_LAYOUT
@@ -3802,7 +3974,7 @@ def load_growth_curve_video_source(
         raise ValueError("No video path(s) provided.")
 
     if layout == VIDEO_FI_LAYOUT_SEPARATE:
-        tiles = _load_growth_curve_separate_tiles(paths)
+        tiles = _load_growth_curve_separate_tiles(paths, overlay_colors=overlay_colors)
         num_frames = int(tiles[0][1].shape[0])
         ref_h, ref_w = int(tiles[0][1].shape[1]), int(tiles[0][1].shape[2])
         return GrowthCurveVideoSource(
@@ -3814,7 +3986,7 @@ def load_growth_curve_video_source(
             tiles=tiles,
         )
 
-    merged = load_growth_curve_video_frames_rgb(paths)
+    merged = load_growth_curve_video_frames_rgb(paths, overlay_colors=overlay_colors)
     _, ref_h, ref_w, _ = merged.shape
     return GrowthCurveVideoSource(
         fi_layout=layout,
@@ -3826,14 +3998,20 @@ def load_growth_curve_video_source(
     )
 
 
-def _load_growth_curve_single_file_rgb(path: Path) -> np.ndarray:
+def _load_growth_curve_single_file_rgb(
+    path: Path,
+    overlay_colors: Optional[dict[str, Any]] = None,
+) -> np.ndarray:
     """One TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (T,C,H,W) with merge."""
     arr, axes = _read_tiff_series_array_and_axes(path)
     tcyx = _transpose_to_tcyx(arr, axes)
     if tcyx is None:
         tcyx = _heuristic_tchw(arr)
     if tcyx is not None and tcyx.shape[1] >= 2:
-        return _merge_tcyx_to_rgb_uint8(tcyx)
+        colors = normalize_video_overlay_colors(overlay_colors)
+        channel_names = _read_video_channel_names_from_metadata(path, int(tcyx.shape[1]))
+        aligned_presets = _align_fi_color_presets_to_channels(channel_names, colors.get("fi_channels") or [])
+        return _merge_tcyx_to_rgb_uint8(tcyx, fi_channel_colors=aligned_presets)
     if arr.ndim == 4 and arr.shape[-1] == 3:
         t, h, w, _ = arr.shape
         out = np.zeros((t, h, w, 3), dtype=np.uint8)
@@ -3853,7 +4031,10 @@ def _load_growth_curve_single_file_rgb(path: Path) -> np.ndarray:
     raise ValueError(f"Unsupported TIFF shape for growth curve video: {arr.shape} (axes={axes!r})")
 
 
-def load_growth_curve_video_frames_rgb(video_paths: Sequence[Path]) -> np.ndarray:
+def load_growth_curve_video_frames_rgb(
+    video_paths: Sequence[Path],
+    overlay_colors: Optional[dict[str, Any]] = None,
+) -> np.ndarray:
     """
     Load TIFF input(s) as (T, H, W, 3) uint8 for the growth-curve composer.
 
@@ -3869,9 +4050,9 @@ def load_growth_curve_video_frames_rgb(video_paths: Sequence[Path]) -> np.ndarra
         if p.is_dir():
             return _load_growth_curve_folder_rgb(p)
         if p.is_file():
-            return _load_growth_curve_single_file_rgb(p)
+            return _load_growth_curve_single_file_rgb(p, overlay_colors=overlay_colors)
         raise ValueError(f"Path not found: {p}")
-    return _load_growth_curve_multi_file_rgb(paths)
+    return _load_growth_curve_multi_file_rgb(paths, overlay_colors=overlay_colors)
 
 
 def list_growth_curve_excel_columns(excel_path: Path) -> list[str]:
@@ -4039,6 +4220,8 @@ def _draw_video_overlays(
     foci_points: Optional[dict[int, list[tuple[int, int]]]] = None,
     show_mask_contours: bool = False,
     show_foci: bool = False,
+    mask_color_rgb: Optional[tuple[int, int, int]] = None,
+    foci_color_rgb: Optional[tuple[int, int, int]] = None,
 ) -> np.ndarray:
     """Draw contour-only masks and simple foci rings over real microscopy data."""
     rgb = _ensure_growth_curve_video_frame_rgb(video_frame).copy()
@@ -4054,7 +4237,7 @@ def _draw_video_overlays(
                 mask = None
         if mask is not None:
             contour = _mask_contour(mask)
-            rgb[contour] = np.array([255, 215, 0], dtype=np.uint8)
+            rgb[contour] = np.array(mask_color_rgb or DEFAULT_VIDEO_MASK_CONTOUR_RGB, dtype=np.uint8)
 
     if show_foci and foci_points:
         points = foci_points.get(frame_idx, [])
@@ -4065,7 +4248,7 @@ def _draw_video_overlays(
             dist = (yy - y) ** 2 + (xx - x) ** 2
             ring = (dist >= 9) & (dist <= 25)
             sub = rgb[max(0, y - 5) : min(h, y + 6), max(0, x - 5) : min(w, x + 6)]
-            sub[ring] = np.array([255, 80, 255], dtype=np.uint8)
+            sub[ring] = np.array(foci_color_rgb or DEFAULT_VIDEO_FOCI_MARKER_RGB, dtype=np.uint8)
     return rgb
 
 
@@ -4076,10 +4259,14 @@ def apply_video_montage_overlays(
     foci_path: Optional[Path] = None,
     show_mask_contours: bool = False,
     show_foci: bool = False,
+    overlay_colors: Optional[dict[str, Any]] = None,
 ) -> np.ndarray:
     """Return RGB video frames with optional contour/foci overlays drawn on real data."""
     if not show_mask_contours and not show_foci:
         return video_frames
+    colors = normalize_video_overlay_colors(overlay_colors)
+    mask_rgb = _overlay_marker_color_to_uint8(colors.get("mask_contour"), kind="mask")
+    foci_rgb = _overlay_marker_color_to_uint8(colors.get("foci_marker"), kind="foci")
     mask_frames = _load_video_mask_frames(mask_path) if show_mask_contours else None
     foci_points = _load_foci_points_by_frame(foci_path) if show_foci else {}
     return np.stack(
@@ -4091,6 +4278,8 @@ def apply_video_montage_overlays(
                 foci_points=foci_points,
                 show_mask_contours=show_mask_contours,
                 show_foci=show_foci,
+                mask_color_rgb=mask_rgb,
+                foci_color_rgb=foci_rgb,
             )
             for idx, frame in enumerate(video_frames)
         ],
@@ -4106,6 +4295,7 @@ def apply_video_montage_overlays_to_tiles(
     foci_path: Optional[Path] = None,
     show_mask_contours: bool = False,
     show_foci: bool = False,
+    overlay_colors: Optional[dict[str, Any]] = None,
 ) -> list[tuple[str, np.ndarray]]:
     """Apply mask/foci overlays only to selected named tiles (Phase, Merged by default)."""
     labels = set(overlay_labels)
@@ -4120,6 +4310,7 @@ def apply_video_montage_overlays_to_tiles(
                 foci_path=foci_path,
                 show_mask_contours=show_mask_contours,
                 show_foci=show_foci,
+                overlay_colors=overlay_colors,
             )
         result.append((label, frames))
     return result
@@ -4131,16 +4322,26 @@ def _compose_separate_tiles_frame(
     *,
     reference_width: int,
 ) -> np.ndarray:
-    """Horizontally stack named tiles for one frame, scaling to keep total width near reference_width."""
+    """Horizontally stack named tiles for one frame without changing tile aspect ratios."""
     import cv2
 
     frame_list = [_ensure_growth_curve_video_frame_rgb(frames[frame_idx]) for _, frames in tiles]
     if not frame_list:
-        raise ValueError("No video tiles available for separate-FI layout.")
-    h = int(frame_list[0].shape[0])
-    n = max(1, len(frame_list))
-    tile_w = max(64, int(reference_width) // n)
-    resized = [cv2.resize(frame, (tile_w, h), interpolation=cv2.INTER_LINEAR) for frame in frame_list]
+        raise ValueError("No video tiles available for separate-tile layout.")
+    target_h = max(1, int(frame_list[0].shape[0]))
+    resized: list[np.ndarray] = []
+    for frame in frame_list:
+        h, w = int(frame.shape[0]), int(frame.shape[1])
+        if h <= 0 or w <= 0:
+            continue
+        if h == target_h:
+            resized.append(frame)
+            continue
+        scale = target_h / float(h)
+        target_w = max(1, int(round(w * scale)))
+        resized.append(cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR))
+    if not resized:
+        raise ValueError("No video tiles available for separate-tile layout.")
     return np.hstack(resized)
 
 
@@ -4168,6 +4369,11 @@ def _render_growth_curve_graph_image(
     if graph_style:
         style.update({k: v for k, v in graph_style.items() if v is not None})
     font_weight = str(style.get("font_weight") or "bold")
+    show_grid_value = style.get("show_grid", True)
+    if isinstance(show_grid_value, str):
+        show_grid = show_grid_value.strip().lower() not in {"", "0", "false", "no", "off"}
+    else:
+        show_grid = bool(show_grid_value)
 
     current_times = time_minutes[: frame_idx + 1]
     current_areas = relative_areas[: frame_idx + 1]
@@ -4197,11 +4403,14 @@ def _render_growth_curve_graph_image(
     )
     ax.set_ylim(y_min, y_max)
     ax.set_xlim(0, float(time_minutes.max()) * 1.05)
-    ax.grid(
-        bool(style.get("show_grid", True)),
-        alpha=float(style.get("grid_alpha", 0.4)),
-        linewidth=float(style.get("grid_line_width", 1.5)),
-    )
+    if show_grid:
+        ax.grid(
+            True,
+            alpha=float(style.get("grid_alpha", 0.4)),
+            linewidth=float(style.get("grid_line_width", 1.5)),
+        )
+    else:
+        ax.grid(False)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
     ax.tick_params(
@@ -4265,7 +4474,7 @@ def compose_growth_curve_combined_frame(
         )
     else:
         if video_frames is None:
-            raise ValueError("Merged video frames are required for merged FI layout.")
+            raise ValueError("Merged video frames are required for merged video layout.")
         video_frame = _ensure_growth_curve_video_frame_rgb(video_frames[frame_idx])
     if frames is None or relative_areas is None or time_minutes is None:
         return video_frame
@@ -4301,10 +4510,17 @@ def build_growth_curve_output_frames(
     graph_width_ratio: float = 0.5,
     y_column: Optional[str] = None,
     fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
+    overlay_colors: Optional[dict[str, Any]] = None,
+    tile_visibility: Optional[dict[str, bool]] = None,
     progress_callback: Optional[Callable[[int, str], None]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> tuple[list[np.ndarray], dict[str, int]]:
     """Load inputs and build all combined output frames."""
-    source = load_growth_curve_video_source(video_paths, fi_layout=fi_layout)
+    source = load_growth_curve_video_source(
+        video_paths,
+        fi_layout=fi_layout,
+        overlay_colors=overlay_colors,
+    )
     video_frames: Optional[np.ndarray] = None
     tiles: Optional[list[tuple[str, np.ndarray]]] = None
 
@@ -4315,7 +4531,16 @@ def build_growth_curve_output_frames(
             foci_path=foci_path,
             show_mask_contours=show_mask_contours,
             show_foci=show_foci,
+            overlay_colors=overlay_colors,
         )
+        if tile_visibility:
+            visible_tiles = [
+                (label, frames)
+                for label, frames in tiles
+                if bool(tile_visibility.get(str(label).strip().lower(), True))
+            ]
+            if visible_tiles:
+                tiles = visible_tiles
     else:
         video_frames = apply_video_montage_overlays(
             source.merged_frames,
@@ -4323,6 +4548,7 @@ def build_growth_curve_output_frames(
             foci_path=foci_path,
             show_mask_contours=show_mask_contours,
             show_foci=show_foci,
+            overlay_colors=overlay_colors,
         )
     frames: Optional[np.ndarray] = None
     relative_areas: Optional[np.ndarray] = None
@@ -4364,6 +4590,8 @@ def build_growth_curve_output_frames(
     output_frames: list[np.ndarray] = []
 
     for frame_idx in range(num_frames):
+        if cancel_check is not None and cancel_check():
+            raise RuntimeError("Cancelled by user")
         if progress_callback is not None and frame_idx % 10 == 0:
             progress = 20 + int((frame_idx / max(num_frames, 1)) * 70)
             progress_callback(progress, f"Processing frame {frame_idx + 1}/{num_frames}...")
@@ -4420,6 +4648,8 @@ class GrowthCurveVideoWorker(QThread):
         graph_width_ratio: float = 0.5,
         y_column: Optional[str] = None,
         fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT,
+        overlay_colors: Optional[dict[str, Any]] = None,
+        tile_visibility: Optional[dict[str, bool]] = None,
     ):
         super().__init__(parent)
         self.setObjectName(type(self).__name__)
@@ -4439,6 +4669,19 @@ class GrowthCurveVideoWorker(QThread):
         self.graph_width_ratio = float(graph_width_ratio)
         self.y_column = y_column
         self.fi_layout = fi_layout
+        self.overlay_colors = normalize_video_overlay_colors(overlay_colors)
+        self.tile_visibility = dict(tile_visibility or {})
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+        try:
+            self.requestInterruption()
+        except Exception:
+            pass
+
+    def _is_cancelled(self) -> bool:
+        return bool(self._cancel_requested) or bool(self.isInterruptionRequested())
 
     def run(self) -> None:
         try:
@@ -4467,9 +4710,18 @@ class GrowthCurveVideoWorker(QThread):
                     graph_width_ratio=self.graph_width_ratio,
                     y_column=self.y_column,
                     fi_layout=self.fi_layout,
+                    overlay_colors=self.overlay_colors,
+                    tile_visibility=self.tile_visibility,
                     progress_callback=_progress,
+                    cancel_check=self._is_cancelled,
                 )
             except ValueError as e:
+                self.finished.emit(False, str(e))
+                return
+            except RuntimeError as e:
+                if "cancel" in str(e).lower():
+                    self.finished.emit(False, "Video montage export cancelled.")
+                    return
                 self.finished.emit(False, str(e))
                 return
 

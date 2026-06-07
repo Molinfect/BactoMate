@@ -23,6 +23,13 @@ DEFAULT_SHARPEN_RADIUS = 1.0
 DEFAULT_SHARPEN_AMOUNT = 1.5
 
 _SPOTIFLOW_MODEL_CACHE: Dict[Tuple[str, str], Any] = {}
+_SPOTIFLOW_DETECT_CACHE: Dict[Any, List[Dict[str, Any]]] = {}
+_SPOTIFLOW_DETECT_CACHE_MAX = 32
+
+
+def clear_spotiflow_detect_cache() -> None:
+    """Clear cached Spotiflow inference outputs. Intended for tests and memory cleanup."""
+    _SPOTIFLOW_DETECT_CACHE.clear()
 
 
 def _spotiflow_cache_key(model_name: str = "general", model_path: Optional[str] = None) -> Tuple[str, str]:
@@ -39,6 +46,7 @@ def _spotiflow_cache_key(model_name: str = "general", model_path: Optional[str] 
 def clear_spotiflow_model_cache() -> None:
     """Clear cached Spotiflow model instances. Intended for tests and explicit memory cleanup."""
     _SPOTIFLOW_MODEL_CACHE.clear()
+    clear_spotiflow_detect_cache()
 
 
 def load_spotiflow_model(model_name: str = "general", model_path: Optional[str] = None) -> Any:
@@ -896,6 +904,51 @@ def probability_from_spotiflow_details(
     return None
 
 
+def spotiflow_inference_cache_key(
+    image: np.ndarray,
+    *,
+    source_path: Optional[str] = None,
+    frame_idx: Optional[int] = None,
+    source_mtime: Optional[float] = None,
+    **detect_kwargs: Any,
+) -> tuple:
+    """Stable cache key for Spotiflow inference (file/frame/settings/mtime when available)."""
+    arr = np.asarray(coerce_plane_to_2d(image))
+    h, w = int(arr.shape[0]), int(arr.shape[1])
+    samples: tuple[float, ...] = ()
+    if arr.size:
+        pts = (
+            (0, 0),
+            (0, max(0, w - 1)),
+            (max(0, h - 1), 0),
+            (max(0, h - 1), max(0, w - 1)),
+            (h // 2, w // 2),
+        )
+        samples = tuple(float(arr[y, x]) for y, x in pts)
+    settings_items = []
+    for key in sorted(detect_kwargs):
+        if key in ("spotiflow_model", "verbose", "raise_on_error", "detect_cache", "detect_cache_key"):
+            continue
+        settings_items.append((key, repr(detect_kwargs[key])))
+    path_token = ""
+    if source_path:
+        try:
+            from pathlib import Path
+
+            path_token = str(Path(source_path).expanduser().resolve())
+        except Exception:
+            path_token = str(source_path)
+    return (
+        path_token,
+        int(frame_idx) if frame_idx is not None else None,
+        float(source_mtime) if source_mtime is not None else None,
+        h,
+        w,
+        samples,
+        tuple(settings_items),
+    )
+
+
 def detect_peaks_spotiflow(
     image: np.ndarray,
     *,
@@ -916,6 +969,8 @@ def detect_peaks_spotiflow(
     n_tiles_x: int = 1,
     verbose: bool = False,
     raise_on_error: bool = False,
+    detect_cache_key: Optional[tuple] = None,
+    detect_cache: Optional[Dict[Any, List[Dict[str, Any]]]] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Optional: detect spots using Spotiflow (deep learning). Returns list of dicts
@@ -929,6 +984,12 @@ def detect_peaks_spotiflow(
 
     ``blur_sigma`` and ``bg_subtract_radius`` are applied to a working copy of the image before inference.
     """
+    cache = detect_cache if detect_cache is not None else _SPOTIFLOW_DETECT_CACHE
+    if detect_cache_key is not None:
+        cached = cache.get(detect_cache_key)
+        if cached is not None:
+            return [dict(p) for p in cached]
+
     sf_normalize = None
     if normalize:
         try:
@@ -1018,6 +1079,13 @@ def detect_peaks_spotiflow(
                 "rel_intensity": rel,
             }
             peaks.append(p)
+    if detect_cache_key is not None:
+        cache[detect_cache_key] = [dict(p) for p in peaks]
+        while len(cache) > _SPOTIFLOW_DETECT_CACHE_MAX:
+            try:
+                cache.pop(next(iter(cache)))
+            except StopIteration:
+                break
     return peaks
 
 

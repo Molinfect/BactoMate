@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QProgressDialog,
@@ -49,14 +50,10 @@ from bactomate.gui.preview.preview_window import (
 )
 from bactomate.gui.image_utils import to_qpixmap, scale_for_preview
 from bactomate.gui.preferences import (
-    delete_growth_graph_preset,
     delete_montage_preset,
     get_default_browse_dir,
-    list_growth_graph_preset_names,
     list_montage_preset_names,
-    load_growth_graph_preset,
     load_montage_preset,
-    save_growth_graph_preset,
     save_montage_preset,
 )
 from bactomate.modules.tiff_metadata import (
@@ -67,7 +64,6 @@ from bactomate.modules.tiff_metadata import (
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.utils import safe_imread
 from bactomate.gui.widgets import (
-    DragDropGroupBox,
     create_info_icon,
     show_file_selection_dialog,
     show_task_complete_dialog,
@@ -76,7 +72,6 @@ from bactomate.gui.widgets import (
 from bactomate.gui.layout_helpers import (
     ResponsivePanel,
     build_path_drop_group,
-    stacked_path_block,
     style_compact_action_button,
     style_compact_browse_button,
     style_module_primary_button,
@@ -84,10 +79,12 @@ from bactomate.gui.layout_helpers import (
 )
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
 from bactomate.gui.workers import (
-    BUILTIN_GROWTH_GRAPH_PRESETS,
     DEFAULT_GROWTH_GRAPH_STYLE,
     DEFAULT_GROWTH_Y_COLUMN,
     DEFAULT_VIDEO_FI_LAYOUT,
+    DEFAULT_VIDEO_OVERLAY_COLORS,
+    MAX_VIDEO_FI_COLOR_CHANNELS,
+    VIDEO_FI_AUTO_LUT_NAMES,
     GrowthCurveVideoWorker,
     VIDEO_FI_LAYOUT_MERGED,
     VIDEO_FI_LAYOUT_SEPARATE,
@@ -97,6 +94,7 @@ from bactomate.gui.workers import (
     list_growth_curve_excel_columns,
     load_growth_curve_summary_data,
     load_growth_curve_video_source,
+    normalize_video_overlay_colors,
 )
 
 
@@ -135,6 +133,8 @@ class PostProcessingTab(QWidget):
         self._growth_y_column: str = DEFAULT_GROWTH_Y_COLUMN
         self._graph_width_ratio: float = 0.5
         self._video_fi_layout: str = DEFAULT_VIDEO_FI_LAYOUT
+        self._video_tile_visibility: dict[str, bool] = {}
+        self._video_overlay_colors: dict[str, Any] = normalize_video_overlay_colors(DEFAULT_VIDEO_OVERLAY_COLORS)
         self._video_montage_widgets_ready = False
         self.montage_channel_color_overrides: dict = {}  # (path_stem, ch_idx) -> "auto"|"gray"|"red"|"green"|...
         self.montage_tile_color_overrides: Dict[Any, Tuple[float, float, float]] = {}  # tile label or idx -> (r,g,b)
@@ -788,16 +788,6 @@ class PostProcessingTab(QWidget):
     def _on_post_section_toggled(self, section: str, expanded: bool) -> None:
         if not expanded:
             return
-        sections = {
-            "montage": getattr(self, "montage_section", None),
-            "video": getattr(self, "video_montage_section", None),
-        }
-        for key, widget in sections.items():
-            if key != section and widget is not None:
-                try:
-                    widget.set_expanded(False)
-                except Exception:
-                    pass
         if str(getattr(self, "_post_preview_mode", "montage")) != section:
             self._close_embedded_post_preview()
         self._set_post_preview_mode(section)
@@ -811,7 +801,7 @@ class PostProcessingTab(QWidget):
             mode = str(getattr(self, "_post_preview_mode", "montage"))
             if mode == "video":
                 raw = (self.video_path.text() or "").strip() if hasattr(self, "video_path") else ""
-                video_paths = self._parse_growth_curve_video_paths(raw)
+                video_paths = self._resolve_growth_curve_video_paths(raw)
                 paths = [str(p.resolve()) for p in video_paths if p.exists()]
             else:
                 paths = [str(p.resolve()) for p in self._get_montage_image_paths()]
@@ -840,6 +830,9 @@ class PostProcessingTab(QWidget):
             self.video_mask_path,
             self.video_foci_overlay,
             self.video_foci_path,
+            self.video_fi_channels,
+            self.use_excel_graph,
+            self.excel_path,
             self.video_fi_layout_combo,
             self.process_btn,
         ):
@@ -910,30 +903,29 @@ class PostProcessingTab(QWidget):
 
     def _build_video_input_group(self) -> QWidget:
         """Build the video input (TIFF sequence) group."""
-        video_group = DragDropGroupBox(
-            "Video Input (TIFF Sequence)",
-            parent=self,
-            on_drop_callback=self.handle_dropped_video_path
-        )
+        video_group = QWidget(self)
         video_group.setMinimumWidth(0)
+        video_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         video_layout = QVBoxLayout()
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(3)
         self.video_path = QLineEdit()
-        self.video_path.setPlaceholderText("TIFF file, folder, or channel stacks (|)…")
+        self.video_path.setPlaceholderText("TIFF file, folder, or channel stacks separated by |")
         self.video_path.setMinimumWidth(0)
         file_font = QFont()
         file_font.setPointSize(11)
         self.video_path.setFont(file_font)
-        file_btn = QPushButton("Browse File...")
+        file_btn = QPushButton("File…")
         file_btn.clicked.connect(self.select_video_file)
-        folder_btn = QPushButton("Browse Folder...")
+        folder_btn = QPushButton("Folder…")
         folder_btn.clicked.connect(self.select_video_folder)
-        channels_btn = QPushButton("Channels…")
+        channels_btn = QPushButton("Ch…")
         channels_btn.setToolTip(
             "Select one TIFF stack per fluorescence channel (same frame count and image size). "
             "Channels are merged with color lookup tables (green, magenta, cyan, …)."
         )
         channels_btn.clicked.connect(self.select_video_multi_channel)
-        autofill_btn = QPushButton("Auto-fill")
+        autofill_btn = QPushButton("Auto")
         autofill_btn.setToolTip(
             "Auto-detect phase/FI channels, analysis workbook, masks, and foci files "
             "from the selected dataset folder."
@@ -943,45 +935,36 @@ class PostProcessingTab(QWidget):
             style_compact_browse_button(btn)
         style_compact_action_button(channels_btn, horizontal_padding=18)
         style_compact_action_button(autofill_btn, horizontal_padding=16)
+        channels_btn.setFixedWidth(58)
+        autofill_btn.setFixedWidth(58)
 
-        input_block = QWidget(self)
-        input_block.setMinimumWidth(0)
-        input_block.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        input_block_layout = QVBoxLayout(input_block)
-        input_block_layout.setContentsMargins(0, 0, 0, 0)
-        input_block_layout.setSpacing(4)
-
-        input_path_row = QHBoxLayout()
-        input_path_row.setSpacing(4)
-        input_label = QLabel("Input:")
-        input_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        input_path_row.addWidget(input_label, 0)
-        input_path_row.addWidget(
-            create_info_icon(
-                "Video input options:\n\n"
-                "• Single TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (TCYX / T,C,H,W). "
-                "Multiple channels are composited with additive color LUTs (green, magenta, cyan, yellow, …).\n\n"
-                "• Folder: sorted *.tif sequence (grayscale).\n\n"
-                "• Channels: pick several single-channel TIFF stacks (one file per channel); "
-                "paths are joined with |. Same T×H×W required.\n\n"
-                "Tip: You can also paste multiple paths separated by | or one path per line.",
-                parent_widget=self,
-            ),
-            0,
+        video_layout.addWidget(
+            build_path_drop_group(
+                self,
+                self.handle_dropped_video_path,
+                path_label="Input:",
+                line_edit=self.video_path,
+                buttons=(),
+                info_icon=create_info_icon(
+                    "Video input options:\n\n"
+                    "• Single TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (TCYX / T,C,H,W). "
+                    "Multiple channels are composited with additive color LUTs (green, magenta, cyan, yellow, …).\n\n"
+                    "• Folder: auto-detects likely TL/phase/FI TIFF stacks. If no stacks are found, "
+                    "the folder is treated as a sorted grayscale TIFF sequence.\n\n"
+                    "• Channels: pick several single-channel TIFF stacks (one file per channel); "
+                    "paths are joined with |. Same T×H×W required.\n\n"
+                    "Tip: You can also paste multiple paths separated by | or one path per line.",
+                    parent_widget=self,
+                ),
+            )
         )
-        input_path_row.addWidget(self.video_path, 1)
-        input_block_layout.addLayout(input_path_row)
-
-        input_button_panel = ResponsivePanel(self, breakpoint=520)
+        input_button_panel = ResponsivePanel(self, breakpoint=300)
         input_button_panel.set_defer_reflow(True)
-        input_button_panel.add_widget(file_btn)
-        input_button_panel.add_widget(folder_btn)
-        input_button_panel.add_widget(channels_btn)
-        input_button_panel.add_widget(autofill_btn)
+        for btn in (file_btn, folder_btn, channels_btn, autofill_btn):
+            input_button_panel.add_widget(btn)
         input_button_panel.set_defer_reflow(False)
         input_button_panel.reflow()
-        input_block_layout.addWidget(input_button_panel)
-        video_layout.addWidget(input_block)
+        video_layout.addWidget(input_button_panel)
         video_group.setLayout(video_layout)
         return video_group
 
@@ -1052,22 +1035,45 @@ class PostProcessingTab(QWidget):
 
         self.video_mask_contours = QCheckBox("Mask contours")
         self.video_mask_contours.setToolTip("Draw segmentation masks as thin contours over the real video frames.")
+        self.video_mask_contours.setText("")
         self.video_mask_path = QLineEdit()
         self.video_mask_path.setPlaceholderText("Optional mask TIFF for contour overlay")
         self.video_mask_path.setMinimumWidth(0)
 
         self.video_foci_overlay = QCheckBox("Foci markers")
         self.video_foci_overlay.setToolTip("Draw foci markers from a CSV/XLSX with frame, x, and y columns.")
+        self.video_foci_overlay.setText("")
         self.video_foci_path = QLineEdit()
         self.video_foci_path.setPlaceholderText("Optional foci CSV/XLSX with frame, x, y columns")
         self.video_foci_path.setMinimumWidth(0)
 
+        self.video_fi_channels = QCheckBox("FI channels")
+        self.video_fi_channels.setChecked(True)
+        self.video_fi_channels.setToolTip("Include FI channel stack(s) in the video montage. Disable for phase/TL only.")
+        self.video_fi_channels.setText("")
+        self.video_fi_path = QLineEdit()
+        self.video_fi_path.setPlaceholderText("Optional FI TIFF stack(s), separated by |")
+        self.video_fi_path.setMinimumWidth(0)
+
+        self.use_excel_graph = QCheckBox("Growth graph")
+        self.use_excel_graph.setChecked(True)
+        self.use_excel_graph.setToolTip("Use the Excel analysis file for the growth graph. Disable for video-only montage.")
+        self.use_excel_graph.setText("")
+
+        self.excel_path = QLineEdit()
+        self.excel_path.setPlaceholderText("Optional Excel file for growth curve")
+        self.excel_path.setMinimumWidth(0)
+        excel_font = QFont()
+        excel_font.setPointSize(11)
+        self.excel_path.setFont(excel_font)
+        self.excel_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         self.video_fi_layout_combo = QComboBox()
-        self.video_fi_layout_combo.addItem("Merged overlay", VIDEO_FI_LAYOUT_MERGED)
-        self.video_fi_layout_combo.addItem("Separate FI tiles", VIDEO_FI_LAYOUT_SEPARATE)
+        self.video_fi_layout_combo.addItem("Merged tile", VIDEO_FI_LAYOUT_MERGED)
+        self.video_fi_layout_combo.addItem("Separate tiles", VIDEO_FI_LAYOUT_SEPARATE)
         self.video_fi_layout_combo.setToolTip(
-            "Merged overlay: phase and FI channels are color-merged into one microscopy tile.\n"
-            "Separate FI tiles: show Phase, each FI channel, and a merged tile side by side."
+            "Merged tile: phase/FI/foci image channels are color-merged into one microscopy tile.\n"
+            "Separate tiles: show individual image-channel tiles and choose which tiles are visible."
         )
         self._compact_preview_control(self.video_fi_layout_combo, 180)
 
@@ -1088,14 +1094,447 @@ class PostProcessingTab(QWidget):
         self.video_foci_overlay.toggled.connect(self._schedule_video_preview_refresh)
         self.video_foci_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
         self.video_foci_path.textChanged.connect(lambda _text="": self._schedule_video_preview_refresh())
+        self.video_fi_channels.toggled.connect(self._on_video_fi_channels_toggled)
+        self.video_fi_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
+        self.video_fi_path.textChanged.connect(lambda _text="": self._schedule_video_preview_refresh())
+        self.use_excel_graph.toggled.connect(self._on_use_excel_graph_toggled)
         self.video_fi_layout_combo.currentIndexChanged.connect(lambda _idx=0: self._on_video_fi_layout_changed())
 
-    def _on_video_fi_layout_changed(self) -> None:
-        self._video_fi_layout = self._get_video_fi_layout()
+    def _on_video_fi_channels_toggled(self, checked: bool) -> None:
+        for widget in (
+            getattr(self, "video_fi_path", None),
+            getattr(self, "video_fi_layout_combo", None),
+            getattr(self, "video_tile_select_btn", None),
+        ):
+            if self._qt_widget_alive(widget):
+                widget.setEnabled(bool(checked))
+        btn = getattr(self, "video_tile_select_btn", None)
+        if self._qt_widget_alive(btn):
+            btn.setEnabled(bool(checked) and self._get_video_fi_layout() == VIDEO_FI_LAYOUT_SEPARATE)
         self._invalidate_video_preview_cache()
         self._schedule_video_preview_refresh()
 
+    def _on_use_excel_graph_toggled(self, checked: bool) -> None:
+        for widget in (
+            getattr(self, "excel_path", None),
+            getattr(self, "excel_y_column", None),
+            getattr(self, "yaxis_min", None),
+            getattr(self, "yaxis_max", None),
+            getattr(self, "graph_width_ratio_spin", None),
+        ):
+            if self._qt_widget_alive(widget):
+                widget.setEnabled(bool(checked))
+        self._refresh_growth_y_column_combo()
+        self._invalidate_video_preview_cache()
+        self._schedule_video_preview_refresh()
+
+    def _on_video_fi_layout_changed(self) -> None:
+        self._video_fi_layout = self._get_video_fi_layout()
+        btn = getattr(self, "video_tile_select_btn", None)
+        if self._qt_widget_alive(btn):
+            btn.setEnabled(self._video_fi_enabled() and self._video_fi_layout == VIDEO_FI_LAYOUT_SEPARATE)
+        self._invalidate_video_preview_cache()
+        self._schedule_video_preview_refresh()
+
+    @staticmethod
+    def _video_tile_key(label: str) -> str:
+        return str(label or "").strip().lower()
+
+    def _video_tile_visible(self, label: str) -> bool:
+        return bool(self._video_tile_visibility.get(self._video_tile_key(label), True))
+
+    def _filter_video_tiles_for_visibility(self, tiles: Optional[list[tuple[str, np.ndarray]]]) -> list[tuple[str, np.ndarray]]:
+        if not tiles:
+            return []
+        visible = [(label, frames) for label, frames in tiles if self._video_tile_visible(label)]
+        return visible or list(tiles)
+
+    def _open_video_tile_visibility_dialog(self) -> None:
+        if self._get_video_fi_layout() != VIDEO_FI_LAYOUT_SEPARATE:
+            QMessageBox.information(self, "Video tiles", "Switch Layout to Separate tiles before choosing tiles.")
+            return
+        try:
+            cache = self._load_video_preview_cache()
+        except Exception as exc:
+            QMessageBox.warning(self, "Video tiles", f"Could not load current video tiles:\n{exc}")
+            return
+        all_tiles = list((cache or {}).get("all_tiles") or (cache or {}).get("tiles") or [])
+        if not all_tiles:
+            QMessageBox.information(self, "Video tiles", "No separate video tiles are available yet.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Video tiles")
+        dlg.setMinimumWidth(360)
+        dlg.setMinimumHeight(320)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel("Choose which tiles to show in Separate tiles layout."))
+        checks: list[tuple[str, QCheckBox]] = []
+        for label, _frames in all_tiles:
+            cb = QCheckBox(str(label))
+            cb.setChecked(self._video_tile_visible(str(label)))
+            layout.addWidget(cb)
+            checks.append((str(label), cb))
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        restore_btn = QPushButton("Show all")
+        style_compact_action_button(restore_btn, horizontal_padding=16)
+        buttons.addButton(restore_btn, QDialogButtonBox.ButtonRole.ResetRole)
+        for std_btn, padding in (
+            (QDialogButtonBox.StandardButton.Cancel, 26),
+            (QDialogButtonBox.StandardButton.Ok, 26),
+        ):
+            btn = buttons.button(std_btn)
+            if btn is not None:
+                style_compact_action_button(btn, horizontal_padding=padding)
+                btn.setMinimumWidth(96)
+        buttons.setMinimumHeight(48)
+
+        def _show_all() -> None:
+            for _label, cb in checks:
+                cb.setChecked(True)
+
+        restore_btn.clicked.connect(_show_all)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        dlg.adjustSize()
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not any(cb.isChecked() for _label, cb in checks):
+            QMessageBox.information(self, "Video tiles", "At least one tile must stay visible.")
+            return
+        for label, cb in checks:
+            self._video_tile_visibility[self._video_tile_key(label)] = cb.isChecked()
+        self._invalidate_video_preview_cache()
+        self._schedule_video_preview_refresh()
+
+    def _get_video_overlay_colors(self) -> dict[str, Any]:
+        return normalize_video_overlay_colors(self._video_overlay_colors)
+
+    def _set_video_overlay_colors(self, data: dict[str, Any]) -> None:
+        self._video_overlay_colors = normalize_video_overlay_colors(data)
+        self._invalidate_video_preview_cache()
+        self._schedule_video_preview_refresh()
+
+    @staticmethod
+    def _video_path_looks_like_foci_channel(path: Path) -> bool:
+        stem = path.stem.lower()
+        return "foci" in stem or "focus" in stem
+
+    @staticmethod
+    def _video_color_channel_label(path: Path, index: int) -> str:
+        return PostProcessingTab._video_color_channel_label_from_name(path.stem, index)
+
+    @staticmethod
+    def _video_color_channel_label_from_name(name: str, index: int) -> str:
+        text = str(name or "").strip()
+        text_lower = text.lower()
+        if "foci" in text_lower or "focus" in text_lower:
+            label = text
+            for token in ("_fi_foci_", "_fi_focus_", "_foci_", "_focus_", "foci_", "focus_"):
+                if token in text_lower:
+                    pos = text_lower.find(token)
+                    label = text[pos + len(token):] or text
+                    break
+            label = label.replace("_", " ").strip()
+            return f"Foci channel ({label})" if label else "Foci channel"
+        label = text
+        if "_fi_" in text_lower:
+            pos = text_lower.find("_fi_")
+            label = text[pos + len("_fi_"):] or text
+        label = label.replace("_", " ").strip()
+        return f"FI channel {index + 1} ({label})" if label else f"FI channel {index + 1}"
+
+    def _metadata_video_color_channel_labels(self, path: Path) -> list[str]:
+        """Use TIFF/ND2 channel names when available, excluding phase-like channels."""
+        if not path.is_file():
+            return []
+        try:
+            meta = read_metadata_from_path(path)
+        except Exception:
+            return []
+        names = [str(n).strip() for n in (meta.get("channel_names") or []) if str(n).strip()]
+        if not names:
+            return []
+        labels: list[str] = []
+        path_is_foci = self._video_path_looks_like_foci_channel(path)
+        for name in names:
+            if any(token in name.lower() for token in ("phase", "brightfield", "transmission", "dic")):
+                continue
+            if path_is_foci and "foci" not in name.lower() and "focus" not in name.lower():
+                clean_name = name.replace("_", " ").strip()
+                labels.append(f"Foci channel ({clean_name})" if clean_name else "Foci channel")
+            else:
+                labels.append(self._video_color_channel_label_from_name(name, len(labels)))
+        return labels[:MAX_VIDEO_FI_COLOR_CHANNELS]
+
+    def _infer_video_color_channel_labels(self) -> list[str]:
+        """Show color rows for the image channels currently selected, not the renderer maximum."""
+        if not self._video_fi_enabled():
+            return []
+
+        fi_edit = getattr(self, "video_fi_path", None)
+        fi_raw = fi_edit.text().strip() if self._qt_widget_alive(fi_edit) else ""
+        explicit_fi_paths = self._parse_growth_curve_video_paths(fi_raw)
+        if explicit_fi_paths:
+            labels: list[str] = []
+            for path in explicit_fi_paths:
+                if path.is_dir():
+                    discovered = self._discover_growth_curve_video_inputs(
+                        path,
+                        include_sequence_folders=True,
+                    )
+                    for discovered_path in discovered or [path]:
+                        labels.append(self._video_color_channel_label(discovered_path, len(labels)))
+                else:
+                    metadata_labels = self._metadata_video_color_channel_labels(path)
+                    labels.extend(metadata_labels or [self._video_color_channel_label(path, len(labels))])
+            return labels[:MAX_VIDEO_FI_COLOR_CHANNELS] or ["FI channel 1"]
+
+        video_edit = getattr(self, "video_path", None)
+        video_raw = video_edit.text().strip() if self._qt_widget_alive(video_edit) else ""
+        base_paths = self._candidate_growth_curve_video_paths(video_raw)
+        if len(base_paths) > 1:
+            _, fi_paths = self._split_phase_and_fi_video_paths(base_paths)
+            if fi_paths:
+                return [
+                    self._video_color_channel_label(path, idx)
+                    for idx, path in enumerate(fi_paths[:MAX_VIDEO_FI_COLOR_CHANNELS])
+                ]
+        if len(base_paths) == 1:
+            metadata_labels = self._metadata_video_color_channel_labels(base_paths[0])
+            if metadata_labels:
+                return metadata_labels
+
+        # A single multi-channel TIFF may still contain one or more FI channels; keep the UI minimal.
+        return ["FI channel 1"]
+
+    def _open_video_overlay_colors_dialog(self) -> None:
+        colors = self._get_video_overlay_colors()
+        channel_labels = self._infer_video_color_channel_labels()
+        fi_preset_names = ["Auto"] + list(VIDEO_FI_AUTO_LUT_NAMES) + ["Gray", "Pick…"]
+        marker_preset_names = ["Auto", "Yellow", "Magenta", "Cyan", "Red", "Green", "White", "Pick…"]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Video overlay colors")
+        dlg.setMinimumWidth(420)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(
+            QLabel(
+                "Choose how FI/foci image channels are tinted and how mask contours and foci markers are drawn. "
+                "Auto keeps the current default palette."
+            )
+        )
+        form = QFormLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        def _add_color_row(label_text: str, widget: QWidget) -> None:
+            label = QLabel(label_text)
+            label.setMinimumWidth(150)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            form.addRow(label, widget)
+
+        fi_combos: list[QComboBox] = []
+        fi_custom: list[Optional[tuple[int, int, int]]] = [None] * len(channel_labels)
+        fi_saved = list(colors.get("fi_channels") or [])
+        for idx, label in enumerate(channel_labels):
+            combo = QComboBox()
+            combo.addItems(fi_preset_names)
+            entry = fi_saved[idx] if idx < len(fi_saved) else "auto"
+            if isinstance(entry, (list, tuple)) and len(entry) == 3:
+                fi_custom[idx] = (int(entry[0]), int(entry[1]), int(entry[2]))
+                combo.addItem("Custom")
+                combo.setCurrentText("Custom")
+            else:
+                text = str(entry or "auto")
+                if text.lower() in {"", "auto", "default"}:
+                    combo.setCurrentIndex(0)
+                elif text in fi_preset_names:
+                    combo.setCurrentText(text)
+                else:
+                    combo.setCurrentIndex(0)
+            _add_color_row(label, combo)
+            fi_combos.append(combo)
+
+        def _marker_combo(entry: Any, presets: list[str]) -> tuple[QComboBox, list[Optional[tuple[int, int, int]]]]:
+            combo = QComboBox()
+            combo.addItems(presets)
+            custom_store: list[Optional[tuple[int, int, int]]] = [None]
+            if isinstance(entry, (list, tuple)) and len(entry) == 3:
+                custom_store[0] = (int(entry[0]), int(entry[1]), int(entry[2]))
+                combo.addItem("Custom")
+                combo.setCurrentText("Custom")
+            else:
+                text = str(entry or "auto")
+                if text.lower() in {"", "auto", "default"}:
+                    combo.setCurrentIndex(0)
+                elif text in presets:
+                    combo.setCurrentText(text)
+                else:
+                    combo.setCurrentIndex(0)
+            return combo, custom_store
+
+        mask_combo, mask_custom = _marker_combo(colors.get("mask_contour"), marker_preset_names)
+        foci_combo, foci_custom = _marker_combo(colors.get("foci_marker"), marker_preset_names)
+        _add_color_row("Mask contours", mask_combo)
+        _add_color_row("Foci markers", foci_combo)
+        layout.addLayout(form)
+
+        def _pick_custom_color(title: str, current: Optional[tuple[int, int, int]]) -> Optional[tuple[int, int, int]]:
+            base = current or (255, 255, 255)
+            qc = QColorDialog.getColor(
+                QColor(base[0], base[1], base[2]),
+                dlg,
+                title,
+            )
+            if not qc.isValid():
+                return None
+            return (qc.red(), qc.green(), qc.blue())
+
+        def _read_combo_value(
+            combo: QComboBox,
+            custom_rgb: Optional[tuple[int, int, int]],
+            *,
+            pick_title: str,
+        ) -> Any:
+            text = combo.currentText()
+            if text == "Pick…":
+                picked = _pick_custom_color(pick_title, custom_rgb)
+                if picked is None:
+                    return custom_rgb or "auto"
+                return list(picked)
+            if text == "Custom" and custom_rgb is not None:
+                return list(custom_rgb)
+            if text == "Auto":
+                return "auto"
+            return text
+
+        def _on_combo_changed(
+            combo: QComboBox,
+            custom_holder: list[Optional[tuple[int, int, int]]],
+            *,
+            pick_title: str,
+        ) -> None:
+            if combo.currentText() != "Pick…":
+                return
+            picked = _pick_custom_color(pick_title, custom_holder[0])
+            if picked is None:
+                combo.setCurrentIndex(0)
+                return
+            custom_holder[0] = picked
+            if combo.findText("Custom") < 0:
+                combo.addItem("Custom")
+            combo.setCurrentText("Custom")
+
+        for idx, combo in enumerate(fi_combos):
+            holder = [fi_custom[idx]]
+            label = channel_labels[idx] if idx < len(channel_labels) else f"FI channel {idx + 1}"
+
+            def _fi_changed(_index: int = 0, c=combo, h=holder, i=idx, row_label=label) -> None:
+                if c.currentText() != "Pick…":
+                    return
+                picked = _pick_custom_color(f"Pick color for {row_label}", h[0])
+                if picked is None:
+                    c.setCurrentIndex(0)
+                    return
+                h[0] = picked
+                fi_custom[i] = picked
+                if c.findText("Custom") < 0:
+                    c.addItem("Custom")
+                c.setCurrentText("Custom")
+
+            combo.currentIndexChanged.connect(_fi_changed)
+
+        mask_combo.currentIndexChanged.connect(
+            lambda _idx=0: _on_combo_changed(mask_combo, mask_custom, pick_title="Pick mask contour color")
+        )
+        foci_combo.currentIndexChanged.connect(
+            lambda _idx=0: _on_combo_changed(foci_combo, foci_custom, pick_title="Pick foci marker color")
+        )
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        restore_btn = QPushButton("Restore")
+        style_compact_action_button(restore_btn, horizontal_padding=14)
+        buttons.addButton(restore_btn, QDialogButtonBox.ButtonRole.ResetRole)
+        for std_btn, padding in (
+            (QDialogButtonBox.StandardButton.Cancel, 26),
+            (QDialogButtonBox.StandardButton.Ok, 26),
+        ):
+            btn = buttons.button(std_btn)
+            if btn is not None:
+                style_compact_action_button(btn, horizontal_padding=padding)
+                btn.setMinimumWidth(96)
+        buttons.setMinimumHeight(44)
+
+        def _restore_defaults() -> None:
+            defaults = normalize_video_overlay_colors(DEFAULT_VIDEO_OVERLAY_COLORS)
+            for idx, combo in enumerate(fi_combos):
+                fi_custom[idx] = None
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(fi_preset_names)
+                combo.setCurrentIndex(0)
+                combo.blockSignals(False)
+            for combo, key, custom_holder in (
+                (mask_combo, "mask_contour", mask_custom),
+                (foci_combo, "foci_marker", foci_custom),
+            ):
+                custom_holder[0] = None
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(marker_preset_names)
+                entry = defaults.get(key)
+                if str(entry).lower() in {"", "auto"}:
+                    combo.setCurrentIndex(0)
+                elif str(entry) in marker_preset_names:
+                    combo.setCurrentText(str(entry))
+                else:
+                    combo.setCurrentIndex(0)
+                combo.blockSignals(False)
+
+        restore_btn.clicked.connect(_restore_defaults)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        fi_values: list[Any] = []
+        for idx, combo in enumerate(fi_combos):
+            label = channel_labels[idx] if idx < len(channel_labels) else f"FI channel {idx + 1}"
+            fi_values.append(
+                _read_combo_value(
+                    combo,
+                    fi_custom[idx],
+                    pick_title=f"Pick color for {label}",
+                )
+            )
+        self._set_video_overlay_colors(
+            {
+                "fi_channels": fi_values,
+                "mask_contour": _read_combo_value(
+                    mask_combo,
+                    mask_custom[0],
+                    pick_title="Pick mask contour color",
+                ),
+                "foci_marker": _read_combo_value(
+                    foci_combo,
+                    foci_custom[0],
+                    pick_title="Pick foci marker color",
+                ),
+            }
+        )
+
     def _get_video_fi_layout(self) -> str:
+        if not self._video_fi_enabled():
+            return VIDEO_FI_LAYOUT_MERGED
         combo = getattr(self, "video_fi_layout_combo", None)
         if self._qt_widget_alive(combo):
             value = combo.currentData()
@@ -1103,44 +1542,6 @@ class PostProcessingTab(QWidget):
                 return str(value)
         layout = getattr(self, "_video_fi_layout", DEFAULT_VIDEO_FI_LAYOUT)
         return layout if layout in (VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE) else DEFAULT_VIDEO_FI_LAYOUT
-
-    def _build_excel_section(self) -> QWidget:
-        """Build Excel analysis file input for video montage."""
-        file_font = QFont()
-        file_font.setPointSize(11)
-        path_field_policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        excel_group = DragDropGroupBox(
-            "Excel Analysis File",
-            parent=self,
-            on_drop_callback=self.handle_dropped_excel_path
-        )
-        excel_group.setMinimumWidth(0)
-        self.excel_path = QLineEdit()
-        self.excel_path.setPlaceholderText("Optional Excel file for growth curve (preview works without it)")
-        self.excel_path.setMinimumWidth(0)
-        self.excel_path.setFont(file_font)
-        self.excel_path.setSizePolicy(path_field_policy)
-        excel_btn = QPushButton("Browse File...")
-        excel_btn.clicked.connect(self.select_excel_file)
-        excel_group_lay = QVBoxLayout(excel_group)
-        excel_group_lay.addWidget(
-            stacked_path_block(
-                path_label="Excel:",
-                line_edit=self.excel_path,
-                buttons=(excel_btn,),
-                info_icon=create_info_icon(
-                    "Optional Excel file from the Analyze Masks tab containing growth data.\n"
-                    "If omitted, the preview/export shows the real video only without a growth graph.\n\n"
-                    "Required columns:\n"
-                    "- Frame: Frame number (1, 2, 3, ...)\n"
-                    "- Total Cell Area (Relative): Normalized cell area (first frame = 1.0)",
-                    parent_widget=self,
-                ),
-                parent=self,
-            )
-        )
-        excel_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        return excel_group
 
     def _build_graph_and_video_settings(self, *, connect_live_refresh: bool = False) -> QWidget:
         """Build time, graph, FPS, and output-format controls for the video montage preview pane."""
@@ -1160,109 +1561,10 @@ class PostProcessingTab(QWidget):
         time_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         time_layout.addWidget(time_label)
         time_layout.addWidget(time_info_icon)
-        time_layout.addStretch()
+        time_layout.addSpacing(12)
         time_layout.addWidget(self.time_interval)
-        time_group.setLayout(time_layout)
-        settings_container_layout.addWidget(time_group)
-        
-        # Graph settings
-        graph_group = QGroupBox("Graph Settings")
-        graph_group.setMinimumWidth(0)
-        graph_layout = QVBoxLayout()
-
-        y_column_row = QHBoxLayout()
-        y_column_row.setSpacing(8)
-        y_column_row.addWidget(QLabel("Y-axis column:"))
-        y_column_row.addWidget(self.excel_y_column, 1)
-        y_column_row.addWidget(
-            create_info_icon(
-                "Choose which Excel Summary column is plotted on the Y axis.\n"
-                "Examples: relative cell area, total area, cell count, or foci metrics.",
-                parent_widget=self,
-            )
-        )
-        graph_layout.addLayout(y_column_row)
-
-        width_row = QHBoxLayout()
-        width_row.setSpacing(8)
-        width_row.addWidget(QLabel("Graph width:"))
-        width_row.addWidget(self.graph_width_ratio_spin)
-        width_row.addWidget(
-            create_info_icon(
-                "How much horizontal space the growth graph takes versus the microscopy video.\n"
-                "50% = equal split; lower values give more room to the video.",
-                parent_widget=self,
-            )
-        )
-        width_row.addStretch(1)
-        graph_layout.addLayout(width_row)
-        
-        # Y-axis min/max
-        yaxis_layout = QHBoxLayout()
-        ymin_label = QLabel("Min:")
-        ymax_label = QLabel("Max:")
-        graph_info_icon = create_info_icon(
-            "Configure the Y-axis range for the growth curve graph.\n\n"
-            "Y-axis represents: Relative cell area (normalized to first frame = 1.0)\n\n"
-            "Y-axis min/max:\n"
-            "- Set to 'Auto' (0.0) to automatically scale based on data\n"
-            "- Set custom values to fix the Y-axis range\n"
-            "- Useful for comparing multiple videos with consistent scaling\n\n"
-            "Example: Set min=0.0, max=3.0 to show growth from 1x to 3x initial area",
-            parent_widget=self
-        )
-        graph_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        
-        yaxis_row = QHBoxLayout()
-        yaxis_row.setSpacing(8)
-        yaxis_row.addWidget(ymin_label)
-        yaxis_row.addWidget(self.yaxis_min)
-        yaxis_row.addWidget(ymax_label)
-        yaxis_row.addWidget(self.yaxis_max)
-        yaxis_row.addWidget(graph_info_icon)
-        yaxis_row.addStretch(1)
-        graph_layout.addLayout(yaxis_row)
-
-        axis_quick_row = QHBoxLayout()
-        axis_quick_row.setSpacing(8)
-        auto_axis_btn = QPushButton("Auto Y")
-        fit_axis_btn = QPushButton("Fit data")
-        zero_axis_btn = QPushButton("Y min = 0")
-        for btn in (auto_axis_btn, fit_axis_btn, zero_axis_btn):
-            style_compact_action_button(btn, horizontal_padding=12)
-        auto_axis_btn.setToolTip("Let matplotlib choose ymin and ymax from the data.")
-        fit_axis_btn.setToolTip("Set ymin/ymax from the loaded Excel column with a small margin.")
-        zero_axis_btn.setToolTip("Force ymin to 0 and leave ymax on Auto.")
-        auto_axis_btn.clicked.connect(self._apply_yaxis_auto)
-        fit_axis_btn.clicked.connect(self._apply_yaxis_fit_data)
-        zero_axis_btn.clicked.connect(self._apply_yaxis_zero_min)
-        axis_quick_row.addWidget(auto_axis_btn)
-        axis_quick_row.addWidget(fit_axis_btn)
-        axis_quick_row.addWidget(zero_axis_btn)
-        axis_quick_row.addStretch(1)
-        graph_layout.addLayout(axis_quick_row)
-
-        appearance_row = QHBoxLayout()
-        appearance_btn = QPushButton("Appearance…")
-        style_compact_action_button(appearance_btn, horizontal_padding=14)
-        appearance_btn.setToolTip(
-            "Edit growth-graph axis labels, fonts, line/marker stroke, and grid. "
-            "You can also double-click the left side of the preview."
-        )
-        appearance_btn.clicked.connect(self._open_growth_graph_style_dialog)
-        appearance_row.addWidget(appearance_btn)
-        appearance_row.addStretch(1)
-        graph_layout.addLayout(appearance_row)
-        
-        graph_group.setLayout(graph_layout)
-        graph_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        settings_container_layout.addWidget(graph_group)
-        
-        # Video settings
-        video_settings_group = QGroupBox("Video Settings")
-        video_settings_group.setMinimumWidth(0)
-        video_settings_layout = QHBoxLayout()
-        fps_label = QLabel("Frames per second (FPS):")
+        time_layout.addSpacing(18)
+        fps_label = QLabel("FPS:")
         fps_info_icon = create_info_icon(
             "Playback speed for the output video.\n\n"
             "Higher values = faster playback\n"
@@ -1272,26 +1574,64 @@ class PostProcessingTab(QWidget):
             parent_widget=self
         )
         fps_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        video_settings_layout.addWidget(fps_label)
-        video_settings_layout.addWidget(self.fps)
-        video_settings_layout.addWidget(fps_info_icon)
-        video_settings_layout.addStretch()
-        video_settings_group.setLayout(video_settings_layout)
-        video_settings_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        video_settings_group.setMinimumWidth(0)
-        settings_container_layout.addWidget(video_settings_group)
+        time_layout.addWidget(fps_label)
+        time_layout.addWidget(self.fps)
+        time_layout.addWidget(fps_info_icon)
+        time_layout.addStretch()
+        time_group.setLayout(time_layout)
+        settings_container_layout.addWidget(time_group)
+        
+        # Graph settings
+        graph_group = QGroupBox("Graph Settings")
+        graph_group.setMinimumWidth(0)
+        graph_layout = QVBoxLayout()
 
+        graph_main_row = QHBoxLayout()
+        graph_main_row.setSpacing(8)
+        graph_main_row.addWidget(QLabel("Y:"))
+        graph_main_row.addWidget(self.excel_y_column, 2)
+        graph_main_row.addWidget(
+            create_info_icon(
+                "Choose which Excel Summary column is plotted on the Y axis.\n"
+                "Examples: relative cell area, total area, cell count, or foci metrics.",
+                parent_widget=self,
+            )
+        )
+        graph_main_row.addSpacing(8)
+        graph_main_row.addWidget(QLabel("Width:"))
+        graph_main_row.addWidget(self.graph_width_ratio_spin)
+        graph_main_row.addWidget(
+            create_info_icon(
+                "How much of the final montage width is used by the growth graph.\n"
+                "Only visible when the Excel growth graph is enabled. Updates live in the preview.",
+                parent_widget=self,
+            )
+        )
+        graph_main_row.addStretch(1)
+        appearance_btn = QPushButton("Appearance…")
+        style_compact_action_button(appearance_btn, horizontal_padding=14)
+        appearance_btn.setToolTip(
+            "Edit growth-graph axis labels, Y range, fonts, line/marker stroke, and grid. "
+            "You can also double-click the left side of the preview."
+        )
+        appearance_btn.clicked.connect(self._open_growth_graph_style_dialog)
+        graph_main_row.addWidget(appearance_btn)
+        graph_layout.addLayout(graph_main_row)
+        
+        graph_group.setLayout(graph_layout)
+        graph_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        settings_container_layout.addWidget(graph_group)
+        
         overlay_group = QGroupBox("Video overlays")
         overlay_group.setMinimumWidth(0)
         overlay_layout = QVBoxLayout()
         overlay_toggle_row = QHBoxLayout()
-        overlay_toggle_row.setSpacing(8)
-        overlay_toggle_row.addWidget(self.video_mask_contours)
-        overlay_toggle_row.addWidget(self.video_foci_overlay)
+        overlay_toggle_row.setSpacing(6)
         overlay_toggle_row.addWidget(
             create_info_icon(
-                "FI layout: choose merged overlay (one colored microscopy tile) or separate tiles "
-                "(Phase, each FI channel, and Merged side by side).\n\n"
+                "Layout: choose one merged microscopy tile or separate tiles "
+                "(Phase, FI/foci image channels, and Merged side by side).\n\n"
+                "Use Tiles… to choose which separate tiles are visible.\n\n"
                 "Pick channel TIFFs with the Channels button on the left; phase/FI roles are inferred "
                 "from filenames when possible.\n\n"
                 "Mask contours: draws segmentation masks as outlines only, so the microscopy signal stays visible.\n\n"
@@ -1300,39 +1640,89 @@ class PostProcessingTab(QWidget):
             )
         )
         mask_btn = QPushButton("Mask…")
-        style_compact_action_button(mask_btn, horizontal_padding=14)
+        style_compact_action_button(mask_btn, horizontal_padding=10)
         mask_btn.clicked.connect(self._select_video_mask_file)
         foci_btn = QPushButton("Foci…")
-        style_compact_action_button(foci_btn, horizontal_padding=14)
+        style_compact_action_button(foci_btn, horizontal_padding=10)
         foci_btn.clicked.connect(self._select_video_foci_file)
+        fi_btn = QPushButton("FI…")
+        style_compact_action_button(fi_btn, horizontal_padding=10)
+        fi_btn.setToolTip("Browse FI TIFF stack(s) or an image-series folder.")
+        fi_btn.clicked.connect(lambda _checked=False, btn=fi_btn: self._show_video_fi_browse_menu(btn))
+        colors_btn = QPushButton("Colors…")
+        style_compact_action_button(colors_btn, horizontal_padding=12)
+        colors_btn.setToolTip("Set FI channel, mask contour, and foci marker colors.")
+        colors_btn.clicked.connect(self._open_video_overlay_colors_dialog)
+        update_preview_btn = QPushButton("Update")
+        style_compact_action_button(update_preview_btn, horizontal_padding=12)
+        update_preview_btn.setToolTip("Reload inputs and redraw the current video montage preview.")
+        update_preview_btn.clicked.connect(self._force_video_preview_refresh)
         overlay_toggle_row.addStretch(1)
-        overlay_toggle_row.addWidget(mask_btn)
-        overlay_toggle_row.addWidget(foci_btn)
+        overlay_toggle_row.addWidget(colors_btn)
+        overlay_toggle_row.addWidget(update_preview_btn)
         overlay_layout.addLayout(overlay_toggle_row)
 
+        fi_row = QHBoxLayout()
+        fi_row.setSpacing(4)
+        fi_label = QLabel("FI:")
+        fi_label.setMinimumWidth(36)
+        fi_row.addWidget(self.video_fi_channels)
+        fi_row.addWidget(fi_label)
+        fi_row.addWidget(self.video_fi_path, 1)
+        fi_row.addWidget(fi_btn)
+        overlay_layout.addLayout(fi_row)
+
         mask_row = QHBoxLayout()
-        mask_row.setSpacing(6)
+        mask_row.setSpacing(4)
         mask_label = QLabel("Mask:")
-        mask_label.setMinimumWidth(44)
+        mask_label.setMinimumWidth(36)
+        mask_row.addWidget(self.video_mask_contours)
         mask_row.addWidget(mask_label)
         mask_row.addWidget(self.video_mask_path, 1)
+        mask_row.addWidget(mask_btn)
         overlay_layout.addLayout(mask_row)
 
         foci_row = QHBoxLayout()
-        foci_row.setSpacing(6)
+        foci_row.setSpacing(4)
         foci_label = QLabel("Foci:")
-        foci_label.setMinimumWidth(44)
+        foci_label.setMinimumWidth(36)
+        foci_row.addWidget(self.video_foci_overlay)
         foci_row.addWidget(foci_label)
         foci_row.addWidget(self.video_foci_path, 1)
+        foci_row.addWidget(foci_btn)
         overlay_layout.addLayout(foci_row)
 
-        fi_layout_row = QHBoxLayout()
-        fi_layout_row.setSpacing(6)
-        fi_layout_label = QLabel("FI layout:")
-        fi_layout_label.setMinimumWidth(44)
-        fi_layout_row.addWidget(fi_layout_label)
-        fi_layout_row.addWidget(self.video_fi_layout_combo, 1)
-        overlay_layout.addLayout(fi_layout_row)
+        excel_btn = QPushButton("Excel…")
+        style_compact_action_button(excel_btn, horizontal_padding=10)
+        excel_btn.setToolTip("Select the optional Excel analysis file used for the growth graph.")
+        excel_btn.setEnabled(self._use_excel_graph_enabled())
+        excel_btn.clicked.connect(self.select_excel_file)
+        self.use_excel_graph.toggled.connect(excel_btn.setEnabled)
+        excel_row = QHBoxLayout()
+        excel_row.setSpacing(4)
+        excel_label = QLabel("Excel:")
+        excel_label.setMinimumWidth(36)
+        excel_row.addWidget(self.use_excel_graph)
+        excel_row.addWidget(excel_label)
+        excel_row.addWidget(self.excel_path, 1)
+        excel_row.addWidget(excel_btn)
+        overlay_layout.addLayout(excel_row)
+
+        layout_row = QHBoxLayout()
+        layout_row.setSpacing(4)
+        layout_label = QLabel("Layout:")
+        layout_label.setMinimumWidth(58)
+        self.video_tile_select_btn = QPushButton("Tiles…")
+        style_compact_action_button(self.video_tile_select_btn, horizontal_padding=10)
+        self.video_tile_select_btn.setToolTip("Choose which tiles are shown in Separate tiles layout.")
+        self.video_tile_select_btn.setEnabled(
+            self._video_fi_enabled() and self._get_video_fi_layout() == VIDEO_FI_LAYOUT_SEPARATE
+        )
+        self.video_tile_select_btn.clicked.connect(self._open_video_tile_visibility_dialog)
+        layout_row.addWidget(layout_label)
+        layout_row.addWidget(self.video_fi_layout_combo, 1)
+        layout_row.addWidget(self.video_tile_select_btn)
+        overlay_layout.addLayout(layout_row)
 
         overlay_group.setLayout(overlay_layout)
         overlay_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1341,21 +1731,24 @@ class PostProcessingTab(QWidget):
         # Output format selection (in same row)
         format_group = QGroupBox("Output Formats")
         format_group.setMinimumWidth(0)
-        format_layout = QVBoxLayout()
-        
+        format_layout = QHBoxLayout()
+        format_layout.setSpacing(12)
+        format_layout.addWidget(QLabel("Save:"))
         format_layout.addWidget(self.format_all)
         format_checkbox_row = QHBoxLayout()
         format_checkbox_row.setSpacing(12)
         for cb in (self.format_tif, self.format_avi, self.format_gif, self.format_mp4):
             format_checkbox_row.addWidget(cb)
-        format_checkbox_row.addStretch(1)
         format_layout.addLayout(format_checkbox_row)
+        format_layout.addStretch(1)
         
         format_group.setLayout(format_layout)
         format_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_container_layout.addWidget(format_group)
         
         settings_container = QWidget()
+        settings_container.setMinimumWidth(0)
+        settings_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_container.setLayout(settings_container_layout)
         return settings_container
 
@@ -1368,7 +1761,6 @@ class PostProcessingTab(QWidget):
         group_layout = QVBoxLayout()
         video_group = self._build_video_input_group()
         group_layout.addWidget(video_group)
-        group_layout.addWidget(self._build_excel_section())
         self.preview_video_btn = QPushButton("Preview video montage")
         style_module_primary_button(self.preview_video_btn)
         self.preview_video_btn.setEnabled(False)
@@ -5048,6 +5440,14 @@ class PostProcessingTab(QWidget):
             return combo.currentText().strip()
         return self._growth_y_column or DEFAULT_GROWTH_Y_COLUMN
 
+    def _use_excel_graph_enabled(self) -> bool:
+        cb = getattr(self, "use_excel_graph", None)
+        return bool(cb.isChecked()) if self._qt_widget_alive(cb) else True
+
+    def _video_fi_enabled(self) -> bool:
+        cb = getattr(self, "video_fi_channels", None)
+        return bool(cb.isChecked()) if self._qt_widget_alive(cb) else True
+
     def _on_growth_y_column_changed(self, text: str) -> None:
         col = str(text or "").strip()
         if not col:
@@ -5064,6 +5464,12 @@ class PostProcessingTab(QWidget):
         combo = getattr(self, "excel_y_column", None)
         excel_edit = getattr(self, "excel_path", None)
         if not self._qt_widget_alive(combo) or not self._qt_widget_alive(excel_edit):
+            return
+        if not self._use_excel_graph_enabled():
+            combo.blockSignals(True)
+            combo.clear()
+            combo.setEnabled(False)
+            combo.blockSignals(False)
             return
         excel_raw = excel_edit.text().strip()
         current = self._get_growth_y_column()
@@ -5083,37 +5489,6 @@ class PostProcessingTab(QWidget):
             self._growth_y_column = combo.currentText()
         combo.setEnabled(bool(cols))
         combo.blockSignals(False)
-
-    def _apply_yaxis_auto(self) -> None:
-        self.yaxis_min.setValue(0.0)
-        self.yaxis_max.setValue(0.0)
-        self._schedule_video_preview_refresh()
-
-    def _apply_yaxis_zero_min(self) -> None:
-        self.yaxis_min.setValue(0.0)
-        self.yaxis_max.setValue(0.0)
-        self._schedule_video_preview_refresh()
-
-    def _apply_yaxis_fit_data(self) -> None:
-        try:
-            cache = self._load_video_preview_cache()
-        except Exception:
-            cache = None
-        values = cache.get("relative_areas") if cache else None
-        if values is None:
-            QMessageBox.information(self, "Fit Y axis", "Load an Excel file with a growth graph first.")
-            return
-        arr = np.asarray(values, dtype=float)
-        arr = arr[np.isfinite(arr)]
-        if arr.size == 0:
-            QMessageBox.information(self, "Fit Y axis", "No numeric values found in the selected Y column.")
-            return
-        lo = float(np.min(arr))
-        hi = float(np.max(arr))
-        pad = max((hi - lo) * 0.08, abs(hi) * 0.05 if hi != 0 else 0.01)
-        self.yaxis_min.setValue(max(0.0, lo - pad))
-        self.yaxis_max.setValue(hi + pad)
-        self._schedule_video_preview_refresh()
 
     def _render_current_video_frame_array(self) -> Optional[np.ndarray]:
         dlg = getattr(self, "_embedded_post_preview", None)
@@ -5137,7 +5512,7 @@ class PostProcessingTab(QWidget):
             QMessageBox.information(self, "Export frame", "Open a video montage preview with loaded input first.")
             return
         default_name = "video_montage_frame.png"
-        video_paths = self._parse_growth_curve_video_paths(self.video_path.text())
+        video_paths = self._resolve_growth_curve_video_paths(self.video_path.text())
         if video_paths:
             default_name = f"{video_paths[0].stem}_montage_frame.png"
         out_path, _ = QFileDialog.getSaveFileName(
@@ -5152,18 +5527,30 @@ class PostProcessingTab(QWidget):
             from PIL import Image
 
             Image.fromarray(np.asarray(frame)).save(out_path)
-            QMessageBox.information(self, "Export frame", f"Saved:\n{out_path}")
+            show_task_complete_dialog(
+                self,
+                title="Export frame",
+                message=f"Saved:\n{out_path}",
+                output_dir=Path(out_path),
+            )
         except Exception as exc:
             QMessageBox.warning(self, "Export frame", f"Could not save PNG:\n{exc}")
 
     def _get_growth_graph_style(self) -> dict[str, Any]:
         return dict(self._growth_graph_style)
 
+    def _coerce_growth_graph_bool(self, value: Any, default: bool = True) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "no", "off"}
+        return bool(value)
+
     def _set_growth_graph_style(self, data: dict[str, Any]) -> None:
         merged = dict(DEFAULT_GROWTH_GRAPH_STYLE)
         for key in DEFAULT_GROWTH_GRAPH_STYLE:
             if key in data and data[key] is not None:
-                merged[key] = data[key]
+                merged[key] = self._coerce_growth_graph_bool(data[key]) if key == "show_grid" else data[key]
         self._growth_graph_style = merged
         self._schedule_video_preview_refresh()
 
@@ -5182,7 +5569,7 @@ class PostProcessingTab(QWidget):
         style = self._get_growth_graph_style()
         dlg = QDialog(self)
         dlg.setWindowTitle("Growth graph appearance")
-        dlg.setMinimumWidth(460)
+        dlg.setMinimumWidth(560)
         layout = QVBoxLayout(dlg)
         layout.addWidget(
             QLabel(
@@ -5191,100 +5578,60 @@ class PostProcessingTab(QWidget):
             )
         )
 
-        preset_row = QHBoxLayout()
-        preset_combo = QComboBox()
-        preset_combo.addItem("(none)")
-        for name in ("Paper", "Presentation", "Minimal"):
-            preset_combo.addItem(name)
-        for name in list_growth_graph_preset_names():
-            preset_combo.addItem(name)
-        preset_row.addWidget(QLabel("Preset:"))
-        preset_row.addWidget(preset_combo, 1)
-        load_preset_btn = QPushButton("Load")
-        save_preset_btn = QPushButton("Save as…")
-        delete_preset_btn = QPushButton("Delete")
-        for btn in (load_preset_btn, save_preset_btn, delete_preset_btn):
-            style_compact_action_button(btn, horizontal_padding=10)
-        preset_row.addWidget(load_preset_btn)
-        preset_row.addWidget(save_preset_btn)
-        preset_row.addWidget(delete_preset_btn)
-        layout.addLayout(preset_row)
-
-        def _apply_preset_payload(payload: dict[str, Any]) -> None:
-            merged = dict(DEFAULT_GROWTH_GRAPH_STYLE)
-            merged.update(payload)
-            x_label.setText(str(merged.get("x_label", DEFAULT_GROWTH_GRAPH_STYLE["x_label"])))
-            y_label.setText(str(merged.get("y_label", DEFAULT_GROWTH_GRAPH_STYLE["y_label"])))
-            axis_font.setValue(int(merged.get("axis_label_font_size", 36)))
-            tick_font.setValue(int(merged.get("tick_font_size", 24)))
-            font_weight.setCurrentText(str(merged.get("font_weight", "bold")))
-            line_width.setValue(float(merged.get("line_width", 8.0)))
-            marker_size.setValue(float(merged.get("marker_size", 200.0)))
-            marker_edge.setValue(float(merged.get("marker_edge_width", 2.0)))
-            axis_stroke.setValue(float(merged.get("axis_stroke_width", 3.5)))
-            tick_stroke.setValue(float(merged.get("tick_stroke_width", 2.0)))
-            show_grid.setChecked(bool(merged.get("show_grid", True)))
-            grid_width.setValue(float(merged.get("grid_line_width", 1.5)))
-            grid_alpha.setValue(float(merged.get("grid_alpha", 0.4)))
-
-        def _load_selected_preset() -> None:
-            name = preset_combo.currentText()
-            if not name or name == "(none)":
-                return
-            payload = BUILTIN_GROWTH_GRAPH_PRESETS.get(name) or load_growth_graph_preset(name)
-            if not payload:
-                QMessageBox.information(self, "Graph preset", f"Preset not found: {name}")
-                return
-            _apply_preset_payload(payload)
-
-        def _save_current_preset() -> None:
-            name, ok = QInputDialog.getText(self, "Save graph preset", "Preset name:")
-            if not ok or not str(name).strip():
-                return
-            save_growth_graph_preset(
-                str(name).strip(),
-                {
-                    "x_label": x_label.text().strip(),
-                    "y_label": y_label.text().strip(),
-                    "axis_label_font_size": axis_font.value(),
-                    "tick_font_size": tick_font.value(),
-                    "font_weight": font_weight.currentText(),
-                    "line_width": line_width.value(),
-                    "marker_size": marker_size.value(),
-                    "marker_edge_width": marker_edge.value(),
-                    "axis_stroke_width": axis_stroke.value(),
-                    "tick_stroke_width": tick_stroke.value(),
-                    "show_grid": show_grid.isChecked(),
-                    "grid_line_width": grid_width.value(),
-                    "grid_alpha": grid_alpha.value(),
-                },
-            )
-            current = str(name).strip()
-            preset_combo.blockSignals(True)
-            preset_combo.clear()
-            preset_combo.addItem("(none)")
-            for builtin in ("Paper", "Presentation", "Minimal"):
-                preset_combo.addItem(builtin)
-            for saved in list_growth_graph_preset_names():
-                preset_combo.addItem(saved)
-            idx = preset_combo.findText(current)
-            preset_combo.setCurrentIndex(idx if idx >= 0 else 0)
-            preset_combo.blockSignals(False)
-
-        def _delete_selected_preset() -> None:
-            name = preset_combo.currentText()
-            if not name or name == "(none)" or name in BUILTIN_GROWTH_GRAPH_PRESETS:
-                return
-            if delete_growth_graph_preset(name):
-                preset_combo.removeItem(preset_combo.currentIndex())
-
-        load_preset_btn.clicked.connect(_load_selected_preset)
-        save_preset_btn.clicked.connect(_save_current_preset)
-        delete_preset_btn.clicked.connect(_delete_selected_preset)
-
         form = QFormLayout()
         x_label = QLineEdit(str(style.get("x_label", "Time [min]")))
         y_label = QLineEdit(str(style.get("y_label", "rel. cell area")))
+        y_min = QDoubleSpinBox()
+        y_min.setMinimum(0.0)
+        y_min.setMaximum(1_000_000.0)
+        y_min.setValue(float(self.yaxis_min.value()))
+        y_min.setDecimals(2)
+        y_min.setSpecialValueText("Auto")
+        self._compact_preview_control(y_min, 90)
+        y_max = QDoubleSpinBox()
+        y_max.setMinimum(0.0)
+        y_max.setMaximum(1_000_000.0)
+        y_max.setValue(float(self.yaxis_max.value()))
+        y_max.setDecimals(2)
+        y_max.setSpecialValueText("Auto")
+        self._compact_preview_control(y_max, 90)
+        y_range_row = QHBoxLayout()
+        y_range_row.setSpacing(8)
+        y_range_row.addWidget(QLabel("min"))
+        y_range_row.addWidget(y_min)
+        y_range_row.addWidget(QLabel("max"))
+        y_range_row.addWidget(y_max)
+        auto_y_btn = QPushButton("Auto")
+        fit_y_btn = QPushButton("Fit data")
+        for btn in (auto_y_btn, fit_y_btn):
+            style_compact_action_button(btn, horizontal_padding=12)
+        auto_y_btn.setToolTip("Let matplotlib choose Y min and max from the data.")
+        fit_y_btn.setToolTip("Set Y min/max from the loaded Excel column with a small margin.")
+        y_range_row.addWidget(auto_y_btn)
+        y_range_row.addWidget(fit_y_btn)
+        y_range_row.addStretch(1)
+
+        def _dialog_y_auto() -> None:
+            y_min.setValue(0.0)
+            y_max.setValue(0.0)
+
+        def _dialog_y_fit() -> None:
+            try:
+                cache = self._load_video_preview_cache()
+                values = np.asarray((cache or {}).get("relative_areas"), dtype=float)
+                values = values[np.isfinite(values)]
+                if values.size == 0:
+                    return
+                lo = float(values.min())
+                hi = float(values.max())
+                margin = max((hi - lo) * 0.05, 0.02)
+                y_min.setValue(max(0.0, lo - margin))
+                y_max.setValue(max(lo + margin, hi + margin))
+            except Exception:
+                return
+
+        auto_y_btn.clicked.connect(_dialog_y_auto)
+        fit_y_btn.clicked.connect(_dialog_y_fit)
         axis_font = QSpinBox()
         axis_font.setRange(8, 96)
         axis_font.setValue(int(style.get("axis_label_font_size", 36)))
@@ -5292,7 +5639,27 @@ class PostProcessingTab(QWidget):
         tick_font.setRange(8, 72)
         tick_font.setValue(int(style.get("tick_font_size", 24)))
         font_weight = QComboBox()
-        font_weight.addItems(["normal", "bold"])
+        font_weight.addItems(
+            [
+                "ultralight",
+                "light",
+                "normal",
+                "regular",
+                "book",
+                "medium",
+                "roman",
+                "semibold",
+                "demibold",
+                "demi",
+                "bold",
+                "heavy",
+                "extra bold",
+                "black",
+            ]
+        )
+        font_weight.setMaxVisibleItems(font_weight.count())
+        font_weight.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        font_weight.view().setMinimumWidth(160)
         font_weight.setCurrentText(str(style.get("font_weight", "bold")))
         line_width = QDoubleSpinBox()
         line_width.setRange(0.5, 24.0)
@@ -5320,7 +5687,7 @@ class PostProcessingTab(QWidget):
         tick_stroke.setSingleStep(0.5)
         tick_stroke.setValue(float(style.get("tick_stroke_width", 2.0)))
         show_grid = QCheckBox("Show grid")
-        show_grid.setChecked(bool(style.get("show_grid", True)))
+        show_grid.setChecked(self._coerce_growth_graph_bool(style.get("show_grid", True)))
         grid_width = QDoubleSpinBox()
         grid_width.setRange(0.1, 8.0)
         grid_width.setDecimals(1)
@@ -5331,9 +5698,14 @@ class PostProcessingTab(QWidget):
         grid_alpha.setDecimals(2)
         grid_alpha.setSingleStep(0.05)
         grid_alpha.setValue(float(style.get("grid_alpha", 0.4)))
+        grid_width.setEnabled(show_grid.isChecked())
+        grid_alpha.setEnabled(show_grid.isChecked())
+        show_grid.toggled.connect(grid_width.setEnabled)
+        show_grid.toggled.connect(grid_alpha.setEnabled)
 
         form.addRow("X-axis label", x_label)
         form.addRow("Y-axis label", y_label)
+        form.addRow("Y-axis range", y_range_row)
         form.addRow("Axis label font size", axis_font)
         form.addRow("Tick font size", tick_font)
         form.addRow("Font weight", font_weight)
@@ -5360,6 +5732,11 @@ class PostProcessingTab(QWidget):
             btn = buttons.button(std_btn)
             if btn is not None:
                 style_compact_action_button(btn, horizontal_padding=padding)
+                btn.setMinimumWidth(110)
+        restore_btn = buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults)
+        if restore_btn is not None:
+            restore_btn.setText("Restore")
+            restore_btn.setMinimumWidth(120)
         buttons.setMinimumHeight(44)
         layout.addWidget(buttons)
 
@@ -5369,6 +5746,8 @@ class PostProcessingTab(QWidget):
             y_label.setText(str(defaults["y_label"]))
             axis_font.setValue(int(defaults["axis_label_font_size"]))
             tick_font.setValue(int(defaults["tick_font_size"]))
+            y_min.setValue(0.0)
+            y_max.setValue(0.0)
             font_weight.setCurrentText(str(defaults["font_weight"]))
             line_width.setValue(float(defaults["line_width"]))
             marker_size.setValue(float(defaults["marker_size"]))
@@ -5402,6 +5781,9 @@ class PostProcessingTab(QWidget):
                 "grid_alpha": grid_alpha.value(),
             }
         )
+        self.yaxis_min.setValue(y_min.value())
+        self.yaxis_max.setValue(y_max.value())
+        self._schedule_video_preview_refresh()
 
     def _compose_growth_frame_from_cache(self, cache: dict[str, Any], frame_idx: int) -> np.ndarray:
         y_min, y_max = self._get_video_yaxis_limits()
@@ -5422,7 +5804,9 @@ class PostProcessingTab(QWidget):
 
     def _schedule_video_preview_refresh(self, *_args: Any) -> None:
         dlg = getattr(self, "_embedded_post_preview", None)
-        if dlg is None or dlg.objectName() != "EmbeddedVideoMontagePreview":
+        if dlg is None:
+            dlg = getattr(self, "_active_video_preview_dialog", None)
+        if dlg is None or dlg.objectName() not in ("EmbeddedVideoMontagePreview", "VideoMontagePreviewDialog"):
             return
         timer = self._video_preview_refresh_timer
         if timer is None:
@@ -5436,27 +5820,40 @@ class PostProcessingTab(QWidget):
     def _invalidate_video_preview_cache(self) -> None:
         self._video_preview_cache = None
 
+    def _force_video_preview_refresh(self) -> None:
+        """Immediately reload inputs and redraw the active video montage preview."""
+        self._invalidate_video_preview_cache()
+        self._refresh_video_montage_preview()
+
     def _load_video_preview_cache(self) -> Optional[dict[str, Any]]:
         if self._video_preview_cache is not None:
             return self._video_preview_cache
-        video_paths = self._parse_growth_curve_video_paths(self.video_path.text())
-        excel_raw = self.excel_path.text().strip()
+        video_paths = self._resolve_growth_curve_video_paths(self.video_path.text())
+        excel_raw = self.excel_path.text().strip() if self._use_excel_graph_enabled() else ""
         excel_path = Path(excel_raw) if excel_raw else None
         fi_layout = self._get_video_fi_layout()
+        overlay_colors = self._get_video_overlay_colors()
         if not video_paths:
             return None
         try:
-            source = load_growth_curve_video_source(video_paths, fi_layout=fi_layout)
+            source = load_growth_curve_video_source(
+                video_paths,
+                fi_layout=fi_layout,
+                overlay_colors=overlay_colors,
+            )
             video_frames = None
             tiles = None
+            all_tiles = None
             if source.fi_layout == VIDEO_FI_LAYOUT_SEPARATE and source.tiles:
-                tiles = apply_video_montage_overlays_to_tiles(
+                all_tiles = apply_video_montage_overlays_to_tiles(
                     source.tiles,
                     mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None,
                     foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None,
                     show_mask_contours=self.video_mask_contours.isChecked(),
                     show_foci=self.video_foci_overlay.isChecked(),
+                    overlay_colors=overlay_colors,
                 )
+                tiles = self._filter_video_tiles_for_visibility(all_tiles)
             else:
                 video_frames = apply_video_montage_overlays(
                     source.merged_frames,
@@ -5464,6 +5861,7 @@ class PostProcessingTab(QWidget):
                     foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None,
                     show_mask_contours=self.video_mask_contours.isChecked(),
                     show_foci=self.video_foci_overlay.isChecked(),
+                    overlay_colors=overlay_colors,
                 )
             frames = relative_areas = time_minutes = None
             graph_error = ""
@@ -5483,11 +5881,14 @@ class PostProcessingTab(QWidget):
             raise ValueError("No frames available to preview.")
         if video_frames is not None:
             video_frames = video_frames[:num_frames]
+        if all_tiles is not None:
+            all_tiles = [(label, stack[:num_frames]) for label, stack in all_tiles]
         if tiles is not None:
             tiles = [(label, stack[:num_frames]) for label, stack in tiles]
         cache = {
             "video_frames": video_frames,
             "tiles": tiles,
+            "all_tiles": all_tiles,
             "fi_layout": source.fi_layout,
             "reference_width": source.reference_width,
             "frames": frames[:num_frames] if frames is not None else None,
@@ -5733,7 +6134,53 @@ class PostProcessingTab(QWidget):
             "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
         )
         if paths:
-            self.video_path.setText("|".join(paths))
+            phase_paths, fi_paths = self._split_phase_and_fi_video_paths([Path(p) for p in paths])
+            if phase_paths:
+                self.video_path.setText(str(phase_paths[0]))
+                self.video_fi_path.setText("|".join(str(p) for p in [*phase_paths[1:], *fi_paths]))
+                self.video_fi_channels.setChecked(bool(phase_paths[1:] or fi_paths))
+            else:
+                self.video_path.setText("|".join(paths))
+
+    def _show_video_fi_browse_menu(self, anchor: QPushButton) -> None:
+        """One FI browse button: pick stack file(s) or a folder from a small menu."""
+        menu = QMenu(self)
+        menu.addAction("TIFF stack(s)…", self.select_video_fi_files)
+        menu.addAction("Folder…", self.select_video_fi_folder)
+        menu.popup(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def select_video_fi_files(self):
+        """Select one or more FI TIFF stacks."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select FI TIFF stack(s)",
+            get_default_browse_dir(),
+            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
+        )
+        if paths:
+            self.video_fi_path.setText("|".join(paths))
+            self.video_fi_channels.setChecked(True)
+
+    def select_video_fi_folder(self):
+        """Select a folder containing an FI image series or FI stack files."""
+        folder_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select FI image series folder",
+            get_default_browse_dir(),
+        )
+        if folder_path:
+            discovered = self._discover_growth_curve_video_inputs(
+                Path(folder_path),
+                include_sequence_folders=True,
+            )
+            if len(discovered) == 1 and discovered[0].is_dir():
+                self.video_fi_path.setText(str(discovered[0]))
+            elif discovered:
+                _, fi_paths = self._split_phase_and_fi_video_paths(discovered)
+                self.video_fi_path.setText("|".join(str(p) for p in (fi_paths or discovered)))
+            else:
+                self.video_fi_path.setText(folder_path)
+            self.video_fi_channels.setChecked(True)
 
     def _video_autofill_root(self) -> Optional[Path]:
         """Infer dataset root from the current video/mask/foci/excel path fields."""
@@ -5788,34 +6235,246 @@ class PostProcessingTab(QWidget):
                     continue
         return paths[0] if paths else None
 
-    def _auto_fill_video_inputs(self) -> None:
+    @staticmethod
+    def _is_growth_curve_video_tiff(path: Path) -> bool:
+        """Return True for TIFFs that look like microscopy video/channel inputs."""
+        name = path.name.lower()
+        if path.suffix.lower() not in (".tif", ".tiff"):
+            return False
+        if name.startswith("."):
+            return False
+        parent_bits = {p.name.lower() for p in path.parents[:4]}
+        if parent_bits & {"filtered_masks", "overlays", "foci_filtered", "foci_detection"}:
+            return False
+        excluded = (
+            "mask",
+            "visualization",
+            "overlay",
+            "filtered_overlay",
+            "montage",
+            "summary",
+        )
+        return not any(token in name for token in excluded)
+
+    @staticmethod
+    def _looks_like_tiff_frame_sequence(paths: list[Path]) -> bool:
+        """A folder with many TIFFs is probably a frame sequence, not channel stack files."""
+        if len(paths) < 6:
+            return False
+        channel_tokens = (
+            "_phase",
+            "phase",
+            "_bf",
+            "brightfield",
+            "_gfp",
+            "_dsred",
+            "_rfp",
+            "_mcherry",
+            "_fi",
+            "foci",
+        )
+        channel_named = sum(
+            1 for p in paths if any(token in p.stem.lower() for token in channel_tokens)
+        )
+        return channel_named < max(2, len(paths) // 2)
+
+    @staticmethod
+    def _video_input_sort_key(path: Path) -> tuple[int, str]:
+        """Phase/TL first, then FI channels, then other TIFFs."""
+        stem = path.stem.lower()
+        if any(token in stem for token in ("phase", "brightfield", "_bf", "_tl", "timelapse")):
+            role = 0
+        elif any(token in stem for token in ("_fi", "foci", "gfp", "rfp", "dsred", "mcherry", "yfp", "cfp")):
+            role = 1
+        else:
+            role = 2
+        return role, path.name.lower()
+
+    @staticmethod
+    def _video_path_looks_like_fi(path: Path) -> bool:
+        stem = path.stem.lower()
+        return any(
+            token in stem
+            for token in (
+                "_fi",
+                "foci",
+                "focus",
+                "gfp",
+                "egfp",
+                "rfp",
+                "dsred",
+                "mcherry",
+                "mscarlet",
+                "yfp",
+                "cfp",
+                "cy5",
+            )
+        )
+
+    @staticmethod
+    def _video_path_looks_like_phase(path: Path) -> bool:
+        stem = path.stem.lower()
+        return any(token in stem for token in ("phase", "brightfield", "_bf", "_tl", "timelapse", "dic"))
+
+    def _split_phase_and_fi_video_paths(self, paths: list[Path]) -> tuple[list[Path], list[Path]]:
+        """Split channel paths into phase/TL candidates and FI candidates by filename."""
+        if not paths:
+            return [], []
+        phase = [p for p in paths if self._video_path_looks_like_phase(p)]
+        fi = [p for p in paths if self._video_path_looks_like_fi(p) and p not in phase]
+        unknown = [p for p in paths if p not in phase and p not in fi]
+        if not phase and unknown:
+            phase = [unknown.pop(0)]
+        fi.extend(unknown)
+        return phase, fi
+
+    def _discover_growth_curve_video_inputs(
+        self,
+        root: Path,
+        *,
+        include_sequence_folders: bool = False,
+        limit: int = 200,
+    ) -> list[Path]:
+        """Discover likely TL/video TIFF inputs below a selected folder."""
+        root = Path(root)
+        if root.is_file():
+            return [root] if self._is_growth_curve_video_tiff(root) else []
+        if not root.is_dir():
+            return []
+
+        try:
+            direct_tifs = sorted(
+                [p for p in root.iterdir() if p.is_file() and self._is_growth_curve_video_tiff(p)],
+                key=lambda p: p.name.lower(),
+            )
+        except Exception:
+            direct_tifs = []
+        if direct_tifs:
+            if include_sequence_folders and self._looks_like_tiff_frame_sequence(direct_tifs):
+                return [root]
+            return sorted(direct_tifs, key=self._video_input_sort_key)[:limit]
+
+        found: list[Path] = []
+        seen: set[Path] = set()
+        skip_dirs = {
+            "_analysis",
+            "analysis",
+            "filtered_masks",
+            "overlays",
+            "foci_filtered",
+            "foci_detection",
+        }
+        try:
+            dirs = [root, *[p for p in root.rglob("*") if p.is_dir()]]
+        except Exception:
+            dirs = [root]
+        for folder in dirs:
+            if folder != root and (
+                folder.name.lower() in skip_dirs or folder.name.lower().startswith("_segmentation")
+            ):
+                continue
+            try:
+                tifs = sorted(
+                    [p for p in folder.iterdir() if p.is_file() and self._is_growth_curve_video_tiff(p)],
+                    key=lambda p: p.name.lower(),
+                )
+            except Exception:
+                continue
+            if not tifs:
+                continue
+            if include_sequence_folders and self._looks_like_tiff_frame_sequence(tifs):
+                if folder not in seen:
+                    found.append(folder)
+                    seen.add(folder)
+            else:
+                for tif in sorted(tifs, key=self._video_input_sort_key):
+                    if tif not in seen:
+                        found.append(tif)
+                        seen.add(tif)
+            if len(found) >= limit:
+                break
+        return found[:limit]
+
+    def _candidate_growth_curve_video_paths(self, text: str) -> list[Path]:
+        """Paths shown in the module-side picker; folders expand to discovered TL candidates."""
+        raw_paths = self._parse_growth_curve_video_paths(text)
+        if len(raw_paths) == 1 and raw_paths[0].is_dir():
+            expanded = self._discover_growth_curve_video_inputs(
+                raw_paths[0],
+                include_sequence_folders=True,
+            )
+            return expanded or raw_paths
+        return raw_paths
+
+    def _resolve_growth_curve_video_paths(self, text: str) -> list[Path]:
+        """Actual preview/export input. Folder sequences stay folders; stack folders expand."""
+        raw_paths = self._parse_growth_curve_video_paths(text)
+        if len(raw_paths) == 1 and raw_paths[0].is_dir():
+            expanded = self._discover_growth_curve_video_inputs(
+                raw_paths[0],
+                include_sequence_folders=True,
+            )
+            if not expanded:
+                return raw_paths
+            if len(expanded) == 1 and expanded[0].is_dir():
+                base_paths = expanded
+            else:
+                base_paths = [p for p in expanded if p.is_file()]
+        else:
+            base_paths = raw_paths
+
+        fi_paths: list[Path] = []
+        if self._video_fi_enabled():
+            fi_edit = getattr(self, "video_fi_path", None)
+            fi_raw = fi_edit.text().strip() if self._qt_widget_alive(fi_edit) else ""
+            for fp in self._parse_growth_curve_video_paths(fi_raw):
+                if fp.is_dir():
+                    discovered = self._discover_growth_curve_video_inputs(
+                        fp,
+                        include_sequence_folders=True,
+                    )
+                    fi_paths.extend(discovered or [fp])
+                elif str(fp).strip():
+                    fi_paths.append(fp)
+
+        phase_base, fi_from_base = self._split_phase_and_fi_video_paths(base_paths)
+        if not self._video_fi_enabled():
+            return phase_base or base_paths[:1]
+        if fi_paths:
+            return [*(phase_base or base_paths[:1]), *fi_paths]
+        return [*(phase_base or base_paths[:1]), *fi_from_base]
+
+    def _auto_fill_video_inputs(self) -> bool:
         """Auto-assign phase/FI channels, analysis workbook, masks, and foci files from a dataset root."""
         root = self._video_autofill_root()
         if root is None or not root.exists():
-            return
+            return False
 
-        direct_tifs = sorted(
-            [
-                p for p in root.iterdir()
-                if p.is_file()
-                and p.suffix.lower() in (".tif", ".tiff")
-                and "mask" not in p.name.lower()
-                and "visualization" not in p.name.lower()
-                and not p.name.startswith(".")
-            ],
-            key=lambda p: p.name.lower(),
+        discovered_video_inputs = self._discover_growth_curve_video_inputs(
+            root,
+            include_sequence_folders=True,
         )
+        sequence_folders = [p for p in discovered_video_inputs if p.is_dir()]
+        direct_tifs = [p for p in discovered_video_inputs if p.is_file()]
+        phase_candidates, fi_candidates = self._split_phase_and_fi_video_paths(direct_tifs)
         phase = self._prefer_first(
-            direct_tifs,
+            phase_candidates,
             [
                 lambda p: "phase" in p.name.lower(),
+                lambda p: "_tl" in p.name.lower() or "timelapse" in p.name.lower(),
                 lambda p: "_fi_" not in p.name.lower() and "foci" not in p.name.lower(),
             ],
         )
-        fi_channels = [p for p in direct_tifs if p != phase and ("_fi_" in p.name.lower() or "foci" in p.name.lower())]
-        video_inputs = [p for p in [phase, *fi_channels] if p is not None]
+        fi_channels = [p for p in fi_candidates if p != phase]
+        video_inputs = [p for p in [phase] if p is not None]
         if video_inputs:
-            self.video_path.setText("|".join(str(p) for p in video_inputs))
+            self.video_path.setText(str(video_inputs[0]))
+            self.video_fi_path.setText("|".join(str(p) for p in fi_channels))
+            self.video_fi_channels.setChecked(bool(fi_channels))
+        elif len(sequence_folders) == 1:
+            video_inputs = [sequence_folders[0]]
+            self.video_path.setText(str(sequence_folders[0]))
+            self.video_fi_path.clear()
 
         analysis_files = sorted((root / "_analysis").glob("*.xlsx"), key=lambda p: p.name.lower())
         analysis = self._prefer_first(
@@ -5869,9 +6528,11 @@ class PostProcessingTab(QWidget):
                 "Video montage auto-fill",
                 f"No matching video montage inputs were found in:\n{root}",
             )
+            return False
         else:
             self._invalidate_video_preview_cache()
             self._schedule_video_preview_refresh()
+            return True
 
     @staticmethod
     def _parse_growth_curve_video_paths(text: str) -> list[Path]:
@@ -5889,6 +6550,8 @@ class PostProcessingTab(QWidget):
         path_obj = Path(dropped_path)
         # Update video path
         self.video_path.setText(dropped_path)
+        if path_obj.is_dir():
+            self._auto_fill_video_inputs()
 
     def handle_dropped_excel_path(self, dropped_path):
         """Handle dropped path for Excel analysis file (file or folder with Excel files)."""
@@ -5950,7 +6613,7 @@ class PostProcessingTab(QWidget):
     
     def _is_folder_mode(self):
         """Check if video input is a single folder path (not multi-file)."""
-        paths = self._parse_growth_curve_video_paths(self.video_path.text())
+        paths = self._resolve_growth_curve_video_paths(self.video_path.text())
         if len(paths) != 1:
             return False
         p = paths[0]
@@ -5968,12 +6631,19 @@ class PostProcessingTab(QWidget):
     
     def create_video(self):
         """Create growth curve video with side-by-side graph and video"""
+        running = getattr(self, "worker", None)
+        if running is not None and hasattr(running, "isRunning") and running.isRunning():
+            if hasattr(running, "request_cancel"):
+                running.request_cancel()
+            self.parent_window.log_output("Cancelling video montage export...\n")
+            return
+
         if not self.video_path.text():
             QMessageBox.warning(self, "Missing Input", "Please select a video input.")
             return
         
-        video_paths = self._parse_growth_curve_video_paths(self.video_path.text())
-        excel_raw = self.excel_path.text().strip()
+        video_paths = self._resolve_growth_curve_video_paths(self.video_path.text())
+        excel_raw = self.excel_path.text().strip() if self._use_excel_graph_enabled() else ""
         excel_path = Path(excel_raw) if excel_raw else None
         
         if not video_paths:
@@ -5981,17 +6651,17 @@ class PostProcessingTab(QWidget):
             return
         if len(video_paths) > 1:
             for vp in video_paths:
-                if not vp.is_file():
-                    QMessageBox.warning(
-                        self,
-                        "Invalid path",
-                        f"Multi-channel mode expects each path to be a file:\n{vp}",
-                    )
-                    return
                 if not vp.exists():
                     QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{vp}")
                     return
-            base_dir = video_paths[0].parent
+                if not (vp.is_file() or vp.is_dir()):
+                    QMessageBox.warning(
+                        self,
+                        "Invalid path",
+                        f"Multi-channel mode expects each path to be a TIFF stack file or TIFF sequence folder:\n{vp}",
+                    )
+                    return
+            base_dir = video_paths[0].parent if video_paths[0].is_file() else video_paths[0]
             input_stem = f"{video_paths[0].stem}_multi_{len(video_paths)}ch"
         else:
             video_path = video_paths[0]
@@ -6018,8 +6688,8 @@ class PostProcessingTab(QWidget):
         output_dir.mkdir(exist_ok=True)
         
         # Show progress
-        self.process_btn.setEnabled(False)
-        self.process_btn.setText("Creating video montage...")
+        self.process_btn.setEnabled(True)
+        self.process_btn.setText("Cancel video export")
         self.parent_window.progress_bar.setVisible(True)
         self.parent_window.progress_bar.setRange(0, 100)
         self.parent_window.progress_bar.setValue(0)
@@ -6055,6 +6725,8 @@ class PostProcessingTab(QWidget):
             graph_width_ratio=self._get_graph_width_ratio(),
             y_column=self._get_growth_y_column(),
             fi_layout=self._get_video_fi_layout(),
+            overlay_colors=self._get_video_overlay_colors(),
+            tile_visibility=dict(self._video_tile_visibility),
         )
         self.worker.finished.connect(self.on_video_finished)
         self.worker.progress.connect(self.on_video_progress)
@@ -6068,6 +6740,7 @@ class PostProcessingTab(QWidget):
     
     def on_video_finished(self, success, message):
         """Handle video creation completion"""
+        self.worker = None
         if hasattr(self, "process_btn") and self._qt_widget_alive(self.process_btn):
             self.process_btn.setText("Create video montage")
         self._update_button_state()
@@ -6092,20 +6765,26 @@ class PostProcessingTab(QWidget):
             ("yaxis_min", self.yaxis_min),
             ("yaxis_max", self.yaxis_max),
             ("fps", self.fps),
+            ("use_excel_graph", self.use_excel_graph),
             ("format_tif", self.format_tif),
             ("format_avi", self.format_avi),
             ("format_gif", self.format_gif),
             ("format_mp4", self.format_mp4),
             ("video_mask_contours", self.video_mask_contours),
             ("video_foci_overlay", self.video_foci_overlay),
+            ("video_fi_channels", self.video_fi_channels),
         ])
         d["video_fi_layout"] = self._get_video_fi_layout()
+        if self._video_tile_visibility:
+            d["video_tile_visibility"] = dict(self._video_tile_visibility)
+        d["video_overlay_colors"] = self._get_video_overlay_colors()
         d.update(self._get_growth_graph_style())
         d["growth_y_column"] = self._get_growth_y_column()
         d["graph_width_ratio"] = self._get_graph_width_ratio()
         for key, widget_name in (
             ("video_mask_path", "video_mask_path"),
             ("video_foci_path", "video_foci_path"),
+            ("video_fi_path", "video_fi_path"),
         ):
             w = getattr(self, widget_name, None)
             if self._qt_widget_alive(w):
@@ -6188,12 +6867,14 @@ class PostProcessingTab(QWidget):
             ("yaxis_min", self.yaxis_min),
             ("yaxis_max", self.yaxis_max),
             ("fps", self.fps),
+            ("use_excel_graph", self.use_excel_graph),
             ("format_tif", self.format_tif),
             ("format_avi", self.format_avi),
             ("format_gif", self.format_gif),
             ("format_mp4", self.format_mp4),
             ("video_mask_contours", self.video_mask_contours),
             ("video_foci_overlay", self.video_foci_overlay),
+            ("video_fi_channels", self.video_fi_channels),
         ])
         if "video_fi_layout" in data:
             layout = str(data.get("video_fi_layout") or DEFAULT_VIDEO_FI_LAYOUT)
@@ -6202,6 +6883,13 @@ class PostProcessingTab(QWidget):
             if self._qt_widget_alive(combo):
                 idx = combo.findData(self._video_fi_layout)
                 combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if "video_overlay_colors" in data:
+            self._video_overlay_colors = normalize_video_overlay_colors(data.get("video_overlay_colors"))
+        if isinstance(data.get("video_tile_visibility"), dict):
+            self._video_tile_visibility = {
+                self._video_tile_key(str(k)): bool(v)
+                for k, v in data.get("video_tile_visibility", {}).items()
+            }
         self._set_growth_graph_style(data)
         if "growth_y_column" in data:
             self._growth_y_column = str(data.get("growth_y_column") or DEFAULT_GROWTH_Y_COLUMN)
@@ -6214,11 +6902,14 @@ class PostProcessingTab(QWidget):
         for key, widget_name in (
             ("video_mask_path", "video_mask_path"),
             ("video_foci_path", "video_foci_path"),
+            ("video_fi_path", "video_fi_path"),
         ):
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
                     w.setText(str(data[key] or ""))
+        self._on_video_fi_channels_toggled(self._video_fi_enabled())
+        self._on_use_excel_graph_toggled(self._use_excel_graph_enabled())
         if "montage_overlay_enable" in data:
             w = getattr(self, "montage_overlay_enable", None)
             if self._qt_widget_alive(w):

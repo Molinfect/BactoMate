@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import time
 from typing import Any, Optional
 
 import numpy as np
@@ -73,6 +74,10 @@ class AnalyzeMasksPreviewWorker(QObject):
         self._latest_request_id = latest_request_id
         self._foci_apply = dict(foci_apply) if foci_apply else None
         self._last_progress_pct = 0
+        self._last_emitted_progress_pct = -1
+        self._last_progress_emit_ts = 0.0
+        self._min_progress_emit_s = 0.05
+        self._pending_progress: Optional[tuple[int, str, str]] = None
 
     def _superseded(self) -> bool:
         if self._latest_request_id is None:
@@ -111,7 +116,28 @@ class AnalyzeMasksPreviewWorker(QObject):
         except Exception:
             pct_i = max(0, min(100, int(pct)))
         self._last_progress_pct = pct_i
-        self.progress.emit(pct_i, str(step or "Working…"), str(detail or ""))
+        step_txt = str(step or "Working…")
+        detail_txt = str(detail or "")
+        now = time.monotonic()
+        force_emit = pct_i >= 100 or pct_i != int(self._last_emitted_progress_pct)
+        if not force_emit and (now - self._last_progress_emit_ts) < self._min_progress_emit_s:
+            self._pending_progress = (pct_i, step_txt, detail_txt)
+            return
+        self._pending_progress = None
+        self._last_progress_emit_ts = now
+        self._last_emitted_progress_pct = pct_i
+        self.progress.emit(pct_i, step_txt, detail_txt)
+
+    def flush_progress(self) -> None:
+        """Emit the most recent throttled progress update (e.g. before worker exit)."""
+        pending = self._pending_progress
+        if pending is None:
+            return
+        pct_i, step_txt, detail_txt = pending
+        self._pending_progress = None
+        self._last_progress_emit_ts = time.monotonic()
+        self._last_emitted_progress_pct = int(pct_i)
+        self.progress.emit(int(pct_i), str(step_txt), str(detail_txt))
 
     def _step(self, idx: int, total: int, title: str) -> str:
         try:
@@ -619,6 +645,7 @@ class AnalyzeMasksPreviewWorker(QObject):
             self._emit_progress(self._pct_in_step(4, 0.85), self._step(4, 4, "Finalizing results"), "")
         except Exception as e:
             err = str(e)
+        self.flush_progress()
         self._emit_progress(self._pct_in_step(4, 1.0), self._step(4, 4, "Complete"), "")
         self.result_ready.emit(
             self._request_id,

@@ -441,20 +441,20 @@ class TrainingTab(QWidget):
         training_layout.addWidget(self.stack, 1)
 
         self.training_section = CollapsibleSection(
-            "Training backend and actual training",
+            "Training parameters",
             training_content,
-            parent=self,
-            expanded=True,
-        )
-        layout.addWidget(self.training_section, 0)
-
-        self.modify_dataset_section = CollapsibleSection(
-            "Modify training dataset",
-            dataset_group,
             parent=self,
             expanded=False,
         )
+
+        self.modify_dataset_section = CollapsibleSection(
+            "Input training dataset",
+            dataset_group,
+            parent=self,
+            expanded=True,
+        )
         layout.addWidget(self.modify_dataset_section, 0)
+        layout.addWidget(self.training_section, 0)
 
         self.backend_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
         self.backend_combo.currentIndexChanged.connect(self._sync_dataset_to_backend)

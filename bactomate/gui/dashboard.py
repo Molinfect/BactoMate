@@ -47,7 +47,6 @@ class _ModuleCard(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setObjectName("ModuleCardOuter")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Click to open this module")
         self.setStyleSheet(
             "#ModuleCardOuter {"
             " background-color: #252525;"

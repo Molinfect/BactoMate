@@ -10,66 +10,47 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-try:
-    import pytest
-except ImportError:
-    pytest = None
+import pytest
 
-try:
-    from PyQt6.QtWidgets import QApplication
-    from bactomate.gui.tabs.analyze_masks import AnalyzeMasksTab, AnalyzeTab, FilteringTab
+pytest.importorskip("PyQt6")
 
-    QT_AVAILABLE = True
-except Exception:
-    QT_AVAILABLE = False
+from PyQt6.QtWidgets import QWidget
+
+from bactomate.gui.tabs.analyze_masks import AnalyzeMasksTab, AnalyzeTab, FilteringTab
 
 
-def _app():
-    return QApplication.instance() or QApplication(sys.argv)
+@pytest.fixture
+def qt_parent(qapp):
+    """Top-level parent widget (required on macOS offscreen to avoid abort)."""
+    parent = QWidget()
+    yield parent
+    parent.deleteLater()
 
 
-def test_filtering_tab_exposes_only_filtering_controls():
-    if not QT_AVAILABLE:
-        if pytest:
-            pytest.skip("PyQt6 not available")
-        return
-    _app()
-    tab = FilteringTab(parent=None)
-    assert hasattr(tab, "filter_prob_enabled")
-    assert hasattr(tab, "filter_min_int_enabled")
-    assert hasattr(tab, "filter_per_cell_ratio_enabled")
+def test_filtering_tab_exposes_only_filtering_controls(qt_parent):
+    tab = FilteringTab(parent=qt_parent)
+    assert tab._stage_key() == "filtering"
     assert not hasattr(tab, "analyze_fi")
-    assert tab.preview_btn.text() == "Preview filters"
-    assert "Filter" in tab.analyze_btn.text()
+    assert tab.preview_action_btn.text() == "Preview filters"
+    assert "Filter" in tab.primary_action_btn.text()
+    # Peak-filter widgets live in the preview surface, not the main tab shell.
+    assert not hasattr(tab, "filter_prob_enabled")
 
 
-def test_analyze_tab_exposes_only_analyze_controls_and_hides_preview():
-    if not QT_AVAILABLE:
-        if pytest:
-            pytest.skip("PyQt6 not available")
-        return
-    _app()
-    tab = AnalyzeTab(parent=None)
+def test_analyze_tab_exposes_only_analyze_controls_and_hides_preview(qt_parent):
+    tab = AnalyzeTab(parent=qt_parent)
+    assert tab._stage_key() == "analyze"
     assert hasattr(tab, "analyze_fi")
     assert hasattr(tab, "use_filtered_masks_cb")
     assert not hasattr(tab, "filter_prob_enabled")
-    assert tab.preview_btn.isVisible() is False
-    assert "Analyze" in tab.analyze_btn.text()
+    assert tab.preview_action_btn.isVisible() is False
+    assert "Analyze" in tab.primary_action_btn.text()
 
 
-def test_factory_returns_expected_tabs_and_rejects_full_mode():
-    if not QT_AVAILABLE:
-        if pytest:
-            pytest.skip("PyQt6 not available")
-        return
-    _app()
-    t1 = AnalyzeMasksTab(parent=None, mode="filtering")
+def test_factory_returns_expected_tabs_and_rejects_full_mode(qt_parent):
+    t1 = AnalyzeMasksTab(parent=qt_parent, mode="filtering")
     assert isinstance(t1, FilteringTab)
-    t2 = AnalyzeMasksTab(parent=None, mode="analyze")
+    t2 = AnalyzeMasksTab(parent=qt_parent, mode="analyze")
     assert isinstance(t2, AnalyzeTab)
-    try:
-        AnalyzeMasksTab(parent=None, mode="full")
-        assert False, "Expected ValueError for mode='full'"
-    except ValueError:
-        pass
-
+    with pytest.raises(ValueError):
+        AnalyzeMasksTab(parent=qt_parent, mode="full")

@@ -59,20 +59,51 @@ from bactomate.gui.preferences import (
     set_state,
 )
 _startup_import_log("after constants/preferences imports")
-_startup_import_log("before tabs import")
-from bactomate.gui.tabs import (
-    AnalyzeTab,
-    FilteringTab,
-    PostProcessingTab,
-    ND2ConversionTab,
-    OmniposeSegTab,
-    SegmentationTab,
-    SessionLogsPanel,
-    TrackingTab,
-    TrainingTab,
-    UNetSegmentTab,
-)
-_startup_import_log("after tabs import")
+
+
+def _import_tab_shell_classes() -> tuple:
+    """Lazy-import heavy tab classes to reduce startup import time."""
+    from bactomate.gui.tabs.analyze_masks import AnalyzeTab, FilteringTab
+    from bactomate.gui.tabs.file_conversion import ND2ConversionTab
+    from bactomate.gui.tabs.omnipose_seg import OmniposeSegTab
+    from bactomate.gui.tabs.post_processing import PostProcessingTab
+    from bactomate.gui.tabs.segmentation import SegmentationTab
+    from bactomate.gui.tabs.session_logs import SessionLogsPanel
+    from bactomate.gui.tabs.tracking import TrackingTab
+    from bactomate.gui.tabs.training import TrainingTab
+    from bactomate.gui.tabs.unet_seg import UNetSegmentTab
+
+    return (
+        ND2ConversionTab,
+        SegmentationTab,
+        TrackingTab,
+        PostProcessingTab,
+        TrainingTab,
+        AnalyzeTab,
+        FilteringTab,
+        OmniposeSegTab,
+        UNetSegmentTab,
+        SessionLogsPanel,
+    )
+
+
+def _get_tab_classes() -> Tuple[Type[Any], ...]:
+    """Return primary module tab classes (lazy import)."""
+    (
+        ND2ConversionTab,
+        SegmentationTab,
+        TrackingTab,
+        PostProcessingTab,
+        TrainingTab,
+        *_rest,
+    ) = _import_tab_shell_classes()
+    return (
+        ND2ConversionTab,
+        SegmentationTab,
+        TrackingTab,
+        PostProcessingTab,
+        TrainingTab,
+    )
 _startup_import_log("before paths/styles imports")
 from bactomate.gui.paths import (
     get_app_root,
@@ -95,9 +126,11 @@ from bactomate.gui.project_model import (
     MODULE_TRAINING,
     default_project_dict,
     load_project,
+    migrate_project,
     path_relative_to_workspace,
     resolve_maybe_relative,
     save_project,
+    store_module_path,
 )
 _startup_import_log("after dashboard/project imports")
 from bactomate.gui.workspace_scanner import (
@@ -294,17 +327,6 @@ def _new_session_log_path(logs_dir: Path, started_at: datetime) -> Path:
     return logs_dir / f"{stem}_{started_at.strftime('%f')}_session.json"
 
 
-def _get_tab_classes() -> Tuple[Type[Any], ...]:
-    """Return tab classes (all from bactomate.gui.tabs)."""
-    return (
-        ND2ConversionTab,
-        SegmentationTab,
-        TrackingTab,
-        PostProcessingTab,
-        TrainingTab,
-    )
-
-
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -408,7 +430,13 @@ class MainWindow(QMainWindow):
             TrackingTab,
             PostProcessingTab,
             TrainingTab,
-        ) = _get_tab_classes()
+            AnalyzeTab,
+            FilteringTab,
+            OmniposeSegTab,
+            UNetSegmentTab,
+            SessionLogsPanel,
+        ) = _import_tab_shell_classes()
+        _startup_import_log("after tabs import")
 
         self.nd2_tab = ND2ConversionTab(self)
         # Keep underlying widgets alive for session/workflow compatibility
@@ -783,6 +811,20 @@ class MainWindow(QMainWindow):
                 "Omnipose processing is still running. Wait for it to finish or cancel it, then close the application.",
             ),
             (
+                getattr(self.segmentation_tab, "_cellpose_owner", None),
+                "worker",
+                "Waiting for Cellpose processing to finish…",
+                300000,
+                "Cellpose processing is still running. Wait for it to finish or cancel it, then close the application.",
+            ),
+            (
+                getattr(self, "unet_segment_tab", None),
+                "worker",
+                "Waiting for U-Net processing to finish…",
+                300000,
+                "U-Net processing is still running. Wait for it to finish or cancel it, then close the application.",
+            ),
+            (
                 getattr(self, "omnipose_seg_tab", None),
                 "_omnipose_train_worker",
                 "Waiting for Omnipose training to finish…",
@@ -1055,6 +1097,9 @@ class MainWindow(QMainWindow):
         if idx == _STACK_DASHBOARD:
             self._show_dashboard()
             return
+        current_idx = self._central_stack.currentIndex()
+        if current_idx != idx and current_idx != _STACK_DASHBOARD:
+            self._dismiss_all_embedded_previews()
         self._central_stack.setCurrentIndex(idx)
         self._sync_pipeline_nav_highlights(module_id)
         if isinstance(self._project_data, dict):
@@ -1243,24 +1288,79 @@ class MainWindow(QMainWindow):
     def _apply_project_paths_to_tabs(self) -> None:
         if not self._workspace_root or not isinstance(self._project_data, dict):
             return
+        self._project_data = migrate_project(self._project_data)
         paths = self._project_data.get("paths") or {}
         raw = paths.get("raw_input")
-        if not raw or not hasattr(self.nd2_tab, "file_path"):
-            return
-        p = resolve_maybe_relative(self._workspace_root, str(raw))
-        if not p.exists():
-            return
-        current = (self.nd2_tab.file_path.text() or "").strip()
-        if current and self._path_is_within_workspace(current):
-            return
-        self.nd2_tab.file_path.setText(str(p))
-        if p.is_file() and hasattr(self.nd2_tab, "load_file_info"):
-            self.nd2_tab.load_file_info(str(p))
-        elif p.is_dir() and hasattr(self.nd2_tab, "load_folder_info"):
-            folder = p
-            supported = list_convertible_microscopy_files(folder, max_files=120)
-            if supported:
-                self.nd2_tab.load_folder_info(str(folder), supported)
+        if raw and hasattr(self.nd2_tab, "file_path"):
+            p = resolve_maybe_relative(self._workspace_root, str(raw))
+            if p.exists():
+                current = (self.nd2_tab.file_path.text() or "").strip()
+                if not current or not self._path_is_within_workspace(current):
+                    self.nd2_tab.file_path.setText(str(p))
+                    if p.is_file() and hasattr(self.nd2_tab, "load_file_info"):
+                        self.nd2_tab.load_file_info(str(p))
+                    elif p.is_dir() and hasattr(self.nd2_tab, "load_folder_info"):
+                        supported = list_convertible_microscopy_files(p, max_files=120)
+                        if supported:
+                            self.nd2_tab.load_folder_info(str(p), supported)
+        seg_paths = paths.get("segmentation") or {}
+        if isinstance(seg_paths, dict):
+            backend = str(seg_paths.get("backend") or "").strip()
+            if backend and hasattr(self.segmentation_tab, "set_session_params"):
+                try:
+                    self.segmentation_tab.set_session_params({"segmentation_backend": backend})
+                except Exception:
+                    pass
+            seg_input = str(seg_paths.get("input") or "").strip()
+            if seg_input:
+                p = resolve_maybe_relative(self._workspace_root, seg_input)
+                if p.exists() and hasattr(self.segmentation_tab, "_sync_segmentation_input_path"):
+                    self.segmentation_tab._sync_segmentation_input_path(str(p))
+        for section, tab, attr in (
+            ("filtering", self.filtering_tab, "file_path"),
+            ("analyze", self.analyze_tab, "file_path"),
+        ):
+            block = paths.get(section) or {}
+            if isinstance(block, dict):
+                stored = str(block.get("masks") or "").strip()
+                if stored:
+                    p = resolve_maybe_relative(self._workspace_root, stored)
+                    if p.exists():
+                        widget = getattr(tab, attr, None)
+                        if widget is not None and hasattr(widget, "setText"):
+                            widget.setText(str(p))
+        track_paths = paths.get("tracking") or {}
+        if isinstance(track_paths, dict) and hasattr(self.tracking_tab, "file_path"):
+            for field, attr in (("masks", "file_path"), ("source", "single_fi_path")):
+                stored = str(track_paths.get(field) or "").strip()
+                if not stored:
+                    continue
+                p = resolve_maybe_relative(self._workspace_root, stored)
+                if p.exists():
+                    widget = getattr(self.tracking_tab, attr, None)
+                    if widget is not None and hasattr(widget, "setText"):
+                        widget.setText(str(p))
+        pp_paths = paths.get("post_processing") or {}
+        if isinstance(pp_paths, dict):
+            pp = self.post_processing_tab
+            for field, attr in (
+                ("video", "video_path"),
+                ("montage", "montage_path"),
+                ("excel", "excel_path"),
+            ):
+                stored = str(pp_paths.get(field) or "").strip()
+                if stored:
+                    p = resolve_maybe_relative(self._workspace_root, stored)
+                    widget = getattr(pp, attr, None)
+                    if widget is not None and hasattr(widget, "setText"):
+                        widget.setText(str(p) if p.exists() else stored)
+        train_paths = paths.get("training") or {}
+        if isinstance(train_paths, dict):
+            stored = str(train_paths.get("dataset_dir") or "").strip()
+            if stored and hasattr(self.training_tab, "train_dir_edit"):
+                p = resolve_maybe_relative(self._workspace_root, stored)
+                if p.exists():
+                    self.training_tab.train_dir_edit.setText(str(p))
 
     def _restore_module_splitters(self) -> None:
         if not isinstance(self._project_data, dict):
@@ -1289,7 +1389,7 @@ class MainWindow(QMainWindow):
             return
         if not isinstance(self._project_data, dict):
             self._project_data = default_project_dict(display_name=self._workspace_root.name)
-        paths = self._project_data.setdefault("paths", {})
+        paths = self._project_data.setdefault("paths", default_project_dict()["paths"])
         ui = self._project_data.setdefault("ui", {})
         fp = (self.nd2_tab.file_path.text() or "").strip() if hasattr(self.nd2_tab, "file_path") else ""
         if fp and self._workspace_root:
@@ -1297,6 +1397,55 @@ class MainWindow(QMainWindow):
                 paths["raw_input"] = path_relative_to_workspace(self._workspace_root, Path(fp))
             except Exception:
                 paths["raw_input"] = fp
+        if hasattr(self.segmentation_tab, "_active_backend_key"):
+            seg_block = paths.setdefault("segmentation", {})
+            if isinstance(seg_block, dict):
+                seg_block["backend"] = self.segmentation_tab._active_backend_key()
+                seg_input = (self.segmentation_tab.file_path.text() or "").strip()
+                if seg_input and self._workspace_root:
+                    store_module_path(paths, self._workspace_root, "segmentation", "input", seg_input)
+        if self._workspace_root:
+            store_module_path(
+                paths,
+                self._workspace_root,
+                "filtering",
+                "masks",
+                (self.filtering_tab.file_path.text() or "").strip(),
+            )
+            store_module_path(
+                paths,
+                self._workspace_root,
+                "analyze",
+                "masks",
+                (self.analyze_tab.file_path.text() or "").strip(),
+            )
+            store_module_path(
+                paths,
+                self._workspace_root,
+                "tracking",
+                "masks",
+                (self.tracking_tab.file_path.text() or "").strip(),
+            )
+            store_module_path(
+                paths,
+                self._workspace_root,
+                "tracking",
+                "source",
+                (getattr(self.tracking_tab, "single_fi_path").text() or "").strip()
+                if hasattr(self.tracking_tab, "single_fi_path")
+                else "",
+            )
+            pp = self.post_processing_tab
+            store_module_path(paths, self._workspace_root, "post_processing", "video", (pp.video_path.text() or "").strip())
+            store_module_path(paths, self._workspace_root, "post_processing", "montage", (pp.montage_path.text() or "").strip())
+            store_module_path(paths, self._workspace_root, "post_processing", "excel", (pp.excel_path.text() or "").strip())
+            store_module_path(
+                paths,
+                self._workspace_root,
+                "training",
+                "dataset_dir",
+                (self.training_tab.train_dir_edit.text() or "").strip(),
+            )
         ui["last_module"] = self._get_current_module_id()
         states: dict[str, str] = {}
         for key, shell in self._module_shells.items():
@@ -1326,6 +1475,22 @@ class MainWindow(QMainWindow):
             return
         # Apply session (all parameters: FI, z-stack, foci, model, filters, etc.; paths from log may overwrite UI)
         self.apply_session_params(tabs_data)
+        # Legacy logs: U-Net segmentation stored performed under unet_segment only
+        seg_tab = getattr(self, "segmentation_tab", None)
+        unet_data = tabs_data.get("unet_segment", {})
+        seg_data = tabs_data.get("segmentation", {})
+        if (
+            seg_tab is not None
+            and isinstance(unet_data, dict)
+            and unet_data.get("performed")
+            and isinstance(seg_data, dict)
+            and not seg_data.get("performed", False)
+            and not seg_data.get("segmentation_backend")
+        ):
+            try:
+                seg_tab.set_session_params({"segmentation_backend": "unet", **unet_data})
+            except Exception:
+                pass
         # Use only the user's chosen path: set it back on nd2 and load file info; we will set other tabs when chaining
         nd2_tab.file_path.setText(seed_path)
         if Path(seed_path).is_file():
@@ -1349,7 +1514,12 @@ class MainWindow(QMainWindow):
             if not isinstance(tab_data, dict):
                 tab_data = {}
             # Backward compatibility: if "performed" missing (old log), treat as True
-            if not tab_data.get("performed", True):
+            performed = tab_data.get("performed", True)
+            if key == "segmentation" and not performed:
+                legacy_unet = tabs_data.get("unet_segment", {})
+                if isinstance(legacy_unet, dict) and legacy_unet.get("performed"):
+                    performed = True
+            if not performed:
                 continue
             tab = getattr(self, TAB_WIDGET_ATTR.get(key), None)
             if tab is None or not hasattr(tab, "workflow_step_finished"):
@@ -1384,7 +1554,9 @@ class MainWindow(QMainWindow):
             return base / "Tif_files"
 
         def _segment_output_path(segment_input_path: str) -> Path:
-            # When segment input is Tif_files (or Tif_*), masks go to _segmentation_<model> (e.g. _segmentation_bact_phase_omni)
+            seg_tab = getattr(self, "segmentation_tab", None)
+            if seg_tab is not None and hasattr(seg_tab, "infer_segment_output_path"):
+                return seg_tab.infer_segment_output_path(segment_input_path)
             folder = Path(segment_input_path)
             omnipose_tab = getattr(self, "omnipose_seg_tab", None)
             folder_name = (
@@ -1566,7 +1738,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = "2.1"
+            version = "2.2"
         QMessageBox.about(
             self,
             "About BactoMate",

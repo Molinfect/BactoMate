@@ -34,6 +34,7 @@ from bactomate.gui.layout_helpers import style_module_primary_button
 from bactomate.gui.widgets import create_info_icon
 from bactomate.gui.foci_filter_pipeline import (
     FOCI_BLOB_SIZE_PRESETS,
+    FociPassFailCache,
     accepted_cell_labels_cache_key,
     accepted_cell_labels_for_foci,
     sync_foci_peaks_with_accepted_cells,
@@ -43,8 +44,13 @@ from bactomate.gui.foci_filter_pipeline import (
     fit_foci_table_columns,
     foci_blob_max_radius,
     foci_blob_threshold_frac,
+    foci_pass_fail_cache_key,
     format_foci_cell_id_display,
     populate_foci_preview_table,
+)
+from bactomate.gui.foci_overlay_draw import (
+    DEFAULT_FOCI_PREVIEW_RENDER_CAP,
+    draw_peak_rings_on_rgb,
 )
 from bactomate.gui.filter_preview_utils import (
     cell_filter_settings_signature,
@@ -2495,8 +2501,8 @@ def show_filter_preview(
         accepted_cell_labels: Optional[set[int]] = None,
     ) -> tuple[list[dict], list[dict]]:
         cache = getattr(dlg, "_foci_pass_fail_cache", None)
-        if not isinstance(cache, dict):
-            cache = {}
+        if not isinstance(cache, FociPassFailCache):
+            cache = FociPassFailCache(max_size=48)
             dlg._foci_pass_fail_cache = cache
         foci_src = _foci_source_for_source_key(source_key)
         ch_key = (
@@ -2505,33 +2511,31 @@ def show_filter_preview(
             else "_default"
         )
         ch_sig = foci_channel_settings_signature(_foci_channel_settings_for_key(ch_key))
-        acc_key = (
-            frozenset(int(x) for x in accepted_cell_labels)
-            if accepted_cell_labels
-            else None
-        )
         mpk = getattr(dlg, "_preview_mask_path_key", None)
-        key = (int(frame_idx), str(mpk or ""), ch_sig, acc_key, ch_key)
-        hit = cache.get(key)
+        key = foci_pass_fail_cache_key(
+            int(frame_idx),
+            str(mpk or ""),
+            ch_sig,
+            accepted_cell_labels,
+            ch_key,
+        )
+        hit = cache.lookup(key)
         if hit is not None:
-            return list(hit[0]), list(hit[1])
-        try:
-            passing, failing = compute_foci_pass_fail_for_frame(
-                frame_rows,
-                dict(fs or {}),
-                mask_2d=mask_2d,
-                foci_plane=foci_plane,
-                accepted_cell_labels=accepted_cell_labels,
-            )
-        except Exception:
-            passing, failing = [], []
-        cache[key] = (list(passing), list(failing))
-        if len(cache) > 48:
+            return hit
+
+        def _compute() -> tuple[list[dict], list[dict]]:
             try:
-                cache.pop(next(iter(cache)))
+                return compute_foci_pass_fail_for_frame(
+                    frame_rows,
+                    dict(fs or {}),
+                    mask_2d=mask_2d,
+                    foci_plane=foci_plane,
+                    accepted_cell_labels=accepted_cell_labels,
+                )
             except Exception:
-                pass
-        return passing, failing
+                return [], []
+
+        return cache.get_or_compute(key, _compute)
 
     def _update_foci_table_live() -> None:
         if dlg is None:
@@ -2961,6 +2965,14 @@ def show_filter_preview(
                 settings=dict(foci_fs or {}),
             )
 
+        if show_foci and (pass_peaks or fail_peaks):
+            preview_total = len(pass_peaks) + len(fail_peaks)
+            preview_cap = max(0, int(DEFAULT_FOCI_PREVIEW_RENDER_CAP))
+            if preview_cap > 0 and preview_total > preview_cap:
+                info_text = (
+                    f"{info_text}  |  Foci preview: {preview_cap} / {preview_total} drawn"
+                ).strip()
+
         highlight_yx = getattr(dlg, "_highlight_foci_yx", None)
         # Blobs after Apply use per-channel foci planes in _build_foci_layer_only (not the View image).
         foci_after_apply = bool(cell_filter_applied)
@@ -2979,28 +2991,26 @@ def show_filter_preview(
             color: tuple[int, int, int],
             *,
             radius: int = 4,
+            cap: Optional[int] = None,
         ) -> None:
-            h0, w0 = mask_2d.shape[:2]
-            hs, ws = target_rgb.shape[:2]
-            sx = (ws / w0) if w0 else 1.0
-            sy = (hs / h0) if h0 else 1.0
-            r = max(2, int(radius))
-            inner_sq = max(1, (r - 2) * (r - 2))
-            outer_sq = r * r
-            for p in peaks or []:
-                yy = int(round(float(p.get("y", 0)) * sy))
-                xx = int(round(float(p.get("x", 0)) * sx))
-                if 0 <= yy < hs and 0 <= xx < ws:
-                    for dy in range(-r, r + 1):
-                        for dx in range(-r, r + 1):
-                            d2 = dx * dx + dy * dy
-                            if d2 > outer_sq or d2 < inner_sq:
-                                continue
-                            y2, x2 = yy + dy, xx + dx
-                            if 0 <= y2 < hs and 0 <= x2 < ws:
-                                target_rgb[y2, x2, 0] = int(color[0])
-                                target_rgb[y2, x2, 1] = int(color[1])
-                                target_rgb[y2, x2, 2] = int(color[2])
+            draw_peak_rings_on_rgb(
+                target_rgb,
+                peaks,
+                color,
+                mask_shape=tuple(mask_2d.shape[:2]),
+                radius=radius,
+                cap=cap,
+            )
+
+        def _foci_preview_draw_cap() -> int:
+            return max(0, int(DEFAULT_FOCI_PREVIEW_RENDER_CAP))
+
+        def _cap_peaks_for_preview(peaks: list[dict]) -> tuple[list[dict], int, int]:
+            total = len(peaks or [])
+            cap = _foci_preview_draw_cap()
+            if cap <= 0 or total <= cap:
+                return list(peaks or []), total, total
+            return list(peaks[:cap]), cap, total
 
         def _foci_channel_should_draw(si: int, fp: Path) -> bool:
             nav = getattr(dlg, "_nav_ctrl", None)
@@ -3072,35 +3082,54 @@ def show_filter_preview(
                             ),
                         )
                     ch_plane_arr = np.asarray(ch_plane)
+                    pass_draw, pass_drawn, pass_total = _cap_peaks_for_preview(ch_pass)
+                    fail_draw, fail_drawn, fail_total = _cap_peaks_for_preview(ch_fail)
                     missed_pass = draw_foci_blob_contours_on_rgb(
                         ch_layer_rgb,
                         mask_2d,
-                        ch_pass,
+                        pass_draw,
                         ch_plane_arr,
                         dict(ch_fs),
                         ch_color,
+                        cap=_foci_preview_draw_cap(),
                     )
                     if missed_pass:
                         _draw_peaks_on_rgb(ch_layer_rgb, missed_pass, ch_color, radius=3)
                     missed_fail = draw_foci_blob_contours_on_rgb(
                         ch_layer_rgb,
                         mask_2d,
-                        ch_fail,
+                        fail_draw,
                         ch_plane_arr,
                         dict(ch_fs),
                         _FOCI_FAIL_RGB,
+                        cap=_foci_preview_draw_cap(),
                     )
                     if missed_fail:
                         _draw_peaks_on_rgb(ch_layer_rgb, missed_fail, _FOCI_FAIL_RGB, radius=3)
-                else:
-                    _draw_peaks_on_rgb(
-                        ch_layer_rgb,
-                        _peaks_from_csv_rows(ch_rows),
-                        ch_color,
-                        radius=4,
-                    )
+                    ch_mask = np.any(np.asarray(ch_layer_rgb) > 12, axis=-1)
+                    channels_store[ch_key] = {
+                        "layer": ch_layer_rgb,
+                        "mask": ch_mask,
+                        "drawn": int(pass_drawn + fail_drawn),
+                        "total": int(pass_total + fail_total),
+                    }
+                    continue
+                raw_peaks = _peaks_from_csv_rows(ch_rows)
+                draw_peaks, drawn_n, total_n = _cap_peaks_for_preview(raw_peaks)
+                _draw_peaks_on_rgb(
+                    ch_layer_rgb,
+                    draw_peaks,
+                    ch_color,
+                    radius=4,
+                    cap=_foci_preview_draw_cap(),
+                )
                 ch_mask = np.any(np.asarray(ch_layer_rgb) > 12, axis=-1)
-                channels_store[ch_key] = {"layer": ch_layer_rgb, "mask": ch_mask}
+                channels_store[ch_key] = {
+                    "layer": ch_layer_rgb,
+                    "mask": ch_mask,
+                    "drawn": int(drawn_n),
+                    "total": int(total_n),
+                }
 
             for si, fp in enumerate(overlay_sources):
                 if not _foci_channel_should_draw(si, fp):
@@ -3120,8 +3149,29 @@ def show_filter_preview(
         def _composite_cached_foci(base_rgb: np.ndarray) -> np.ndarray:
             if not show_foci:
                 return np.asarray(base_rgb, dtype=np.uint8)
+            comp_key = (
+                base_cache_key,
+                foci_channels_parent_key,
+                _foci_channel_overlay_vis_key(dlg),
+            )
+            comp_cache = getattr(dlg, "_foci_composited_cache", None)
+            if isinstance(comp_cache, dict) and comp_cache.get("key") == comp_key:
+                cached_rgb = comp_cache.get("rgb")
+                if (
+                    isinstance(cached_rgb, np.ndarray)
+                    and cached_rgb.shape == np.asarray(base_rgb).shape
+                ):
+                    return np.asarray(cached_rgb, dtype=np.uint8)
             layer_rgb, layer_mask = _build_foci_layer_only()
-            return _composite_foci_layer(base_rgb, layer_rgb, layer_mask)
+            result = _composite_foci_layer(base_rgb, layer_rgb, layer_mask)
+            try:
+                dlg._foci_composited_cache = {
+                    "key": comp_key,
+                    "rgb": np.asarray(result).copy(),
+                }
+            except Exception:
+                dlg._foci_composited_cache = None
+            return result
 
         def _finalize_overlay(overlay: np.ndarray) -> RenderResult:
             try:

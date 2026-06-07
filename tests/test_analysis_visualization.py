@@ -28,8 +28,8 @@ def test_resolve_phase_exact_match_not_shared_prefix(tmp_path):
 
     mask_a = tmp_path / "filtered_masks" / "ssb-mNG_cl1__Phase60X_mask_filtered.tif"
     mask_b = tmp_path / "filtered_masks" / "ssb-mNG_cl1_001_Phase60X_mask_filtered.tif"
-    mask_a.parent.mkdir(parents=True)
-    mask_b.parent.mkdir(parents=True)
+    mask_a.parent.mkdir(parents=True, exist_ok=True)
+    mask_b.parent.mkdir(parents=True, exist_ok=True)
     mask_a.write_bytes(b"m")
     mask_b.write_bytes(b"m")
 

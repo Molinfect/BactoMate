@@ -37,11 +37,12 @@ jobs:
           python main.py --version
           python main.py --smoke-test
 
-      - name: Focused pytest
+      - name: Full pytest (headless Qt)
         run: |
           source venv/bin/activate
           pip install pytest
-          pytest tests/test_analysis_paths.py tests/test_combined_summary.py tests/test_session_apply.py tests/test_patch_import.py -q --tb=short
+          export QT_QPA_PLATFORM=offscreen
+          pytest tests/ -q --tb=short
 
   smoke-windows:
     name: Windows source install + smoke test
@@ -72,9 +73,10 @@ jobs:
           python main.py --version
           python main.py --smoke-test
 
-      - name: Focused pytest
+      - name: Full pytest (headless Qt)
         shell: cmd
         run: |
           call venv\Scripts\activate.bat
           pip install pytest
-          pytest tests/test_analysis_paths.py tests/test_combined_summary.py tests/test_session_apply.py tests/test_patch_import.py -q --tb=short
+          set QT_QPA_PLATFORM=offscreen
+          pytest tests/ -q --tb=short
