@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.1 (2026-06)
+
+### macOS app bundle fix
+
+- **Fix reopen failure:** the `venv/bin/BactoMate` wrapper incorrectly routed `-c` to `main.py`, so the strict bundle launcher’s Python version check corrupted the Qt plugin path on second launch (“missing Qt plugins”).
+- **Launcher hardening:** strict launcher now queries Python version via `python3` directly; wrapper passes `-c`/`-m` to Python and `--version`/`--smoke-test` to `main.py`.
+
+---
+
 ## v2.3 (2026-06)
 
 ### macOS packaging restored
