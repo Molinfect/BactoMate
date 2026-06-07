@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.5 (2026-06)
+
+### macOS Dock identity cleanup
+
+- **One icon source:** runtime Dock/window icon selection now prefers the packaged `BactoMate.icns`, matching the app bundle icon instead of switching to the raw `img/logo2.png` graphic after Qt starts.
+- **Explicit bundle icon:** generated `Info.plist` now names `BactoMate.icns` directly for clearer LaunchServices registration.
+
+---
+
 ## v2.3.4 (2026-06)
 
 ### macOS bundle dependency repair

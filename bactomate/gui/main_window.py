@@ -182,9 +182,9 @@ _STATUS_LOG_TEXT_STYLESHEET = (
 
 
 def _get_app_icon_path() -> Path | None:
-    """App icon: img/logo2.png or BactoMate.icns under get_app_root()."""
+    """App icon from the bundle first, then the raw GUI logo as fallback."""
     root = get_app_root()
-    for p in (root / "img" / "logo2.png", root / "BactoMate.icns"):
+    for p in (root / "BactoMate.icns", root / "img" / "logo2.png"):
         if p.exists():
             return p.resolve()
     return None
@@ -1804,7 +1804,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = "2.3.4"
+            version = "2.3.5"
         QMessageBox.about(
             self,
             "About BactoMate",

@@ -186,7 +186,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleExecutable</key>
     <string>BactoMate</string>
     <key>CFBundleIconFile</key>
-    <string>BactoMate</string>
+    <string>BactoMate.icns</string>
     <key>CFBundleIdentifier</key>
     <string>de.hu-berlin.bactomate</string>
     <key>CFBundleInfoDictionaryVersion</key>
