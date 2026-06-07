@@ -45,6 +45,7 @@ czifile>=2019.7.2,<2025.0.0
 
 # GUI framework
 PyQt6>=6.6.0,<7.0.0
+pyobjc-framework-Cocoa; sys_platform == "darwin"  # Dock icon/name integration for macOS .app bundles
 
 # Data analysis and export (>=2.1.1: wheels on py312; 2.1.0 sdist fails vs NumPy 2: PyArray_Descr.c_metadata)
 pandas>=2.1.1,<3.0.0

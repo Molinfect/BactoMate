@@ -194,6 +194,27 @@ fi
 echo "Verifying bundled Python..."
 "$RESOURCES_DIR/venv/bin/BactoMate" --version
 "$RESOURCES_DIR/venv/bin/BactoMate" --smoke-test
+"$RESOURCES_DIR/venv/bin/python3" - <<'PY'
+import importlib.util
+import sys
+
+missing = [
+    name
+    for name in ("setproctitle", "AppKit", "Foundation")
+    if importlib.util.find_spec(name) is None
+]
+if missing:
+    print(
+        "Error: bundled macOS app integration dependencies are missing: "
+        + ", ".join(missing),
+        file=sys.stderr,
+    )
+    print(
+        "Run ./setup/install_mac.sh or pip install -r requirements.txt, then rebuild.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PY
 
 echo "Created: $APP_DIR"
 echo "Next: ./build/create_dmg.sh"

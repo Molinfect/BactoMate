@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.3.2 (2026-06)
+
+### macOS Dock icon/name fix
+
+- **Fix Python Dock identity:** macOS app builds now include the Cocoa bridge used by BactoMate to set the Dock icon and process name at runtime.
+- **Build verification:** `build/build_app_bundle.sh` now fails if `setproctitle`, `AppKit`, or `Foundation` are missing from the bundled venv, preventing future app bundles that reopen as Python or lose the BactoMate icon.
+
+---
+
 ## v2.3.1 (2026-06)
 
 ### macOS app bundle fix
