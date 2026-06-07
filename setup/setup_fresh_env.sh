@@ -117,7 +117,21 @@ python3 -c "import PyQt6; print('✓ PyQt6 imported successfully')" || {
     python3 -c "import PyQt6; print('✓ PyQt6 installed and imported')"
 }
 
-# Step 7: Check for cocoa plugin
+# Step 7: macOS Dock/menu-bar integration (AppKit/Foundation via pyobjc)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo ""
+    echo "Checking for macOS app integration dependencies..."
+    if ! python3 -c "import AppKit, Foundation" 2>/dev/null; then
+        echo "Installing pyobjc-framework-Cocoa..."
+        python3 -m pip install "pyobjc-framework-Cocoa"
+    fi
+    python3 -c "import AppKit, Foundation; print('✓ AppKit/Foundation available')" || {
+        echo "✗ AppKit/Foundation import failed after install."
+        exit 1
+    }
+fi
+
+# Step 8: Check for Qt cocoa plugin
 echo ""
 echo "Checking for Qt cocoa plugin..."
 PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
@@ -135,7 +149,7 @@ else
     fi
 fi
 
-# Step 8: Test PyQt6
+# Step 9: Test PyQt6
 echo ""
 echo "Testing PyQt6 (this may take a moment)..."
 PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")

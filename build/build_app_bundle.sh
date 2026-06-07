@@ -27,6 +27,45 @@ if [ ! -x "$VENV_PYTHON" ]; then
     exit 1
 fi
 
+echo "Checking macOS app integration dependencies..."
+MISSING_MACOS_DEPS="$("$VENV_PYTHON" - <<'PY'
+import importlib.util
+missing = [
+    name
+    for name in ("setproctitle", "AppKit", "Foundation")
+    if importlib.util.find_spec(name) is None
+]
+print(",".join(missing))
+PY
+)"
+if [ -n "$MISSING_MACOS_DEPS" ]; then
+    echo "Missing in build venv: ${MISSING_MACOS_DEPS//,/, }"
+    if [[ "$MISSING_MACOS_DEPS" == *"AppKit"* || "$MISSING_MACOS_DEPS" == *"Foundation"* ]]; then
+        echo "Installing pyobjc-framework-Cocoa into the build venv..."
+        "$VENV_PYTHON" -m pip install "pyobjc-framework-Cocoa"
+    fi
+    if [[ "$MISSING_MACOS_DEPS" == *"setproctitle"* ]]; then
+        echo "Installing setproctitle into the build venv..."
+        "$VENV_PYTHON" -m pip install "setproctitle>=1.3.0,<2.0.0"
+    fi
+    MISSING_MACOS_DEPS="$("$VENV_PYTHON" - <<'PY'
+import importlib.util
+missing = [
+    name
+    for name in ("setproctitle", "AppKit", "Foundation")
+    if importlib.util.find_spec(name) is None
+]
+print(",".join(missing))
+PY
+)"
+    if [ -n "$MISSING_MACOS_DEPS" ]; then
+        echo "Error: macOS app integration dependencies still missing: ${MISSING_MACOS_DEPS//,/, }"
+        echo "Run: $VENV_PYTHON -m pip install -r requirements.txt"
+        echo "Or rerun: ./setup/install_mac.sh"
+        exit 1
+    fi
+fi
+
 if ! command -v rsync >/dev/null 2>&1; then
     echo "Error: rsync is required to build the app bundle."
     exit 1
