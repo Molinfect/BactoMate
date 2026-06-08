@@ -292,15 +292,16 @@ class TrackingTab(QWidget):
         self._build_run_lineage_tracking_section(lineage_inner)
         scroll_layout.addWidget(
             CollapsibleSection(
-                "Run lineage tracking", lineage_content, parent=self, expanded=False
+                "Lineage export", lineage_content, parent=self, expanded=False
             )
         )
 
         # Parameters and track filters live in the right-hand preview (like segmentation / filtering).
+        self._tracking_params_host = scroll_widget
         self._tracking_params_panel = self._build_tracking_params()
         self._filter_tracks_panel = self._build_filter_tracks_panel()
-        self._tracking_params_panel.setParent(scroll_widget)
-        self._filter_tracks_panel.setParent(scroll_widget)
+        self._tracking_params_panel.setParent(self._tracking_params_host)
+        self._filter_tracks_panel.setParent(self._tracking_params_host)
         self._tracking_params_panel.hide()
         self._filter_tracks_panel.hide()
 
@@ -319,6 +320,54 @@ class TrackingTab(QWidget):
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
         self.setLayout(layout)
+
+    @staticmethod
+    def _qt_widget_alive(widget: QWidget | None) -> bool:
+        if widget is None:
+            return False
+        try:
+            from shiboken6 import isValid
+
+            return bool(isValid(widget))
+        except Exception:
+            try:
+                widget.objectName()
+                return True
+            except RuntimeError:
+                return False
+
+    def _restore_tracking_preview_panels(self) -> None:
+        """Reparent shared parameter panels before the preview dialog is destroyed."""
+        host = getattr(self, "_tracking_params_host", None) or self
+        for panel in (
+            getattr(self, "_tracking_params_panel", None),
+            getattr(self, "_filter_tracks_panel", None),
+        ):
+            if not self._qt_widget_alive(panel):
+                continue
+            try:
+                panel.setParent(host)
+                panel.hide()
+            except RuntimeError:
+                pass
+
+    def _linking_mode_text(self, default: str = "greedy") -> str:
+        combo = getattr(self, "mode_combo", None)
+        if not self._qt_widget_alive(combo):
+            return default
+        try:
+            return (combo.currentText() or default).strip()
+        except RuntimeError:
+            return default
+
+    def _set_linking_mode_text(self, mode: str) -> None:
+        combo = getattr(self, "mode_combo", None)
+        if not self._qt_widget_alive(combo):
+            return
+        try:
+            combo.setCurrentText(mode)
+        except RuntimeError:
+            pass
 
     def _main_window(self) -> QWidget:
         """Return the main window so dialogs parent to it (avoids second dock/taskbar icon)."""
@@ -410,6 +459,7 @@ class TrackingTab(QWidget):
     def _dismiss_embedded_tracking_preview(self) -> None:
         prev = getattr(self, "_embedded_tracking_preview", None)
         if prev is not None:
+            self._restore_tracking_preview_panels()
             try:
                 prev.close()
                 prev.deleteLater()
@@ -485,7 +535,7 @@ class TrackingTab(QWidget):
             "Writes CSV, tracked masks, and report workbook under _tracking/{stem}_tracking/.\n\n"
             "When Create visualization is checked, also builds per-frame overlay and "
             "*_trajectories.tif (slow on long movies; this is not done during preview).\n\n"
-            "For divisions and lineage tables, use Run lineage tracking below."
+            "For divisions and lineage tables, use Run lineage export below."
         )
         self.movement_btn.clicked.connect(lambda: self._run_tracking_with_action("movement"))
         for btn in (self.preview_btn, self.movement_btn):
@@ -530,17 +580,17 @@ class TrackingTab(QWidget):
         )
 
         actions_layout = module_path_action_buttons_layout()
-        self._preview_lineage_btn_idle = "Preview lineage tracking"
-        self._lineage_btn_idle = "Run lineage tracking"
+        self._preview_lineage_btn_idle = "Preview lineage QC"
+        self._lineage_btn_idle = "Run lineage export"
 
         self.preview_lineage_btn = ProgressCancelButton(self._preview_lineage_btn_idle)
         self.preview_lineage_btn.setEnabled(False)
         style_module_primary_button(self.preview_lineage_btn)
         self.preview_lineage_btn.setToolTip(
-            f"Same as Preview tracking but uses a linking mode that can record divisions "
-            f"(greedy_nodiv is switched to greedy).\n\n"
+            f"Quick in-memory lineage QC: founder-colored overlay, division candidates, and a "
+            f"compact review panel (greedy_nodiv is switched to greedy).\n\n"
             f"Pick mask and quick ({TRACKING_PREVIEW_FRAME_LIMIT} frames) or full time lapse; "
-            "in-memory only, nothing written to disk."
+            "nothing written to disk. Use Run lineage export for the full Excel/report."
         )
         self.preview_lineage_btn.clicked.connect(
             lambda: self._run_tracking_with_action("preview_lineage")
@@ -549,22 +599,13 @@ class TrackingTab(QWidget):
         self.lineage_btn.setEnabled(False)
         style_module_primary_button(self.lineage_btn)
         self.lineage_btn.setToolTip(
-            "Trackastra pass with lineage exports (CSV, XLSX, lineage TIF).\n\n"
+            "Full lineage export: tables, Excel report, lineage TIF, and PNG figures.\n\n"
             "If Mode is greedy_nodiv, it is switched to greedy so divisions can be recorded.\n\n"
             "Outputs live under _tracking/{stem}_tracking/ alongside trajectory files."
         )
         self.lineage_btn.clicked.connect(lambda: self._run_tracking_with_action("lineage"))
-        self.lineage_inspector_btn = QPushButton("Open lineage inspector…")
-        from bactomate.gui.layout_helpers import style_compact_action_button
-
-        style_compact_action_button(self.lineage_inspector_btn, horizontal_padding=10)
-        self.lineage_inspector_btn.setToolTip(
-            "Inspect the last lineage preview or open tables from a completed _tracking output folder."
-        )
-        self.lineage_inspector_btn.clicked.connect(self._open_lineage_inspector)
         for btn in (self.preview_lineage_btn, self.lineage_btn):
             actions_layout.addWidget(btn)
-        actions_layout.addWidget(self.lineage_inspector_btn)
         path_lay.addLayout(actions_layout)
         parent_layout.addWidget(path_panel)
 
@@ -997,7 +1038,13 @@ class TrackingTab(QWidget):
             self.model_combo.blockSignals(False)
 
     def _selected_trackastra_model(self) -> str:
-        text = (self.model_combo.currentText() or TRACKASTRA_DEFAULT_MODEL).strip()
+        combo = getattr(self, "model_combo", None)
+        if not self._qt_widget_alive(combo):
+            return TRACKASTRA_DEFAULT_MODEL
+        try:
+            text = (combo.currentText() or TRACKASTRA_DEFAULT_MODEL).strip()
+        except RuntimeError:
+            return TRACKASTRA_DEFAULT_MODEL
         return text.split(" (")[0].strip()
 
     def _ensure_trackastra_model_available(self, model_name: str, *, title: str = "Tracking") -> bool:
@@ -1158,17 +1205,38 @@ class TrackingTab(QWidget):
 
     def _get_trajectory_frame_count(self, path: Path) -> Optional[int]:
         """Return number of frames in a trajectory TIFF, or None if unreadable."""
-        meta = read_metadata_from_path(path)
-        n = meta.get("frame_count")
-        if n is not None and n > 0:
-            return int(n)
+        counts: list[int] = []
         try:
-            import tifffile
-            with tifffile.TiffFile(path) as tif:
-                if tif.pages:
-                    return len(tif.pages)
+            meta = read_metadata_from_path(path)
+            n = meta.get("frame_count")
+            if n is not None and int(n) > 0:
+                counts.append(int(n))
         except Exception:
             pass
+        try:
+            import tifffile
+
+            with tifffile.TiffFile(path) as tif:
+                if tif.series:
+                    series = tif.series[0]
+                    shape = tuple(int(v) for v in getattr(series, "shape", ()) or ())
+                    axes = str(getattr(series, "axes", "") or "").upper()
+                    if "T" in axes and len(shape) > axes.index("T"):
+                        counts.append(int(shape[axes.index("T")]))
+                    elif len(shape) >= 3:
+                        # Some microscopy stacks are stored as a single TIFF page whose
+                        # first array dimension is time (e.g. shape TYX but axes QYX).
+                        # Do not report these as one frame just because len(pages) == 1.
+                        if axes.endswith("C") and shape[-1] in (3, 4):
+                            counts.append(int(shape[0]) if len(shape) > 3 else 1)
+                        else:
+                            counts.append(int(shape[0]))
+                if tif.pages:
+                    counts.append(int(len(tif.pages)))
+        except Exception:
+            pass
+        if counts:
+            return max(c for c in counts if c > 0)
         return None
 
     def _update_filter_ranges_from_trajectory(self) -> None:
@@ -1447,11 +1515,11 @@ class TrackingTab(QWidget):
 
         lineage_mask = self._primary_lineage_mask_for_run_labels()
         n_lineage = self._mask_stack_frame_count(lineage_mask) if lineage_mask is not None else None
-        self._preview_lineage_btn_idle = "Preview lineage tracking"
+        self._preview_lineage_btn_idle = "Preview lineage QC"
         if n_lineage is not None and n_lineage > 0:
-            self._lineage_btn_idle = f"Run lineage tracking ({int(n_lineage)} frames)"
+            self._lineage_btn_idle = f"Run lineage export ({int(n_lineage)} frames)"
         else:
-            self._lineage_btn_idle = "Run lineage tracking"
+            self._lineage_btn_idle = "Run lineage export"
         for attr, idle in (
             ("preview_lineage_btn", self._preview_lineage_btn_idle),
             ("lineage_btn", self._lineage_btn_idle),
@@ -1584,12 +1652,12 @@ class TrackingTab(QWidget):
 
     def _ensure_lineage_linking_mode(self) -> None:
         """greedy_nodiv cannot represent divisions; switch to greedy and notify."""
-        if self.mode_combo.currentText() != "greedy_nodiv":
+        if self._linking_mode_text() != "greedy_nodiv":
             return
-        self.mode_combo.setCurrentText("greedy")
+        self._set_linking_mode_text("greedy")
         QMessageBox.information(
             self._main_window(),
-            "Lineage tracking",
+            "Lineage QC / export",
             "greedy_nodiv does not model cell divisions. Mode was switched to greedy for this run.\n\n"
             "Both greedy and ilp support divisions; ilp is often more accurate on difficult lineages but is slower "
             "and needs an ILP solver (e.g. Gurobi or SCIP).",
@@ -1613,9 +1681,9 @@ class TrackingTab(QWidget):
         """Disable run buttons while a worker runs; blue in-button fill on the active action."""
         idle_by_action = {
             "preview": getattr(self, "_preview_btn_idle", "Preview tracking"),
-            "preview_lineage": getattr(self, "_preview_lineage_btn_idle", "Preview lineage tracking"),
+            "preview_lineage": getattr(self, "_preview_lineage_btn_idle", "Preview lineage QC"),
             "movement": getattr(self, "_movement_btn_idle", "Run tracking (movement)"),
-            "lineage": getattr(self, "_lineage_btn_idle", "Run lineage tracking"),
+            "lineage": getattr(self, "_lineage_btn_idle", "Run lineage export"),
         }
         btn_by_action = {
             "preview": getattr(self, "preview_btn", None),
@@ -2211,7 +2279,7 @@ class TrackingTab(QWidget):
         self._last_preview_in_memory = False
         self._last_track_action = busy_action
         preview_title = (
-            "Preview lineage tracking"
+            "Preview lineage QC"
             if busy_action == "preview_lineage"
             else "Preview tracking"
         )
@@ -2339,7 +2407,7 @@ class TrackingTab(QWidget):
             active.set_progress(100)
         if success:
             label = (
-                "Preview lineage tracking"
+                "Preview lineage QC"
                 if action == "preview_lineage"
                 else "Preview tracking"
             )
@@ -2383,7 +2451,11 @@ class TrackingTab(QWidget):
 
     def _lineage_preflight_check(self, mask_file: Path, *, title: str) -> bool:
         """Warn about mask/analysis mismatch and linker before lineage jobs."""
-        from bactomate.modules.lineage_integration import preflight_lineage_run, resolve_lineage_mask_path
+        from bactomate.modules.lineage_integration import (
+            preflight_lineage_run,
+            preflight_summary_lines,
+            resolve_lineage_mask_path,
+        )
 
         pf = preflight_lineage_run(
             mask_file,
@@ -2397,10 +2469,10 @@ class TrackingTab(QWidget):
                 "Cannot start lineage tracking:\n\n" + "\n".join(f"• {e}" for e in pf.errors),
             )
             return False
+        summary = preflight_summary_lines(pf)
         if pf.warnings:
-            msg = "Lineage preflight:\n\n" + "\n".join(f"• {w}" for w in pf.warnings)
-            if pf.analysis_workbook:
-                msg += f"\n\nAnalysis workbook:\n{pf.analysis_workbook}"
+            msg = "Lineage preflight:\n\n" + "\n".join(summary)
+            msg += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in pf.warnings)
             resolved = pf.resolved_mask_path or resolve_lineage_mask_path(mask_file)
             if resolved != Path(mask_file):
                 msg += f"\n\nWill use mask:\n{resolved}"
@@ -2433,14 +2505,14 @@ class TrackingTab(QWidget):
             except Exception as exc:
                 QMessageBox.warning(
                     self._main_window(),
-                    "Lineage inspector",
+                    "Lineage review",
                     f"Could not load lineage tables from output folder:\n{exc}",
                 )
                 return
         QMessageBox.information(
             self._main_window(),
-            "Lineage inspector",
-            "Run Preview lineage tracking first, or complete a lineage tracking run "
+            "Lineage review",
+            "Run Preview lineage QC first, or complete a lineage export "
             "with outputs under _tracking/{stem}_tracking/.",
         )
 
@@ -2451,9 +2523,9 @@ class TrackingTab(QWidget):
         model_name = self._selected_trackastra_model()
         title = {
             "preview": "Preview tracking",
-            "preview_lineage": "Preview lineage tracking",
+            "preview_lineage": "Preview lineage QC",
             "movement": "Run tracking",
-            "lineage": "Lineage tracking",
+            "lineage": "Run lineage export",
         }.get(track_action, "Tracking")
         if not self._ensure_trackastra_model_available(model_name, title=title):
             return
@@ -2484,10 +2556,10 @@ class TrackingTab(QWidget):
             is_lineage_preview = track_action == "preview_lineage"
             setup = self._prompt_preview_tracking_setup(
                 mask_files,
-                dialog_title="Preview lineage tracking" if is_lineage_preview else "Preview tracking",
+                dialog_title="Preview lineage QC" if is_lineage_preview else "Preview tracking",
                 intro_text=(
-                    "Lineage preview in memory — linking allows divisions (greedy_nodiv is switched to greedy). "
-                    "Nothing is written to disk.\n"
+                    "Quick lineage QC in memory — check division candidates and track families before export. "
+                    "Linking allows divisions (greedy_nodiv is switched to greedy). Nothing is written to disk.\n"
                     "Choose the mask and how many frames to include."
                 )
                 if is_lineage_preview
@@ -2495,13 +2567,13 @@ class TrackingTab(QWidget):
                 preferred_path_edit=self.lineage_file_path if is_lineage_preview else self.file_path,
             )
             if setup is None:
-                label = "Preview lineage tracking" if is_lineage_preview else "Preview tracking"
+                label = "Preview lineage QC" if is_lineage_preview else "Preview tracking"
                 self.parent_window.log_output(f"{label} cancelled.\n")
                 return
             mask_file, frame_limit = setup
             mask_file = mask_file.resolve()
             if is_lineage_preview and not self._lineage_preflight_check(
-                mask_file, title="Preview lineage tracking"
+                mask_file, title="Preview lineage QC"
             ):
                 return
             path_edit.blockSignals(True)
@@ -2566,7 +2638,7 @@ class TrackingTab(QWidget):
 
             if not self._lineage_preflight_check(
                 resolve_lineage_mask_path(Path(selected[0])),
-                title="Run lineage tracking",
+                title="Run lineage export",
             ):
                 return
         self._batch_lineage_summary_items: list = []
@@ -2943,7 +3015,7 @@ class TrackingTab(QWidget):
             if excel_file is None:
                 wb = resolve_analysis_workbook_for_mask(mask_file)
                 excel_file = str(wb) if wb else None
-            if not self._lineage_preflight_check(mask_file, title="Run lineage tracking"):
+            if not self._lineage_preflight_check(mask_file, title="Run lineage export"):
                 return
 
         # Store for completion popup "Open output folder"
@@ -3666,6 +3738,7 @@ class TrackingTab(QWidget):
         lineage_frame_label: QLabel | None = None
         lineage_table: QTableWidget | None = None
         lineage_metric_combo: QComboBox | None = None
+        lineage_plot_notice: QLabel | None = None
         lineage_ax = None
         lineage_plot_canvas: Any = None
 
@@ -3676,48 +3749,135 @@ class TrackingTab(QWidget):
                 return pts
             return _pd().DataFrame()
 
+        def _lineage_growth_table() -> Any:
+            tables = preview_state.get("lineage_tables") or {}
+            ts = tables.get("lineage_growth_timeseries") if isinstance(tables, dict) else None
+            if _is_pandas_dataframe(ts):
+                return ts
+            return _pd().DataFrame()
+
+        def _selected_lineage_id_from_preview() -> int | None:
+            selected_tid = preview_state.get("selected_lineage_track_id")
+            pts = _lineage_points_table()
+            if selected_tid is None or not _is_pandas_dataframe(pts) or pts.empty:
+                return None
+            tid = int(selected_tid)
+            if "lineage_id" in pts.columns:
+                row0 = pts[pts["track_id"] == tid].head(1)
+                if len(row0):
+                    lineage_id = row0.iloc[0].get("lineage_id")
+                    if lineage_id is not None and not _pd().isna(lineage_id):
+                        return int(lineage_id)
+            return tid
+
+        def _has_biological_lineage_measurement(pts: Any, growth_ts: Any) -> bool:
+            if _is_pandas_dataframe(growth_ts) and not growth_ts.empty:
+                return True
+            if not _is_pandas_dataframe(pts) or pts.empty:
+                return False
+            for col in pts.columns:
+                cl = str(col).lower()
+                if col in ("Area (µm²)", "area", "Area") or "fi" in cl or "foci" in cl or "coloc" in cl:
+                    return True
+            return False
+
+        def _set_lineage_plot_notice(visible: bool, text: str = "") -> None:
+            if lineage_plot_notice is None:
+                return
+            lineage_plot_notice.setText(text)
+            lineage_plot_notice.setVisible(bool(visible))
+
         def _refresh_lineage_plot() -> None:
             if lineage_ax is None or lineage_plot_canvas is None:
                 return
-            pts = _lineage_points_table()
             lineage_ax.clear()
-            if not _is_pandas_dataframe(pts) or pts.empty or "frame" not in pts.columns:
-                lineage_ax.set_title("No lineage measurements")
+            choice = lineage_metric_combo.currentText() if lineage_metric_combo is not None else "Lineage total area"
+            pts = _lineage_points_table()
+            growth_ts = _lineage_growth_table()
+            selected_tid = preview_state.get("selected_lineage_track_id")
+            lineage_id = _selected_lineage_id_from_preview()
+
+            if choice == "Lineage total area":
+                if not _is_pandas_dataframe(growth_ts) or growth_ts.empty or "total_area" not in growth_ts.columns:
+                    lineage_ax.set_title("No lineage area timeseries")
+                    _set_lineage_plot_notice(False)
+                    lineage_plot_canvas.draw()
+                    return
+                sub = growth_ts.copy()
+                if lineage_id is not None and "lineage_id" in sub.columns:
+                    filtered = sub[sub["lineage_id"] == int(lineage_id)]
+                    if not filtered.empty:
+                        sub = filtered
+                for lid, group in sub.groupby("lineage_id"):
+                    group = group.sort_values("frame")
+                    lineage_ax.plot(
+                        group["frame"],
+                        group["total_area"],
+                        marker="o",
+                        markersize=2.5,
+                        label=f"lineage {lid}",
+                    )
+                lineage_ax.set_xlabel("Frame")
+                lineage_ax.set_ylabel("Total area")
+                title_suffix = f"lineage {lineage_id}" if lineage_id is not None else "all lineages"
+                lineage_ax.set_title(f"Lineage total area — {title_suffix}")
+                if sub["lineage_id"].nunique() <= 8:
+                    lineage_ax.legend(fontsize=7, loc="best")
+                _set_lineage_plot_notice(False)
                 lineage_plot_canvas.draw()
                 return
-            selected_tid = preview_state.get("selected_lineage_track_id")
+
+            if not _is_pandas_dataframe(pts) or pts.empty or "frame" not in pts.columns:
+                lineage_ax.set_title("No lineage measurements")
+                _set_lineage_plot_notice(False)
+                lineage_plot_canvas.draw()
+                return
             sub = pts.copy()
             if selected_tid is not None and "track_id" in sub.columns:
                 tid = int(selected_tid)
                 if "lineage_id" in sub.columns:
                     row0 = sub[sub["track_id"] == tid].head(1)
-                    lineage_id = row0.iloc[0].get("lineage_id") if len(row0) else None
-                    if lineage_id is not None and not _pd().isna(lineage_id):
-                        sub = sub[sub["lineage_id"] == lineage_id]
+                    row_lineage_id = row0.iloc[0].get("lineage_id") if len(row0) else None
+                    if row_lineage_id is not None and not _pd().isna(row_lineage_id):
+                        sub = sub[sub["lineage_id"] == row_lineage_id]
                     else:
                         sub = sub[sub["track_id"] == tid]
                 else:
                     sub = sub[sub["track_id"] == tid]
-            choice = lineage_metric_combo.currentText() if lineage_metric_combo is not None else "Area (µm²)"
             ycol = None
             if choice in sub.columns:
                 ycol = choice
+            elif choice.startswith("y"):
+                ycol = "y" if "y" in sub.columns else None
             elif choice == "Area (µm²)":
                 ycol = next((c for c in ("Area (µm²)", "area", "Area") if c in sub.columns), None)
             if ycol is None:
                 ycol = "y" if "y" in sub.columns else None
             if ycol is None or sub.empty:
                 lineage_ax.set_title("No plottable lineage column")
+                _set_lineage_plot_notice(False)
                 lineage_plot_canvas.draw()
                 return
+            position_only = ycol == "y"
             for tid, group in sub.groupby("track_id"):
                 group = group.sort_values("frame")
                 lineage_ax.plot(group["frame"], group[ycol], marker="o", markersize=2.5, label=str(tid))
             lineage_ax.set_xlabel("Frame")
-            lineage_ax.set_ylabel(str(ycol))
-            lineage_ax.set_title(f"Track/lineage {selected_tid or 'all'}")
+            lineage_ax.set_ylabel("Y position (px)" if position_only else str(ycol))
+            lineage_ax.set_title(
+                f"Track position — track {selected_tid or 'all'}"
+                if position_only
+                else f"Track/lineage {selected_tid or 'all'}"
+            )
             if "track_id" in sub.columns and sub["track_id"].nunique() <= 8:
                 lineage_ax.legend(fontsize=7, loc="best")
+            if position_only:
+                _set_lineage_plot_notice(
+                    True,
+                    "Position preview only — not growth data. Join an Analyze workbook or run export for area/FI plots.",
+                )
+            else:
+                _set_lineage_plot_notice(False)
             lineage_plot_canvas.draw()
 
         def _populate_lineage_side_panel(table: QTableWidget) -> None:
@@ -3780,41 +3940,83 @@ class TrackingTab(QWidget):
 
         if bool(preview_state.get("is_lineage_preview")):
             lineage_side_panel = QWidget()
-            lineage_side_panel.setMinimumWidth(260)
             lineage_lay = QVBoxLayout(lineage_side_panel)
-            lineage_lay.setContentsMargins(8, 0, 0, 0)
-            lineage_lay.setSpacing(6)
-            title = QLabel("Lineage inspector")
-            title.setStyleSheet("font-weight: bold; color: #e8eef6;")
-            lineage_lay.addWidget(title)
+            lineage_lay.setContentsMargins(0, 0, 0, 0)
+            lineage_lay.setSpacing(8)
+            lineage_top_row = QHBoxLayout()
+            lineage_top_row.setContentsMargins(0, 0, 0, 0)
+            lineage_top_row.setSpacing(8)
+            open_inspector_btn = QPushButton("Open full lineage review…")
+            from bactomate.gui.layout_helpers import style_compact_action_button
+
+            style_compact_action_button(open_inspector_btn, horizontal_padding=18)
+            open_inspector_btn.setToolTip(
+                "Open the full lineage review dialog: start with division events, then inspect "
+                "the tree graph and growth plots."
+            )
+            lineage_top_row.addWidget(open_inspector_btn, 0)
+            lineage_frame_label = QLabel("")
+            lineage_frame_label.setStyleSheet("color: #8fbfff; font-weight: 600;")
+            lineage_top_row.addWidget(lineage_frame_label, 1)
+            lineage_lay.addLayout(lineage_top_row)
             hint = QLabel(
-                "Scrub or press Play below the image. Double-click a row to jump to that track; "
-                "the plot shows the selected track's lineage."
+                "1. Scrub frames and check division candidates in the movie. "
+                "2. Double-click a track row to focus that lineage. "
+                "3. Open full review to accept/reject divisions, then Run lineage export for the report."
             )
             hint.setWordWrap(True)
             lineage_lay.addWidget(hint)
-            lineage_frame_label = QLabel("")
-            lineage_frame_label.setStyleSheet("color: #8fbfff; font-weight: 600;")
-            lineage_lay.addWidget(lineage_frame_label)
+            glossary = QLabel(
+                "track_id — individual tracked cell · "
+                "lineage_id — family/root lineage · "
+                "parent_track_id — mother track · "
+                "generation — steps from the founding cell"
+            )
+            glossary.setWordWrap(True)
+            glossary.setStyleSheet("color: #aeb6c2; font-size: 10pt;")
+            lineage_lay.addWidget(glossary)
+            lineage_body = QWidget()
+            lineage_body_lay = QHBoxLayout(lineage_body)
+            lineage_body_lay.setContentsMargins(0, 0, 0, 0)
+            lineage_body_lay.setSpacing(8)
             lineage_table = QTableWidget()
             lineage_table.setAlternatingRowColors(True)
             lineage_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
             lineage_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             lineage_table.setMinimumHeight(160)
-            lineage_lay.addWidget(lineage_table, 2)
+            lineage_table.setMaximumHeight(220)
+            lineage_table.setMinimumWidth(360)
+            lineage_body_lay.addWidget(lineage_table, 3)
+            lineage_plot_wrap = QWidget()
+            lineage_plot_lay = QVBoxLayout(lineage_plot_wrap)
+            lineage_plot_lay.setContentsMargins(0, 0, 0, 0)
+            lineage_plot_lay.setSpacing(6)
             lineage_metric_combo = QComboBox()
             pts_for_choices = _lineage_points_table()
-            choices = ["Area (µm²)"]
+            growth_for_choices = _lineage_growth_table()
+            choices: list[str] = []
+            if _is_pandas_dataframe(growth_for_choices) and not growth_for_choices.empty:
+                choices.append("Lineage total area")
+            choices.append("Area (µm²)")
             if _is_pandas_dataframe(pts_for_choices):
                 for col in pts_for_choices.columns:
                     cl = str(col).lower()
                     if "fi" in cl or "foci" in cl or "coloc" in cl:
                         choices.append(str(col))
-            if len(choices) == 1:
-                choices.append("y")
+            if not _has_biological_lineage_measurement(pts_for_choices, growth_for_choices):
+                choices.append("y (position only)")
             lineage_metric_combo.addItems(list(dict.fromkeys(choices)))
+            if "Lineage total area" in choices:
+                lineage_metric_combo.setCurrentText("Lineage total area")
+            elif not _has_biological_lineage_measurement(pts_for_choices, growth_for_choices):
+                lineage_metric_combo.setCurrentText("y (position only)")
             lineage_metric_combo.currentIndexChanged.connect(_refresh_lineage_plot)
-            lineage_lay.addWidget(lineage_metric_combo)
+            lineage_plot_lay.addWidget(lineage_metric_combo)
+            lineage_plot_notice = QLabel("")
+            lineage_plot_notice.setWordWrap(True)
+            lineage_plot_notice.setStyleSheet("color: #f0b429; font-weight: 600; font-size: 10pt;")
+            lineage_plot_notice.setVisible(False)
+            lineage_plot_lay.addWidget(lineage_plot_notice)
             try:
                 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
                 from matplotlib.figure import Figure
@@ -3822,10 +4024,14 @@ class TrackingTab(QWidget):
                 fig = Figure(figsize=(3.2, 2.0), tight_layout=True)
                 lineage_plot_canvas = FigureCanvasQTAgg(fig)
                 lineage_ax = fig.add_subplot(111)
-                lineage_lay.addWidget(lineage_plot_canvas, 1)
+                lineage_plot_canvas.setMinimumHeight(180)
+                lineage_plot_canvas.setMaximumHeight(240)
+                lineage_plot_lay.addWidget(lineage_plot_canvas, 1)
             except Exception:
                 lineage_plot_canvas = QLabel("(Plot unavailable — install matplotlib)")
-                lineage_lay.addWidget(lineage_plot_canvas)
+                lineage_plot_lay.addWidget(lineage_plot_canvas)
+            lineage_body_lay.addWidget(lineage_plot_wrap, 2)
+            lineage_lay.addWidget(lineage_body)
 
             def _on_lineage_row_double_clicked(row: int, _col: int) -> None:
                 if lineage_table is None or row < 0:
@@ -3847,6 +4053,38 @@ class TrackingTab(QWidget):
             _populate_lineage_side_panel(lineage_table)
             _update_lineage_panel_frame(frame_slider.value())
             _refresh_lineage_plot()
+
+            def _open_full_lineage_inspector() -> None:
+                from bactomate.gui.lineage_inspector import LineageInspectorDialog
+
+                frames = preview_state.get("frames")
+                if frames is None:
+                    return
+                dlg = LineageInspectorDialog(
+                    self._main_window(),
+                    frames_rgb=np.asarray(frames, dtype=np.uint8),
+                    tracks_df=preview_state.get("tracks_df"),
+                    edges_df=preview_state.get("edges_df"),
+                    lineage_tables=preview_state.get("lineage_tables") or {},
+                    masks_tracked=preview_state.get("masks_tracked"),
+                    title="Lineage review — preview",
+                )
+                dlg.exec()
+
+            open_inspector_btn.clicked.connect(_open_full_lineage_inspector)
+            lineage_section = CollapsibleSection(
+                "Quick lineage QC",
+                lineage_side_panel,
+                parent=settings_host,
+                expanded=True,
+                compact=True,
+            )
+            lineage_section.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
+            settings_lay.addWidget(lineage_section)
+            preview_state["lineage_section"] = lineage_section
 
         def apply_filters() -> None:
             tracks_in = _tracks_for_filtering()
@@ -4050,7 +4288,7 @@ class TrackingTab(QWidget):
             primary_action_callback=apply_filters,
             render_callback=_render,
             minimum_size=(200, 200) if embed else (900, 700),
-            side_controls=lineage_side_panel,
+            side_controls=None,
             embedded=embed,
             show_close_button=not embed,
             hide_title_and_builtin_info=embed,
@@ -4095,11 +4333,7 @@ class TrackingTab(QWidget):
             frame_loop_timer.stop()
             loop_btn.setChecked(False)
             self._embedded_tracking_preview = None
-            try:
-                self._tracking_params_panel.hide()
-                self._filter_tracks_panel.hide()
-            except Exception:
-                pass
+            self._restore_tracking_preview_panels()
             surf = self._preview_surface
             surf = self._preview_surface
             if embed and surf is not None:

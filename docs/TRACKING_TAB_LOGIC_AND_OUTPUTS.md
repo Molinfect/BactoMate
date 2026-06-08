@@ -87,13 +87,19 @@ Canonical trajectory tables:
 - `track_cells`
 - `track_area`
 
-Canonical lineage tables (lineage runs):
+Canonical lineage tables (lineage runs, schema v2):
 - `lineage_edges`
 - `lineage_summary`
 - `lineage_growth`
+- `lineage_growth_timeseries`
 - `lineage_tracks`
 - `lineage_cells`
 - `lineage_points`
+- `lineage_events` (with `review_status`, `division_frame_1based`, area asymmetry, distances)
+- `lineage_qc`
+- `lineage_measurements`
+- `lineage_tracks_meta`
+- `lineage_tree_nodes`, `lineage_tree_edges`
 
 ### Legacy profile tabular outputs
 
@@ -121,15 +127,26 @@ Calibration (pixel size, time per frame) is read from original/mask TIFF and pro
 ## 4. Canonical lineage semantics (`tables/`, lineage runs)
 
 - `lineage_id` is founder-based (`founder_track_id` concept).
-- `lineage_edges`: directed parent/daughter links.
+- `lineage_edges`: directed parent/daughter links (`link_status: candidate`).
 - `lineage_summary`: lineage-level span, containing cells/tracks, division count.
 - `lineage_growth`: growth fit metrics per lineage:
   - `growth`: slope of linear fit on `log(area)` vs time.
   - `doubling_time`: `ln(2) / growth` when growth > 0.
   - `fit_r2`: goodness-of-fit of that model.
   - `metric_used`: analysis area column when available, else mask pixel area.
+- `lineage_growth_timeseries`: per-lineage summed `total_area` by frame (for plots/Excel).
+- `lineage_events`: one row per candidate division with mother/daughter area, asymmetry, distances, `review_status`.
+- `lineage_qc`: suspicious links (many daughters, track gaps, far daughters, extreme asymmetry, missing analyze join).
+- `lineage_tracks_meta`: generation, parent, daughters, branch depth per track.
+- `lineage_tree_nodes` / `lineage_tree_edges`: layout data for in-app tree graph and PNG export.
 - `lineage_tracks`, `lineage_cells`: normalized relations.
-- `lineage_points`: point-level rows with `lineage_id`.
+- `lineage_points`: point-level rows with `lineage_id`, joined FI/foci from Analyze when available.
+
+### Lineage inspection (in-app)
+
+- **Preview lineage tracking** — quick in-memory run with founder colors and division markers.
+- **Open full lineage inspector** — tree graph, division review (accept/reject/flag), growth/FI/foci plots.
+- **Run lineage tracking** — full export to `_tracking/{stem}_tracking/` including `{stem}_lineage_report.xlsx` and `figures/*.png`.
 
 ---
 

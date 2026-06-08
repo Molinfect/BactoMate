@@ -127,3 +127,84 @@ def test_preflight_warns_raw_without_filtered(tmp_path) -> None:
         prefer_filtered_mask=True,
     )
     assert any("filtered" in w.lower() for w in pf.warnings) or pf.mask_is_filtered is False
+
+
+def test_build_lineage_events_includes_review_and_1based_frame() -> None:
+    import pandas as pd
+
+    from bactomate.modules.lineage_integration import build_lineage_events, track_lineage_metadata
+
+    edges = pd.DataFrame(
+        [
+            {
+                "parent_track_id": 1,
+                "daughter_track_id": 2,
+                "division_frame": 2,
+                "parent_last_frame": 1,
+                "link_status": "candidate",
+            }
+        ]
+    )
+    tracks = pd.DataFrame(
+        {
+            "track_id": [1, 1, 2],
+            "frame": [0, 1, 2],
+            "y": [0.0, 0.0, 50.0],
+            "x": [0.0, 0.0, 0.0],
+        }
+    )
+    meta = track_lineage_metadata(edges, tracks)
+    events = build_lineage_events(edges, tracks, lineage_tracks_meta=meta, pixel_size_um=0.1)
+    assert int(events["division_frame_1based"].iloc[0]) == 3
+    assert events["review_status"].iloc[0] == "candidate"
+    assert float(events["division_distance_px"].iloc[0]) == 50.0
+
+
+def test_enrich_lineage_tables_adds_growth_timeseries_and_tree() -> None:
+    import pandas as pd
+
+    from bactomate.modules.lineage_integration import enrich_lineage_tables
+
+    base = {
+        "lineage_summary": pd.DataFrame(),
+        "lineage_growth": pd.DataFrame(),
+        "lineage_edges": pd.DataFrame(
+            [{"parent_track_id": 1, "daughter_track_id": 2, "division_frame": 1, "parent_last_frame": 0}]
+        ),
+        "lineage_tracks": pd.DataFrame({"lineage_id": [1], "track_id": [1]}),
+        "lineage_cells": pd.DataFrame(),
+        "lineage_points": pd.DataFrame(
+            {"track_id": [1, 2], "frame": [0, 1], "y": [0, 0], "x": [0, 0], "lineage_id": [1, 1], "Cell_ID": [1, 2]}
+        ),
+    }
+    tracks = pd.DataFrame(
+        {"track_id": [1, 2], "frame": [0, 1], "y": [0, 0], "x": [0, 0], "Cell_ID": [1, 2]}
+    )
+    area = pd.DataFrame({"track_id": [1, 2], "frame": [0, 1], "area": [10.0, 5.0], "area_source": ["mask_px"] * 2})
+    out = enrich_lineage_tables(base, tracks_df=tracks, edges_df=base["lineage_edges"], area_df=area)
+    assert "lineage_growth_timeseries" in out
+    assert len(out["lineage_growth_timeseries"]) >= 1
+    assert "lineage_tree_nodes" in out
+    assert len(out["lineage_tree_nodes"]) >= 1
+
+
+def test_write_lineage_report_workbook_sheets(tmp_path) -> None:
+    import pandas as pd
+
+    from bactomate.modules.lineage_integration import write_lineage_report_workbook
+
+    tables = {
+        "lineage_summary": pd.DataFrame({"lineage_id": [1], "n_tracks": [2]}),
+        "lineage_events": pd.DataFrame(
+            {"parent_track_id": [1], "daughter_track_id": [2], "review_status": ["candidate"]}
+        ),
+        "lineage_tracks_meta": pd.DataFrame({"track_id": [1, 2], "generation": [0, 1]}),
+        "lineage_growth_timeseries": pd.DataFrame({"lineage_id": [1], "frame": [0], "total_area": [10.0]}),
+        "lineage_qc": pd.DataFrame({"flag_type": ["track_gap"], "track_id": [1], "message": ["gap"]}),
+    }
+    out = tmp_path / "lineage_report.xlsx"
+    write_lineage_report_workbook(out, tables, run_info_rows=[("Schema version", "2")])
+    sheets = pd.read_excel(out, sheet_name=None)
+    assert "Lineage Summary" in sheets
+    assert "Division Events" in sheets
+    assert "Growth Timeseries" in sheets

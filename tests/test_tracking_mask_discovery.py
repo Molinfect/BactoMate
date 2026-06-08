@@ -36,3 +36,13 @@ def test_collect_mask_files_segmentation_subfolder(tmp_path: Path):
     found = TrackingTab._collect_mask_files(parent)
     assert any(p.name == "T7_001_masks.tif" for p in found)
     assert not any(p.name == "T7_001.tif" for p in found)
+
+
+def test_mask_stack_frame_count_single_page_3d_tiff(tmp_path: Path):
+    import numpy as np
+    import tifffile
+
+    p = tmp_path / "sample_mask_filtered.tif"
+    tifffile.imwrite(p, np.zeros((10, 16, 16), dtype=np.uint16))
+    tab = TrackingTab.__new__(TrackingTab)
+    assert tab._mask_stack_frame_count(p) == 10

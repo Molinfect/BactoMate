@@ -4,6 +4,18 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.5.0 (2026-06)
+
+### In-app lineage QC and export
+
+- **Lineage schema v2:** division events carry review status (`candidate` / `accepted` / `rejected` / `flagged`), richer metrics (generation, asymmetry, distances), lineage growth timeseries, and expanded QC flags.
+- **Quick lineage QC:** preview panel in the Tracking tab with track glossary, division-aware frame summary, lineage total area plot (with honest position-only fallback), and guided 3-step workflow copy.
+- **Lineage review dialog:** Divisions tab opens first for accept/reject/flag review; tree graph and growth/FI plots; Cmd+W to close.
+- **Exports:** Excel lineage report, canonical tables, and PNG figures (`lineage_tree`, `lineage_growth`, division asymmetry) on full **Run lineage export**.
+- **Stability:** fix preview teardown deleting shared tracking parameter widgets (`QComboBox has been deleted`).
+
+---
+
 ## v2.4.0 (2026-06)
 
 ### Unified dark preview UI

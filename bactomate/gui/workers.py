@@ -2124,8 +2124,10 @@ class TrackingWorker(QThread):
     ) -> dict[str, Any]:
         """Core lineage tables plus analysis joins, QC, events, and lineage report workbook."""
         from bactomate.modules.lineage_integration import (
+            LINEAGE_SCHEMA_VERSION,
             canonical_lineage_tables,
             enrich_lineage_tables,
+            export_lineage_artifacts,
             lineage_run_info_rows,
             load_per_cell_table,
             preflight_lineage_run,
@@ -2153,6 +2155,7 @@ class TrackingWorker(QThread):
             area_df=area_df,
             per_cell_df=per_cell_df,
             time_per_frame_min=float(getattr(self, "_cal_tp", 0.0) or 0.0),
+            pixel_size_um=float(getattr(self, "_cal_ps", 0.0) or 0.0),
         )
         try:
             pf = preflight_lineage_run(
@@ -2170,6 +2173,12 @@ class TrackingWorker(QThread):
             report_path = Path(output_dir) / f"{stem}_lineage_report.xlsx"
             write_lineage_report_workbook(report_path, full, run_info_rows=run_info)
             get_logger().info("Wrote lineage report: %s", report_path)
+            try:
+                fig_paths = export_lineage_artifacts(output_dir, full, stem=stem)
+                for fp in fig_paths:
+                    get_logger().info("Wrote lineage figure: %s", fp)
+            except Exception:
+                get_logger().debug("Lineage figure export failed", exc_info=True)
         except Exception:
             get_logger().debug("Lineage report workbook write failed", exc_info=True)
         return canonical_lineage_tables(full)
@@ -2568,8 +2577,16 @@ class TrackingWorker(QThread):
                 df.to_csv(out_path, index=False, compression="gzip")
             written[key] = out_path.name
 
+        schema_version = 1
+        if lineage_tables is not None:
+            try:
+                from bactomate.modules.lineage_integration import LINEAGE_SCHEMA_VERSION
+
+                schema_version = int(LINEAGE_SCHEMA_VERSION)
+            except Exception:
+                schema_version = 2
         meta = {
-            "schema_version": 1,
+            "schema_version": schema_version,
             "output_profile": self.output_profile,
             "pixel_size_um": float(getattr(self, "_cal_ps", 0.0) or 0.0),
             "time_per_frame_min": float(getattr(self, "_cal_tp", 0.0) or 0.0),
@@ -2936,6 +2953,7 @@ class TrackingWorker(QThread):
                 area_df=self._track_area_table(tracks_df, masks_tracked, merged_data=None),
                 per_cell_df=per_cell_df,
                 time_per_frame_min=float(getattr(self, "_cal_tp", 0.0) or 0.0),
+                pixel_size_um=float(getattr(self, "_cal_ps", 0.0) or 0.0),
             )
 
         self.progress.emit(82, "Building preview overlay…")

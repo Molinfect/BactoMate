@@ -15,8 +15,21 @@ import numpy as np
 
 ANALYSIS_FRAME_BASE = 1
 TRACKING_FRAME_BASE = 0
+LINEAGE_SCHEMA_VERSION = 2
 MASTER_LINEAGE_SUMMARY_NAME = "@summary-lineage.xlsx"
 MASTER_LINEAGE_SHEET = "@summary-lineage"
+
+LINK_STATUS_CANDIDATE = "candidate"
+REVIEW_STATUS_CANDIDATE = "candidate"
+REVIEW_STATUS_ACCEPTED = "accepted"
+REVIEW_STATUS_REJECTED = "rejected"
+REVIEW_STATUS_FLAGGED = "flagged"
+VALID_REVIEW_STATUSES = (
+    REVIEW_STATUS_CANDIDATE,
+    REVIEW_STATUS_ACCEPTED,
+    REVIEW_STATUS_REJECTED,
+    REVIEW_STATUS_FLAGGED,
+)
 
 
 @dataclass
@@ -32,6 +45,10 @@ class LineagePreflightResult:
     mask_is_filtered: bool = False
     linker_mode: str = ""
     model_name: str = ""
+    fi_channels: list[str] = field(default_factory=list)
+    foci_channels: list[str] = field(default_factory=list)
+    pixel_size_um: float = 0.0
+    time_per_frame_min: float = 0.0
 
 
 def _safe_int(v: Any) -> Optional[int]:
@@ -77,6 +94,33 @@ def resolve_lineage_mask_path(mask_path: Path, *, prefer_filtered: bool = True) 
 
 def mask_filtered_status(mask_path: Path) -> bool:
     return "_mask_filtered" in Path(mask_path).name.lower()
+
+
+def discover_lineage_input_channels(mask_path: Path) -> tuple[list[str], list[str]]:
+    """Discover FI and foci TIFF siblings near the resolved mask."""
+    from bactomate.gui.analysis_paths import base_dir_for_mask
+
+    mask_path = Path(mask_path)
+    fi_channels: list[str] = []
+    foci_channels: list[str] = []
+    search_dirs: list[Path] = []
+    try:
+        search_dirs.append(base_dir_for_mask(mask_path))
+    except Exception:
+        pass
+    for d in (mask_path.parent, mask_path.parent.parent):
+        if d.is_dir() and d not in search_dirs:
+            search_dirs.append(d)
+    for directory in search_dirs:
+        for p in sorted(directory.glob("*.tif")) + sorted(directory.glob("*.tiff")):
+            name = p.name.lower()
+            if "_fi_foci_" in name or "_foci_" in name:
+                if p.name not in foci_channels:
+                    foci_channels.append(p.name)
+            elif "_fi_" in name and "_foci_" not in name:
+                if p.name not in fi_channels:
+                    fi_channels.append(p.name)
+    return fi_channels, foci_channels
 
 
 def preflight_lineage_run(
@@ -174,7 +218,52 @@ def preflight_lineage_run(
     except Exception:
         out.warnings.append("Could not read mask frame count from TIFF header.")
 
+    try:
+        from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
+
+        ps, tp, _, _ = resolve_calibration_for_mask(resolved)
+        out.pixel_size_um = float(ps or 0.0)
+        out.time_per_frame_min = float(tp or 0.0)
+    except Exception:
+        pass
+
+    fi, foci = discover_lineage_input_channels(resolved)
+    out.fi_channels = fi
+    out.foci_channels = foci
+    if not fi and not foci and wb is not None:
+        out.warnings.append(
+            "No FI/foci TIFF siblings found beside the mask; lineage will still run but "
+            "channel overlays depend on Analyze workbook columns."
+        )
+
     return out
+
+
+def preflight_summary_lines(pf: LineagePreflightResult) -> list[str]:
+    """Human-readable preflight summary for dialogs."""
+    lines: list[str] = []
+    if pf.resolved_mask_path:
+        lines.append(f"Mask: {pf.resolved_mask_path.name}")
+        lines.append(f"Filtered mask: {'Yes' if pf.mask_is_filtered else 'No'}")
+    if pf.n_frames is not None:
+        lines.append(f"Frames: {pf.n_frames}")
+    if pf.analysis_workbook:
+        lines.append(f"Analysis workbook: {pf.analysis_workbook.name}")
+    else:
+        lines.append("Analysis workbook: not found")
+    if pf.original_image:
+        lines.append(f"Phase image: {pf.original_image.name}")
+    if pf.fi_channels:
+        lines.append(f"FI channels: {', '.join(pf.fi_channels)}")
+    if pf.foci_channels:
+        lines.append(f"Foci channels: {', '.join(pf.foci_channels)}")
+    if pf.pixel_size_um > 0:
+        lines.append(f"Pixel size: {pf.pixel_size_um:.4f} µm/px")
+    if pf.time_per_frame_min > 0:
+        lines.append(f"Time / frame: {pf.time_per_frame_min:.6g} min")
+    lines.append(f"Trackastra model: {pf.model_name or '—'}")
+    lines.append(f"Linking mode: {pf.linker_mode or '—'}")
+    return lines
 
 
 def lineage_edges_from_napari_graph(napari_graph: Any, tracks_df: Any) -> Any:
@@ -358,12 +447,30 @@ def join_analysis_to_lineage_points(
     return pts.merge(pc_merge, on=["frame", "Cell_ID"], how="left")
 
 
+def _track_point_lookup(tracks_df: Any) -> dict[tuple[int, int], tuple[float, float]]:
+    out: dict[tuple[int, int], tuple[float, float]] = {}
+    if tracks_df is None or len(tracks_df) == 0:
+        return out
+    if "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
+        return out
+    for r in tracks_df.itertuples(index=False):
+        tid = _safe_int(getattr(r, "track_id", None))
+        fr = _safe_int(getattr(r, "frame", None))
+        y = _safe_float(getattr(r, "y", None))
+        x = _safe_float(getattr(r, "x", None))
+        if tid is not None and fr is not None and y is not None and x is not None:
+            out[(tid, fr)] = (y, x)
+    return out
+
+
 def build_lineage_events(
     edges_df: Any,
     tracks_df: Any,
     area_df: Any = None,
     *,
     time_per_frame_min: float = 0.0,
+    lineage_tracks_meta: Any = None,
+    pixel_size_um: float = 0.0,
 ) -> Any:
     """One row per candidate division with mother/daughter size snapshots."""
     import pandas as pd
@@ -372,17 +479,37 @@ def build_lineage_events(
         "parent_track_id",
         "daughter_track_id",
         "division_frame",
+        "division_frame_1based",
+        "division_time_min",
         "parent_last_frame",
         "lineage_id",
+        "generation",
+        "branch_depth",
         "mother_area_before",
         "daughter_area_after",
         "area_asymmetry",
         "inter_division_interval_frames",
+        "division_distance_px",
+        "division_distance_um",
+        "mother_y",
+        "mother_x",
+        "daughter_y",
+        "daughter_x",
         "link_status",
+        "review_status",
     ]
     if edges_df is None or len(edges_df) == 0:
         return pd.DataFrame(columns=cols)
     founder = lineage_founder_map(edges_df, tracks_df)
+    meta_by_tid: dict[int, dict[str, Any]] = {}
+    if lineage_tracks_meta is not None and hasattr(lineage_tracks_meta, "columns"):
+        for r in lineage_tracks_meta.itertuples(index=False):
+            tid = _safe_int(getattr(r, "track_id", None))
+            if tid is not None:
+                meta_by_tid[tid] = {
+                    "generation": _safe_int(getattr(r, "generation", None)),
+                    "branch_depth": _safe_int(getattr(r, "branch_depth", None)),
+                }
     area_by_track_frame: dict[tuple[int, int], float] = {}
     if area_df is not None and len(area_df) > 0 and "track_id" in area_df.columns and "frame" in area_df.columns:
         for r in area_df.itertuples(index=False):
@@ -391,6 +518,8 @@ def build_lineage_events(
             ar = _safe_float(getattr(r, "area", None))
             if tid is not None and fr is not None and ar is not None and ar > 0:
                 area_by_track_frame[(tid, fr)] = ar
+    point_lookup = _track_point_lookup(tracks_df)
+    prior_div_by_parent: dict[int, list[int]] = defaultdict(list)
     rows = []
     for er in edges_df.itertuples(index=False):
         p = _safe_int(getattr(er, "parent_track_id", None))
@@ -400,23 +529,50 @@ def build_lineage_events(
         if p is None or d is None or div_f is None:
             continue
         lid = founder.get(p) or founder.get(d)
-        mother_a = area_by_track_frame.get((p, plf if plf is not None else max(0, div_f - 1)))
+        plf_use = plf if plf is not None else max(0, div_f - 1)
+        mother_a = area_by_track_frame.get((p, plf_use))
         daughter_a = area_by_track_frame.get((d, div_f))
         asym = np.nan
         if mother_a and daughter_a and mother_a > 0:
             asym = float(daughter_a) / float(mother_a)
+        mother_pt = point_lookup.get((p, plf_use)) or point_lookup.get((p, div_f))
+        daughter_pt = point_lookup.get((d, div_f))
+        dist_px = np.nan
+        if mother_pt and daughter_pt:
+            dist_px = float(np.hypot(daughter_pt[0] - mother_pt[0], daughter_pt[1] - mother_pt[1]))
+        dist_um = dist_px * pixel_size_um if pixel_size_um > 0 and not np.isnan(dist_px) else np.nan
+        interval = None
+        if p in prior_div_by_parent and prior_div_by_parent[p]:
+            interval = int(div_f - max(prior_div_by_parent[p]))
+        prior_div_by_parent[p].append(div_f)
+        d_meta = meta_by_tid.get(d, {})
         rows.append(
             {
                 "parent_track_id": p,
                 "daughter_track_id": d,
                 "division_frame": div_f,
+                "division_frame_1based": int(div_f) + int(ANALYSIS_FRAME_BASE) - int(TRACKING_FRAME_BASE),
+                "division_time_min": float(div_f) * time_per_frame_min if time_per_frame_min > 0 else np.nan,
                 "parent_last_frame": plf,
                 "lineage_id": lid,
+                "generation": d_meta.get("generation"),
+                "branch_depth": d_meta.get("branch_depth"),
                 "mother_area_before": mother_a,
                 "daughter_area_after": daughter_a,
                 "area_asymmetry": asym,
-                "inter_division_interval_frames": None,
-                "link_status": getattr(er, "link_status", "candidate") if hasattr(er, "link_status") else "candidate",
+                "inter_division_interval_frames": interval,
+                "division_distance_px": dist_px,
+                "division_distance_um": dist_um,
+                "mother_y": mother_pt[0] if mother_pt else np.nan,
+                "mother_x": mother_pt[1] if mother_pt else np.nan,
+                "daughter_y": daughter_pt[0] if daughter_pt else np.nan,
+                "daughter_x": daughter_pt[1] if daughter_pt else np.nan,
+                "link_status": getattr(er, "link_status", LINK_STATUS_CANDIDATE)
+                if hasattr(er, "link_status")
+                else LINK_STATUS_CANDIDATE,
+                "review_status": getattr(er, "review_status", REVIEW_STATUS_CANDIDATE)
+                if hasattr(er, "review_status")
+                else REVIEW_STATUS_CANDIDATE,
             }
         )
     return pd.DataFrame(rows, columns=cols)
@@ -426,13 +582,20 @@ def build_lineage_qc(
     edges_df: Any,
     tracks_df: Any,
     lineage_tracks_df: Any,
+    *,
+    lineage_events_df: Any = None,
+    lineage_points_df: Any = None,
+    max_daughter_distance_px: float = 80.0,
+    area_asymmetry_min: float = 0.15,
+    area_asymmetry_max: float = 0.85,
 ) -> Any:
     """QC flags for suspicious lineage links."""
     import pandas as pd
 
+    qc_cols = ["flag_type", "track_id", "related_track_id", "frame", "severity", "message"]
     rows: list[dict[str, Any]] = []
     if tracks_df is None or len(tracks_df) == 0:
-        return pd.DataFrame(columns=["flag_type", "track_id", "related_track_id", "frame", "message"])
+        return pd.DataFrame(columns=qc_cols)
     daughters_per_parent: dict[int, list[int]] = defaultdict(list)
     if edges_df is not None and len(edges_df) > 0:
         for er in edges_df.itertuples(index=False):
@@ -448,6 +611,7 @@ def build_lineage_qc(
                     "track_id": p,
                     "related_track_id": ",".join(str(x) for x in dlist),
                     "frame": None,
+                    "severity": "warning",
                     "message": f"Parent track {p} has {len(dlist)} candidate daughters.",
                 }
             )
@@ -463,12 +627,127 @@ def build_lineage_qc(
                             "track_id": int(tid),
                             "related_track_id": None,
                             "frame": None,
+                            "severity": "info",
                             "message": f"Track {tid} has frame gap(s) in detection.",
                         }
                     )
-    return pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["flag_type", "track_id", "related_track_id", "frame", "message"]
-    )
+    if lineage_events_df is not None and hasattr(lineage_events_df, "columns") and len(lineage_events_df) > 0:
+        for er in lineage_events_df.itertuples(index=False):
+            p = _safe_int(getattr(er, "parent_track_id", None))
+            d = _safe_int(getattr(er, "daughter_track_id", None))
+            div_f = _safe_int(getattr(er, "division_frame", None))
+            dist = _safe_float(getattr(er, "division_distance_px", None))
+            asym = _safe_float(getattr(er, "area_asymmetry", None))
+            if dist is not None and dist > max_daughter_distance_px:
+                rows.append(
+                    {
+                        "flag_type": "daughter_far_from_mother",
+                        "track_id": p,
+                        "related_track_id": str(d) if d is not None else None,
+                        "frame": div_f,
+                        "severity": "warning",
+                        "message": f"Division {p}->{d} at frame {div_f}: daughter centroid {dist:.1f} px from mother.",
+                    }
+                )
+            if asym is not None and (asym < area_asymmetry_min or asym > area_asymmetry_max):
+                rows.append(
+                    {
+                        "flag_type": "area_asymmetry_extreme",
+                        "track_id": p,
+                        "related_track_id": str(d) if d is not None else None,
+                        "frame": div_f,
+                        "severity": "warning",
+                        "message": f"Division {p}->{d}: area ratio {asym:.2f} outside typical range.",
+                    }
+                )
+    if lineage_points_df is not None and hasattr(lineage_points_df, "columns") and len(lineage_points_df) > 0:
+        if "Cell_ID" in lineage_points_df.columns:
+            measure_cols = [
+                c
+                for c in lineage_points_df.columns
+                if c not in ("track_id", "frame", "y", "x", "lineage_id", "Cell_ID", "cell_id")
+            ]
+            if measure_cols:
+                joined = lineage_points_df.dropna(subset=["Cell_ID"])
+                missing = lineage_points_df[lineage_points_df["Cell_ID"].isna()]
+                if len(missing) > 0 and "track_id" in missing.columns:
+                    for tid in sorted(missing["track_id"].dropna().unique().tolist())[:20]:
+                        rows.append(
+                            {
+                                "flag_type": "missing_analyze_join",
+                                "track_id": int(tid),
+                                "related_track_id": None,
+                                "frame": None,
+                                "severity": "info",
+                                "message": f"Track {tid} has points without Per-Cell join.",
+                            }
+                        )
+    return pd.DataFrame(rows, columns=qc_cols) if rows else pd.DataFrame(columns=qc_cols)
+
+
+def build_lineage_growth_timeseries(
+    area_df: Any,
+    founder_by_track: dict[int, int],
+    *,
+    time_per_frame_min: float = 0.0,
+) -> Any:
+    """Per-lineage summed area over time for growth-curve plotting."""
+    import pandas as pd
+
+    cols = ["lineage_id", "frame", "frame_1based", "time_min", "total_area", "n_tracks", "metric_used"]
+    if area_df is None or not hasattr(area_df, "columns") or len(area_df) == 0:
+        return pd.DataFrame(columns=cols)
+    if "track_id" not in area_df.columns or "frame" not in area_df.columns or "area" not in area_df.columns:
+        return pd.DataFrame(columns=cols)
+    df = area_df.copy()
+    df["lineage_id"] = df["track_id"].map(lambda t: founder_by_track.get(int(t), int(t)) if _safe_int(t) is not None else None)
+    df = df.dropna(subset=["lineage_id", "frame", "area"])
+    if len(df) == 0:
+        return pd.DataFrame(columns=cols)
+    metric = "mask_px"
+    if "area_source" in df.columns:
+        sources = sorted(set(df["area_source"].astype(str).tolist()))
+        analysis_sources = [s for s in sources if s.startswith("analysis:")]
+        if analysis_sources:
+            metric = analysis_sources[0]
+    rows = []
+    for (lid, fr), g in df.groupby(["lineage_id", "frame"]):
+        rows.append(
+            {
+                "lineage_id": int(lid),
+                "frame": int(fr),
+                "frame_1based": int(fr) + int(ANALYSIS_FRAME_BASE) - int(TRACKING_FRAME_BASE),
+                "time_min": float(fr) * time_per_frame_min if time_per_frame_min > 0 else np.nan,
+                "total_area": float(g["area"].sum()),
+                "n_tracks": int(g["track_id"].nunique()),
+                "metric_used": metric,
+            }
+        )
+    out = pd.DataFrame(rows, columns=cols)
+    return out.sort_values(["lineage_id", "frame"])
+
+
+def apply_event_review_status(
+    events_df: Any,
+    *,
+    parent_track_id: int,
+    daughter_track_id: int,
+    review_status: str,
+) -> Any:
+    """Update review_status for one division event (in-memory or before export)."""
+    import pandas as pd
+
+    if events_df is None or not hasattr(events_df, "columns"):
+        return events_df
+    status = str(review_status or REVIEW_STATUS_CANDIDATE).strip().lower()
+    if status not in VALID_REVIEW_STATUSES:
+        status = REVIEW_STATUS_FLAGGED
+    out = events_df.copy()
+    if "review_status" not in out.columns:
+        out["review_status"] = REVIEW_STATUS_CANDIDATE
+    mask = (out["parent_track_id"] == int(parent_track_id)) & (out["daughter_track_id"] == int(daughter_track_id))
+    out.loc[mask, "review_status"] = status
+    return out
 
 
 def enrich_lineage_tables(
@@ -479,9 +758,12 @@ def enrich_lineage_tables(
     area_df: Any = None,
     per_cell_df: Any = None,
     time_per_frame_min: float = 0.0,
+    pixel_size_um: float = 0.0,
 ) -> dict[str, Any]:
     """Add events, QC, analysis joins, and track metadata to core lineage tables from TrackingWorker."""
     import pandas as pd
+
+    from bactomate.modules.lineage_viz import build_lineage_tree_layout
 
     out = dict(base_tables)
     founder = lineage_founder_map(edges_df, tracks_df)
@@ -490,9 +772,24 @@ def enrich_lineage_tables(
     if per_cell_df is not None and lineage_points is not None and len(lineage_points) > 0:
         lineage_points = join_analysis_to_lineage_points(lineage_points, per_cell_df)
     lineage_events = build_lineage_events(
-        edges_df, tracks_df, area_df=area_df, time_per_frame_min=time_per_frame_min
+        edges_df,
+        tracks_df,
+        area_df=area_df,
+        time_per_frame_min=time_per_frame_min,
+        lineage_tracks_meta=lineage_tracks_meta,
+        pixel_size_um=pixel_size_um,
     )
-    lineage_qc = build_lineage_qc(edges_df, tracks_df, lineage_tracks_meta)
+    lineage_qc = build_lineage_qc(
+        edges_df,
+        tracks_df,
+        lineage_tracks_meta,
+        lineage_events_df=lineage_events,
+        lineage_points_df=lineage_points,
+    )
+    lineage_growth_timeseries = build_lineage_growth_timeseries(
+        area_df, founder, time_per_frame_min=time_per_frame_min
+    )
+    tree_nodes, tree_edges = build_lineage_tree_layout(edges_df, lineage_tracks_meta)
     measure_cols = []
     if lineage_points is not None and len(lineage_points) > 0:
         skip = {"track_id", "frame", "y", "x", "lineage_id", "Cell_ID", "cell_id"}
@@ -502,11 +799,18 @@ def enrich_lineage_tables(
         keep = ["lineage_id", "track_id", "frame", "Cell_ID"] + measure_cols
         keep = [c for c in keep if c in lineage_points.columns]
         lineage_measurements = lineage_points[keep].copy()
+        if "frame" in lineage_measurements.columns:
+            lineage_measurements["frame_1based"] = (
+                lineage_measurements["frame"].astype(int) + ANALYSIS_FRAME_BASE - TRACKING_FRAME_BASE
+            )
     out["lineage_tracks_meta"] = lineage_tracks_meta
     out["lineage_points"] = lineage_points
     out["lineage_events"] = lineage_events
     out["lineage_qc"] = lineage_qc
     out["lineage_measurements"] = lineage_measurements
+    out["lineage_growth_timeseries"] = lineage_growth_timeseries
+    out["lineage_tree_nodes"] = tree_nodes
+    out["lineage_tree_edges"] = tree_edges
     out["founder_by_track"] = founder
     return out
 
@@ -514,6 +818,7 @@ def enrich_lineage_tables(
 LINEAGE_CANONICAL_TABLE_KEYS = (
     "lineage_summary",
     "lineage_growth",
+    "lineage_growth_timeseries",
     "lineage_edges",
     "lineage_tracks",
     "lineage_cells",
@@ -522,6 +827,8 @@ LINEAGE_CANONICAL_TABLE_KEYS = (
     "lineage_qc",
     "lineage_measurements",
     "lineage_tracks_meta",
+    "lineage_tree_nodes",
+    "lineage_tree_edges",
 )
 
 
@@ -539,18 +846,30 @@ def lineage_run_info_rows(
     preflight: Optional[LineagePreflightResult] = None,
 ) -> list[tuple[str, str]]:
     rows = [
+        ("Schema version", str(LINEAGE_SCHEMA_VERSION)),
         ("Mask file", str(Path(mask_path).resolve())),
         ("Analysis workbook", str(analysis_workbook.resolve()) if analysis_workbook else "—"),
         ("Analysis frame base", str(ANALYSIS_FRAME_BASE)),
         ("Tracking frame base", str(TRACKING_FRAME_BASE)),
         ("Trackastra model", model_name),
         ("Linking mode", linker_mode),
-        ("Division links", "candidate (Trackastra); verify in lineage QC"),
+        ("Division links", "candidate (Trackastra); verify in lineage QC / inspector"),
+        ("Review statuses", "candidate | accepted | rejected | flagged"),
     ]
     if preflight is not None:
         if preflight.resolved_mask_path and preflight.resolved_mask_path != Path(mask_path):
             rows.append(("Resolved mask", str(preflight.resolved_mask_path.resolve())))
         rows.append(("Mask is filtered", "Yes" if preflight.mask_is_filtered else "No"))
+        if preflight.n_frames is not None:
+            rows.append(("Frames", str(preflight.n_frames)))
+        if preflight.fi_channels:
+            rows.append(("FI channels", ", ".join(preflight.fi_channels)))
+        if preflight.foci_channels:
+            rows.append(("Foci channels", ", ".join(preflight.foci_channels)))
+        if preflight.pixel_size_um > 0:
+            rows.append(("Pixel size (µm/px)", f"{preflight.pixel_size_um:.6g}"))
+        if preflight.time_per_frame_min > 0:
+            rows.append(("Time / frame (min)", f"{preflight.time_per_frame_min:.6g}"))
         for w in preflight.warnings:
             rows.append(("Warning", w))
     return rows
@@ -574,11 +893,13 @@ def write_lineage_report_workbook(
         ("Lineage Summary", "lineage_summary"),
         ("Division Events", "lineage_events"),
         ("Track Lineage", "lineage_tracks_meta"),
+        ("Growth Timeseries", "lineage_growth_timeseries"),
         ("Lineage Points", "lineage_points"),
         ("Growth", "lineage_growth"),
         ("QC Flags", "lineage_qc"),
         ("Edges", "lineage_edges"),
         ("Measurements", "lineage_measurements"),
+        ("Tree Nodes", "lineage_tree_nodes"),
     ]
     for sheet_name, key in order:
         df = tables.get(key)
@@ -623,3 +944,16 @@ def edges_and_founders_from_graph(napari_graph: Any, tracks_df: Any) -> tuple[An
     edges = lineage_edges_from_napari_graph(napari_graph, tracks_df)
     founders = lineage_founder_map(edges, tracks_df)
     return edges, founders
+
+
+def export_lineage_artifacts(
+    output_dir: Path,
+    tables: dict[str, Any],
+    *,
+    stem: str,
+) -> list[Path]:
+    """Write static PNG figures for lineage overview (tree, growth, divisions)."""
+    from bactomate.modules.lineage_viz import export_lineage_figures
+
+    fig_dir = Path(output_dir) / "figures"
+    return export_lineage_figures(fig_dir, tables, stem=stem)

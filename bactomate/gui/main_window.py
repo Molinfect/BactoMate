@@ -1816,7 +1816,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = "2.4.0"
+            version = "2.5.0"
         QMessageBox.about(
             self,
             "About BactoMate",

@@ -63,19 +63,40 @@ Optional:
 | `greedy` | Yes (default for lineage) |
 | `ilp` | Yes (slower; may need solver deps) |
 
-Division edges are **candidate links** from Trackastra, not ground truth.
+Division edges are **candidate links** from Trackastra, not ground truth. Review them in the lineage inspector before trusting exports.
+
+## Review status (schema v2)
+
+Division events and edges carry `review_status`:
+
+| Status | Meaning |
+|--------|---------|
+| `candidate` | Default Trackastra link; not yet reviewed |
+| `accepted` | User confirmed in lineage inspector |
+| `rejected` | User rejected as incorrect division |
+| `flagged` | Needs manual follow-up |
+
+## Inspection workflow
+
+1. **Preview lineage tracking** — in-memory founder-colored overlay + side panel  
+2. **Open full lineage inspector** — tree graph, division table, accept/reject/flag, growth plots  
+3. **Run lineage tracking** — writes tables, Excel report, TIFF overlay, and PNG figures  
 
 ## Output layout
 
 Under `{sample}/_tracking/{mask_stem}_tracking/`:
 
-- `tables/lineage_edges`, `lineage_tracks`, `lineage_points`, `lineage_events`, `lineage_growth`, `lineage_measurements`, `lineage_qc` (Parquet or CSV.gz)  
-- `{stem}_lineage_report.xlsx` — human-readable integrated report  
+- `tables/lineage_edges`, `lineage_tracks`, `lineage_points`, `lineage_events`, `lineage_growth`, `lineage_growth_timeseries`, `lineage_measurements`, `lineage_qc`, `lineage_tracks_meta`, `lineage_tree_nodes`, `lineage_tree_edges` (Parquet or CSV.gz)  
+- `tables/metadata.json` — `schema_version: 2` for lineage runs  
+- `{stem}_lineage_report.xlsx` — human-readable integrated report (Run Info, Division Events with `division_frame_1based`, Growth Timeseries, QC Flags, …)  
 - `{stem}_lineage.tif` — founder-colored overlay with division markers (full runs)  
+- `figures/{stem}_lineage_tree.png`, `{stem}_lineage_growth.png`, `{stem}_division_events.png`  
 - Legacy: `{stem}_lineage_edges.csv`, `{stem}_lineage_summary.xlsx`
 
 Batch aggregate: `@summary-lineage.xlsx` at project level (when batch lineage completes).
 
-## Implementation module
+## Implementation modules
 
-Python API: `bactomate.modules.lineage_integration`
+- Python API: `bactomate.modules.lineage_integration`  
+- Tree/figure helpers: `bactomate.modules.lineage_viz`  
+- GUI inspector: `bactomate.gui.lineage_inspector`
