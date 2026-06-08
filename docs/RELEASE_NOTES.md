@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.5.1 (2026-06)
+
+### CI fix and install docs
+
+- **Fix macOS CI segfault:** lineage PNG export no longer uses `matplotlib.pyplot` (avoids native macosx backend crash in headless pytest).
+- **README:** prominent copy-paste install commands for macOS and Windows; v2.5 wording and lineage feature mention.
+
+---
+
 ## v2.5.0 (2026-06)
 
 ### In-app lineage QC and export

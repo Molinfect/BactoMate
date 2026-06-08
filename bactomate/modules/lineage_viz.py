@@ -116,7 +116,9 @@ def plot_lineage_tree(
     lid_by_tid = {int(r.track_id): int(r.lineage_id) for r in nodes_df.itertuples(index=False)}
     gen_by_tid = {int(r.track_id): int(r.generation) for r in nodes_df.itertuples(index=False)}
 
-    cmap = __import__("matplotlib.pyplot", fromlist=["plt"]).cm.get_cmap("tab20")
+    from matplotlib import colormaps
+
+    cmap = colormaps.get_cmap("tab20")
     founders = sorted(set(lid_by_tid.values()))
     founder_color = {}
     for i, fid in enumerate(founders):
@@ -194,7 +196,7 @@ def export_lineage_figures(
     dpi: int = 120,
 ) -> list[Path]:
     """Write PNG overview figures: tree, growth, division events."""
-    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
     import pandas as pd
 
     output_dir = Path(output_dir)
@@ -208,15 +210,16 @@ def export_lineage_figures(
 
     nodes, tree_edges = build_lineage_tree_layout(edges, meta)
     if len(nodes) > 0:
-        fig, ax = plt.subplots(figsize=(6, 4), tight_layout=True)
+        fig = Figure(figsize=(6, 4), tight_layout=True)
+        ax = fig.add_subplot(111)
         plot_lineage_tree(ax, nodes, tree_edges, title=f"{stem} — lineage tree")
         p = output_dir / f"{stem}_lineage_tree.png"
         fig.savefig(p, dpi=dpi)
-        plt.close(fig)
         written.append(p)
 
     if growth_ts is not None and isinstance(growth_ts, pd.DataFrame) and len(growth_ts) > 0:
-        fig, axes = plt.subplots(1, 2, figsize=(8, 3), tight_layout=True)
+        fig = Figure(figsize=(8, 3), tight_layout=True)
+        axes = fig.subplots(1, 2)
         lids = sorted(growth_ts["lineage_id"].dropna().unique().tolist())[:6] if "lineage_id" in growth_ts.columns else [None]
         if lids and lids[0] is not None:
             plot_lineage_growth(axes[0], growth_ts, lineage_id=int(lids[0]), title="Lineage growth")
@@ -226,11 +229,11 @@ def export_lineage_figures(
             axes[1].set_visible(False)
         p = output_dir / f"{stem}_lineage_growth.png"
         fig.savefig(p, dpi=dpi)
-        plt.close(fig)
         written.append(p)
 
     if events is not None and isinstance(events, pd.DataFrame) and len(events) > 0:
-        fig, ax = plt.subplots(figsize=(5, 3), tight_layout=True)
+        fig = Figure(figsize=(5, 3), tight_layout=True)
+        ax = fig.add_subplot(111)
         if "area_asymmetry" in events.columns:
             valid = events["area_asymmetry"].dropna()
             if len(valid) > 0:
@@ -240,7 +243,6 @@ def export_lineage_figures(
                 ax.set_title(f"{stem} — division asymmetry")
         p = output_dir / f"{stem}_division_events.png"
         fig.savefig(p, dpi=dpi)
-        plt.close(fig)
         written.append(p)
 
     return written

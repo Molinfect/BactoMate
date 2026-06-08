@@ -1,17 +1,40 @@
 # BactoMate
 
-Integrated microscopy analysis platform: file conversion, segmentation (Omnipose, U-Net, Cellpose-SAM), mask analysis, tracking, training, and reporting.
+Integrated microscopy analysis platform: file conversion, segmentation (Omnipose, U-Net, Cellpose-SAM), mask analysis, tracking, **lineage QC & export**, training, and reporting.
 
-**v2.3 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG packaging can also be built locally from the installed `venv`; Windows standalone packaging is still deferred.
+**v2.5 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG packaging can also be built locally from the installed `venv`; Windows standalone packaging is still deferred.
 
-## Clone
+## Quick Install
+
+For most users, open a terminal window and run the commands for your operating system.
+
+### macOS
 
 ```bash
 git clone https://github.com/poppphil/BactoMate.git
 cd BactoMate
+./setup/install_mac.sh
+./launch_gui.sh
 ```
 
-Or download the repository as a ZIP from GitHub and extract it.
+If macOS says the script is not executable, run:
+
+```bash
+chmod +x setup/install_mac.sh setup/setup_fresh_env.sh launch_gui.sh
+```
+
+### Windows
+
+Open Command Prompt, then run:
+
+```bat
+git clone https://github.com/poppphil/BactoMate.git
+cd BactoMate
+setup\install_windows.bat
+launch_windows.bat
+```
+
+Or download the repository as a ZIP from GitHub, extract it, open a terminal in the extracted folder, and start from the install command for your OS.
 
 ## macOS — install and launch
 
@@ -26,7 +49,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.5.0
+python main.py --version    # BactoMate 2.5.1
 python main.py --smoke-test # Smoke test OK
 ```
 
@@ -53,7 +76,7 @@ Open Command Prompt in the project folder:
 setup\install_windows.bat
 ```
 
-Then double-click `launch_windows.bat`, or:
+Then double-click `launch_windows.bat`, run it from Command Prompt, or launch the installed console command:
 
 ```bat
 venv\Scripts\activate

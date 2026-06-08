@@ -19,14 +19,33 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 
 ## Quick Start
 
-**v2.3 is source-first (developers & researchers).** Clone the repo, install once, then launch:
+**v2.5 is source-first (developers & researchers).** Clone the repo, install once, then launch:
 
-| Platform | Install | Launch |
-|----------|---------|--------|
-| macOS | `./setup/install_mac.sh` | `./launch_gui.sh` |
-| Windows | `setup\install_windows.bat` | `launch_windows.bat` or `bactomate` |
+**macOS:**
 
-Verify: `python main.py --version` (expect `BactoMate 2.5.0`) and `python main.py --smoke-test`.
+```bash
+git clone https://github.com/poppphil/BactoMate.git
+cd BactoMate
+./setup/install_mac.sh
+./launch_gui.sh
+```
+
+If macOS says the scripts are not executable:
+
+```bash
+chmod +x setup/install_mac.sh setup/setup_fresh_env.sh launch_gui.sh
+```
+
+**Windows:**
+
+```bat
+git clone https://github.com/poppphil/BactoMate.git
+cd BactoMate
+setup\install_windows.bat
+launch_windows.bat
+```
+
+Verify: `python main.py --version` (expect `BactoMate 2.5.1`) and `python main.py --smoke-test`.
 
 macOS app/DMG packaging is restored for local builds:
 
@@ -43,7 +62,7 @@ The GUI uses a **dashboard + module shell** layout (not legacy top-level tabs):
 
 - **File conversion** — ND2/LIF/CZI → TIFF
 - **Segmentation** — Omnipose, Cellpose-SAM, or U-Net in one module; filtering and analyze stages below
-- **Tracking** — Trackastra on mask time series
+- **Tracking** — Trackastra on mask time series; **lineage QC** preview, division review, and export
 - **Post-processing** — image montage, growth-curve video montage, scale bar
 - **Training** — shared dataset section + backend-specific training panels
 
@@ -120,7 +139,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### macOS: DMG install
 
-> **v2.3 note:** macOS DMGs can be built locally with `./build/build_app_bundle.sh` followed by `./build/create_dmg.sh`. Windows standalone packaging is still deferred.
+> **v2.5 note:** macOS DMGs can be built locally with `./build/build_app_bundle.sh` followed by `./build/create_dmg.sh`. Windows standalone packaging is still deferred.
 
 Use this section when a **`BactoMate.dmg`** binary is available (no project folder, no Terminal, no Python install).
 
