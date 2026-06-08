@@ -193,15 +193,30 @@ def _strip_managed_summary_columns(df: "pd.DataFrame") -> "pd.DataFrame":
     return df
 
 
+def _pair_label_sort_key(label: str) -> tuple[int, str]:
+    txt = str(label or "")
+    low = txt.lower()
+    priority = {
+        "gfp": 10,
+        "egfp": 10,
+        "mgfp": 10,
+        "dsred": 20,
+        "mcherry": 20,
+        "mscarlet": 20,
+        "rfp": 20,
+    }.get(low, 100)
+    return priority, low
+
+
 def _pair_column_name(la: str, lb: str) -> str:
-    a, b = sorted((str(la), str(lb)), key=lambda s: s.lower())
+    a, b = sorted((str(la), str(lb)), key=_pair_label_sort_key)
     return f"Valid Pairs Count ({a}×{b})"
 
 
 def _coloc_match_index_column_name(la: str, lb: str, *, multi_pair: bool) -> str:
     if not multi_pair:
         return "coloc_match_index"
-    a, b = sorted((str(la), str(lb)), key=lambda s: s.lower())
+    a, b = sorted((str(la), str(lb)), key=_pair_label_sort_key)
     return f"coloc_match_index_{_safe_col_key(a)}_x_{_safe_col_key(b)}"
 
 

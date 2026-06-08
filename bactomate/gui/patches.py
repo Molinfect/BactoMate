@@ -274,7 +274,8 @@ def _patch_cellpose_omni_affinity_architecture() -> None:
         if uses_affinity_architecture(model_type=model_type, loader_path=ckpt_path):
             kwargs["omni"] = False
             kwargs["nchan"] = 1
-            kwargs["nclasses"] = 3
+            # cellpose_omni adds dim-1 to nclasses internally; 2 -> 3 output channels in 2D.
+            kwargs["nclasses"] = 2
             if kwargs.get("diam_mean") in (None, 27.0):
                 kwargs["diam_mean"] = 30.0
             if ckpt_path:

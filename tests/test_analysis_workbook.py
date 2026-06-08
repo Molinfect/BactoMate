@@ -69,7 +69,7 @@ def test_per_cell_foci_lists_match_ids() -> None:
     assert out.loc[0, "foci_ids_GFP"] == "798,806"
     assert out.loc[0, "GFP_foci_intensities"] == "5000, 6000"
     assert out.loc[0, "GFP_foci_mean_intensities"] == "5100, 6100"
-    assert float(out.loc[0, "GFP_foci_mean_intensity"]) == 5550.0
+    assert float(out.loc[0, "GFP_foci_mean_intensity"]) == 5600.0
     assert float(out.loc[0, "GFP_foci_total_intensity"]) == 11000.0
     assert float(out.loc[0, "GFP_foci_max_intensity"]) == 6000.0
 

@@ -817,7 +817,10 @@ def default_manifest_timestamp() -> str:
 
 
 def _sample_label_from_workbook_path(workbook_path: Path) -> str:
-    stem = workbook_path.stem.replace("_analysis", "").replace("_masks_analysis", "")
+    stem = workbook_path.stem
+    for suffix in ("_masks_analysis", "_analysis"):
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
     return stem
 
 

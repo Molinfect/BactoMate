@@ -583,12 +583,12 @@ def foci_filter_failure_reasons(
     ex_clear, ex_touch = _outside_exclude_flags(settings)
     rel = classify_foci_cell_relation(label, y, x) if label is not None else "inside"
     if accepted_cell_labels is not None:
-        if cell_id > 0 and cell_id not in accepted_cell_labels:
-            reasons.append("In a rejected cell")
-        elif rel == "outside_clear" and ex_clear:
+        if rel == "outside_clear" and ex_clear:
             reasons.append("Outside cells (clear)")
         elif rel == "outside_touching" and ex_touch:
             reasons.append("Outside cells (touching edge)")
+        elif cell_id > 0 and cell_id not in accepted_cell_labels:
+            reasons.append("In a rejected cell")
     else:
         if rel == "outside_clear" and ex_clear:
             reasons.append("Outside cells (clear)")

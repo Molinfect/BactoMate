@@ -1860,6 +1860,7 @@ class TrackingTab(QWidget):
             first_frame = int(g["frame"].iloc[0])
             last_frame = int(g["frame"].iloc[-1])
             duration = max(1, int(last_frame - first_frame + 1))
+            elapsed_intervals = max(1, int(last_frame - first_frame))
             displacement_px = 0.0
             path_length_px = 0.0
             if need_xy and n >= 2:
@@ -1871,14 +1872,14 @@ class TrackingTab(QWidget):
             path_length_um = path_length_px * pixel_size_um if pixel_size_um > 0 else path_length_px
             path_safe = path_length_px if path_length_px > 0 else 1.0
             straightness = float(displacement_px / path_safe) if path_safe > 0 else 0.0
-            mean_speed_px_frame = path_length_px / duration if duration > 0 else 0.0
-            duration_sec = duration * time_per_frame_min * 60.0 if time_per_frame_min > 0 else 0.0
+            mean_speed_px_frame = path_length_px / elapsed_intervals if elapsed_intervals > 0 else 0.0
+            duration_sec = elapsed_intervals * time_per_frame_min * 60.0 if time_per_frame_min > 0 else 0.0
             if pixel_size_um > 0 and duration_sec > 0:
                 mean_speed_um_s = path_length_um / duration_sec
             else:
                 mean_speed_um_s = mean_speed_px_frame
             duration_min = duration * time_per_frame_min if time_per_frame_min > 0 else 0.0
-            straight_line_speed_px_frame = displacement_px / duration if duration > 0 else 0.0
+            straight_line_speed_px_frame = displacement_px / elapsed_intervals if elapsed_intervals > 0 else 0.0
             if duration_sec > 0 and pixel_size_um > 0:
                 straight_line_speed_um_s = displacement_um / duration_sec
             else:

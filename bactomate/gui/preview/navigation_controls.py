@@ -178,17 +178,21 @@ class PreviewNavigationControls(QWidget):
 
         self._frame_timer = QTimer(self)
         self._frame_timer.setSingleShot(True)
-        self._frame_timer.timeout.connect(lambda: self._commit_spin("frame"))
+        self._frame_timer.timeout.connect(self._commit_frame_spin)
 
         self._channel_timer = QTimer(self)
         self._channel_timer.setSingleShot(True)
-        self._channel_timer.timeout.connect(lambda: self._commit_spin("channel"))
+        self._channel_timer.timeout.connect(self._commit_channel_spin)
 
         self._z_timer = QTimer(self)
         self._z_timer.setSingleShot(True)
-        self._z_timer.timeout.connect(lambda: self._commit_spin("z"))
+        self._z_timer.timeout.connect(self._commit_z_spin)
 
         self._wire_signals()
+        try:
+            self.destroyed.connect(self._on_destroyed)
+        except Exception:
+            pass
         self.set_spec(self._spec, emit_init=False)
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -256,22 +260,72 @@ class PreviewNavigationControls(QWidget):
     # ---- internals ----------------------------------------------------
 
     def _wire_signals(self) -> None:
-        self._image_combo.currentIndexChanged.connect(lambda *_: self._commit_combo())
-        self._show_cells_cb.toggled.connect(lambda checked: self._emit_overlay("show_cells", bool(checked)))
-        self._show_foci_cb.toggled.connect(lambda checked: self._emit_overlay("show_foci", bool(checked)))
+        self._image_combo.currentIndexChanged.connect(self._on_image_combo_changed)
+        self._show_cells_cb.toggled.connect(self._on_show_cells_toggled)
+        self._show_foci_cb.toggled.connect(self._on_show_foci_toggled)
 
-        def _debounce(timer: QTimer) -> None:
-            timer.stop()
-            timer.start(max(0, int(self._spec.debounce_ms)))
+        self._frame_spin.valueChanged.connect(self._on_frame_spin_value_changed)
+        self._frame_spin.editingFinished.connect(self._commit_frame_spin_immediate)
 
-        self._frame_spin.valueChanged.connect(lambda *_: _debounce(self._frame_timer))
-        self._frame_spin.editingFinished.connect(lambda: self._commit_spin("frame", immediate=True))
+        self._channel_spin.valueChanged.connect(self._on_channel_spin_value_changed)
+        self._channel_spin.editingFinished.connect(self._commit_channel_spin_immediate)
 
-        self._channel_spin.valueChanged.connect(lambda *_: _debounce(self._channel_timer))
-        self._channel_spin.editingFinished.connect(lambda: self._commit_spin("channel", immediate=True))
+        self._z_spin.valueChanged.connect(self._on_z_spin_value_changed)
+        self._z_spin.editingFinished.connect(self._commit_z_spin_immediate)
 
-        self._z_spin.valueChanged.connect(lambda *_: _debounce(self._z_timer))
-        self._z_spin.editingFinished.connect(lambda: self._commit_spin("z", immediate=True))
+    def _stop_nav_timers(self) -> None:
+        for timer in (self._frame_timer, self._channel_timer, self._z_timer):
+            try:
+                timer.stop()
+            except Exception:
+                pass
+
+    def _on_destroyed(self, *_args) -> None:
+        self._stop_nav_timers()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_nav_timers()
+        super().closeEvent(event)
+
+    def _debounce(self, timer: QTimer) -> None:
+        timer.stop()
+        timer.start(max(0, int(self._spec.debounce_ms)))
+
+    def _on_image_combo_changed(self, *_args) -> None:
+        self._commit_combo()
+
+    def _on_show_cells_toggled(self, checked: bool) -> None:
+        self._emit_overlay("show_cells", bool(checked))
+
+    def _on_show_foci_toggled(self, checked: bool) -> None:
+        self._emit_overlay("show_foci", bool(checked))
+
+    def _on_frame_spin_value_changed(self, *_args) -> None:
+        self._debounce(self._frame_timer)
+
+    def _on_channel_spin_value_changed(self, *_args) -> None:
+        self._debounce(self._channel_timer)
+
+    def _on_z_spin_value_changed(self, *_args) -> None:
+        self._debounce(self._z_timer)
+
+    def _commit_frame_spin(self) -> None:
+        self._commit_spin("frame")
+
+    def _commit_channel_spin(self) -> None:
+        self._commit_spin("channel")
+
+    def _commit_z_spin(self) -> None:
+        self._commit_spin("z")
+
+    def _commit_frame_spin_immediate(self) -> None:
+        self._commit_spin("frame", immediate=True)
+
+    def _commit_channel_spin_immediate(self) -> None:
+        self._commit_spin("channel", immediate=True)
+
+    def _commit_z_spin_immediate(self) -> None:
+        self._commit_spin("z", immediate=True)
 
     def _nav_separator(self) -> QFrame:
         line = QFrame()

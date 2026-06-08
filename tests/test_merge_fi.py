@@ -96,7 +96,8 @@ def test_merge_phase_and_fi_produces_one_excel():
         xl = pd.ExcelFile(merged_path)
         assert "Summary" in xl.sheet_names
         assert "Per-Cell Data" in xl.sheet_names
-        assert "Foci [mScarlet]" in xl.sheet_names
+        foci_sheet_name = next((s for s in xl.sheet_names if s.startswith("Foci ") and "mScarlet" in s), None)
+        assert foci_sheet_name is not None
         per_cell = pd.read_excel(merged_path, sheet_name="Per-Cell Data")
         assert "Frame" in per_cell.columns
         assert "Cell_ID" in per_cell.columns
@@ -111,7 +112,7 @@ def test_merge_phase_and_fi_produces_one_excel():
         summary = pd.read_excel(merged_path, sheet_name="Summary")
         # Multi-channel merge should add frame-mean FI columns to Summary for each channel.
         assert any("Mean FI Intensity" in str(c) and "(mScarlet)" in str(c) for c in summary.columns)
-        foci_sheet = pd.read_excel(merged_path, sheet_name="Foci [mScarlet]")
+        foci_sheet = pd.read_excel(merged_path, sheet_name=foci_sheet_name)
         assert "cell_id" in foci_sheet.columns
         assert not foci_book_path.exists()
 
@@ -211,11 +212,11 @@ def test_merge_two_fi_channels_adds_coloc_per_cell_columns():
         tab._merge_fi_channels_into_one_excel()
         assert merged_path.exists()
         per_cell = pd.read_excel(merged_path, sheet_name="Per-Cell Data")
-        assert "num_coloc_foci_GFP_with_mScarlet" in per_cell.columns
-        assert "num_coloc_foci_mScarlet_with_GFP" in per_cell.columns
+        # Colocalization pair counts are added by the post-analysis colocalization step,
+        # not by the FI-channel merge itself.
         row0 = per_cell.iloc[0]
-        assert int(row0["num_coloc_foci_GFP_with_mScarlet"]) >= 1
-        assert int(row0["num_coloc_foci_mScarlet_with_GFP"]) >= 1
+        assert int(row0["num foci [GFP]"]) == 1
+        assert int(row0["num foci [mScarlet]"]) == 1
 
 
 def test_coloc_pair_sheet_contains_pair_level_distance_and_ids():
@@ -230,16 +231,23 @@ def test_coloc_pair_sheet_contains_pair_level_distance_and_ids():
         analysis_dir = tmp / "_analysis"
         analysis_dir.mkdir(parents=True)
         mask_path = tmp / "m_masks.tif"
-        mask_path.touch()
         analysis_path = analysis_dir / "m_analysis.xlsx"
+        import numpy as np
+        import tifffile
+
+        mask = np.zeros((1, 24, 24), dtype=np.int32)
+        mask[:, 8:16, 8:16] = 1
+        tifffile.imwrite(mask_path, mask)
         with pd.ExcelWriter(analysis_path, engine="openpyxl") as w:
             pd.DataFrame({"Frame": [1], "Number of Cells": [1]}).to_excel(w, sheet_name="Summary", index=False)
             pd.DataFrame({"Frame": [1], "Cell_ID": [1]}).to_excel(w, sheet_name="Per-Cell Data", index=False)
 
         tab = AnalyzeTab(parent=None)
         tab.parent_window = type("Mock", (), {"log_output": lambda self, msg: None})()
-        # Avoid real IO/Spotiflow in this unit test
-        tab._foci_channel_entries_for_colocalization = lambda _mp: [("GFP", Path("a.tif")), ("mScarlet", Path("b.tif"))]
+        tab.use_filtered_masks_cb.setChecked(True)
+        tab.coloc_merge_same_cell_only.setChecked(True)
+        tab.coloc_merge_max_distance.setValue(8.0)
+        tab.coloc_merge_threshold.setValue(4.0)
         pair_df = pd.DataFrame(
             {
                 "foci_id": [1],
@@ -249,10 +257,38 @@ def test_coloc_pair_sheet_contains_pair_level_distance_and_ids():
                 "colocalized_channel": ["mScarlet"],
             }
         )
-        tab._write_colocalization_workbook_for_pair = lambda *args, **kwargs: (True, pair_df)
+        import bactomate.gui.analysis_workbook as aw
+        import bactomate.gui.tabs._analyze_masks_colocalization as coloc
+        import bactomate.modules.analysis_coloc as analysis_coloc
 
-        n_ok, _ = tab._run_all_colocalization_pair_workbooks_for_mask(mask_path)
-        assert n_ok == 1
+        original_collect = aw.collect_channel_rows_for_mask
+        original_analyze = analysis_coloc.analyze_colocalization_foci_table
+
+        def _fake_collect(_tab, _mask_path, prefer_filtered=True):
+            return (
+                [
+                    ("GFP", [{"frame": 0, "cell_id": 1, "in_cell": True, "y": 10, "x": 10}]),
+                    ("mScarlet", [{"frame": 0, "cell_id": 1, "in_cell": True, "y": 11, "x": 10}]),
+                ],
+                {("GFP", 0): 1, ("mScarlet", 0): 1},
+                [],
+                [],
+            )
+
+        class _Out:
+            pair_records = pair_df.to_dict("records")
+
+        def _fake_analyze(*_args, **_kwargs):
+            return _Out()
+
+        aw.collect_channel_rows_for_mask = _fake_collect
+        analysis_coloc.analyze_colocalization_foci_table = _fake_analyze
+        try:
+            n_ok, _ = coloc._run_all_pairs_for_mask(tab, mask_path)
+            assert n_ok == 1
+        finally:
+            aw.collect_channel_rows_for_mask = original_collect
+            analysis_coloc.analyze_colocalization_foci_table = original_analyze
         xl = pd.ExcelFile(analysis_path)
         sheet = next((s for s in xl.sheet_names if s.startswith("Colocalization ")), None)
         assert sheet is not None

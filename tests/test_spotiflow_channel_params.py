@@ -11,10 +11,10 @@ from bactomate.gui.tabs.omnipose_seg import SPOTIFLOW_DETECTION_DEFAULTS, Omnipo
 
 @pytest.fixture
 def seg_tab(qapp):
-    parent = MagicMock()
-    parent.log_output = MagicMock()
-    parent._save_session_log = None
-    tab = OmniposeSegTab(parent)
+    tab = OmniposeSegTab(None)
+    tab.parent_window = MagicMock()
+    tab.parent_window.log_output = MagicMock()
+    tab.parent_window._save_session_log = None
     tab._spotiflow_detection_params = dict(SPOTIFLOW_DETECTION_DEFAULTS)
     tab._spotiflow_channel_params = {}
     return tab

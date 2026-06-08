@@ -2122,6 +2122,23 @@ class AnalyzeTab(AnalyzeMasksBase):
                         df_foci["channel_name"] = ch_lbl
                     foci_by_channel.setdefault(ch_lbl, []).append(df_foci)
 
+                def _safe_excel_sheet_name(base: str, used: set[str]) -> str:
+                    bad = "\\/:*?[]"
+                    safe = "".join("_" if ch in bad else ch for ch in str(base)).strip() or "Sheet"
+                    safe = safe[:31]
+                    if safe not in used:
+                        used.add(safe)
+                        return safe
+                    stem_name = safe[:28] if len(safe) > 28 else safe
+                    n = 2
+                    cand = f"{stem_name}_{n}"
+                    while cand in used:
+                        n += 1
+                        cand = f"{stem_name}_{n}"
+                    used.add(cand)
+                    return cand
+
+                used_sheet_names = {"Summary", "Per-Cell Data"}
                 with pd.ExcelWriter(merged_path, engine="openpyxl") as writer:
                     summary_df.to_excel(writer, sheet_name="Summary", index=False)
                     if merged is not None and not merged.empty:
@@ -2131,7 +2148,8 @@ class AnalyzeTab(AnalyzeMasksBase):
                         if not parts:
                             continue
                         ch_df = pd.concat(parts, ignore_index=True, sort=False)
-                        ch_df.to_excel(writer, sheet_name=f"Foci [{ch}]", index=False)
+                        sheet_name = _safe_excel_sheet_name(f"Foci {ch}", used_sheet_names)
+                        ch_df.to_excel(writer, sheet_name=sheet_name, index=False)
                 try:
                     from openpyxl import load_workbook
 

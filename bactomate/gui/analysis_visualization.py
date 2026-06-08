@@ -311,12 +311,12 @@ def _render_foci_panel_frame(
             rgb[b, 1] = FOCI_BOUNDARY_RGB[1]
             rgb[b, 2] = FOCI_BOUNDARY_RGB[2]
 
+    ys: list[int] = []
+    xs: list[int] = []
     if foci_rows:
         rgb = np.asarray(rgb, dtype=np.uint8).copy()
         ys = [int(r.get("y", 0)) for r in foci_rows]
         xs = [int(r.get("x", 0)) for r in foci_rows]
-        _draw_circles_rgb(rgb, ys=ys, xs=xs, radius=2, rgb=FOCI_MARKER_RGB)
-
         foci_labels: list[tuple[str, int, int]] = []
         for r in foci_rows:
             fid = r.get("foci_id")
@@ -339,7 +339,11 @@ def _render_foci_panel_frame(
             stroke_width=2,
         )
 
-    return _draw_panel_title(rgb, title)
+    rgb = _draw_panel_title(rgb, title)
+    if ys and xs:
+        rgb = np.asarray(rgb, dtype=np.uint8).copy()
+        _draw_circles_rgb(rgb, ys=ys, xs=xs, radius=2, rgb=FOCI_MARKER_RGB)
+    return rgb
 
 
 def _concat_panels_horiz(panels: list[np.ndarray], *, divider_px: int = 2) -> np.ndarray:

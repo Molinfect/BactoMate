@@ -374,6 +374,26 @@ def bootstrap_cellpose_omni_for_bactomate() -> None:
         _patch_cellpose_omni_affinity_architecture()
     except Exception:
         pass
+    try:
+        import omnipose.gpu as omni_gpu
+
+        gpu_logger = getattr(omni_gpu, "gpu_logger", None)
+        if gpu_logger is not None and not getattr(gpu_logger, "_bactomate_info_safe", False):
+            original_info = gpu_logger.info
+
+            def _safe_info(msg, *args, **kwargs):
+                if args:
+                    try:
+                        msg = str(msg) % args
+                    except Exception:
+                        msg = " ".join([str(msg), *(str(a) for a in args)])
+                    args = ()
+                return original_info(msg, *args, **kwargs)
+
+            gpu_logger.info = _safe_info
+            gpu_logger._bactomate_info_safe = True
+    except Exception:
+        pass
 
 
 # Bumped when affinity load logic changes (shown in debug logs).
@@ -387,12 +407,15 @@ def materialize_bact_phase_affinity_checkpoint(source: str | Path) -> Path:
     cellpose_omni sets ``self.omni = ('omni' in filename)`` and upgrades to a 4-class head;
     a materialized copy avoids stale *_omni.pth symlinks in cache or temp dirs.
     """
-    from bactomate.gui.paths import get_omnipose_pretrained_cache_dir
-
     src = Path(source).resolve()
     if not src.is_file():
         raise FileNotFoundError(f"Affinity checkpoint not found: {src}")
-    dest = get_omnipose_pretrained_cache_dir() / "bact_phase_affinity_seg3.pth"
+    # cellpose_omni checks for the substring "omni" in the *full* path, not just
+    # the file name. Keep this materialized copy outside omnipose_pretrained.
+    import tempfile
+
+    dest = Path(tempfile.gettempdir()) / "bactomate_affinity_models" / "bact_phase_affinity_seg3.pth"
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.is_file() or dest.stat().st_mtime < src.stat().st_mtime:
         import shutil
 
@@ -427,7 +450,8 @@ def load_bact_phase_affinity_model(*, gpu: bool, checkpoint_path: str | Path):
             pretrained_model=safe_str,
             omni=False,
             nchan=1,
-            nclasses=3,
+            # cellpose_omni adds dim-1 internally; 2 yields the 3-channel affinity head.
+            nclasses=2,
             diam_mean=30.0,
         )
         _check(model)
@@ -441,7 +465,7 @@ def load_bact_phase_affinity_model(*, gpu: bool, checkpoint_path: str | Path):
         pretrained_model=False,
         omni=False,
         nchan=1,
-        nclasses=3,
+        nclasses=2,
         diam_mean=30.0,
     )
     model.pretrained_model = [safe_str]
@@ -460,8 +484,9 @@ def load_cellpose_segmentation_model(
     """
     Load Omnipose/cellpose_omni for segmentation.
 
-    Affinity models use CellposeModel directly with nchan=1, nclasses=3 because cellpose_omni
-    overwrites ``omni`` from the checkpoint filename (``_omni`` symlinks force a 4-class head).
+    Affinity models use CellposeModel directly with nchan=1 and an abstract
+    nclasses=2 (cellpose_omni adds dim-1 internally, giving a 3-channel head).
+    This avoids ``_omni`` filename/path aliases forcing a 4-class head.
     """
     bootstrap_cellpose_omni_for_bactomate()
     from cellpose_omni import models
@@ -489,7 +514,7 @@ def load_cellpose_segmentation_model(
                 pretrained_model=safe,
                 omni=False,
                 nchan=1,
-                nclasses=3,
+                nclasses=2,
                 diam_mean=30.0,
             )
         return models.CellposeModel(

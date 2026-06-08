@@ -192,7 +192,7 @@ def _cached_foci_hover_data(
     if isinstance(cache, dict) and cache.get("key") == cache_key:
         data = cache.get("data")
         if data is not None:
-            return list(data)
+            return data
     try:
         hover_data = build_foci_hover_data(
             pass_peaks,
@@ -205,7 +205,7 @@ def _cached_foci_hover_data(
     except Exception:
         return None
     try:
-        dlg._foci_hover_cache = {"key": cache_key, "data": list(hover_data)}
+        dlg._foci_hover_cache = {"key": cache_key, "data": hover_data}
     except Exception:
         pass
     return hover_data
@@ -288,7 +288,7 @@ def _format_foci_peak_tooltip(
     metric_lines = [
         ("Intensity", "intensity", None),
         ("Probability", "probability", None),
-        ("Area px", "area_px", "size_px"),
+        ("Area (px)", "area_px", "size_px"),
         ("Mean intens.", "mean_intensity", None),
         ("Rel. intens.", "rel_intensity", None),
         ("Cell ID", "cell_id", None),

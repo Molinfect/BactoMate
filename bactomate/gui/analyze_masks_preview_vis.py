@@ -38,7 +38,7 @@ def paint_contour_fi_ring_on_display_rgb(
     accepted_labels: set[int] | frozenset[int],
     *,
     thickness_px: int = 1,
-    blend_alpha: float = 0.95,
+    blend_alpha: float = 1.0,
     high_contrast_outline: bool = False,
 ) -> None:
     """
@@ -99,9 +99,9 @@ def paint_contour_fi_ring_on_display_rgb(
     plane = np.asarray(rgb, dtype=np.float32)
     if high_contrast_outline:
         halo = binary_dilation(ring) & accepted_binary
-        plane[halo, 0] *= 0.35
-        plane[halo, 1] *= 0.35
-        plane[halo, 2] *= 0.35
+        plane[halo, 0] *= 0.20
+        plane[halo, 1] *= 0.20
+        plane[halo, 2] *= 0.20
     plane[ring, 0] = plane[ring, 0] * (1.0 - alpha) + float(r0) * alpha
     plane[ring, 1] = plane[ring, 1] * (1.0 - alpha) + float(g0) * alpha
     plane[ring, 2] = plane[ring, 2] * (1.0 - alpha) + float(b0) * alpha

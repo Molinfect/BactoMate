@@ -105,7 +105,10 @@ class FilterApplyProgressDialog(QDialog):
             or self._step_label.text() != step_txt
             or self._detail_label.text() != detail_txt
         )
-        if not ui_changed and (now - self._last_ui_update_ts) < self._min_ui_interval_s:
+        elapsed = now - self._last_ui_update_ts
+        if self._last_ui_update_ts > 0 and elapsed < self._min_ui_interval_s and pct < 100:
+            return
+        if not ui_changed:
             return
         self._step_label.setText(step_txt)
         self._detail_label.setText(detail_txt)
