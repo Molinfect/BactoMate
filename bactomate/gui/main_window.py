@@ -531,6 +531,7 @@ class MainWindow(QMainWindow):
         self.dashboard_widget = DashboardWidget(
             self,
             on_open_workspace=self._open_workspace_dialog,
+            on_drop_workspace=self._open_workspace_from_drop,
             on_clear_workspace=self._clear_workspace,
             on_go_module=self._go_module_from_dashboard,
         )
@@ -1188,6 +1189,17 @@ class MainWindow(QMainWindow):
             return
         self._set_workspace_root(Path(picked))
 
+    def _open_workspace_from_drop(self, dropped_path: str) -> None:
+        """Open workspace from a dropped folder, or the parent folder of a dropped file."""
+        try:
+            p = Path(str(dropped_path)).expanduser()
+            if not p.exists():
+                return
+            root = p if p.is_dir() else p.parent
+            self._set_workspace_root(root)
+        except Exception:
+            log_exception(get_logger(), "Open workspace from drag-and-drop failed")
+
     def _on_file_conversion_finished(self, ok: bool) -> None:
         """Use the generated Tif_files folder as the next Segmentation input."""
         if not ok:
@@ -1804,7 +1816,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = "2.3.7"
+            version = "2.4.0"
         QMessageBox.about(
             self,
             "About BactoMate",

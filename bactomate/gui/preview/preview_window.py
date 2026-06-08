@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QToolButton,
@@ -188,11 +189,11 @@ class CollapsibleSection(QWidget):
             " border-bottom: 1px solid #2c3240;"
             " border-radius: 0px;"
             f" padding: {header_pad};"
-            " background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2c323c, stop:1 #232830);"
+            " background-color: #1a1a1a;"
             "}"
             "QWidget#collapsibleSectionHeader:hover {"
             " border-left: 3px solid #6bb3ff;"
-            " background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #343b46, stop:1 #2a3038);"
+            " background-color: #202733;"
             "}"
             "QLabel#collapsibleSectionTitle {"
             " border: none;"
@@ -624,6 +625,7 @@ class PreviewDialogBase(QDialog):
                     str(top_controls_title),
                     top_controls,
                     expanded=bool(top_controls_expanded),
+                    compact=True,
                 )
                 self._layout.addWidget(self.top_section)
             else:
@@ -659,6 +661,7 @@ class PreviewDialogBase(QDialog):
             str(lut_title) if lut_title else HistogramLUTWidget.DEFAULT_TITLE,
             self.lut_widget,
             expanded=bool(lut_expanded),
+            compact=True,
         )
         self._layout.addWidget(self.lut_section)
 
@@ -883,3 +886,25 @@ class _HoverBuilderEventFilter(QObject):
         except Exception:
             return False
         return False
+
+
+def standard_preview_settings_scroll(
+    content: QWidget,
+    *,
+    embedded: bool = False,
+    max_height: int | None = None,
+) -> QScrollArea:
+    """Shared scrollable settings chrome for embedded and standalone previews."""
+    from bactomate.gui.layout_helpers import build_preview_settings_scroll
+
+    return build_preview_settings_scroll(content, embedded=embedded, max_height=max_height)
+
+
+def preview_settings_height_cap(*, embedded: bool = False, host_height: int = 0) -> int:
+    """Dynamic cap for preview settings viewport (matches filter preview behavior)."""
+    from bactomate.gui.layout_helpers import preview_settings_viewport_height
+
+    base = preview_settings_viewport_height(embedded=embedded)
+    if host_height < 280:
+        return base
+    return max(160, min(base, int(host_height * 0.42)))

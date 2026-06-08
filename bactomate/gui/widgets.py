@@ -42,7 +42,12 @@ _BACTOMATE_DIALOG_STYLESHEET = (
     "QLabel#dialogTitle { color: #e8eef6; font-size: 12pt; font-weight: 600; padding-bottom: 4px; }"
 )
 
-_TASK_COMPLETE_DIALOG_STYLESHEET = _BACTOMATE_DIALOG_STYLESHEET
+def _dialog_stylesheet() -> str:
+    from bactomate.gui.styles import card_aware_control_stylesheet
+
+    return _BACTOMATE_DIALOG_STYLESHEET + card_aware_control_stylesheet()
+
+_TASK_COMPLETE_DIALOG_STYLESHEET = _BACTOMATE_DIALOG_STYLESHEET  # extended at runtime via _dialog_stylesheet()
 
 
 def show_confirm_dialog(
@@ -61,7 +66,7 @@ def show_confirm_dialog(
 
     dlg = QDialog(parent)
     dlg.setWindowTitle(str(title))
-    dlg.setStyleSheet(_BACTOMATE_DIALOG_STYLESHEET)
+    dlg.setStyleSheet(_dialog_stylesheet())
     dlg.setWindowModality(Qt.WindowModality.WindowModal)
     dlg.setMinimumWidth(440)
 
@@ -135,7 +140,7 @@ def show_task_complete_dialog(
 
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
-    dlg.setStyleSheet(_BACTOMATE_DIALOG_STYLESHEET)
+    dlg.setStyleSheet(_dialog_stylesheet())
     dlg.setMinimumWidth(420)
     layout = QVBoxLayout(dlg)
     layout.setContentsMargins(20, 18, 20, 16)

@@ -61,6 +61,7 @@ def draw_peak_rings_on_rgb(
     *,
     mask_shape: tuple[int, int],
     radius: int = 4,
+    inner_gap: int = 2,
     cap: Optional[int] = None,
 ) -> None:
     """Draw hollow ring markers for many peaks using vectorized indexing."""
@@ -73,7 +74,7 @@ def draw_peak_rings_on_rgb(
     )
     if ys.size == 0:
         return
-    dy, dx = _ring_offsets(radius, inner_gap=2)
+    dy, dx = _ring_offsets(radius, inner_gap=inner_gap)
     cr, cg, cb = (int(color[0]), int(color[1]), int(color[2]))
     for yy, xx in zip(ys, xs):
         y2 = yy + dy

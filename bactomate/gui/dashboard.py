@@ -74,6 +74,56 @@ class _ModuleCard(QFrame):
         super().mousePressEvent(event)
 
 
+class _WorkspaceDropLabel(QLabel):
+    """Workspace status label that accepts dropped files/folders."""
+
+    def __init__(self, text: str, on_drop: Callable[[str], None], parent: Optional[QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self._on_drop = on_drop
+        self._base_stylesheet = ""
+        self.setAcceptDrops(True)
+
+    def setStyleSheet(self, styleSheet: str) -> None:  # noqa: N802
+        super().setStyleSheet(styleSheet)
+        if "2px dashed" not in str(styleSheet):
+            self._base_stylesheet = str(styleSheet)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            super().setStyleSheet(
+                "#WorkspaceStatusLabel {"
+                " color: #ffffff;"
+                " font-size: 13pt;"
+                " padding: 12px 14px;"
+                " background: #202a34;"
+                " border-radius: 8px;"
+                " border: 2px dashed #4a9eff;"
+                "}"
+            )
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        super().setStyleSheet(self._base_stylesheet)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        urls = event.mimeData().urls()
+        if urls:
+            dropped_path = urls[0].toLocalFile()
+            if dropped_path:
+                self._on_drop(dropped_path)
+                event.acceptProposedAction()
+        super().setStyleSheet(self._base_stylesheet)
+
+
 class DashboardWidget(QWidget):
     """Landing page: open/create workspace, jump to modules."""
 
@@ -82,11 +132,13 @@ class DashboardWidget(QWidget):
         parent: Optional[QWidget] = None,
         *,
         on_open_workspace: Callable[[], None],
+        on_drop_workspace: Callable[[str], None],
         on_clear_workspace: Callable[[], None],
         on_go_module: Callable[[str], None],
     ) -> None:
         super().__init__(parent)
         self._on_open_workspace = on_open_workspace
+        self._on_drop_workspace = on_drop_workspace
         self._on_clear_workspace = on_clear_workspace
         self._on_go_module = on_go_module
 
@@ -110,7 +162,7 @@ class DashboardWidget(QWidget):
         root.setSpacing(20)
 
         ws_row = QHBoxLayout()
-        self.workspace_label = QLabel("No workspace open")
+        self.workspace_label = _WorkspaceDropLabel("No workspace open", self._on_drop_workspace, self)
         self.workspace_label.setObjectName("WorkspaceStatusLabel")
         self.workspace_label.setWordWrap(True)
         self.workspace_label.setStyleSheet(

@@ -4,6 +4,18 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.4.0 (2026-06)
+
+### Unified dark preview UI
+
+- **Shared settings cards:** preview and module panels use centralized `build_settings_card`, compact dark theme tokens, and consistent spacing across filtering, segmentation, montage, and tracking previews.
+- **Montage preview polish:** reorganized action/preset footer, full-width LUT histogram, fixed clipped buttons, and removed figure-style preset buttons; export labels spelled out (`Background`, `Format`).
+- **Spinbox/combo uniformity:** one shared card-aware spinbox style across montage cards, Edit tiles dialog, and preview nav rows (no more bright-blue vs dark arrow wells).
+- **Foci table highlight:** foci table uses theme tokens; double-click row shows a prominent red/white ring on the selected focus.
+- **Workspace drag-and-drop:** drop a folder or file onto the dashboard workspace area to open it as the workspace root.
+
+---
+
 ## v2.3.7 (2026-06)
 
 ### Portable native macOS launcher

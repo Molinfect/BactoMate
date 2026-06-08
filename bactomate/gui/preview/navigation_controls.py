@@ -93,17 +93,22 @@ class PreviewNavigationControls(QWidget):
         self._inline_trailer = inline_trailer
         self._inline_end = inline_end
         self._trailing_end = trailing_end
+        self._nav_breakpoint = 700
+        self._source_widgets: list[QWidget] = []
+        self._overlay_widgets: list[QWidget] = []
+        self._action_widgets: list[QWidget] = []
+        self._last_nav_narrow: Optional[bool] = None
+        self._nav_layout_dirty = True
 
-        root = QVBoxLayout(self)
+        self._root = QVBoxLayout(self)
         # Small bottom inset so bordered compact buttons (e.g. Clear Cache) are not clipped by the row.
-        root.setContentsMargins(0, 0, 0, 4)
-        root.setSpacing(8)
-
-        self._layout = QHBoxLayout()
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(8)
-        self._layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        root.addLayout(self._layout)
+        self._root.setContentsMargins(0, 0, 0, 4)
+        self._root.setSpacing(6)
+        self._rows_host = QWidget(self)
+        self._rows_layout = QVBoxLayout(self._rows_host)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(6)
+        self._root.addWidget(self._rows_host)
 
         self._image_label = QLabel("View:")
         self._image_combo = QComboBox()
@@ -146,7 +151,13 @@ class PreviewNavigationControls(QWidget):
         except Exception:
             pass
         for spin in (self._frame_spin, self._channel_spin, self._z_spin):
-            spin.setFixedHeight(28)
+            spin.setFixedHeight(32)
+            try:
+                from bactomate.gui.styles import PREVIEW_NAV_SPINBOX_STYLESHEET
+
+                spin.setStyleSheet(PREVIEW_NAV_SPINBOX_STYLESHEET)
+            except Exception:
+                pass
         for lbl in (self._image_label, self._frame_label, self._frame_of_label, self._channel_label, self._z_label):
             lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         # Match Spotiflow / foci param row labels (e.g. "Peaks min prob"): same size, weight, hue.
@@ -176,6 +187,14 @@ class PreviewNavigationControls(QWidget):
         self.set_spec(self._spec, emit_init=False)
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._reflow_nav_rows()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._reflow_nav_rows()
 
     def spec(self) -> PreviewNavSpec:
         return self._spec
@@ -259,30 +278,120 @@ class PreviewNavigationControls(QWidget):
         )
         return line
 
+    def _new_nav_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        row.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        return row
+
+    def _clear_rows_host(self) -> None:
+        while self._rows_layout.count():
+            item = self._rows_layout.takeAt(0)
+            container = item.widget()
+            if container is not None:
+                container.deleteLater()
+
+    def _add_nav_row(self, row: QHBoxLayout) -> None:
+        wrap = QWidget(self._rows_host)
+        wrap.setLayout(row)
+        self._rows_layout.addWidget(wrap)
+
+    def _reflow_nav_rows(self) -> None:
+        if not self._source_widgets and not self._overlay_widgets and not self._action_widgets:
+            return
+        width = self.width()
+        if width <= 0:
+            width = self._nav_breakpoint + 1
+        narrow = width < self._nav_breakpoint
+        if not self._nav_layout_dirty and self._last_nav_narrow == narrow:
+            return
+
+        for widget in (*self._source_widgets, *self._overlay_widgets, *self._action_widgets):
+            widget.setParent(self._rows_host)
+
+        self._clear_rows_host()
+
+        if not narrow:
+            row = self._new_nav_row()
+            for widget in self._source_widgets:
+                row.addWidget(widget, 0)
+            for widget in self._overlay_widgets:
+                row.addWidget(widget, 0)
+            for widget in self._action_widgets:
+                if widget is self._inline_end:
+                    row.addWidget(widget, 1)
+                else:
+                    row.addWidget(widget, 0)
+            if self._inline_end is None:
+                row.addStretch(1)
+            self._add_nav_row(row)
+            self._last_nav_narrow = narrow
+            self._nav_layout_dirty = False
+            return
+
+        source_row = self._new_nav_row()
+        for widget in self._source_widgets:
+            source_row.addWidget(widget, 0)
+        source_row.addStretch(1)
+        self._add_nav_row(source_row)
+
+        if self._overlay_widgets:
+            overlay_row = self._new_nav_row()
+            for widget in self._overlay_widgets:
+                overlay_row.addWidget(widget, 0)
+            overlay_row.addStretch(1)
+            self._add_nav_row(overlay_row)
+
+        if self._action_widgets:
+            action_row = self._new_nav_row()
+            for widget in self._action_widgets:
+                if widget is self._inline_end:
+                    action_row.addWidget(widget, 1)
+                else:
+                    action_row.addWidget(widget, 0)
+            if self._inline_end is None:
+                action_row.addStretch(1)
+            self._add_nav_row(action_row)
+
+        self._last_nav_narrow = narrow
+        self._nav_layout_dirty = False
+        self.updateGeometry()
+
     def _rebuild_ui(self) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
+        self._source_widgets = []
+        self._overlay_widgets = []
+        self._action_widgets = []
+        self._nav_layout_dirty = True
 
         if self._spec.show_image:
-            self._layout.addWidget(self._image_label)
-            self._layout.addWidget(self._image_combo)
+            self._source_widgets.extend(
+                [self._image_label, self._image_combo, self._nav_separator()]
+            )
             self._populate_sources()
-            self._layout.addWidget(self._nav_separator())
 
-        self._layout.addWidget(self._frame_label)
-        self._layout.addWidget(self._frame_spin)
-        self._layout.addWidget(self._frame_of_label)
+        self._source_widgets.extend(
+            [self._frame_label, self._frame_spin, self._frame_of_label]
+        )
+
+        if self._spec.show_channel:
+            self._source_widgets.extend([self._channel_label, self._channel_spin])
+
+        if self._spec.show_z:
+            self._source_widgets.extend([self._z_label, self._z_spin])
 
         _foci_ch_labels = tuple(getattr(self._spec, "foci_channel_overlay_labels", ()) or ())
         self._foci_channel_cbs = []
-        if self._spec.show_cell_overlay_toggle or self._spec.show_foci_overlay_toggle or _foci_ch_labels:
-            self._layout.addWidget(self._nav_separator())
+        has_overlays = (
+            self._spec.show_cell_overlay_toggle
+            or self._spec.show_foci_overlay_toggle
+            or bool(_foci_ch_labels)
+        )
+        if has_overlays:
+            self._overlay_widgets.append(self._nav_separator())
 
         if self._spec.show_cell_overlay_toggle:
-            self._layout.addWidget(self._show_cells_cb)
+            self._overlay_widgets.append(self._show_cells_cb)
 
         if _foci_ch_labels:
             _nav_cb_style = "QCheckBox { font-size: 10pt; color: #dce4ee; spacing: 6px; }"
@@ -293,36 +402,26 @@ class PreviewNavigationControls(QWidget):
                 cb.setStyleSheet(_nav_cb_style)
                 cname = _ring_color_names[i % len(_ring_color_names)]
                 cb.setToolTip(f"Show foci rings ({cname}) for {lbl}")
+
                 def _mk_handler(idx: int):
                     return lambda checked: self.foci_channel_overlay_changed.emit(idx, bool(checked))
+
                 cb.toggled.connect(_mk_handler(i))
-                self._layout.addWidget(cb)
+                self._overlay_widgets.append(cb)
                 self._foci_channel_cbs.append(cb)
                 if i < len(defaults):
                     cb.setChecked(bool(defaults[i]))
         elif self._spec.show_foci_overlay_toggle:
-            self._layout.addWidget(self._show_foci_cb)
-
-        if self._spec.show_channel:
-            self._layout.addWidget(self._channel_label)
-            self._layout.addWidget(self._channel_spin)
-
-        if self._spec.show_z:
-            self._layout.addWidget(self._z_label)
-            self._layout.addWidget(self._z_spin)
+            self._overlay_widgets.append(self._show_foci_cb)
 
         if self._inline_trailer is not None:
-            self._layout.addWidget(self._inline_trailer)
-
-        # When ``inline_end`` is present (e.g. cache combo strip), let it grow into free space
-        # before ``trailing_end`` instead of leaving a dead stretch between them.
+            self._action_widgets.append(self._inline_trailer)
         if self._inline_end is not None:
-            self._layout.addWidget(self._inline_end, 1)
-        else:
-            self._layout.addStretch(1)
-
+            self._action_widgets.append(self._inline_end)
         if self._trailing_end is not None:
-            self._layout.addWidget(self._trailing_end, 0)
+            self._action_widgets.append(self._trailing_end)
+
+        self._reflow_nav_rows()
 
     def _populate_sources(self) -> None:
         self._image_combo.blockSignals(True)

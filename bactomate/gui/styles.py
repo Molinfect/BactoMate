@@ -66,10 +66,10 @@ def get_modern_stylesheet() -> str:
     
     /* ===== MODERN GROUP BOXES (CARDS) ===== */
     QGroupBox {
-        border: 1px solid #2d2d2d;
+        border: 1px solid #303844;
         border-radius: 8px;
-        margin-top: 10px;
-        padding-top: 14px;
+        margin-top: 6px;
+        padding-top: 10px;
         background-color: #1a1a1a;
         font-weight: 600;
         font-size: 11pt;
@@ -183,7 +183,7 @@ def get_modern_stylesheet() -> str:
         border-left: 1px solid #3a3a3a;
         border-bottom: 1px solid rgba(12, 28, 48, 0.55);
         border-top-right-radius: 6px;
-        background-color: #5a9eff;
+        background-color: #344052;
     }
     QSpinBox::down-button, QDoubleSpinBox::down-button {
         subcontrol-origin: border;
@@ -191,15 +191,15 @@ def get_modern_stylesheet() -> str:
         width: 20px;
         border-left: 1px solid #3a3a3a;
         border-bottom-right-radius: 6px;
-        background-color: #5594f5;
+        background-color: #344052;
     }
     QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
     QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-        background-color: #6aaeff;
+        background-color: #46586f;
     }
     QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
     QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
-        background-color: #4a8eef;
+        background-color: #2f3948;
     }
     QSpinBox::up-button:disabled, QDoubleSpinBox::up-button:disabled {
         background-color: #3d4d5c;
@@ -427,32 +427,36 @@ def get_modern_stylesheet() -> str:
 
 # Flat bordered panel (no title chrome) for module sub-panels after outer CollapsibleSection headers.
 FLAT_GROUPBOX_FRAME_STYLESHEET = (
-    "QGroupBox { border: 1px solid #2d2d2d; border-radius: 8px; margin-top: 4px; padding: 10px; "
-    "background-color: #1a1a1a; }"
+    "QGroupBox { border: 1px solid #303844; border-radius: 8px; "
+    "margin-top: 4px; padding: 8px 10px; background-color: #1a1a1a; min-width: 0; }"
+    "QGroupBox QWidget { background: transparent; }"
 )
 
 # Drag-drop path strip: tight vertical padding so the line edit is not squashed inside nested group boxes.
 PATH_DROP_GROUPBOX_STYLESHEET = (
-    "QGroupBox { border: 1px solid #2d2d2d; border-radius: 8px; margin-top: 4px; "
-    "padding: 8px 10px; background-color: #1a1a1a; }"
+    "QGroupBox { border: 1px solid #303844; border-radius: 8px; margin-top: 4px; "
+    "padding: 8px 10px; background-color: #1a1a1a; min-width: 0; }"
+    "QGroupBox QWidget { background: transparent; }"
 )
 
 # Same path-drop chrome as File Conversion, but without extra top margin inside a module path/action card.
 PATH_DROP_GROUPBOX_NESTED_STYLESHEET = (
-    "QGroupBox { border: 1px solid #2d2d2d; border-radius: 8px; margin-top: 0; "
-    "padding: 8px 10px; background-color: #1a1a1a; }"
+    "QGroupBox { border: 1px solid #303844; border-radius: 8px; margin-top: 0; "
+    "padding: 8px 10px; background-color: #1a1a1a; min-width: 0; }"
+    "QGroupBox QWidget { background: transparent; }"
 )
 
 # Path + preview/segment (or filter) actions: border with no extra space under the bottom button.
 MODULE_PATH_ACTION_PANEL_STYLESHEET = (
     "QGroupBox#ModulePathActionPanel {"
-    " border: 1px solid #2d2d2d;"
+    " border: 1px solid #303844;"
     " border-radius: 8px;"
     " margin-top: 4px;"
     " padding: 8px 10px 6px 10px;"
     " background-color: #1a1a1a;"
     " min-width: 0;"
     "}"
+    "QGroupBox#ModulePathActionPanel QWidget { background: transparent; }"
 )
 
 # Secondary path pickers in module left panes (less prominent than primary action buttons).
@@ -529,36 +533,131 @@ PATH_ROW_BROWSE_BUTTON_STYLESHEET = (
 )
 
 
-# Dark dropdown + popup for module left panes (vertical margins keep rows spaced in scroll forms).
-MODULE_PANEL_COMBO_STYLESHEET = (
-    "QComboBox {"
-    " background-color: #2b2b2b;"
-    " color: #eeeeee;"
-    " border: 1px solid #3a3a3a;"
-    " border-radius: 6px;"
-    " padding: 4px 8px;"
-    " min-height: 22px;"
-    " margin-top: 6px;"
-    " margin-bottom: 6px;"
-    "}"
-    "QComboBox:hover { border-color: #4a9eff; }"
-    "QComboBox::drop-down { border: none; width: 22px; }"
-    "QComboBox QAbstractItemView {"
-    " background-color: #2b2b2b;"
-    " color: #eeeeee;"
-    " selection-background-color: #4a9eff;"
-    " selection-color: #ffffff;"
-    " border: 1px solid #3a3a3a;"
-    " outline: none;"
-    "}"
-)
+# ----- Responsive UI theme tokens (shared across module panes and preview cards) -----
+RESPONSIVE_COMPACT_BREAKPOINT = 360
+RESPONSIVE_MEDIUM_BREAKPOINT = 560
+RESPONSIVE_WIDE_BREAKPOINT = 840
+
+UI_THEME = {
+    "app_bg": "#1a1a1a",
+    "card_bg": "#1a1a1a",
+    "preview_card_bg": "#1a1a1a",
+    "preview_card_border": "#303844",
+    "field_bg": "#2a3140",
+    "field_bg_module": "#2a3140",
+    "field_border": "#3a4555",
+    "field_border_module": "#3a3a3a",
+    "text": "#e8eef6",
+    "muted_text": "#c8d0dc",
+    "accent": "#4a9eff",
+    "disabled_text": "#6a7a88",
+}
+
+
+def card_aware_control_stylesheet(*, compact_margins: bool = False) -> str:
+    """Spin/combo/line styles that match preview cards (not near-black islands)."""
+    margin = " margin: 0;" if compact_margins else " margin-top: 2px; margin-bottom: 2px;"
+    fg = UI_THEME["field_bg"]
+    border = UI_THEME["field_border"]
+    text = UI_THEME["text"]
+    return (
+        f"QSpinBox, QDoubleSpinBox, QLineEdit {{"
+        f" background-color: {fg};"
+        f" color: {text};"
+        f" border: 1px solid {border};"
+        f" border-radius: 6px;"
+        f" padding: 4px 8px;"
+        f" min-height: 28px;{margin}"
+        f"}}"
+        f"QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover {{ border-color: {UI_THEME['accent']}; }}"
+        f"QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{ border-color: {UI_THEME['accent']}; }}"
+        f"QSpinBox::up-button, QDoubleSpinBox::up-button {{"
+        f" subcontrol-origin: border;"
+        f" subcontrol-position: top right;"
+        f" width: 20px;"
+        f" border-left: 1px solid {border};"
+        f" border-bottom: 1px solid rgba(12, 28, 48, 0.55);"
+        f" border-top-right-radius: 5px;"
+        f" background-color: #344052;"
+        f"}}"
+        f"QSpinBox::down-button, QDoubleSpinBox::down-button {{"
+        f" subcontrol-origin: border;"
+        f" subcontrol-position: bottom right;"
+        f" width: 20px;"
+        f" border-left: 1px solid {border};"
+        f" border-bottom-right-radius: 5px;"
+        f" background-color: #344052;"
+        f"}}"
+        f"QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,"
+        f"QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{"
+        f" background-color: #46586f;"
+        f"}}"
+        f"QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,"
+        f"QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{"
+        f" background-color: #2f3948;"
+        f"}}"
+        f"QSpinBox::up-button:disabled, QDoubleSpinBox::up-button:disabled,"
+        f"QSpinBox::down-button:disabled, QDoubleSpinBox::down-button:disabled {{"
+        f" background-color: #2f3a48;"
+        f" border-left: 1px solid {border};"
+        f"}}"
+        f"QComboBox {{"
+        f" background-color: {fg};"
+        f" color: {text};"
+        f" border: 1px solid {border};"
+        f" border-radius: 6px;"
+        f" padding: 4px 8px;"
+        f" min-height: 28px;{margin}"
+        f"}}"
+        f"QComboBox:hover {{ border-color: {UI_THEME['accent']}; }}"
+        f"QComboBox::drop-down {{ border: none; width: 22px; }}"
+        f"QComboBox QAbstractItemView {{"
+        f" background-color: {fg};"
+        f" color: {text};"
+        f" selection-background-color: {UI_THEME['accent']};"
+        f" selection-color: #ffffff;"
+        f" border: 1px solid {border};"
+        f" outline: none;"
+        f"}}"
+        f"QLabel {{ color: {UI_THEME['muted_text']}; background: transparent; }}"
+        f"QCheckBox {{ color: {UI_THEME['text']}; spacing: 6px; }}"
+    )
+
+
+def preview_settings_card_stylesheet(object_name: str = "PreviewSettingsCard") -> str:
+    """Compact dark settings card shared by preview and module controls."""
+    return (
+        f"QGroupBox#{object_name} {{"
+        f" border: 1px solid {UI_THEME['preview_card_border']};"
+        f" border-radius: 8px;"
+        f" margin-top: 4px;"
+        f" padding: 2px 10px 4px 10px;"
+        f" background-color: {UI_THEME['preview_card_bg']};"
+        f" min-width: 0;"
+        f"}}"
+        f"QGroupBox#{object_name}::title {{"
+        f" color: {UI_THEME['accent']};"
+        f" padding: 0 6px;"
+        f" subcontrol-origin: margin;"
+        f" left: 10px;"
+        f" font-weight: 600;"
+        f"}}"
+        f"QGroupBox#{object_name} QWidget {{ background: transparent; }}"
+        + card_aware_control_stylesheet(compact_margins=True)
+    )
+
+
+def filter_preview_card_stylesheet(object_name: str = "FilterPreviewCard") -> str:
+    """Compatibility alias for dense filter cards; uses the shared card skin."""
+    return preview_settings_card_stylesheet(object_name)
+
 
 # Preview nav rows: no extra vertical margin so "View:" aligns with the combo on one baseline.
 PREVIEW_NAV_COMBO_STYLESHEET = (
     "QComboBox {"
-    " background-color: #2b2b2b;"
+    f" background-color: {UI_THEME['field_bg']};"
     " color: #eeeeee;"
-    " border: 1px solid #3a3a3a;"
+    f" border: 1px solid {UI_THEME['field_border']};"
     " border-radius: 6px;"
     " padding: 4px 8px;"
     " min-height: 28px;"
@@ -568,21 +667,57 @@ PREVIEW_NAV_COMBO_STYLESHEET = (
     "QComboBox:hover { border-color: #4a9eff; }"
     "QComboBox::drop-down { border: none; width: 22px; }"
     "QComboBox QAbstractItemView {"
-    " background-color: #2b2b2b;"
+    f" background-color: {UI_THEME['field_bg']};"
     " color: #eeeeee;"
     " selection-background-color: #4a9eff;"
     " selection-color: #ffffff;"
-    " border: 1px solid #3a3a3a;"
+    f" border: 1px solid {UI_THEME['field_border']};"
     " outline: none;"
     "}"
+)
+
+PREVIEW_NAV_SPINBOX_STYLESHEET = card_aware_control_stylesheet(compact_margins=True)
+
+
+def preview_table_stylesheet() -> str:
+    """Compact data table styling aligned with preview card theme tokens."""
+    t = UI_THEME
+    return (
+        "QTableWidget {"
+        f" background-color: {t['preview_card_bg']};"
+        f" color: {t['text']};"
+        f" gridline-color: {t['field_border']};"
+        f" border: 1px solid {t['preview_card_border']};"
+        " border-radius: 6px;"
+        "}"
+        "QTableWidget::item { padding: 1px 3px; }"
+        "QTableWidget::item:selected {"
+        f" background-color: {t['accent']};"
+        " color: #ffffff;"
+        "}"
+        "QHeaderView::section {"
+        f" background-color: {t['field_bg']};"
+        f" color: {t['muted_text']};"
+        " padding: 2px 2px;"
+        " border: none;"
+        f" border-right: 1px solid {t['field_border']};"
+        " font-weight: 600;"
+        "}"
+        "QHeaderView::section:last { border-right: none; }"
+    )
+
+# Module dropdowns use the same palette as preview dropdowns, with module-pane vertical margins.
+MODULE_PANEL_COMBO_STYLESHEET = (
+    PREVIEW_NAV_COMBO_STYLESHEET
+    + " QComboBox { min-height: 24px; margin-top: 6px; margin-bottom: 6px; }"
 )
 
 # Segmentation preview: cached-parameter picker — quieter than main nav combos.
 PREVIEW_CACHE_RUN_COMBO_STYLESHEET = (
     "QComboBox {"
-    " background-color: #252525;"
-    " color: #c8c8c8;"
-    " border: 1px solid #353535;"
+    f" background-color: {UI_THEME['field_bg']};"
+    " color: #dce4e8;"
+    f" border: 1px solid {UI_THEME['field_border']};"
     " border-radius: 5px;"
     " padding: 3px 8px;"
     " min-height: 28px;"
@@ -590,14 +725,14 @@ PREVIEW_CACHE_RUN_COMBO_STYLESHEET = (
     " margin: 0;"
     " font-size: 11pt;"
     "}"
-    "QComboBox:hover { border-color: #4a6278; color: #dce4e8; }"
+    "QComboBox:hover { border-color: #4a9eff; color: #ffffff; }"
     "QComboBox::drop-down { border: none; width: 20px; }"
     "QComboBox QAbstractItemView {"
-    " background-color: #2b2b2b;"
+    f" background-color: {UI_THEME['field_bg']};"
     " color: #dddddd;"
     " selection-background-color: #4a9eff;"
     " selection-color: #ffffff;"
-    " border: 1px solid #3a3a3a;"
+    f" border: 1px solid {UI_THEME['field_border']};"
     " outline: none;"
     " font-size: 11pt;"
     "}"
@@ -605,17 +740,23 @@ PREVIEW_CACHE_RUN_COMBO_STYLESHEET = (
 
 
 def get_module_shell_left_pane_stylesheet() -> str:
-    """Font bump + dark combos for all widgets under the module shell left scroll."""
+    """Font bump + unified field/combo styling for module shell left scroll."""
+    fg = UI_THEME["field_bg_module"]
+    border = UI_THEME["field_border_module"]
     return (
         "QWidget { font-size: 12pt; }"
-        "QLabel { font-size: 12pt; }"
-        "QLineEdit { font-size: 13pt; min-height: 30px; padding: 4px 8px; }"
-        "QGroupBox { font-size: 12pt; font-weight: 600; }"
+        "QLabel { font-size: 12pt; color: #dce4ee; }"
+        f"QLineEdit {{ font-size: 13pt; min-height: 30px; padding: 4px 8px;"
+        f" background-color: {fg}; border: 1px solid {border}; border-radius: 6px; color: #ffffff; }}"
+        f"QLineEdit:focus {{ border-color: {UI_THEME['accent']}; }}"
+        "QGroupBox { font-size: 12pt; font-weight: 600; border-color: #303844; background-color: #1a1a1a; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #aeb6c2; font-weight: 600; }"
         "QPushButton { font-size: 12pt; }"
-        "QCheckBox { font-size: 12pt; }"
+        "QCheckBox { font-size: 12pt; color: #dce4ee; spacing: 6px; }"
         "QRadioButton { font-size: 12pt; }"
-        "QSpinBox, QDoubleSpinBox { font-size: 12pt; }"
+        f"QSpinBox, QDoubleSpinBox {{ font-size: 12pt; background-color: {fg};"
+        f" border: 1px solid {border}; border-radius: 6px; padding: 4px 8px; color: #eeeeee; }}"
+        f"QSpinBox:hover, QDoubleSpinBox:hover {{ border-color: {UI_THEME['accent']}; }}"
         "QTextEdit { font-size: 12pt; }"
         + MODULE_PANEL_COMBO_STYLESHEET
     )

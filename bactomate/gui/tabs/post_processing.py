@@ -8,7 +8,7 @@ import numpy as np
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QColorDialog,
@@ -71,10 +71,22 @@ from bactomate.gui.widgets import (
 
 from bactomate.gui.layout_helpers import (
     ResponsivePanel,
+    build_settings_card,
     build_path_drop_group,
+    build_preview_settings_scroll,
+    compact_control,
+    flex_control,
+    inline_controls,
+    labeled_control,
+    preview_settings_group,
+    scrollable_control_panel,
+    setting_cell,
+    setting_field,
+    stacked_control_rows,
     style_compact_action_button,
     style_compact_browse_button,
     style_module_primary_button,
+    style_preview_nav_spinbox,
     vbox_from_rows,
 )
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
@@ -183,13 +195,6 @@ class PostProcessingTab(QWidget):
             return bool(widget.isChecked())
         except RuntimeError:
             return default
-
-    @staticmethod
-    def _compact_preview_control(widget: QWidget, width: int) -> None:
-        """Keep preview-panel controls from expanding across compact cards."""
-        widget.setMinimumWidth(width)
-        widget.setMaximumWidth(width)
-        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def _montage_use_z_max_projection(self) -> bool:
         combo = getattr(self, "montage_z_projection", None)
@@ -988,7 +993,7 @@ class PostProcessingTab(QWidget):
         self.yaxis_min.setValue(0.0)
         self.yaxis_min.setDecimals(2)
         self.yaxis_min.setSpecialValueText("Auto")
-        self._compact_preview_control(self.yaxis_min, 90)
+        compact_control(self.yaxis_min, 90)
 
         self.yaxis_max = QDoubleSpinBox()
         self.yaxis_max.setMinimum(0.0)
@@ -996,7 +1001,7 @@ class PostProcessingTab(QWidget):
         self.yaxis_max.setValue(0.0)
         self.yaxis_max.setDecimals(2)
         self.yaxis_max.setSpecialValueText("Auto")
-        self._compact_preview_control(self.yaxis_max, 90)
+        compact_control(self.yaxis_max, 90)
 
         self.fps = QDoubleSpinBox()
         self.fps.setMinimum(0.1)
@@ -1004,12 +1009,12 @@ class PostProcessingTab(QWidget):
         self.fps.setValue(5.0)
         self.fps.setDecimals(1)
         self.fps.setSuffix(" fps")
-        self._compact_preview_control(self.fps, 95)
+        compact_control(self.fps, 95)
 
         self.excel_y_column = QComboBox()
         self.excel_y_column.setToolTip("Summary-sheet column plotted on the growth-curve Y axis.")
         self.excel_y_column.setMinimumWidth(0)
-        self._compact_preview_control(self.excel_y_column, 220)
+        compact_control(self.excel_y_column, 220)
         self.excel_y_column.currentTextChanged.connect(self._on_growth_y_column_changed)
 
         self.graph_width_ratio_spin = QSpinBox()
@@ -1017,7 +1022,7 @@ class PostProcessingTab(QWidget):
         self.graph_width_ratio_spin.setValue(50)
         self.graph_width_ratio_spin.setSuffix(" %")
         self.graph_width_ratio_spin.setToolTip("Share of total width used by the growth graph (video gets the rest).")
-        self._compact_preview_control(self.graph_width_ratio_spin, 80)
+        compact_control(self.graph_width_ratio_spin, 80)
         self.graph_width_ratio_spin.valueChanged.connect(self._on_graph_width_ratio_changed)
 
         self.format_all = QCheckBox("Select All")
@@ -1075,7 +1080,7 @@ class PostProcessingTab(QWidget):
             "Merged tile: phase/FI/foci image channels are color-merged into one microscopy tile.\n"
             "Separate tiles: show individual image-channel tiles and choose which tiles are visible."
         )
-        self._compact_preview_control(self.video_fi_layout_combo, 180)
+        compact_control(self.video_fi_layout_combo, 180)
 
         self.process_btn = QPushButton("Create video montage")
         style_module_primary_button(self.process_btn)
@@ -1863,55 +1868,30 @@ class PostProcessingTab(QWidget):
         return group
 
     def _build_montage_layout_controls(self, parent: QWidget) -> QGroupBox:
-        """Create compact montage layout controls for the preview pane."""
-        group = QGroupBox("")
-        group.setObjectName("MontageLayoutControls")
-        group.setMinimumWidth(0)
-        group.setStyleSheet(
-            """
-            QGroupBox#MontageLayoutControls {
-                border: 1px solid #303844;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding: 10px 10px 8px 10px;
-                background-color: #232830;
-            }
-            QGroupBox#MontageLayoutControls::title {
-                color: #4a9eff;
-                padding: 0 6px;
-            }
-            """
-        )
-        layout = QVBoxLayout(group)
-        layout.setContentsMargins(8, 12, 8, 8)
-        layout.setSpacing(6)
-
+        """Create montage layout controls for the preview pane (adaptive width-filling grid)."""
         self.montage_rows = QSpinBox(parent)
         self.montage_rows.setRange(1, 50)
         self.montage_rows.setValue(1)
         self.montage_rows.setToolTip("Number of rows. Default 1 = single row of tiles.")
-        self._compact_preview_control(self.montage_rows, 70)
         self.montage_cols = QSpinBox(parent)
         self.montage_cols.setRange(0, 50)
         self.montage_cols.setValue(0)
         self.montage_cols.setSpecialValueText("Auto")
         self.montage_cols.setToolTip("Auto = derived from number of tiles and rows.")
-        self._compact_preview_control(self.montage_cols, 80)
 
         self.montage_spacing = QSpinBox(parent)
         self.montage_spacing.setRange(0, 100)
         self.montage_spacing.setValue(4)
         self.montage_spacing.setSuffix(" px")
-        self._compact_preview_control(self.montage_spacing, 80)
         self.montage_border = QSpinBox(parent)
         self.montage_border.setRange(0, 100)
         self.montage_border.setValue(0)
         self.montage_border.setSuffix(" px")
-        self._compact_preview_control(self.montage_border, 80)
         self.montage_border_color = QComboBox(parent)
         self.montage_border_color.addItems(["Gray", "White", "Black", "Transparent"])
-        self.montage_border_color.setToolTip("Fill color for montage spacing and outer border. Transparent is preserved for PNG/TIFF exports.")
-        self._compact_preview_control(self.montage_border_color, 120)
+        self.montage_border_color.setToolTip(
+            "Fill color for montage spacing and outer border. Transparent is preserved for PNG/TIFF exports."
+        )
         saved_border_color = str(getattr(self, "_montage_border_color", "White") or "White")
         border_color_idx = self.montage_border_color.findText(saved_border_color)
         if border_color_idx >= 0:
@@ -1920,172 +1900,230 @@ class PostProcessingTab(QWidget):
 
         self.montage_order = QComboBox(parent)
         self.montage_order.addItems(["Row-major", "Column-major"])
-        self.montage_order.setToolTip("Row-major: left to right, then top to bottom. Column-major: top to bottom, then left to right.")
-        self.montage_order.setMinimumWidth(0)
-        self._compact_preview_control(self.montage_order, 160)
-
+        self.montage_order.setToolTip(
+            "Row-major: left to right, then top to bottom. Column-major: top to bottom, then left to right."
+        )
         self.montage_z_projection = QComboBox(parent)
         self.montage_z_projection.addItems(["First Z", "Max projection"])
         self.montage_z_projection.setToolTip(
             "For z-stacks, choose the first z plane or collapse each channel with a max-intensity projection."
         )
-        self.montage_z_projection.setMinimumWidth(0)
-        self._compact_preview_control(self.montage_z_projection, 160)
         if getattr(self, "_montage_z_projection_max", False):
             self.montage_z_projection.setCurrentIndex(1)
         self.montage_z_projection.currentTextChanged.connect(self._sync_montage_z_projection_mode)
 
-        row_a = QHBoxLayout()
-        row_a.setSpacing(8)
-        row_a.addWidget(QLabel("Rows", group))
-        row_a.addWidget(self.montage_rows)
-        row_a.addWidget(QLabel("Cols", group))
-        row_a.addWidget(self.montage_cols)
-        row_a.addWidget(QLabel("Spacing", group))
-        row_a.addWidget(self.montage_spacing)
-        row_a.addWidget(QLabel("Border", group))
-        row_a.addWidget(self.montage_border)
-        row_a.addWidget(QLabel("Color", group))
-        row_a.addWidget(self.montage_border_color)
-        row_a.addStretch(1)
-
-        row_b = QHBoxLayout()
-        row_b.setSpacing(8)
-        row_b.addWidget(QLabel("Order", group))
-        row_b.addWidget(self.montage_order)
-        row_b.addWidget(QLabel("Z-stack", group))
-        row_b.addWidget(self.montage_z_projection)
-        row_b.addStretch(1)
-
-        layout.addWidget(vbox_from_rows(row_a, row_b, parent=group))
-        return group
+        return build_settings_card(
+            "",
+            object_name="MontageLayoutControls",
+            parent=parent,
+            min_cell_width=130,
+            label_min_width=58,
+            control_max_width=132,
+            fields=[
+                setting_field("Rows", self.montage_rows, min_width=56, max_width=84),
+                setting_field("Cols", self.montage_cols, min_width=64, max_width=92),
+                setting_field("Spacing", self.montage_spacing, min_width=64, max_width=92),
+                setting_field("Border", self.montage_border, min_width=64, max_width=92),
+                setting_field("Color", self.montage_border_color, min_width=72, max_width=116),
+                setting_field("Order", self.montage_order, min_width=96, max_width=132),
+                setting_field("Z-stack", self.montage_z_projection, min_width=96, max_width=132),
+            ],
+        )
 
     def _build_montage_label_controls(self, parent: QWidget) -> QGroupBox:
         """Per-tile label options for montage export."""
-        group = QGroupBox("")
-        group.setObjectName("MontageLabelControls")
-        group.setStyleSheet(
-            """
-            QGroupBox#MontageLabelControls {
-                border: 1px solid #303844;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding: 10px 10px 8px 10px;
-                background-color: #232830;
-            }
-            QGroupBox#MontageLabelControls::title { color: #4a9eff; padding: 0 6px; }
-            """
-        )
-        outer = QVBoxLayout(group)
-        outer.setContentsMargins(8, 12, 8, 8)
-        outer.setSpacing(6)
-
         self.montage_show_labels = QCheckBox("Show tile labels", parent)
         self.montage_show_labels.setToolTip("Draw channel/tile names on the montage (e.g. Phase, GFP, Merged).")
 
-        row_a = QHBoxLayout()
-        row_a.setSpacing(8)
-        row_a.addWidget(self.montage_show_labels)
-        row_a.addWidget(QLabel("Position", group))
         self.montage_label_position = QComboBox(parent)
         self.montage_label_position.addItems(["Below", "Inside top-left", "Inside bottom-left"])
-        self._compact_preview_control(self.montage_label_position, 145)
-        row_a.addWidget(self.montage_label_position)
-        row_a.addWidget(QLabel("Color", group))
         self.montage_label_color = QComboBox(parent)
         self.montage_label_color.addItems(["Black", "White"])
-        self._compact_preview_control(self.montage_label_color, 90)
-        row_a.addWidget(self.montage_label_color)
-        row_a.addWidget(QLabel("Font", group))
         self.montage_label_font_size = QSpinBox(parent)
         self.montage_label_font_size.setRange(8, 48)
         self.montage_label_font_size.setValue(12)
-        self._compact_preview_control(self.montage_label_font_size, 70)
-        row_a.addWidget(self.montage_label_font_size)
-        row_a.addStretch(1)
 
-        outer.addWidget(vbox_from_rows(row_a, parent=group))
-        return group
+        return build_settings_card(
+            "",
+            object_name="MontageLabelControls",
+            parent=parent,
+            min_cell_width=160,
+            label_min_width=70,
+            control_max_width=120,
+            fields=[
+                setting_cell(self.montage_show_labels),
+                setting_field("Position", self.montage_label_position, min_width=96, max_width=132),
+                setting_field("Color", self.montage_label_color, min_width=72, max_width=104),
+                setting_field("Font", self.montage_label_font_size, min_width=56, max_width=84),
+            ],
+        )
+
+    def _build_montage_lut_controls(
+        self,
+        parent: QWidget,
+        *,
+        embedded: bool = False,
+    ) -> tuple[QGroupBox, QDoubleSpinBox, QDoubleSpinBox, QPushButton, QPushButton, Any, Any, Any]:
+        """LUT histogram + min/max controls for montage preview."""
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
+
+        montage_lut_canvas_height = 92 if embedded else LUT_HIST_CANVAS_HEIGHT_PX
+        hist_fig = Figure(figsize=(LUT_HIST_FIGSIZE_INCHES[0], 1.35 if embedded else LUT_HIST_FIGSIZE_INCHES[1]))
+        hist_canvas = FigureCanvas(hist_fig)
+        hist_canvas.setMinimumHeight(montage_lut_canvas_height)
+        hist_canvas.setMaximumHeight(montage_lut_canvas_height)
+        hist_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        hist_ax = hist_fig.add_subplot(111)
+        hist_fig.patch.set_facecolor("#2b2b2b")
+        hist_ax.set_facecolor("#2b2b2b")
+        hist_ax.tick_params(colors="white", labelsize=8 if embedded else 10)
+        for spine in ["bottom", "top", "left", "right"]:
+            hist_ax.spines[spine].set_color("white")
+        hist_ax.xaxis.label.set_color("white")
+        hist_ax.yaxis.label.set_color("white")
+        apply_lut_histogram_figure_margins(hist_fig)
+        if embedded:
+            hist_fig.subplots_adjust(left=0.15, right=0.98, top=0.86, bottom=0.28)
+        hist_canvas.setStyleSheet("background-color: #2b2b2b;")
+        hist_canvas.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        min_spin = QDoubleSpinBox(parent)
+        min_spin.setRange(0, 65535)
+        min_spin.setValue(0)
+        min_spin.setDecimals(0)
+        flex_control(min_spin, 64, combo_style=False, max_width=88)
+        max_spin = QDoubleSpinBox(parent)
+        max_spin.setRange(0, 65535)
+        max_spin.setValue(65535)
+        max_spin.setDecimals(0)
+        flex_control(max_spin, 64, combo_style=False, max_width=88)
+        auto_selected_btn = QPushButton("Auto selected", parent)
+        style_compact_action_button(auto_selected_btn, horizontal_padding=12, dense=True)
+        auto_selected_btn.setToolTip("Set the selected tile to the automatic robust LUT range.")
+        auto_all_btn = QPushButton("Auto all", parent)
+        style_compact_action_button(auto_all_btn, horizontal_padding=12, dense=True)
+        auto_all_btn.setToolTip("Set automatic robust LUTs for all non-merged tiles.")
+
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(8)
+        min_lbl = QLabel("Min:", parent)
+        max_lbl = QLabel("Max:", parent)
+        controls_row.addWidget(min_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        controls_row.addWidget(min_spin, 0, Qt.AlignmentFlag.AlignVCenter)
+        controls_row.addWidget(max_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        controls_row.addWidget(max_spin, 0, Qt.AlignmentFlag.AlignVCenter)
+        controls_row.addStretch(1)
+        controls_row.addWidget(auto_selected_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        controls_row.addWidget(auto_all_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        lut_body = QWidget(parent)
+        lut_body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        lut_body_lay = QVBoxLayout(lut_body)
+        lut_body_lay.setContentsMargins(0, 0, 0, 0)
+        lut_body_lay.setSpacing(4)
+        lut_body_lay.addWidget(hist_canvas)
+        lut_body_lay.addLayout(controls_row)
+
+        class _LutCanvasResizeFilter(QObject):
+            def __init__(self, canvas: QWidget, fig: Any) -> None:
+                super().__init__(canvas)
+                self._canvas = canvas
+                self._fig = fig
+
+            def eventFilter(self, obj, event) -> bool:  # noqa: N802
+                if obj is self._canvas and event.type() == QEvent.Type.Resize:
+                    w = max(int(self._canvas.width()), 1)
+                    h = max(int(self._canvas.height()), 1)
+                    dpi = float(self._fig.get_dpi() or 100.0)
+                    self._fig.set_size_inches(w / dpi, h / dpi, forward=True)
+                    try:
+                        apply_lut_histogram_figure_margins(self._fig)
+                    except Exception:
+                        pass
+                    self._canvas.draw_idle()
+                return False
+
+        lut_group = preview_settings_group("", object_name="MontageLutControls", parent=parent)
+        lut_outer = QVBoxLayout(lut_group)
+        lut_outer.setContentsMargins(8, 2, 8, 4)
+        lut_outer.setSpacing(4)
+        lut_outer.addWidget(lut_body)
+        lut_group.setMinimumHeight(0)
+        lut_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        lut_group._lut_resize_filter = _LutCanvasResizeFilter(hist_canvas, hist_fig)  # type: ignore[attr-defined]
+        hist_canvas.installEventFilter(lut_group._lut_resize_filter)
+
+        def _sync_lut_canvas_width() -> None:
+            w = max(int(hist_canvas.width()), 1)
+            h = max(int(hist_canvas.height()), 1)
+            dpi = float(hist_fig.get_dpi() or 100.0)
+            hist_fig.set_size_inches(w / dpi, h / dpi, forward=True)
+            try:
+                apply_lut_histogram_figure_margins(hist_fig)
+            except Exception:
+                pass
+            hist_canvas.draw_idle()
+
+        QTimer.singleShot(0, _sync_lut_canvas_width)
+        return lut_group, min_spin, max_spin, auto_selected_btn, auto_all_btn, hist_fig, hist_ax, hist_canvas
 
     def _build_montage_scalebar_controls(self, parent: QWidget) -> QGroupBox:
         """Scale bar options inside montage preview."""
-        group = QGroupBox("")
-        group.setObjectName("MontageScaleBarControls")
-        group.setStyleSheet(
-            """
-            QGroupBox#MontageScaleBarControls {
-                border: 1px solid #303844;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding: 10px 10px 8px 10px;
-                background-color: #232830;
-            }
-            QGroupBox#MontageScaleBarControls::title { color: #4a9eff; padding: 0 6px; }
-            """
-        )
-        outer = QVBoxLayout(group)
-        outer.setContentsMargins(8, 12, 8, 8)
-        outer.setSpacing(6)
-
         self.montage_sb_enable = QCheckBox("Add scale bar to montage", parent)
         self.montage_sb_enable.setChecked(False)
 
-        row_a = QHBoxLayout()
-        row_a.setSpacing(8)
-        row_a.addWidget(self.montage_sb_enable)
-        row_a.addWidget(QLabel("Pixel size (µm/px)", group))
         self.montage_sb_pixel_size = QDoubleSpinBox(parent)
         self.montage_sb_pixel_size.setRange(0.001, 100.0)
         self.montage_sb_pixel_size.setDecimals(3)
         self.montage_sb_pixel_size.setValue(0.108)
-        self._compact_preview_control(self.montage_sb_pixel_size, 90)
-        row_a.addWidget(self.montage_sb_pixel_size)
+        flex_control(self.montage_sb_pixel_size, 72, combo_style=False, max_width=104)
         self.montage_sb_pixel_size_source = QLabel("", parent)
-        self.montage_sb_pixel_size_source.setStyleSheet("color: #2ecc71; font-size: 9pt;")
-        row_a.addWidget(self.montage_sb_pixel_size_source)
-        row_a.addWidget(QLabel("Length (µm)", group))
+        self.montage_sb_pixel_size_source.setStyleSheet("color: #2ecc71; font-size: 9pt; padding-left: 2px;")
+
         self.montage_sb_length_um = QDoubleSpinBox(parent)
         self.montage_sb_length_um.setRange(0.1, 1000.0)
         self.montage_sb_length_um.setDecimals(1)
         self.montage_sb_length_um.setValue(10.0)
-        self._compact_preview_control(self.montage_sb_length_um, 90)
-        row_a.addWidget(self.montage_sb_length_um)
         auto_length_btn = QPushButton("Auto length", parent)
-        style_compact_action_button(auto_length_btn, horizontal_padding=12)
+        style_compact_action_button(auto_length_btn, horizontal_padding=12, dense=True)
         auto_length_btn.setToolTip("Pick a visually nice scale-bar length from tile width and pixel size.")
-        row_a.addWidget(auto_length_btn)
-        row_a.addWidget(QLabel("Position", group))
+
         self.montage_sb_position = QComboBox(parent)
         self.montage_sb_position.addItems(["Bottom-right", "Bottom-left", "Top-right", "Top-left"])
-        self._compact_preview_control(self.montage_sb_position, 135)
-        row_a.addWidget(self.montage_sb_position)
-        row_a.addStretch(1)
 
-        row_b = QHBoxLayout()
-        row_b.setSpacing(8)
         self.montage_sb_show_label = QCheckBox("Show label (e.g. 10 µm)", parent)
         self.montage_sb_show_label.setChecked(True)
-        row_b.addWidget(self.montage_sb_show_label)
-        row_b.addWidget(QLabel("Color", group))
         self.montage_sb_color = QComboBox(parent)
         self.montage_sb_color.addItems(["White", "Black"])
-        self._compact_preview_control(self.montage_sb_color, 90)
-        row_b.addWidget(self.montage_sb_color)
-        row_b.addWidget(QLabel("Thickness", group))
         self.montage_sb_thickness = QSpinBox(parent)
         self.montage_sb_thickness.setRange(1, 20)
         self.montage_sb_thickness.setValue(5)
-        self._compact_preview_control(self.montage_sb_thickness, 70)
-        row_b.addWidget(self.montage_sb_thickness)
-        row_b.addWidget(QLabel("Font", group))
         self.montage_sb_font_size = QSpinBox(parent)
         self.montage_sb_font_size.setRange(8, 72)
         self.montage_sb_font_size.setValue(20)
-        self._compact_preview_control(self.montage_sb_font_size, 70)
-        row_b.addWidget(self.montage_sb_font_size)
-        row_b.addStretch(1)
 
-        outer.addWidget(vbox_from_rows(row_a, row_b, parent=group))
+        group = build_settings_card(
+            "",
+            object_name="MontageScaleBarControls",
+            parent=parent,
+            min_cell_width=170,
+            label_min_width=96,
+            control_max_width=112,
+            fields=[
+                setting_cell(self.montage_sb_enable),
+                setting_field("Pixel size", self.montage_sb_pixel_size, min_width=72, max_width=104),
+                setting_cell(auto_length_btn),
+                setting_cell(self.montage_sb_show_label),
+                setting_field("Length (µm)", self.montage_sb_length_um, min_width=72, max_width=104),
+                setting_field("Position", self.montage_sb_position, min_width=96, max_width=132),
+                setting_field("Color", self.montage_sb_color, min_width=72, max_width=104),
+                setting_field("Thickness", self.montage_sb_thickness, min_width=56, max_width=84),
+                setting_field("Font", self.montage_sb_font_size, min_width=56, max_width=84),
+            ],
+            footer_widgets=[self.montage_sb_pixel_size_source],
+        )
         self._try_update_montage_pixel_size_from_paths()
         auto_length_btn.clicked.connect(lambda *_args: self._auto_montage_scalebar_length(getattr(self, "_last_montage_layout", None)))
         return group
@@ -2103,64 +2141,42 @@ class PostProcessingTab(QWidget):
 
     def _build_montage_focus_controls(self, parent: QWidget) -> QGroupBox:
         """Focus inset options inside montage preview."""
-        group = QGroupBox("")
-        group.setObjectName("MontageFocusControls")
-        group.setStyleSheet(
-            """
-            QGroupBox#MontageFocusControls {
-                border: 1px solid #303844;
-                border-radius: 8px;
-                margin-top: 8px;
-                padding: 10px 10px 8px 10px;
-                background-color: #232830;
-            }
-            QGroupBox#MontageFocusControls::title { color: #4a9eff; padding: 0 6px; }
-            """
-        )
-        outer = QVBoxLayout(group)
-        outer.setContentsMargins(8, 12, 8, 8)
-        outer.setSpacing(6)
-
-        self.montage_focus_enable = QCheckBox("Add focus inset / zoom box", parent)
+        self.montage_focus_enable = QCheckBox("Enable focus inset", parent)
         self.montage_focus_enable.setToolTip(
-            "Right-drag a box on the preview. The selected region is magnified into the chosen corner and exported with the montage."
+            "Right-drag on the preview to choose the source region. The selected region is magnified into the chosen corner and exported with the montage."
         )
 
         self.montage_focus_zoom = QComboBox(parent)
         self.montage_focus_zoom.addItems(["2x", "4x", "8x", "12x", "16x"])
         self.montage_focus_zoom.setCurrentText("4x")
-        self._compact_preview_control(self.montage_focus_zoom, 75)
         self.montage_focus_position = QComboBox(parent)
         self.montage_focus_position.addItems(["Top-right", "Top-left", "Bottom-right", "Bottom-left"])
-        self._compact_preview_control(self.montage_focus_position, 135)
         self.montage_focus_color = QComboBox(parent)
         self.montage_focus_color.addItems(["Yellow", "White", "Black", "Cyan", "Magenta", "Green", "Red"])
         self.montage_focus_color.setCurrentText("White")
-        self._compact_preview_control(self.montage_focus_color, 110)
         self.montage_focus_line_width = QSpinBox(parent)
         self.montage_focus_line_width.setRange(1, 20)
         self.montage_focus_line_width.setValue(5)
-        self._compact_preview_control(self.montage_focus_line_width, 70)
         self.montage_focus_clear_btn = QPushButton("Clear ROI", parent)
         self.montage_focus_clear_btn.setToolTip("Remove the current focus inset selection.")
-        style_compact_action_button(self.montage_focus_clear_btn, horizontal_padding=16)
+        style_compact_action_button(self.montage_focus_clear_btn, horizontal_padding=16, dense=True)
 
-        row_a = QHBoxLayout()
-        row_a.setSpacing(8)
-        row_a.addWidget(self.montage_focus_enable)
-        row_a.addWidget(QLabel("Zoom", group))
-        row_a.addWidget(self.montage_focus_zoom)
-        row_a.addWidget(QLabel("Position", group))
-        row_a.addWidget(self.montage_focus_position)
-        row_a.addWidget(QLabel("Box color", group))
-        row_a.addWidget(self.montage_focus_color)
-        row_a.addWidget(QLabel("Line width", group))
-        row_a.addWidget(self.montage_focus_line_width)
-        row_a.addWidget(self.montage_focus_clear_btn)
-        row_a.addStretch(1)
-
-        outer.addWidget(vbox_from_rows(row_a, parent=group))
-        return group
+        return build_settings_card(
+            "",
+            object_name="MontageFocusControls",
+            parent=parent,
+            min_cell_width=160,
+            label_min_width=78,
+            control_max_width=120,
+            fields=[
+                setting_cell(self.montage_focus_enable),
+                setting_field("Zoom", self.montage_focus_zoom, min_width=64, max_width=88),
+                setting_field("Position", self.montage_focus_position, min_width=96, max_width=132),
+                setting_field("Box color", self.montage_focus_color, min_width=88, max_width=120),
+                setting_field("Line width", self.montage_focus_line_width, min_width=56, max_width=84),
+                setting_cell(self.montage_focus_clear_btn),
+            ],
+        )
 
     def _montage_focus_params(self) -> dict[str, Any]:
         return {
@@ -2415,6 +2431,7 @@ class PostProcessingTab(QWidget):
             order_spin.setRange(1, max(1, len(tiles)))
             order_spin.setValue(order_rank.get(tile_key, idx + 1))
             order_spin.setFixedWidth(64)
+            style_preview_nav_spinbox(order_spin)
             z_combo = QComboBox()
             z_combo.addItems(z_choices)
             z_mode = str(self.montage_tile_z_modes.get(tile_key, "global"))
@@ -2440,6 +2457,7 @@ class PostProcessingTab(QWidget):
             p_low_spin.setSingleStep(0.5)
             p_low_spin.setValue(float(pct[0]))
             p_low_spin.setFixedWidth(72)
+            style_preview_nav_spinbox(p_low_spin)
             p_low_spin.setEnabled(not is_merged)
             p_high_spin = QDoubleSpinBox()
             p_high_spin.setRange(0.1, 100.0)
@@ -2447,6 +2465,7 @@ class PostProcessingTab(QWidget):
             p_high_spin.setSingleStep(0.5)
             p_high_spin.setValue(float(pct[1]))
             p_high_spin.setFixedWidth(72)
+            style_preview_nav_spinbox(p_high_spin)
             p_high_spin.setEnabled(not is_merged)
             rows.append(
                 {
@@ -2539,6 +2558,15 @@ class PostProcessingTab(QWidget):
             row["color_combo"].currentIndexChanged.connect(lambda *_, ri=i: on_combo_change(ri))
 
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        for std_btn, padding in (
+            (QDialogButtonBox.StandardButton.Cancel, 30),
+            (QDialogButtonBox.StandardButton.Ok, 30),
+        ):
+            btn = bb.button(std_btn)
+            if btn is not None:
+                style_compact_action_button(btn, horizontal_padding=padding)
+                btn.setMinimumWidth(96)
+        bb.setMinimumHeight(44)
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         vlayout.addWidget(bb)
@@ -4372,9 +4400,6 @@ class PostProcessingTab(QWidget):
         embedded: bool = False,
     ) -> None:
         """Non-modal montage preview: click a tile to select it, adjust LUT via histogram; Update, Edit colors, Save, Close."""
-        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-        from matplotlib.figure import Figure
-
         if embedded and getattr(self, "_module_preview_mount", None) is not None:
             self._close_embedded_post_preview()
             dlg = QWidget(self)
@@ -4410,72 +4435,48 @@ class PostProcessingTab(QWidget):
 
         layout_group = self._build_montage_layout_controls(dlg)
         layout_section = CollapsibleSection("Layout", layout_group, parent=dlg, expanded=False, compact=True)
-        main_layout.addWidget(layout_section)
         scalebar_group = self._build_montage_scalebar_controls(dlg)
         scalebar_section = CollapsibleSection("Scale bar", scalebar_group, parent=dlg, expanded=False, compact=True)
-        main_layout.addWidget(scalebar_section)
         focus_group = self._build_montage_focus_controls(dlg)
         focus_section = CollapsibleSection("Focus inset", focus_group, parent=dlg, expanded=False, compact=True)
-        main_layout.addWidget(focus_section)
         labels_group = self._build_montage_label_controls(dlg)
         labels_section = CollapsibleSection("Labels", labels_group, parent=dlg, expanded=False, compact=True)
-        main_layout.addWidget(labels_section)
 
-        lut_group = QGroupBox("")
-        lut_group.setMinimumHeight(0)
-        lut_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        lut_layout = QVBoxLayout()
-        lut_layout.setContentsMargins(8, 8, 8, 6)
-        lut_layout.setSpacing(4)
-        montage_lut_canvas_height = 92 if embedded else LUT_HIST_CANVAS_HEIGHT_PX
-        hist_fig = Figure(figsize=(LUT_HIST_FIGSIZE_INCHES[0], 1.35 if embedded else LUT_HIST_FIGSIZE_INCHES[1]))
-        hist_canvas = FigureCanvas(hist_fig)
-        hist_canvas.setMinimumHeight(montage_lut_canvas_height)
-        hist_canvas.setMaximumHeight(montage_lut_canvas_height)
-        hist_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        hist_ax = hist_fig.add_subplot(111)
-        hist_fig.patch.set_facecolor("#2b2b2b")
-        hist_ax.set_facecolor("#2b2b2b")
-        hist_ax.tick_params(colors="white", labelsize=8 if embedded else 10)
-        for spine in ["bottom", "top", "left", "right"]:
-            hist_ax.spines[spine].set_color("white")
-        hist_ax.xaxis.label.set_color("white")
-        hist_ax.yaxis.label.set_color("white")
-        apply_lut_histogram_figure_margins(hist_fig)
-        if embedded:
-            hist_fig.subplots_adjust(left=0.15, right=0.98, top=0.86, bottom=0.28)
-        hist_canvas.setStyleSheet("background-color: #2b2b2b;")
-        hist_canvas.setCursor(Qt.CursorShape.PointingHandCursor)
-        lut_layout.addWidget(hist_canvas)
-        min_max_row = QHBoxLayout()
-        min_max_row.setSpacing(6)
-        min_max_row.addWidget(QLabel("Min:", lut_group))
-        min_spin = QDoubleSpinBox()
-        min_spin.setRange(0, 65535)
-        min_spin.setValue(0)
-        min_spin.setDecimals(0)
-        self._compact_preview_control(min_spin, 78)
-        min_max_row.addWidget(min_spin)
-        min_max_row.addWidget(QLabel("Max:", lut_group))
-        max_spin = QDoubleSpinBox()
-        max_spin.setRange(0, 65535)
-        max_spin.setValue(65535)
-        max_spin.setDecimals(0)
-        self._compact_preview_control(max_spin, 78)
-        min_max_row.addWidget(max_spin)
-        auto_selected_btn = QPushButton("Auto selected")
-        style_compact_action_button(auto_selected_btn, horizontal_padding=12)
-        auto_selected_btn.setToolTip("Set the selected tile to the automatic robust LUT range.")
-        min_max_row.addWidget(auto_selected_btn)
-        auto_all_btn = QPushButton("Auto all")
-        style_compact_action_button(auto_all_btn, horizontal_padding=12)
-        auto_all_btn.setToolTip("Set automatic robust LUTs for all non-merged tiles.")
-        min_max_row.addWidget(auto_all_btn)
-        min_max_row.addStretch()
-        lut_layout.addLayout(min_max_row)
-        lut_group.setLayout(lut_layout)
+        (
+            lut_group,
+            min_spin,
+            max_spin,
+            auto_selected_btn,
+            auto_all_btn,
+            hist_fig,
+            hist_ax,
+            hist_canvas,
+        ) = self._build_montage_lut_controls(dlg, embedded=embedded)
         lut_section = CollapsibleSection("LUTs", lut_group, parent=dlg, expanded=False, compact=True)
-        main_layout.addWidget(lut_section)
+        montage_chrome_host = QWidget(dlg)
+        montage_chrome_layout = QVBoxLayout(montage_chrome_host)
+        montage_chrome_layout.setContentsMargins(0, 0, 0, 0)
+        montage_chrome_layout.setSpacing(6)
+        montage_chrome_layout.addWidget(layout_section)
+        montage_chrome_layout.addWidget(scalebar_section)
+        montage_chrome_layout.addWidget(focus_section)
+        montage_chrome_layout.addWidget(labels_section)
+        montage_chrome_layout.addWidget(lut_section)
+        dlg._montage_chrome_host = montage_chrome_host
+        dlg._montage_chrome_layout = montage_chrome_layout
+        if embedded:
+            chrome_scroll = build_preview_settings_scroll(
+                montage_chrome_host,
+                embedded=True,
+                stretch=True,
+            )
+            main_layout.addWidget(chrome_scroll, 1)
+        else:
+            main_layout.addWidget(layout_section)
+            main_layout.addWidget(scalebar_section)
+            main_layout.addWidget(focus_section)
+            main_layout.addWidget(labels_section)
+            main_layout.addWidget(lut_section)
 
         selected_index: List[Optional[int]] = [None]
         current_vmin: List[Optional[float]] = [None]
@@ -4671,6 +4672,46 @@ class PostProcessingTab(QWidget):
                 dlg._export_layout = export_layout
             return displayed
 
+        def display_to_montage_xy(x: int, y: int) -> tuple[int, int]:
+            layout = dlg._layout
+            ow, oh = layout.get("out_w"), layout.get("out_h")
+            dw, dh = getattr(dlg, "_display_w", None), getattr(dlg, "_display_h", None)
+            if ow is not None and oh is not None and dw and dh:
+                x = int(round(x * ow / dw))
+                y = int(round(y * oh / dh))
+            return (
+                max(0, min(int(x), int((ow or x + 1) - 1))),
+                max(0, min(int(y), int((oh or y + 1) - 1))),
+            )
+
+        def display_to_montage_roi(x0: int, y0: int, x1: int, y1: int) -> Optional[tuple[int, int, int, int]]:
+            mx0, my0 = display_to_montage_xy(x0, y0)
+            mx1, my1 = display_to_montage_xy(x1, y1)
+            return self._normalize_montage_roi(
+                mx0,
+                my0,
+                mx1,
+                my1,
+                int(dlg._layout.get("out_w", 0)),
+                int(dlg._layout.get("out_h", 0)),
+            )
+
+        def montage_to_display_roi(roi: tuple[int, int, int, int]) -> Optional[tuple[int, int, int, int]]:
+            ow, oh = dlg._layout.get("out_w"), dlg._layout.get("out_h")
+            dw, dh = getattr(dlg, "_display_w", None), getattr(dlg, "_display_h", None)
+            if not ow or not oh or not dw or not dh:
+                return tuple(int(v) for v in roi)
+            x0, y0, x1, y1 = roi
+            return self._normalize_montage_roi(
+                int(round(x0 * dw / ow)),
+                int(round(y0 * dh / oh)),
+                int(round(x1 * dw / ow)),
+                int(round(y1 * dh / oh)),
+                int(dw),
+                int(dh),
+                min_size=1,
+            )
+
         def sync_focus_overlay() -> None:
             if not focus_inset_enabled():
                 image_canvas.enable_roi_editing = False
@@ -4685,9 +4726,14 @@ class PostProcessingTab(QWidget):
                 self._safe_combo_text(getattr(self, "montage_focus_color", None), "White")
             )
             line_width = self._safe_spin_value(getattr(self, "montage_focus_line_width", None), 5)
+            display_roi = montage_to_display_roi(tuple(int(v) for v in roi))
+            if display_roi is None:
+                image_canvas.enable_roi_editing = False
+                image_canvas.clear_roi_overlays()
+                return
             image_canvas.enable_roi_editing = True
             image_canvas.set_editable_roi(
-                tuple(int(v) for v in roi),
+                display_roi,
                 color=QColor(*color_rgb),
                 line_width=line_width,
                 show_handles=True,
@@ -4744,27 +4790,19 @@ class PostProcessingTab(QWidget):
             clear_focus_btn.clicked.connect(lambda *_args: (setattr(dlg, "_focus_roi", None), sync_focus_overlay(), refresh_preview_same_view()))
 
         def on_roi_changed(x0: int, y0: int, x1: int, y1: int) -> None:
-            dlg._focus_roi = (int(x0), int(y0), int(x1), int(y1))
+            roi = display_to_montage_roi(x0, y0, x1, y1)
+            if roi is not None:
+                dlg._focus_roi = roi
 
         def on_roi_edit_finished(x0: int, y0: int, x1: int, y1: int) -> None:
-            dlg._focus_roi = (int(x0), int(y0), int(x1), int(y1))
+            roi = display_to_montage_roi(x0, y0, x1, y1)
+            if roi is not None:
+                dlg._focus_roi = roi
             sync_focus_overlay()
             refresh_preview_same_view()
 
         image_canvas.roi_changed.connect(on_roi_changed)
         image_canvas.roi_edit_finished.connect(on_roi_edit_finished)
-
-        def display_to_montage_xy(x: int, y: int) -> tuple[int, int]:
-            layout = dlg._layout
-            ow, oh = layout.get("out_w"), layout.get("out_h")
-            dw, dh = getattr(dlg, "_display_w", None), getattr(dlg, "_display_h", None)
-            if ow is not None and oh is not None and dw and dh:
-                x = int(round(x * ow / dw))
-                y = int(round(y * oh / dh))
-            return (
-                max(0, min(int(x), int((ow or x + 1) - 1))),
-                max(0, min(int(y), int((oh or y + 1) - 1))),
-            )
 
         def on_canvas_click(x: int, y: int) -> None:
             layout = dlg._layout
@@ -4808,7 +4846,7 @@ class PostProcessingTab(QWidget):
                 x0, y0, x1, y1, int(dlg._layout.get("out_w", 0)), int(dlg._layout.get("out_h", 0))
             )
             if roi is not None:
-                image_canvas.set_pending_roi(roi)
+                image_canvas.set_pending_roi(montage_to_display_roi(roi))
 
         def on_focus_drag_finished(x: int, y: int) -> None:
             if not focus_inset_enabled() or getattr(dlg, "_focus_drag_start", None) is None:
@@ -5198,52 +5236,23 @@ class PostProcessingTab(QWidget):
 
         refresh_preview(reset_view=True)
 
-        preset_row = QHBoxLayout()
-        preset_row.setSpacing(6)
-        preset_row.addWidget(QLabel("Preset:"))
         dlg._montage_preset_combo = QComboBox()
         dlg._montage_preset_combo.setEditable(False)
         dlg._montage_preset_combo.addItem("(none)")
         for name in list_montage_preset_names():
             dlg._montage_preset_combo.addItem(name)
-        self._compact_preview_control(dlg._montage_preset_combo, 130)
-        preset_row.addWidget(dlg._montage_preset_combo)
-        save_preset_btn = QPushButton("Save")
-        style_compact_action_button(save_preset_btn, horizontal_padding=10)
+        compact_control(dlg._montage_preset_combo, 130)
+        save_preset_btn = QPushButton("Save preset")
+        style_compact_action_button(save_preset_btn, horizontal_padding=10, dense=True)
         load_preset_btn = QPushButton("Load")
-        style_compact_action_button(load_preset_btn, horizontal_padding=10)
-        delete_preset_btn = QPushButton("Del")
-        style_compact_action_button(delete_preset_btn, horizontal_padding=10)
-        preset_row.addWidget(save_preset_btn)
-        preset_row.addWidget(load_preset_btn)
-        preset_row.addWidget(delete_preset_btn)
-        preset_row.addSpacing(12)
+        style_compact_action_button(load_preset_btn, horizontal_padding=10, dense=True)
+        delete_preset_btn = QPushButton("Delete")
+        style_compact_action_button(delete_preset_btn, horizontal_padding=10, dense=True)
 
-        figure_row = QHBoxLayout()
-        figure_row.setSpacing(6)
-        figure_label = QLabel("Figure:")
-        figure_label.setToolTip(
-            "Quick style for export and display settings only.\n"
-            "Does not change tile order, LUTs, or channel colors."
-        )
-        figure_row.addWidget(figure_label)
-        figure_tooltips = self._montage_figure_preset_tooltips()
-        for preset_name in ("Nature", "Presentation", "Supplement"):
-            btn = QPushButton(preset_name)
-            style_compact_action_button(btn, horizontal_padding=12)
-            btn.setToolTip(figure_tooltips.get(preset_name, ""))
-            btn.clicked.connect(lambda _checked=False, n=preset_name: (self._apply_montage_figure_preset(n, dlg), refresh_preview_same_view()))
-            figure_row.addWidget(btn)
-        figure_row.addSpacing(12)
-
-        export_row = preset_row
-        export_row.addWidget(QLabel("Export:"))
         self.montage_export_mode = QComboBox()
         self.montage_export_mode.addItems(["Full montage", "Merged only"])
         self.montage_export_mode.setToolTip("Save the full montage grid or only merged channel tiles.")
-        self._compact_preview_control(self.montage_export_mode, 115)
-        export_row.addWidget(self.montage_export_mode)
-        export_row.addWidget(QLabel("Bg:"))
+        compact_control(self.montage_export_mode, 115)
         dlg._export_background_combo = QComboBox()
         dlg._export_background_combo.addItems(["White", "Black", "Gray", "Transparent"])
         current_bg = self._montage_border_color_name()
@@ -5251,22 +5260,50 @@ class PostProcessingTab(QWidget):
         if bg_idx >= 0:
             dlg._export_background_combo.setCurrentIndex(bg_idx)
         dlg._export_background_combo.setToolTip("Montage background/border fill. Transparent is preserved in PNG/TIFF exports.")
-        self._compact_preview_control(dlg._export_background_combo, 105)
-        export_row.addWidget(dlg._export_background_combo)
-        export_row.addWidget(QLabel("Fmt:"))
+        compact_control(dlg._export_background_combo, 105)
         dlg._export_format_combo = QComboBox()
         dlg._export_format_combo.addItems(["PNG", "TIFF", "JPEG"])
         dlg._export_format_combo.setToolTip("Default export format. You can still type a different extension in the save dialog.")
-        self._compact_preview_control(dlg._export_format_combo, 80)
-        export_row.addWidget(dlg._export_format_combo)
-        export_row.addWidget(QLabel("DPI:"))
+        compact_control(dlg._export_format_combo, 80)
         dlg._export_dpi_combo = QComboBox()
         dlg._export_dpi_combo.addItems(["300 DPI", "600 DPI", "900 DPI", "1200 DPI", "2400 DPI"])
         dlg._export_dpi_combo.setToolTip("Resolution (DPI) for PNG/TIFF/JPEG export. Applied when you save from this preview.")
-        self._compact_preview_control(dlg._export_dpi_combo, 100)
-        export_row.addWidget(dlg._export_dpi_combo)
-        export_row.addStretch(1)
-        main_layout.addLayout(preset_row)
+        compact_control(dlg._export_dpi_combo, 100)
+
+        def footer_cell(widget: QWidget):
+            return setting_cell(inline_controls(widget, parent=dlg))
+
+        export_presets_panel = build_settings_card(
+            "",
+            object_name="MontageExportControls",
+            parent=dlg,
+            min_cell_width=158,
+            label_min_width=82,
+            control_max_width=132,
+            max_columns=4,
+            h_spacing=12,
+            v_spacing=6,
+            margins=(8, 4, 8, 6),
+            fields=[
+                setting_field("Preset", dlg._montage_preset_combo, min_width=110, max_width=150),
+                footer_cell(save_preset_btn),
+                footer_cell(load_preset_btn),
+                footer_cell(delete_preset_btn),
+                setting_field("Export", self.montage_export_mode, min_width=100, max_width=132),
+                setting_field("Background", dlg._export_background_combo, min_width=96, max_width=128),
+                setting_field("Format", dlg._export_format_combo, min_width=74, max_width=100),
+                setting_field("DPI", dlg._export_dpi_combo, min_width=90, max_width=116),
+            ],
+        )
+        presets_export_section = CollapsibleSection(
+            "Presets & export settings",
+            export_presets_panel,
+            parent=dlg,
+            expanded=False,
+            compact=True,
+        )
+        footer_target = montage_chrome_layout if embedded else main_layout
+        footer_target.addWidget(presets_export_section)
 
         def refresh_preset_combo(selected: Optional[str] = None) -> None:
             current = selected or dlg._montage_preset_combo.currentText()
@@ -5322,47 +5359,59 @@ class PostProcessingTab(QWidget):
         delete_preset_btn.clicked.connect(on_delete_preset)
         dlg._export_background_combo.currentTextChanged.connect(on_export_background_changed)
 
-        btn_row = figure_row
-        update_btn = QPushButton("Update")
-        style_compact_action_button(update_btn, horizontal_padding=20)
+        update_btn = QPushButton("Update preview")
+        style_compact_action_button(update_btn, horizontal_padding=20, dense=True)
         update_btn.setToolTip("Rebuild montage from the preview layout settings and current paths. Resets per-tile LUT.")
         update_btn.setAutoDefault(False)
         update_btn.setDefault(False)
         update_btn.clicked.connect(on_update)
         edit_colors_btn = QPushButton("Edit tiles")
-        style_compact_action_button(edit_colors_btn, horizontal_padding=20)
+        style_compact_action_button(edit_colors_btn, horizontal_padding=20, dense=True)
         edit_colors_btn.setToolTip(
             "Include/exclude tiles, per-tile z projection, color, and percentile normalization."
         )
         edit_colors_btn.setAutoDefault(False)
         edit_colors_btn.setDefault(False)
         edit_colors_btn.clicked.connect(on_edit_colors)
-        apply_settings_btn = QPushButton("Batch...")
-        style_compact_action_button(apply_settings_btn, horizontal_padding=20)
+        apply_settings_btn = QPushButton("Batch export...")
+        style_compact_action_button(apply_settings_btn, horizontal_padding=20, dense=True)
         apply_settings_btn.setToolTip("Batch export selected ND2/TIFF files with the current montage preview settings.")
         apply_settings_btn.setAutoDefault(False)
         apply_settings_btn.setDefault(False)
         apply_settings_btn.clicked.connect(on_apply_settings_to_files)
-        save_btn = QPushButton("Save")
-        style_compact_action_button(save_btn, horizontal_padding=20)
+        save_btn = QPushButton("Save image...")
+        style_compact_action_button(save_btn, horizontal_padding=20, dense=True)
         save_btn.setAutoDefault(False)
         save_btn.setDefault(False)
         save_btn.clicked.connect(on_save)
         close_btn = QPushButton("Close")
-        style_compact_action_button(close_btn, horizontal_padding=20)
+        style_compact_action_button(close_btn, horizontal_padding=20, dense=True)
         close_btn.setAutoDefault(False)
         close_btn.setDefault(False)
         if embedded:
             close_btn.clicked.connect(self._close_embedded_post_preview)
         else:
             close_btn.clicked.connect(dlg.close)
-        btn_row.addWidget(update_btn)
-        btn_row.addWidget(edit_colors_btn)
-        btn_row.addStretch()
-        btn_row.addWidget(apply_settings_btn)
-        btn_row.addWidget(save_btn)
-        btn_row.addWidget(close_btn)
-        main_layout.addLayout(btn_row)
+        action_panel = build_settings_card(
+            "",
+            object_name="MontageActionControls",
+            parent=dlg,
+            min_cell_width=128,
+            label_min_width=0,
+            control_max_width=150,
+            max_columns=5,
+            h_spacing=10,
+            v_spacing=6,
+            margins=(8, 4, 8, 6),
+            fields=[
+                footer_cell(update_btn),
+                footer_cell(edit_colors_btn),
+                footer_cell(save_btn),
+                footer_cell(apply_settings_btn),
+                footer_cell(close_btn),
+            ],
+        )
+        main_layout.insertWidget(1, action_panel, 0)
 
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, dlg)
         close_shortcut.activated.connect(self._close_embedded_post_preview if embedded else dlg.close)
@@ -5381,8 +5430,11 @@ class PostProcessingTab(QWidget):
             self.refresh_post_candidate_list()
             if self._preview_surface is not None:
                 self._preview_surface.set_preview_chrome_visible(False)
-        else:
-            dlg.show()
+            return
+        dlg.show()
+        dlg.resize(1200, 900)
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _show_image_dialog(self, img: np.ndarray, title: str) -> None:
         """Show a non-modal preview dialog with ImageCanvas (zoom, pan), Reset view, Cmd+W, and Ctrl+M."""
@@ -5587,14 +5639,14 @@ class PostProcessingTab(QWidget):
         y_min.setValue(float(self.yaxis_min.value()))
         y_min.setDecimals(2)
         y_min.setSpecialValueText("Auto")
-        self._compact_preview_control(y_min, 90)
+        compact_control(y_min, 90)
         y_max = QDoubleSpinBox()
         y_max.setMinimum(0.0)
         y_max.setMaximum(1_000_000.0)
         y_max.setValue(float(self.yaxis_max.value()))
         y_max.setDecimals(2)
         y_max.setSpecialValueText("Auto")
-        self._compact_preview_control(y_max, 90)
+        compact_control(y_max, 90)
         y_range_row = QHBoxLayout()
         y_range_row.setSpacing(8)
         y_range_row.addWidget(QLabel("min"))

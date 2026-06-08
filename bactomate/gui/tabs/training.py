@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from bactomate.gui.mask_utils import get_training_pairs
 from bactomate.gui.image_canvas import ImageCanvas
+from bactomate.gui.layout_helpers import flex_control
 from bactomate.gui.styles import MODULE_PANEL_COMBO_STYLESHEET
 from bactomate.gui.preview.preview_window import (
     CollapsibleSection,
@@ -281,7 +282,7 @@ class TrainingTab(QWidget):
         self.aug_noise_sigma.setValue(5.0)
         self.aug_noise_sigma.setDecimals(2)
         self.aug_noise_sigma.setEnabled(False)
-        self.aug_noise_sigma.setFixedWidth(90)
+        flex_control(self.aug_noise_sigma, 72, combo_style=False)
         aug_controls_row.addWidget(self.aug_noise_sigma)
         aug_controls_row.addSpacing(14)
         self.aug_brightness = QCheckBox("Adjust brightness")
@@ -303,7 +304,7 @@ class TrainingTab(QWidget):
         self.aug_bright_min.setValue(0.9)
         self.aug_bright_min.setDecimals(2)
         self.aug_bright_min.setEnabled(False)
-        self.aug_bright_min.setFixedWidth(75)
+        flex_control(self.aug_bright_min, 64, combo_style=False)
         aug_controls_row.addWidget(self.aug_bright_min)
         aug_controls_row.addWidget(QLabel("to"))
         self.aug_bright_max = QDoubleSpinBox()
@@ -311,7 +312,7 @@ class TrainingTab(QWidget):
         self.aug_bright_max.setValue(1.1)
         self.aug_bright_max.setDecimals(2)
         self.aug_bright_max.setEnabled(False)
-        self.aug_bright_max.setFixedWidth(75)
+        flex_control(self.aug_bright_max, 64, combo_style=False)
         aug_controls_row.addWidget(self.aug_bright_max)
         aug_controls_row.addStretch(1)
         aug_layout.addLayout(aug_controls_row)

@@ -100,6 +100,7 @@ from bactomate.modules.tiff_metadata import (
 
 from bactomate.gui.artifact_paths import collect_filtered_mask_files_in_folder, is_cell_mask_tiff
 from bactomate.gui.layout_helpers import (
+    flex_control,
     module_path_action_buttons_layout,
     module_path_action_outer_layout,
     module_path_drop_row,
@@ -584,7 +585,7 @@ class TrackingTab(QWidget):
         self.filter_pixel_size.setSingleStep(0.001)
         self.filter_pixel_size.setSpecialValueText("px only")
         self.filter_pixel_size.setMinimum(0.0)
-        self.filter_pixel_size.setFixedWidth(FILTER_CAL_SPIN_WIDTH)
+        flex_control(self.filter_pixel_size, FILTER_CAL_SPIN_WIDTH, combo_style=False)
         self.filter_time_per_frame = QDoubleSpinBox()
         self.filter_time_per_frame.setRange(0.0, 1e6)
         self.filter_time_per_frame.setDecimals(6)
@@ -592,13 +593,11 @@ class TrackingTab(QWidget):
         self.filter_time_per_frame.setValue(0.0)
         self.filter_time_per_frame.setSpecialValueText("frames only")
         self.filter_time_per_frame.setMinimum(0.0)
-        self.filter_time_per_frame.setFixedWidth(FILTER_CAL_TIME_SPIN_WIDTH)
-        self.filter_time_per_frame.setMinimumWidth(FILTER_CAL_TIME_SPIN_WIDTH)
+        flex_control(self.filter_time_per_frame, FILTER_CAL_TIME_SPIN_WIDTH, combo_style=False)
         self.filter_time_per_frame_unit = QComboBox()
         self.filter_time_per_frame_unit.addItems(["min", "h", "s", "ms"])
         self.filter_time_per_frame_unit.setCurrentText("min")
-        self.filter_time_per_frame_unit.setMinimumWidth(76)
-        self.filter_time_per_frame_unit.setFixedWidth(76)
+        flex_control(self.filter_time_per_frame_unit, 76)
 
         self.create_vis_cb = QCheckBox("Create visualization")
         self.create_vis_cb.setChecked(True)
@@ -648,8 +647,7 @@ class TrackingTab(QWidget):
                 w = FILTER_METRIC_DEC_SPIN_WIDTH
             else:
                 w = FILTER_METRIC_SPIN_WIDTH
-            spin.setFixedWidth(w)
-            spin.setMinimumWidth(w)
+            flex_control(spin, w, combo_style=False)
 
         self._filter_metric_title_labels: dict[str, QLabel] = {}
 
@@ -3459,6 +3457,7 @@ class TrackingTab(QWidget):
             self._tracking_params_panel,
             parent=settings_host,
             expanded=False,
+            compact=True,
         )
         tracking_params_section.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -3470,6 +3469,7 @@ class TrackingTab(QWidget):
             self._filter_tracks_panel,
             parent=settings_host,
             expanded=False,
+            compact=True,
         )
         filter_tracks_section.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -3513,6 +3513,7 @@ class TrackingTab(QWidget):
             metrics_table_host,
             parent=settings_host,
             expanded=True,
+            compact=True,
         )
         metrics_table_section.setSizePolicy(
             QSizePolicy.Policy.Expanding,

@@ -53,18 +53,24 @@ from bactomate.gui.preferences import LAST_DIR_SEGMENTATION
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.layout_helpers import (
     ResponsivePanel,
+    build_settings_card,
+    flex_control,
     hbox_row_widget,
     module_path_action_buttons_layout,
     module_path_action_outer_layout,
     module_path_drop_row,
     new_module_path_action_panel,
+    setting_cell,
+    setting_field,
     stacked_path_block,
     style_compact_action_button,
     style_module_primary_button,
     style_path_row_browse_button,
+    style_preview_nav_combo,
+    style_preview_nav_spinbox,
     vbox_from_rows,
 )
-from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET
+from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET, UI_THEME
 from bactomate.gui.mask_utils import (
     OMNIPOSE_MASKS_SUBDIR,
     OMNIPOSE_MASKS_TILED_SUBDIR,
@@ -535,61 +541,26 @@ class OmniposeSegTab(QWidget):
         *,
         redetect_btn: Optional[QPushButton] = None,
     ) -> QWidget:
-        """Omnipose / Cellpose-SAM cell segmentation parameters (single scrollable row).
+        """Omnipose / Cellpose-SAM cell segmentation parameters (adaptive preview card).
 
         Spotiflow foci lives in a separate strip — different pipeline from cell masks.
         """
-        strip = QWidget()
-        row1 = QHBoxLayout(strip)
-        row1.setContentsMargins(0, 6, 0, 6)
-        row1.setSpacing(10)
-        row1.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        _title_ss = "color: #d4dce8; font-size: 11pt; font-weight: 600;"
-        _cb_ss = "QCheckBox { font-size: 10pt; color: #dce4ee; spacing: 6px; }"
-
-        def thin_rule_vertical() -> QFrame:
-            fr = QFrame()
-            fr.setFixedWidth(1)
-            fr.setMaximumWidth(1)
-            fr.setMinimumHeight(22)
-            fr.setStyleSheet(
-                "QFrame { background-color: #3d4d62; border: none; margin-left: 6px; margin-right: 6px; }"
-            )
-            return fr
-
-        spin_w = 78
-        spin_h = 28
-
-        title = QLabel("Cell segmentation")
-        title.setStyleSheet(_title_ss)
-        row1.addWidget(title)
-        row1.addWidget(thin_rule_vertical())
-
-        def linked_preview_spin(label: str, main_spin: QDoubleSpinBox) -> QDoubleSpinBox:
-            row1.addWidget(_omnipose_seg_param_qlabel(label))
-            pv = QDoubleSpinBox(strip)
-            self._link_spinboxes(pv, main_spin, fixed_width=spin_w)
-            pv.setFixedHeight(spin_h)
-            row1.addWidget(pv)
+        def linked_preview_spin(main_spin: QDoubleSpinBox) -> QDoubleSpinBox:
+            pv = QDoubleSpinBox(parent)
+            self._link_spinboxes(pv, main_spin, fixed_width=88)
+            flex_control(pv, 74, combo_style=False, max_width=96)
             return pv
 
-        pv_diameter = linked_preview_spin("Diameter:", self.diameter)
-        pv_flow = linked_preview_spin("Flow:", self.flow_threshold)
-        row1.addWidget(_omnipose_seg_param_qlabel("Mask:"))
-        pv_mask = QDoubleSpinBox(strip)
+        pv_diameter = linked_preview_spin(self.diameter)
+        pv_flow = linked_preview_spin(self.flow_threshold)
+        pv_mask = QDoubleSpinBox(parent)
         self._sync_mask_threshold_spinbox_for_model()
-        self._link_spinboxes(pv_mask, self.mask_threshold, fixed_width=spin_w)
-        pv_mask.setFixedHeight(spin_h)
-        row1.addWidget(pv_mask)
-
-        row1.addWidget(thin_rule_vertical())
+        self._link_spinboxes(pv_mask, self.mask_threshold, fixed_width=88)
+        flex_control(pv_mask, 74, combo_style=False, max_width=96)
 
         pv_cluster = QCheckBox("DBSCAN")
         pv_cluster.setToolTip("Use DBSCAN clustering for thin/elongated cells.")
         self._link_checkboxes(pv_cluster, self.cluster)
-        pv_cluster.setStyleSheet(_cb_ss)
-        row1.addWidget(pv_cluster)
 
         reset_btn = QPushButton("Reset")
         reset_btn.setToolTip("Reset cell segmentation parameters to defaults for the current model.")
@@ -605,42 +576,31 @@ class OmniposeSegTab(QWidget):
             self.create_overlay.setChecked(True)
 
         reset_btn.clicked.connect(_reset_preview_tuning)
-        style_compact_action_button(reset_btn, horizontal_padding=22)
+        style_compact_action_button(reset_btn, horizontal_padding=22, dense=True)
 
         if redetect_btn is not None:
-            style_compact_action_button(redetect_btn, horizontal_padding=22)
+            style_compact_action_button(redetect_btn, horizontal_padding=22, dense=True)
 
-        # Push Reset + Re-detect to the right; Re-detect stays on the far right (aligns with Clear Cache above).
-        row1.addSpacing(10)
-        row1.addStretch(1)
-        row1.addWidget(reset_btn)
+        fields = [
+            setting_field("Diameter", pv_diameter, min_width=74, max_width=96),
+            setting_field("Flow", pv_flow, min_width=74, max_width=96),
+            setting_field("Mask", pv_mask, min_width=74, max_width=96),
+            setting_cell(pv_cluster),
+            setting_cell(reset_btn),
+        ]
         if redetect_btn is not None:
-            row1.addSpacing(10)
-            row1.addWidget(redetect_btn)
+            fields.append(setting_cell(redetect_btn))
 
-        strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        try:
-            strip.setMinimumWidth(0)
-        except Exception:
-            pass
-
-        wrap = QScrollArea(parent)
-        wrap.setWidget(strip)
-        # True so the strip spans the viewport width; stretch in row1 then pushes
-        # Reset / Re-detect flush-right (aligned with Clear Cache + preview chrome).
-        wrap.setWidgetResizable(True)
-        wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        wrap.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        wrap.setFrameShape(QFrame.Shape.NoFrame)
-        wrap.setMinimumHeight(48)
-        wrap.setMaximumHeight(64)
-        wrap.setFixedHeight(52)
-        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        try:
-            wrap.setStyleSheet("QScrollArea { background: transparent; border: none; }")
-        except Exception:
-            pass
-        return wrap
+        return build_settings_card(
+            "Cell segmentation",
+            object_name="EmbeddedCellSegmentationControls",
+            parent=parent,
+            min_cell_width=150,
+            label_min_width=70,
+            control_max_width=96,
+            h_spacing=12,
+            fields=fields,
+        )
 
     def _build_embedded_spotiflow_foci_strip(self, parent: QWidget, preview_dialog: Optional[Any] = None) -> QWidget:
         """Spotiflow foci — visually separate from Omnipose/Cellpose cell parameters."""
@@ -654,9 +614,9 @@ class OmniposeSegTab(QWidget):
             pass
         frame.setStyleSheet(
             "#SpotiflowFociStrip {"
-            " background-color: #222831;"
-            " border: 1px solid #3d4d62;"
-            " border-radius: 6px;"
+            " background-color: #1a1a1a;"
+            " border: 1px solid #303844;"
+            " border-radius: 8px;"
             "}"
             "#SpotiflowFociStrip QLabel {"
             " background-color: transparent;"
@@ -675,8 +635,8 @@ class OmniposeSegTab(QWidget):
             " width: 22px;"
             " height: 22px;"
             " border-radius: 4px;"
-            " border: 1px solid #5a6a80;"
-            " background-color: #2a3340;"
+            " border: 1px solid #3a4555;"
+            " background-color: #2a3140;"
             "}"
             "#SpotiflowFociStrip QCheckBox::indicator:checked {"
             " background-color: #4a9eff;"
@@ -1051,7 +1011,7 @@ class OmniposeSegTab(QWidget):
         self.omnipose_n_epochs_spin.setRange(1, 50000)
         self.omnipose_n_epochs_spin.setSingleStep(100)
         self.omnipose_n_epochs_spin.setValue(4000)
-        self.omnipose_n_epochs_spin.setMinimumWidth(90)
+        flex_control(self.omnipose_n_epochs_spin, 72, combo_style=False)
         params_row1.addWidget(self.omnipose_n_epochs_spin)
         params_row1.addSpacing(16)
         params_row1.addWidget(QLabel("Save N epochs:"))
@@ -1063,7 +1023,7 @@ class OmniposeSegTab(QWidget):
         self.omnipose_save_each_spin.setRange(0, 1000)
         self.omnipose_save_each_spin.setValue(0)
         self.omnipose_save_each_spin.setSpecialValueText("final only")
-        self.omnipose_save_each_spin.setMinimumWidth(90)
+        flex_control(self.omnipose_save_each_spin, 72, combo_style=False)
         params_row1.addWidget(self.omnipose_save_each_spin)
         params_row1.addSpacing(16)
         params_row1.addWidget(QLabel("LR:"))
@@ -1075,7 +1035,7 @@ class OmniposeSegTab(QWidget):
         self.omnipose_lr_spin.setRange(0.001, 1.0)
         self.omnipose_lr_spin.setValue(0.1)
         self.omnipose_lr_spin.setDecimals(3)
-        self.omnipose_lr_spin.setMinimumWidth(90)
+        flex_control(self.omnipose_lr_spin, 72, combo_style=False)
         params_row1.addWidget(self.omnipose_lr_spin)
         params_row1.addSpacing(16)
         params_row1.addWidget(QLabel("Batch:"))
@@ -1086,7 +1046,7 @@ class OmniposeSegTab(QWidget):
         self.omnipose_batch_spin = QSpinBox()
         self.omnipose_batch_spin.setRange(1, 128)
         self.omnipose_batch_spin.setValue(16)
-        self.omnipose_batch_spin.setMinimumWidth(90)
+        flex_control(self.omnipose_batch_spin, 72, combo_style=False)
         params_row1.addWidget(self.omnipose_batch_spin)
         params_row1.addSpacing(16)
         params_row1.addWidget(QLabel("Crop size:"))
@@ -1099,14 +1059,14 @@ class OmniposeSegTab(QWidget):
         self.omnipose_tyx_y_spin.setRange(64, 512)
         self.omnipose_tyx_y_spin.setSingleStep(8)
         self.omnipose_tyx_y_spin.setValue(256)
-        self.omnipose_tyx_y_spin.setMinimumWidth(72)
+        flex_control(self.omnipose_tyx_y_spin, 64, combo_style=False)
         params_row1.addWidget(self.omnipose_tyx_y_spin)
         params_row1.addWidget(QLabel("X:"))
         self.omnipose_tyx_x_spin = QSpinBox()
         self.omnipose_tyx_x_spin.setRange(64, 512)
         self.omnipose_tyx_x_spin.setSingleStep(8)
         self.omnipose_tyx_x_spin.setValue(256)
-        self.omnipose_tyx_x_spin.setMinimumWidth(72)
+        flex_control(self.omnipose_tyx_x_spin, 64, combo_style=False)
         params_row1.addWidget(self.omnipose_tyx_x_spin)
         params_row1.addStretch()
         layout.addLayout(params_row1)
@@ -1804,7 +1764,7 @@ class OmniposeSegTab(QWidget):
         self.diameter.setRange(0, 1000)
         self.diameter.setValue(0)
         self.diameter.setDecimals(1)
-        self.diameter.setFixedWidth(80)
+        flex_control(self.diameter, 72, combo_style=False)
         diameter_row.addWidget(self.diameter)
         diameter_row.addStretch(1)
         flow_row = QHBoxLayout()
@@ -1818,7 +1778,7 @@ class OmniposeSegTab(QWidget):
         self.flow_threshold.setValue(0.4)
         self.flow_threshold.setSingleStep(0.1)
         self.flow_threshold.setDecimals(2)
-        self.flow_threshold.setFixedWidth(80)
+        flex_control(self.flow_threshold, 72, combo_style=False)
         flow_row.addWidget(self.flow_threshold)
         flow_row.addStretch(1)
         mask_row = QHBoxLayout()
@@ -1833,7 +1793,7 @@ class OmniposeSegTab(QWidget):
         self.mask_threshold.setValue(0.0)
         self.mask_threshold.setSingleStep(0.5)
         self.mask_threshold.setDecimals(2)
-        self.mask_threshold.setFixedWidth(80)
+        flex_control(self.mask_threshold, 72, combo_style=False)
         mask_row.addWidget(self.mask_threshold)
         mask_row.addStretch(1)
         reset_seg_btn = QPushButton("Reset to Default")
@@ -4991,9 +4951,9 @@ class OmniposeSegTab(QWidget):
                 cached_runs_combo.setMinimumWidth(200)
                 cached_runs_combo.setMaximumWidth(420)
             try:
-                from bactomate.gui.styles import PREVIEW_CACHE_RUN_COMBO_STYLESHEET
+                from bactomate.gui.styles import PREVIEW_NAV_COMBO_STYLESHEET
 
-                cached_runs_combo.setStyleSheet(PREVIEW_CACHE_RUN_COMBO_STYLESHEET)
+                cached_runs_combo.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET + " QComboBox { font-size: 11pt; }")
             except Exception:
                 pass
 
@@ -5002,7 +4962,7 @@ class OmniposeSegTab(QWidget):
                 "Clear all cached segmentation results.\n"
                 "Use this if you want to force recalculation of all frames."
             )
-            style_compact_action_button(clear_cache_btn, horizontal_padding=20)
+            style_compact_action_button(clear_cache_btn, horizontal_padding=20, dense=True)
 
             def refresh_cached_runs_combo():
                 cur_frame = preview_dialog.current_frame
@@ -5057,7 +5017,7 @@ class OmniposeSegTab(QWidget):
                 "(source, frame, Spotiflow params)."
             )
             if embed_seg:
-                style_compact_action_button(redetect_btn, horizontal_padding=22)
+                style_compact_action_button(redetect_btn, horizontal_padding=22, dense=True)
             else:
                 style_compact_action_button(redetect_btn, horizontal_padding=28)
 
@@ -5274,9 +5234,12 @@ class OmniposeSegTab(QWidget):
             # build these widgets even when the checkbox is off at preview-open time so
             # enabling Detect foci later does not leave _foci_source_combo unset (Omnipose).
             if foci_sources:
-                # Unified typography: one weight/size family; primary phrases slightly brighter.
-                _sf_lbl_style = OMNIPOSE_SEG_PARAM_LABEL_STYLESHEET
-                _sf_cb_style = "QCheckBox { font-size: 10pt; color: #dce4ee; spacing: 6px; }"
+                _sf_lbl_style = (
+                    f"color: {UI_THEME['muted_text']}; font-size: 10pt; font-weight: 500; background: transparent;"
+                )
+                _sf_cb_style = (
+                    f"QCheckBox {{ font-size: 10pt; color: {UI_THEME['text']}; spacing: 6px; background: transparent; }}"
+                )
 
                 def _spot_param_label(text: str) -> QLabel:
                     lb = QLabel(text)
@@ -5290,7 +5253,8 @@ class OmniposeSegTab(QWidget):
                     fr.setMaximumWidth(1)
                     fr.setMinimumHeight(22)
                     fr.setStyleSheet(
-                        "QFrame { background-color: #3d4d62; border: none; margin-left: 6px; margin-right: 6px; }"
+                        f"QFrame {{ background-color: {UI_THEME['field_border']}; border: none;"
+                        " margin-left: 6px; margin-right: 6px; }"
                     )
                     return fr
 
@@ -5306,16 +5270,12 @@ class OmniposeSegTab(QWidget):
                     "Spotiflow settings on this row apply to this foci stack only. "
                     "Switch channel to tune each reporter separately."
                 )
-                sf_channel_lbl.setFixedHeight(28)
                 sf_channel_combo = QComboBox(preview_dialog)
                 sf_channel_combo.setMinimumContentsLength(12)
                 sf_channel_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-                sf_channel_combo.setFixedHeight(28)
+                sf_channel_combo.setMinimumWidth(120)
                 sf_channel_combo.setMaximumWidth(220)
-                sf_channel_combo.setSizePolicy(
-                    QSizePolicy.Policy.Preferred,
-                    QSizePolicy.Policy.Fixed,
-                )
+                style_preview_nav_combo(sf_channel_combo)
                 sf_channel_combo.blockSignals(True)
                 try:
                     for fp in foci_sources:
@@ -5364,7 +5324,7 @@ class OmniposeSegTab(QWidget):
                 sf_plow.setSingleStep(0.5)
                 sf_plow.setValue(float(p_sf.get("perc_low", 1.0) or 1.0))
                 sf_plow.setFixedWidth(70)
-                sf_plow.setFixedHeight(28)
+                style_preview_nav_spinbox(sf_plow)
                 sf_params_row.addWidget(sf_plow)
                 sf_params_row.addWidget(_spot_param_label("pHigh"))
                 sf_phigh = QDoubleSpinBox()
@@ -5373,7 +5333,7 @@ class OmniposeSegTab(QWidget):
                 sf_phigh.setSingleStep(0.5)
                 sf_phigh.setValue(float(p_sf.get("perc_high", 99.8) or 99.8))
                 sf_phigh.setFixedWidth(74)
-                sf_phigh.setFixedHeight(28)
+                style_preview_nav_spinbox(sf_phigh)
                 sf_params_row.addWidget(sf_phigh)
 
                 sf_params_row.addWidget(_spot_col_sep())
@@ -5391,7 +5351,7 @@ class OmniposeSegTab(QWidget):
                 _pt = p_sf.get("prob_thresh")
                 sf_prob.setValue(float(_pt) if _pt is not None else 0.5)
                 sf_prob.setFixedWidth(70)
-                sf_prob.setFixedHeight(28)
+                style_preview_nav_spinbox(sf_prob)
                 sf_prob.setEnabled(not sf_use_opt.isChecked())
                 sf_params_row.addWidget(sf_prob)
 
@@ -5403,7 +5363,7 @@ class OmniposeSegTab(QWidget):
                 sf_min_dist.setSingleStep(1)
                 sf_min_dist.setValue(int(p_sf.get("min_distance", 1) or 1))
                 sf_min_dist.setFixedWidth(64)
-                sf_min_dist.setFixedHeight(28)
+                style_preview_nav_spinbox(sf_min_dist)
                 sf_params_row.addWidget(sf_min_dist)
 
                 sf_params_row.addWidget(_spot_col_sep())
@@ -5418,7 +5378,7 @@ class OmniposeSegTab(QWidget):
                 )
                 _sf_hint.setWordWrap(True)
                 _sf_hint.setStyleSheet(
-                    "QLabel { color: #9eb0c4; font-size: 9pt; padding: 0 2px 4px 2px; }"
+                    f"QLabel {{ color: {UI_THEME['muted_text']}; font-size: 9pt; padding: 0 2px 4px 2px; }}"
                 )
                 nav_layout.addWidget(_sf_hint)
                 nav_layout.addLayout(sf_params_row)
@@ -5738,6 +5698,7 @@ class OmniposeSegTab(QWidget):
                         "Spotiflow",
                         top_widget,
                         expanded=True,
+                        compact=True,
                     )
                     sec = preview_dialog.top_section
                 except Exception:
@@ -5781,16 +5742,6 @@ class OmniposeSegTab(QWidget):
                         redetect_btn=redetect_btn,
                     )
                 )
-                try:
-                    _aw = max(
-                        int(clear_cache_btn.sizeHint().width()),
-                        int(redetect_btn.sizeHint().width()),
-                        112,
-                    )
-                    clear_cache_btn.setFixedWidth(_aw)
-                    redetect_btn.setFixedWidth(_aw)
-                except Exception:
-                    pass
                 bottom_outer.addWidget(
                     self._build_embedded_spotiflow_foci_strip(bottom_widget, preview_dialog=preview_dialog)
                 )

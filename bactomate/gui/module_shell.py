@@ -59,11 +59,14 @@ _NAV_BTN_ACTIVE = (
     "}"
     "QPushButton:hover { color: #ffffff; }"
 )
-# Module splitter: left = collapsible controls (~40%), right = preview (~60%). Left never scrolls horizontally.
+# Module splitter: left = controls, right = preview. Width-aware mins; user can drag when wide enough.
 _SPLITTER_LEFT_RATIO = 0.40
-_MAX_LEFT_RATIO = 0.40
-_LEFT_PANE_MIN_W = 260
-_RIGHT_PANE_MIN_W = 400
+_MAX_LEFT_RATIO = 0.45
+_LEFT_PANE_MIN_W = 240
+_RIGHT_PANE_MIN_W = 280
+_RIGHT_PANE_MIN_W_COMPACT = 200
+_SHELL_COMPACT_TOTAL_W = 720
+_SPLITTER_HANDLE_W = 5
 
 _NAV_BTN_INACTIVE = (
     "QPushButton {"
@@ -437,6 +440,7 @@ class ModuleShellWidget(QWidget):
         self._show_preview_panel = bool(show_preview_panel)
         self._splitter: Optional[QSplitter] = None
         self._preview = PreviewSurface(self)
+        self._has_saved_splitter = False
         if not show_preview_picker:
             self._preview.set_preview_context("training")
             self._preview.set_file_picker_enabled(False)
@@ -518,27 +522,30 @@ class ModuleShellWidget(QWidget):
         self._splitter.addWidget(self._preview)
         self._splitter.setStretchFactor(0, 4)
         self._splitter.setStretchFactor(1, 6)
-        # Fixed 40/60 split: no drag grip (ratio is enforced on resize, not user-draggable).
-        self._splitter.setHandleWidth(0)
+        self._splitter.setHandleWidth(_SPLITTER_HANDLE_W)
         self._splitter.setStyleSheet(
             "QSplitter::handle {"
-            " background: transparent;"
-            " width: 0px;"
+            " background-color: #2d3540;"
+            f" width: {_SPLITTER_HANDLE_W}px;"
             " margin: 0;"
-            " padding: 0;"
             " border: none;"
-            " image: none;"
             "}"
+            "QSplitter::handle:hover { background-color: #4a6278; }"
         )
         try:
-            handle = self._splitter.handle(1)
-            if handle is not None:
-                handle.setEnabled(False)
-                handle.setVisible(False)
+            self._splitter.splitterMoved.connect(self._on_splitter_moved)
         except Exception:
             pass
         outer.addWidget(self._splitter, 1)
-        QTimer.singleShot(0, self._apply_splitter_ratio)
+        QTimer.singleShot(0, self._apply_splitter_default_ratio)
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        self._has_saved_splitter = True
+
+    def _right_pane_min_w(self, total: int) -> int:
+        if total < _SHELL_COMPACT_TOTAL_W:
+            return _RIGHT_PANE_MIN_W_COMPACT
+        return _RIGHT_PANE_MIN_W
 
     def _splitter_total_width(self) -> int:
         if self._splitter is None:
@@ -550,16 +557,40 @@ class ModuleShellWidget(QWidget):
         total = sum(sizes)
         return total if total > 0 else _LEFT_PANE_MIN_W + _RIGHT_PANE_MIN_W
 
-    def _apply_splitter_ratio(self) -> None:
-        """Keep ~40% controls / ~60% preview; left pane never wider than 40%."""
+    def _enforce_splitter_minimums(self) -> None:
+        """Keep panes above minimum widths without overriding a user-chosen ratio."""
         if self._splitter is None:
             return
         total = self._splitter_total_width()
-        if total < _LEFT_PANE_MIN_W + _RIGHT_PANE_MIN_W:
+        right_min = self._right_pane_min_w(total)
+        if total < _LEFT_PANE_MIN_W + right_min:
             return
+        left, right = self._splitter.sizes()
+        if left < _LEFT_PANE_MIN_W:
+            left = _LEFT_PANE_MIN_W
+            right = total - left
+        if right < right_min:
+            right = right_min
+            left = total - right
+        if left + right != total:
+            left = max(_LEFT_PANE_MIN_W, total - right)
+        sizes = [left, max(right_min, total - left)]
+        if sizes != self._splitter.sizes():
+            self._splitter.setSizes(sizes)
+
+    def _apply_splitter_default_ratio(self) -> None:
+        """Initial ~40/60 split when no saved/user state exists."""
+        if self._splitter is None or self._has_saved_splitter:
+            self._enforce_splitter_minimums()
+            return
+        total = self._splitter_total_width()
+        right_min = self._right_pane_min_w(total)
+        if total < _LEFT_PANE_MIN_W + right_min:
+            return
+        ratio = 0.45 if total < _SHELL_COMPACT_TOTAL_W else _SPLITTER_LEFT_RATIO
         cap = int(round(total * _MAX_LEFT_RATIO))
-        left = max(_LEFT_PANE_MIN_W, min(int(round(total * _SPLITTER_LEFT_RATIO)), cap, total - _RIGHT_PANE_MIN_W))
-        right = max(_RIGHT_PANE_MIN_W, total - left)
+        left = max(_LEFT_PANE_MIN_W, min(int(round(total * ratio)), cap, total - right_min))
+        right = max(right_min, total - left)
         if left + right != total:
             left = total - right
         sizes = [left, right]
@@ -568,11 +599,11 @@ class ModuleShellWidget(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        QTimer.singleShot(0, self._apply_splitter_ratio)
+        QTimer.singleShot(0, self._enforce_splitter_minimums if self._has_saved_splitter else self._apply_splitter_default_ratio)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._apply_splitter_ratio)
+        QTimer.singleShot(0, self._enforce_splitter_minimums if self._has_saved_splitter else self._apply_splitter_default_ratio)
 
     def preview_surface(self) -> PreviewSurface:
         return self._preview
@@ -590,7 +621,11 @@ class ModuleShellWidget(QWidget):
             return
         if data is not None and not data.isEmpty():
             self._splitter.restoreState(data)
-        QTimer.singleShot(0, self._apply_splitter_ratio)
+            self._has_saved_splitter = True
+            QTimer.singleShot(0, self._enforce_splitter_minimums)
+        else:
+            self._has_saved_splitter = False
+            QTimer.singleShot(0, self._apply_splitter_default_ratio)
 
     def splitter_state(self) -> bytes:
         if self._splitter is None:

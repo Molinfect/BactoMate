@@ -1,15 +1,20 @@
 """Small layout helpers for narrow module left panes (no horizontal scroll)."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QDoubleSpinBox,
@@ -22,7 +27,657 @@ from bactomate.gui.styles import (
     MODULE_PATH_ACTION_PANEL_STYLESHEET,
     PATH_ROW_BROWSE_BUTTON_STYLESHEET,
     PATH_ROW_LINE_EDIT_STYLESHEET,
+    PREVIEW_NAV_COMBO_STYLESHEET,
+    RESPONSIVE_COMPACT_BREAKPOINT,
+    RESPONSIVE_MEDIUM_BREAKPOINT,
+    RESPONSIVE_WIDE_BREAKPOINT,
+    preview_settings_card_stylesheet,
 )
+
+
+# Re-export breakpoints for tests and module code.
+COMPACT_BREAKPOINT = RESPONSIVE_COMPACT_BREAKPOINT
+MEDIUM_BREAKPOINT = RESPONSIVE_MEDIUM_BREAKPOINT
+WIDE_BREAKPOINT = RESPONSIVE_WIDE_BREAKPOINT
+
+PREVIEW_SETTINGS_SCROLL_MAX_HEIGHT = 340
+PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT = 72
+PREVIEW_SETTINGS_SCROLL_EMBEDDED_MAX_HEIGHT = 280
+
+
+def columns_for_width(
+    width: int,
+    *,
+    min_cell_width: int = 148,
+    compact_bp: int = COMPACT_BREAKPOINT,
+    medium_bp: int = MEDIUM_BREAKPOINT,
+    wide_bp: int = WIDE_BREAKPOINT,
+    max_columns: int = 4,
+) -> int:
+    """Return a bounded column count for adaptive form grids."""
+    w = max(0, int(width))
+    cap = max(1, int(max_columns))
+    if w < compact_bp:
+        return 1
+    max_fit = max(1, w // max(80, int(min_cell_width)))
+    if w >= wide_bp:
+        return min(cap, max_fit)
+    if w >= medium_bp:
+        return min(min(3, cap), max_fit)
+    return min(min(2, cap), max_fit)
+
+
+def style_preview_nav_spinbox(widget: QWidget) -> None:
+    """Shared preview spinbox styling (same skin as settings-card spinboxes)."""
+    from bactomate.gui.styles import card_aware_control_stylesheet
+
+    if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+        widget.setStyleSheet(card_aware_control_stylesheet(compact_margins=True))
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+
+def style_preview_nav_combo(widget: QWidget) -> None:
+    """Nav-row combo styling (32px tall, shared across preview toolbars)."""
+    if isinstance(widget, QComboBox):
+        widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET)
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+
+def flex_control(
+    widget: QWidget,
+    min_width: int = 64,
+    *,
+    combo_style: bool = True,
+    max_width: int | None = None,
+) -> None:
+    """Width-aware control; expands when useful but can be capped inside adaptive cells."""
+    if combo_style and isinstance(widget, QComboBox):
+        # Only apply nav combo sheet when parent has no card stylesheet (standalone nav rows).
+        parent = widget.parentWidget()
+        if parent is not None and not (parent.styleSheet() or "").strip():
+            widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET)
+    widget.setMinimumWidth(int(min_width))
+    if max_width is not None and int(max_width) > 0:
+        widget.setMaximumWidth(max(int(min_width), int(max_width)))
+        widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    else:
+        widget.setMaximumWidth(16777215)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+
+def compact_control(widget: QWidget, width: int, *, combo_style: bool = True, fixed: bool = False) -> None:
+    """Preview/module control sizing; defaults to expanding width unless ``fixed=True``."""
+    if fixed:
+        if combo_style and isinstance(widget, QComboBox):
+            widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET)
+        widget.setMinimumWidth(int(width))
+        widget.setMaximumWidth(int(width))
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        return
+    flex_control(widget, min_width=int(width), combo_style=combo_style, max_width=max(int(width), 180))
+
+
+def preview_settings_group(
+    title: str = "",
+    *,
+    object_name: str = "PreviewSettingsCard",
+    parent: QWidget | None = None,
+) -> QGroupBox:
+    """Standard blue-gray preview settings card with unified child control styling."""
+    from PyQt6.QtWidgets import QGroupBox
+
+    group = QGroupBox(title, parent)
+    group.setObjectName(object_name)
+    group.setStyleSheet(preview_settings_card_stylesheet(object_name))
+    group.setMinimumWidth(0)
+    group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+    return group
+
+
+@dataclass(frozen=True)
+class SettingsCardItem:
+    """Declarative item for a shared settings card."""
+
+    widget: QWidget
+    label: str | None = None
+    min_control_width: int = 64
+    max_control_width: int | None = None
+
+
+def setting_field(
+    label: str,
+    control: QWidget,
+    *,
+    min_width: int = 64,
+    max_width: int | None = None,
+) -> SettingsCardItem:
+    """Labeled control cell for ``build_settings_card``."""
+    return SettingsCardItem(
+        widget=control,
+        label=str(label),
+        min_control_width=int(min_width),
+        max_control_width=max_width,
+    )
+
+
+def setting_cell(widget: QWidget) -> SettingsCardItem:
+    """Unlabeled cell (checkbox, button, custom row) for ``build_settings_card``."""
+    return SettingsCardItem(widget=widget)
+
+
+def build_settings_card(
+    title: str = "",
+    *,
+    object_name: str = "PreviewSettingsCard",
+    parent: QWidget | None = None,
+    fields: Sequence[SettingsCardItem | QWidget] = (),
+    footer_widgets: Sequence[QWidget] = (),
+    min_cell_width: int = 160,
+    label_min_width: int = 78,
+    control_max_width: int = 120,
+    max_columns: int = 4,
+    h_spacing: int = 14,
+    v_spacing: int = 6,
+    margins: tuple[int, int, int, int] = (8, 2, 8, 4),
+    spacing: int = 6,
+    stylesheet: str | None = None,
+) -> QWidget:
+    """Build a standard themed settings card from declarative fields.
+
+    Modules should create their widgets and pass them here instead of hand-wiring
+    ``QVBoxLayout + AdaptiveFillGrid``. This keeps card spacing, width caps, and
+    transparent wrappers consistent across previews and module panels.
+    """
+    group = preview_settings_group(title, object_name=object_name, parent=parent)
+    if stylesheet:
+        group.setStyleSheet(str(stylesheet))
+    outer = QVBoxLayout(group)
+    outer.setContentsMargins(*margins)
+    outer.setSpacing(int(spacing))
+
+    grid = AdaptiveFillGrid(
+        group,
+        min_cell_width=int(min_cell_width),
+        label_min_width=int(label_min_width),
+        control_max_width=int(control_max_width),
+        max_columns=int(max_columns),
+        h_spacing=int(h_spacing),
+        v_spacing=int(v_spacing),
+    )
+    for field in fields:
+        item = setting_cell(field) if isinstance(field, QWidget) else field
+        if item.label:
+            grid.add_field(
+                item.label,
+                item.widget,
+                min_control_width=item.min_control_width,
+                max_control_width=item.max_control_width,
+            )
+        else:
+            grid.add_cell(item.widget)
+    outer.addWidget(grid)
+
+    for footer in footer_widgets:
+        footer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        outer.addWidget(footer)
+
+    try:
+        group._settings_grid = grid  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return group
+
+
+def preview_settings_viewport_height(*, embedded: bool = False, max_height: int | None = None) -> int:
+    """Standard cap for scrollable preview settings chrome."""
+    if max_height is not None:
+        return int(max_height)
+    return PREVIEW_SETTINGS_SCROLL_EMBEDDED_MAX_HEIGHT if embedded else PREVIEW_SETTINGS_SCROLL_MAX_HEIGHT
+
+
+class AdaptiveFillGrid(QWidget):
+    """
+    Reflow labeled fields into 1–4 equal-width columns based on available width.
+
+    Controls stretch within each cell so cards use horizontal space efficiently.
+    """
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        min_cell_width: int = 148,
+        h_spacing: int = 8,
+        v_spacing: int = 6,
+        compact_bp: int = COMPACT_BREAKPOINT,
+        medium_bp: int = MEDIUM_BREAKPOINT,
+        wide_bp: int = WIDE_BREAKPOINT,
+        label_min_width: int = 52,
+        control_max_width: int = 160,
+        max_columns: int = 4,
+    ) -> None:
+        super().__init__(parent)
+        self._min_cell_width = int(min_cell_width)
+        self._h_spacing = int(h_spacing)
+        self._v_spacing = int(v_spacing)
+        self._compact_bp = int(compact_bp)
+        self._medium_bp = int(medium_bp)
+        self._wide_bp = int(wide_bp)
+        self._label_min_width = int(label_min_width)
+        self._control_max_width = int(control_max_width)
+        self._max_columns = int(max_columns)
+        self._labeled: list[tuple[str, QWidget]] = []
+        self._cells: list[QWidget] = []
+        self._current_columns: int | None = None
+        self._layout_dirty = True
+        self._grid_host = QWidget(self)
+        self._grid_host.setObjectName("AdaptiveFillGridHost")
+        self._grid_host.setStyleSheet("#AdaptiveFillGridHost { background: transparent; }")
+        self._grid = QGridLayout(self._grid_host)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(self._h_spacing)
+        self._grid.setVerticalSpacing(self._v_spacing)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self._grid_host)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+    def add_field(
+        self,
+        label: str,
+        control: QWidget,
+        *,
+        min_control_width: int = 64,
+        max_control_width: int | None = None,
+    ) -> None:
+        flex_control(
+            control,
+            min_width=min_control_width,
+            max_width=self._control_max_width if max_control_width is None else max_control_width,
+        )
+        cell = self._make_labeled_cell(label, control)
+        self._labeled.append((label, control))
+        self._cells.append(cell)
+        self._layout_dirty = True
+        self._reflow()
+
+    def add_cell(self, widget: QWidget) -> None:
+        from PyQt6.QtWidgets import QPushButton
+
+        if isinstance(widget, QPushButton):
+            widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        else:
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        cell = self._wrap_grid_cell(widget)
+        self._cells.append(cell)
+        self._layout_dirty = True
+        self._reflow()
+
+    def reflow(self) -> None:
+        self._reflow()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if _qt_widget_alive(self):
+            self._reflow()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if _qt_widget_alive(self):
+            self._reflow()
+
+    def _wrap_grid_cell(self, widget: QWidget) -> QWidget:
+        wrap = QWidget(self._grid_host)
+        wrap.setObjectName("AdaptiveFillCell")
+        wrap.setStyleSheet("#AdaptiveFillCell { background: transparent; }")
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(
+            widget,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        lay.addStretch(1)
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        return wrap
+
+    def _make_labeled_cell(self, label: str, control: QWidget) -> QWidget:
+        wrap = QWidget(self._grid_host)
+        wrap.setObjectName("AdaptiveFillCell")
+        wrap.setStyleSheet("#AdaptiveFillCell { background: transparent; }")
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        if label:
+            lbl = QLabel(label, wrap)
+            lbl.setMinimumWidth(self._label_min_width)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lay.addWidget(lbl, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(
+            control,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        lay.addStretch(1)
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        return wrap
+
+    def _column_count(self) -> int:
+        return columns_for_width(
+            self.width(),
+            min_cell_width=self._min_cell_width,
+            compact_bp=self._compact_bp,
+            medium_bp=self._medium_bp,
+            wide_bp=self._wide_bp,
+            max_columns=self._max_columns,
+        )
+
+    def _reflow(self) -> None:
+        if not _qt_widget_alive(self):
+            return
+        self._cells = [c for c in self._cells if _qt_widget_alive(c)]
+        if not self._cells:
+            return
+        cols = max(1, self._column_count())
+        if not self._layout_dirty and self._current_columns == cols:
+            return
+
+        for cell in self._cells:
+            cell.setParent(self._grid_host)
+
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().setParent(self._grid_host)
+
+        for idx, cell in enumerate(self._cells):
+            row, col = divmod(idx, cols)
+            self._grid.addWidget(cell, row, col)
+            self._grid.setColumnStretch(col, 1)
+        self._current_columns = cols
+        self._layout_dirty = False
+        self.updateGeometry()
+
+
+def build_preview_settings_scroll(
+    content: QWidget,
+    *,
+    embedded: bool = False,
+    max_height: int | None = None,
+    min_height: int = PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT,
+    stretch: bool = False,
+) -> QScrollArea:
+    """Scrollable preview settings chrome with standard height cap."""
+    return scrollable_control_panel(
+        content,
+        max_viewport_height=preview_settings_viewport_height(embedded=embedded, max_height=max_height),
+        min_viewport_height=min_height,
+        stretch=stretch or embedded,
+    )
+
+
+def control_row(
+    label: str | QLabel | None,
+    control: QWidget,
+    *,
+    spacing: int = 6,
+    parent: QWidget | None = None,
+) -> QWidget:
+    """Label + control as one horizontal strip for responsive flow layouts."""
+    wrap = QWidget(parent)
+    wrap.setObjectName("TransparentControlRow")
+    wrap.setStyleSheet("#TransparentControlRow { background: transparent; }")
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(int(spacing))
+    if label is not None:
+        lbl = QLabel(label, parent) if isinstance(label, str) else label
+        lay.addWidget(lbl, 0)
+    lay.addWidget(control, 0)
+    wrap.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+    return wrap
+
+
+def inline_controls(*widgets: QWidget, spacing: int = 4, parent: QWidget | None = None) -> QWidget:
+    """Group widgets side-by-side (checkbox + spin, label + combo + info icon, etc.)."""
+    wrap = QWidget(parent)
+    wrap.setObjectName("TransparentInlineControls")
+    wrap.setStyleSheet("#TransparentInlineControls { background: transparent; }")
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(int(spacing))
+    for widget in widgets:
+        lay.addWidget(widget, 0)
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return wrap
+
+
+def labeled_control(
+    label: str | QLabel,
+    control: QWidget,
+    *,
+    parent: QWidget | None = None,
+    spacing: int = 6,
+) -> QWidget:
+    """Label + control on one row; stretches to panel width without runtime reflow."""
+    wrap = QWidget(parent)
+    wrap.setObjectName("TransparentLabeledControl")
+    wrap.setStyleSheet("#TransparentLabeledControl { background: transparent; }")
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(int(spacing))
+    lbl = QLabel(label, parent) if isinstance(label, str) else label
+    lay.addWidget(lbl, 0)
+    lay.addWidget(control, 0)
+    lay.addStretch(1)
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return wrap
+
+
+def checkbox_with_control(
+    checkbox: QCheckBox,
+    control: QWidget,
+    *,
+    parent: QWidget | None = None,
+    spacing: int = 4,
+) -> QWidget:
+    """Checkbox + paired control (spin/combo) as one stable row item."""
+    return inline_controls(checkbox, control, spacing=spacing, parent=parent)
+
+
+def stacked_control_rows(
+    *rows: QHBoxLayout | QWidget,
+    parent: QWidget | None = None,
+    spacing: int = 6,
+) -> QWidget:
+    """Stack explicit horizontal rows vertically — deterministic preview layout."""
+    wrap = QWidget(parent)
+    wrap.setObjectName("TransparentStackedRows")
+    wrap.setStyleSheet("#TransparentStackedRows { background: transparent; }")
+    lay = QVBoxLayout(wrap)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(int(spacing))
+    for row in rows:
+        if isinstance(row, QHBoxLayout):
+            lay.addLayout(row)
+        else:
+            lay.addWidget(row)
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    return wrap
+
+
+def stacked_control_grid(
+    *cells: QWidget,
+    columns: int = 2,
+    parent: QWidget | None = None,
+    h_spacing: int = 8,
+    v_spacing: int = 4,
+) -> QWidget:
+    """Place control strips in a fixed grid (wraps to new rows by column count)."""
+    wrap = QWidget(parent)
+    wrap.setObjectName("TransparentStackedGrid")
+    wrap.setStyleSheet("#TransparentStackedGrid { background: transparent; }")
+    grid = QGridLayout(wrap)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(int(h_spacing))
+    grid.setVerticalSpacing(int(v_spacing))
+    cols = max(1, int(columns))
+    for idx, cell in enumerate(cells):
+        grid.addWidget(cell, idx // cols, idx % cols)
+    wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    return wrap
+
+
+def scrollable_control_panel(
+    content: QWidget,
+    *,
+    parent: QWidget | None = None,
+    max_viewport_height: int = 340,
+    min_viewport_height: int = 72,
+    stretch: bool = False,
+) -> QScrollArea:
+    """Scroll area for dense preview chrome; child keeps natural height."""
+    scroll = QScrollArea(parent)
+    scroll.setWidgetResizable(True)
+    scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    scroll.setWidget(content)
+    scroll.setMinimumHeight(int(min_viewport_height))
+    if max_viewport_height > 0:
+        scroll.setMaximumHeight(int(max_viewport_height))
+    policy_v = (
+        QSizePolicy.Policy.Expanding
+        if stretch
+        else QSizePolicy.Policy.Fixed
+    )
+    scroll.setSizePolicy(QSizePolicy.Policy.Expanding, policy_v)
+    return scroll
+
+
+class ResponsiveRowFlow(QWidget):
+    """
+    Pack child widgets into horizontal rows; wrap when the next item would overflow.
+
+    Used for dense preview option strips (montage layout, foci filters) so controls
+    reflow on narrow panels without hand-splitting every row.
+    """
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        h_spacing: int = 8,
+        v_spacing: int = 6,
+    ) -> None:
+        super().__init__(parent)
+        self._h_spacing = int(h_spacing)
+        self._v_spacing = int(v_spacing)
+        self._items: list[QWidget] = []
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(self._v_spacing)
+        self._defer_reflow = False
+
+    def add_widget(self, widget: QWidget) -> None:
+        self._items.append(widget)
+        widget.setParent(self)
+        if not self._defer_reflow:
+            self._reflow()
+
+    def set_defer_reflow(self, defer: bool) -> None:
+        self._defer_reflow = bool(defer)
+
+    def reflow(self) -> None:
+        self._reflow()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if not _qt_widget_alive(self):
+            return
+        self._reflow()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not _qt_widget_alive(self):
+            return
+        self._reflow()
+
+    def _reflow(self) -> None:
+        if not _qt_widget_alive(self):
+            return
+        self._items = [w for w in self._items if _qt_widget_alive(w)]
+        if not self._items:
+            return
+        for widget in self._items:
+            widget.setParent(self)
+        while self._outer.count():
+            item = self._outer.takeAt(0)
+            container = item.widget()
+            if container is not None:
+                container.deleteLater()
+
+        width = self.width()
+        if width <= 0:
+            width = 640
+
+        row_widget: QWidget | None = None
+        row_layout: QHBoxLayout | None = None
+        row_used = 0
+
+        def _finish_row() -> None:
+            nonlocal row_widget, row_layout, row_used
+            if row_layout is not None:
+                row_layout.addStretch(1)
+            row_widget = None
+            row_layout = None
+            row_used = 0
+
+        def _start_row() -> QHBoxLayout:
+            nonlocal row_widget, row_layout, row_used
+            _finish_row()
+            row_widget = QWidget(self)
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(self._h_spacing)
+            self._outer.addWidget(row_widget)
+            row_used = 0
+            return row_layout
+
+        for widget in self._items:
+            if not _qt_widget_alive(widget):
+                continue
+            widget.show()
+            item_width = max(widget.sizeHint().width(), widget.minimumSizeHint().width(), 1)
+            if row_layout is None:
+                lay = _start_row()
+            elif row_used + self._h_spacing + item_width > width:
+                lay = _start_row()
+            else:
+                lay = row_layout
+            lay.addWidget(widget, 0)
+            row_used += item_width + (self._h_spacing if row_used else 0)
+
+        _finish_row()
+        self.updateGeometry()
+
+
+def responsive_rows(
+    *items: QWidget,
+    parent: QWidget | None = None,
+    h_spacing: int = 8,
+    v_spacing: int = 6,
+) -> ResponsiveRowFlow:
+    """Build a wrapping row flow from pre-built control strips."""
+    flow = ResponsiveRowFlow(parent, h_spacing=h_spacing, v_spacing=v_spacing)
+    flow.set_defer_reflow(True)
+    for item in items:
+        flow.add_widget(item)
+    flow.reflow()
+    return flow
 
 
 def hbox_row_widget(row: QHBoxLayout, parent: Optional[QWidget] = None) -> QWidget:
@@ -159,12 +814,29 @@ def style_path_row_browse_button(btn: QPushButton) -> None:
     _style_path_row_browse_button(btn, _PATH_ROW_CONTENT_HEIGHT)
 
 
-def style_compact_action_button(btn: QPushButton, *, horizontal_padding: int = 24) -> None:
+def style_compact_action_button(
+    btn: QPushButton,
+    *,
+    horizontal_padding: int = 24,
+    dense: bool = False,
+) -> None:
     """Compact secondary button (path row File…/Folder… style) without renaming label text."""
-    btn.setStyleSheet(COMPACT_BROWSE_BUTTON_STYLESHEET)
+    if dense:
+        btn.setStyleSheet(
+            COMPACT_BROWSE_BUTTON_STYLESHEET
+            + (
+                "QPushButton {"
+                " padding: 2px 10px;"
+                " min-height: 0px;"
+                " max-height: 30px;"
+                "}"
+            )
+        )
+    else:
+        btn.setStyleSheet(COMPACT_BROWSE_BUTTON_STYLESHEET)
     btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    # 32px is tight with 1px border + padding on some styles — bottom edge can clip in dense rows.
-    btn.setFixedHeight(34)
+    # Dense cards stay compact, but need enough real content height for QSS padding/borders.
+    btn.setFixedHeight(30 if dense else 34)
     fm = btn.fontMetrics()
     text_w = int(fm.horizontalAdvance(btn.text() or ""))
     btn.setFixedWidth(max(72, text_w + int(horizontal_padding)))

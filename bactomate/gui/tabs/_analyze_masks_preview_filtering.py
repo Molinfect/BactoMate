@@ -11,13 +11,11 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QTableWidget,
@@ -30,8 +28,18 @@ from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog
 from bactomate.gui.image_utils import scale_for_preview, to_qpixmap
 from bactomate.gui.log_config import write_gui_log_line
 from bactomate.gui.utils import safe_imread
-from bactomate.gui.layout_helpers import style_module_primary_button
+from bactomate.gui.layout_helpers import (
+    PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT,
+    build_settings_card,
+    build_preview_settings_scroll,
+    checkbox_with_control,
+    flex_control,
+    setting_cell,
+    setting_field,
+    style_module_primary_button,
+)
 from bactomate.gui.widgets import create_info_icon
+from bactomate.gui.styles import filter_preview_card_stylesheet, preview_table_stylesheet
 from bactomate.gui.foci_filter_pipeline import (
     FOCI_BLOB_SIZE_PRESETS,
     FociPassFailCache,
@@ -60,14 +68,16 @@ from bactomate.gui.filter_preview_utils import (
     seed_foci_channel_settings,
 )
 from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, WorkerGuard, RenderResult
-from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
 from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
 
 # Preview foci overlay colors (RGB) — contour-only markers on the background image.
 _FOCI_PASS_RGB = (255, 165, 0)
 _FOCI_RAW_PEAK_RGB = (255, 200, 80)
 _FOCI_FAIL_RGB = (255, 55, 55)
-_FOCI_HIGHLIGHT_RGB = (255, 255, 0)
+_FOCI_HIGHLIGHT_RGB = (255, 35, 35)
+_FOCI_HIGHLIGHT_OUTLINE_RGB = (255, 255, 255)
+_FOCI_HIGHLIGHT_RING_RADIUS = 8
+_FOCI_HIGHLIGHT_OUTLINE_RADIUS = 11
 _FOCI_CHANNEL_RGB: tuple[tuple[int, int, int], ...] = (
     (255, 165, 0),
     (0, 220, 255),
@@ -414,17 +424,37 @@ def build_foci_hover_data(
 def _apply_foci_highlight_contour(
     rgb: np.ndarray,
     mask_2d: np.ndarray,
-    plane: np.ndarray,
+    plane: Optional[np.ndarray],
     yx: tuple[int, int],
     settings: dict[str, Any],
 ) -> None:
-    """Draw a yellow contour on one focus (table double-click / selection)."""
+    """Draw a prominent red ring on one focus (table double-click / selection)."""
     from bactomate.modules.foci_utils import get_focus_blob_mask
     from skimage.segmentation import find_boundaries
 
     try:
         hy, hx = int(yx[0]), int(yx[1])
     except (TypeError, ValueError):
+        return
+    mask_shape = tuple(np.asarray(mask_2d).shape[:2])
+    peak = [{"y": hy, "x": hx}]
+    draw_peak_rings_on_rgb(
+        rgb,
+        peak,
+        _FOCI_HIGHLIGHT_OUTLINE_RGB,
+        mask_shape=mask_shape,
+        radius=_FOCI_HIGHLIGHT_OUTLINE_RADIUS,
+        inner_gap=1,
+    )
+    draw_peak_rings_on_rgb(
+        rgb,
+        peak,
+        _FOCI_HIGHLIGHT_RGB,
+        mask_shape=mask_shape,
+        radius=_FOCI_HIGHLIGHT_RING_RADIUS,
+        inner_gap=2,
+    )
+    if plane is None or not np.asarray(plane).size:
         return
     h0, w0 = int(mask_2d.shape[0]), int(mask_2d.shape[1])
     h1, w1 = int(rgb.shape[0]), int(rgb.shape[1])
@@ -813,51 +843,9 @@ def show_filter_preview(
         w.setRange(float(mn), float(mx))
         w.setSingleStep(float(step))
         w.setValue(float(value))
-        w.setFixedWidth(int(width))
+        flex_control(w, int(width), combo_style=False)
         w.setKeyboardTracking(False)
         return w
-
-    def _grid_pair(
-        grid: QGridLayout,
-        row: int,
-        col: int,
-        lbl_a: str,
-        w_a: QWidget,
-        lbl_b: str,
-        w_b: QWidget,
-    ) -> None:
-        la = QLabel(lbl_a)
-        la.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(la, row, col)
-        grid.addWidget(w_a, row, col + 1)
-        lb = QLabel(lbl_b)
-        lb.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(lb, row, col + 2)
-        grid.addWidget(w_b, row, col + 3)
-
-    def _grid_single(
-        grid: QGridLayout,
-        row: int,
-        col: int,
-        lbl: str,
-        w: QWidget,
-    ) -> None:
-        la = QLabel(lbl)
-        la.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        grid.addWidget(la, row, col)
-        grid.addWidget(w, row, col + 1)
-
-    _filter_gb_style = (
-        str(FLAT_GROUPBOX_FRAME_STYLESHEET)
-        + " QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; "
-        "color: #d4dce8; font-weight: 600; font-size: 11pt; }"
-    )
-    # ---- Cell filter parameters (geometry | morphology columns — single bordered panel)
-    cell_group = QGroupBox("Cell filtering")
-    cell_group.setStyleSheet(_filter_gb_style)
-    cell_outer = QVBoxLayout(cell_group)
-    cell_outer.setContentsMargins(8, 6, 8, 8)
-    cell_outer.setSpacing(4)
 
     w_min_area = _mk_spin(decimals=2, mn=0.0, mx=10000.0, step=0.1, value=float(fs0.get("min_area_um2") or 0.0))
     w_max_area = _mk_spin(decimals=2, mn=0.0, mx=10000.0, step=0.1, value=float(fs0.get("max_area_um2") or 0.0))
@@ -874,74 +862,50 @@ def show_filter_preview(
     w_excl_border = QCheckBox("Exclude cells at borders")
     w_excl_border.setChecked(bool(fs0.get("exclude_border", False)))
 
-    cell_grid = QGridLayout()
-    cell_grid.setContentsMargins(0, 0, 0, 0)
-    cell_grid.setHorizontalSpacing(6)
-    cell_grid.setVerticalSpacing(3)
-    _morph_col = 5
-    for col_i, min_w in enumerate((102, 88, 102, 88, 12, 102, 88, 102, 88)):
-        cell_grid.setColumnMinimumWidth(col_i, min_w)
-
-    _grid_pair(
-        cell_grid, 0, 0,
-        "Min area (µm²):", w_min_area,
-        "Max area (µm²):", w_max_area,
+    cell_group = build_settings_card(
+        "Cell filtering",
+        object_name="FilterCellGroup",
+        parent=settings_host,
+        min_cell_width=220,
+        label_min_width=118,
+        control_max_width=92,
+        max_columns=4,
+        h_spacing=18,
+        stylesheet=filter_preview_card_stylesheet("FilterCellGroup"),
+        fields=[
+            setting_field("Min area (µm²)", w_min_area, min_width=72, max_width=92),
+            setting_field("Max area (µm²)", w_max_area, min_width=72, max_width=92),
+            setting_field("Pixel size (µm)", w_pixel, min_width=72, max_width=92),
+            setting_cell(w_excl_border),
+            setting_field("Min width (µm)", w_min_w, min_width=72, max_width=92),
+            setting_field("Max width (µm)", w_max_w, min_width=72, max_width=92),
+            setting_field("Min aspect", w_min_ar, min_width=72, max_width=92),
+            setting_field("Max aspect", w_max_ar, min_width=72, max_width=92),
+            setting_field("Min length (µm)", w_min_len, min_width=72, max_width=92),
+            setting_field("Max length (µm)", w_max_len, min_width=72, max_width=92),
+            setting_field("Min eccent.", w_min_ecc, min_width=72, max_width=92),
+            setting_field("Min solid.", w_min_sol, min_width=72, max_width=92),
+        ],
     )
-    _grid_pair(
-        cell_grid, 1, 0,
-        "Min width (µm):", w_min_w,
-        "Max width (µm):", w_max_w,
-    )
-    _grid_pair(
-        cell_grid, 2, 0,
-        "Min length (µm):", w_min_len,
-        "Max length (µm):", w_max_len,
-    )
-    pixel_lbl = QLabel("Pixel size (µm):")
-    pixel_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    cell_grid.addWidget(pixel_lbl, 0, _morph_col)
-    cell_grid.addWidget(w_pixel, 0, _morph_col + 1)
-    cell_grid.addWidget(
-        w_excl_border,
-        0,
-        _morph_col + 2,
-        1,
-        2,
-        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-    )
-    _grid_pair(
-        cell_grid, 1, _morph_col,
-        "Min aspect:", w_min_ar,
-        "Max aspect:", w_max_ar,
-    )
-    _grid_pair(
-        cell_grid, 2, _morph_col,
-        "Min eccent.:", w_min_ecc,
-        "Min solid.:", w_min_sol,
-    )
-    cell_outer.addLayout(cell_grid)
-    cell_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    cell_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
     # ---- Foci filter parameters --------------------------------------
-    foci_group = QGroupBox("Foci filtering")
-    foci_group.setStyleSheet(_filter_gb_style)
-    foci_layout = QVBoxLayout(foci_group)
-    foci_layout.setContentsMargins(8, 6, 8, 8)
-    foci_layout.setSpacing(4)
-
     w_prob_en = QCheckBox("Probability ≥")
+    w_prob_en.setToolTip("Minimum Spotiflow probability.")
     w_prob_en.setChecked(bool(fs_foci0.get("foci_prob_enabled", False)))
     w_prob_thr = _mk_spin(decimals=3, mn=0.0, mx=1.0, step=0.05, value=float(fs_foci0.get("foci_prob_thresh", 0.5) or 0.5))
     w_minint_en = QCheckBox("Min intensity ≥")
+    w_minint_en.setToolTip("Minimum focus intensity.")
     w_minint_en.setChecked(bool(fs_foci0.get("foci_min_int_enabled", False)))
     w_minint = _mk_spin(decimals=0, mn=0.0, mx=100000.0, step=100.0, value=float(fs_foci0.get("foci_min_int", 0.0) or 0.0), width=90)
     w_minarea_en = QCheckBox("Min area px ≥")
+    w_minarea_en.setToolTip("Minimum grown focus area in pixels.")
     w_minarea_en.setChecked(bool(fs_foci0.get("foci_min_area_px_enabled", False)))
     w_minarea = QSpinBox()
     w_minarea.setRange(1, 100000)
     w_minarea.setValue(max(1, int(fs_foci0.get("foci_min_area_px", 1) or 1)))
-    w_minarea.setFixedWidth(64)
-    w_ratio_en = QCheckBox("Per-cell ratio ≥")
+    flex_control(w_minarea, 64, combo_style=False, max_width=96)
+    w_ratio_en = QCheckBox("Per-cell ratio >")
     w_ratio_en.setChecked(bool(fs_foci0.get("foci_per_cell_ratio_enabled", False)))
     w_ratio = _mk_spin(decimals=2, mn=0.5, mx=100.0, step=0.1, value=float(fs_foci0.get("foci_per_cell_ratio", 2.0) or 2.0))
     w_ratio_en.setToolTip("Focus mean / rest-of-cell mean")
@@ -969,13 +933,11 @@ def show_filter_preview(
         if abs(float(frac) - blob_frac0) < 1e-6:
             blob_sel = i
     w_blob_size.setCurrentIndex(blob_sel)
-    w_blob_size.setFixedWidth(72)
-    w_blob_size.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    flex_control(w_blob_size, 72, max_width=140)
     w_blob_radius = QSpinBox()
     w_blob_radius.setRange(1, 50)
     w_blob_radius.setValue(int(fs_foci0.get("foci_blob_max_radius", 5) or 5))
-    w_blob_radius.setFixedWidth(52)
-    _foci_lbl_style = "color: #c8d0dc; padding-right: 4px;"
+    flex_control(w_blob_radius, 52, combo_style=False, max_width=84)
     _foci_size_info = (
         "Foci size sets the intensity threshold used to grow each peak into a region.\n\n"
         "Pixels are included if intensity ≥ (selected % of peak intensity at the focus center). "
@@ -990,37 +952,49 @@ def show_filter_preview(
         "foci size threshold.\n\n"
         "Increase for large or diffuse foci; decrease to keep measurements local to the peak."
     )
-    r_foci_opts = QGridLayout()
-    r_foci_opts.setHorizontalSpacing(8)
-    r_foci_opts.setVerticalSpacing(4)
-    r_foci_opts.setContentsMargins(0, 0, 0, 0)
-    r_foci_opts.addWidget(w_prob_en, 0, 0)
-    r_foci_opts.addWidget(w_prob_thr, 0, 1)
-    r_foci_opts.addWidget(w_minint_en, 0, 2)
-    r_foci_opts.addWidget(w_minint, 0, 3)
-    r_foci_opts.addWidget(w_minarea_en, 1, 0)
-    r_foci_opts.addWidget(w_minarea, 1, 1)
-    r_foci_opts.addWidget(w_ratio_en, 1, 2)
-    r_foci_opts.addWidget(w_ratio, 1, 3)
-    r_foci_opts.setColumnMinimumWidth(4, 16)
-    r_foci_opts.addWidget(w_foci_excl_outside_clear, 0, 5)
-    r_foci_opts.addWidget(w_foci_excl_outside_touch, 0, 6)
-    r_foci_opts.addWidget(w_show_foci_table, 1, 5, 1, 2)
-    r_foci_opts.setColumnMinimumWidth(7, 16)
-    foci_size_lbl = QLabel("Foci size:")
-    foci_size_lbl.setStyleSheet(_foci_lbl_style)
-    r_foci_opts.addWidget(foci_size_lbl, 0, 8)
-    r_foci_opts.addWidget(w_blob_size, 0, 9)
-    r_foci_opts.addWidget(create_info_icon(_foci_size_info, parent_widget=settings_host, compact=True), 0, 10)
-    rad_lbl = QLabel("Max radius (px):")
-    rad_lbl.setStyleSheet(_foci_lbl_style)
-    r_foci_opts.addWidget(rad_lbl, 1, 8)
-    r_foci_opts.addWidget(w_blob_radius, 1, 9)
-    r_foci_opts.addWidget(create_info_icon(_foci_radius_info, parent_widget=settings_host, compact=True), 1, 10)
-    r_foci_opts.setColumnStretch(11, 1)
-    foci_layout.addLayout(r_foci_opts)
+    w_blob_size.setToolTip(_foci_size_info)
+    w_blob_radius.setToolTip(_foci_radius_info)
 
-    foci_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+    foci_channel_badge = QLabel("")
+    foci_channel_badge.setObjectName("FociChannelBadge")
+    foci_channel_badge.setStyleSheet(
+        "#FociChannelBadge {"
+        " color: #8fbfff;"
+        " background-color: #202733;"
+        " border: 1px solid #303844;"
+        " border-radius: 6px;"
+        " padding: 4px 8px;"
+        " font-weight: 600;"
+        "}"
+    )
+    foci_channel_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    foci_channel_badge.setVisible(False)
+
+    foci_group = build_settings_card(
+        "Foci filtering",
+        object_name="FilterFociGroup",
+        parent=settings_host,
+        min_cell_width=160,
+        label_min_width=84,
+        control_max_width=104,
+        max_columns=5,
+        h_spacing=18,
+        stylesheet=filter_preview_card_stylesheet("FilterFociGroup"),
+        fields=[
+            setting_cell(foci_channel_badge),
+            setting_cell(checkbox_with_control(w_prob_en, w_prob_thr, parent=settings_host)),
+            setting_cell(checkbox_with_control(w_minint_en, w_minint, parent=settings_host)),
+            setting_cell(w_foci_excl_outside_clear),
+            setting_cell(w_foci_excl_outside_touch),
+            setting_field("Foci size", w_blob_size, min_width=72, max_width=112),
+            setting_cell(checkbox_with_control(w_minarea_en, w_minarea, parent=settings_host)),
+            setting_cell(checkbox_with_control(w_ratio_en, w_ratio, parent=settings_host)),
+            setting_cell(w_show_foci_table),
+            setting_field("Max radius (px)", w_blob_radius, min_width=52, max_width=76),
+        ],
+    )
+
+    foci_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
 
     settings_outer.addWidget(cell_group)
     if has_foci_image_files:
@@ -1045,28 +1019,7 @@ def show_filter_preview(
         vhdr.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
     except Exception:
         pass
-    foci_table.setStyleSheet(
-        "QTableWidget {"
-        " background-color: #1c2128;"
-        " color: #dce4ee;"
-        " gridline-color: #343c48;"
-        " border: 1px solid #3a4555;"
-        "}"
-        "QTableWidget::item { padding: 1px 3px; }"
-        "QTableWidget::item:selected {"
-        " background-color: #3d5a80;"
-        " color: #ffffff;"
-        "}"
-        "QHeaderView::section {"
-        " background-color: #262c34;"
-        " color: #aeb6c2;"
-        " padding: 2px 2px;"
-        " border: none;"
-        " border-right: 1px solid #343c48;"
-        " font-weight: 600;"
-        "}"
-        "QHeaderView::section:last { border-right: none; }"
-    )
+    foci_table.setStyleSheet(preview_table_stylesheet())
     foci_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     foci_table.setMinimumHeight(72)
     foci_table.setMaximumHeight(140)
@@ -1105,15 +1058,8 @@ def show_filter_preview(
     settings_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
     settings_host.setMinimumWidth(0)
 
-    settings_scroll = QScrollArea()
-    # Resizable child is forced to viewport height and squashes stacked sections; use explicit height.
-    settings_scroll.setWidgetResizable(False)
-    settings_scroll.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-    settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
-    settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    settings_scroll = build_preview_settings_scroll(settings_host)
     settings_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    settings_scroll.setWidget(settings_host)
 
     _FILTER_SETTINGS_VIEWPORT_MAX_PX = 340
 
@@ -1133,41 +1079,18 @@ def show_filter_preview(
             return _FILTER_SETTINGS_VIEWPORT_MAX_PX
         return max(160, min(_FILTER_SETTINGS_VIEWPORT_MAX_PX, int(host_h * 0.42)))
 
-    def _settings_host_content_height() -> int:
-        """Natural stacked height of all filter sections (not capped by scroll viewport)."""
-        try:
-            settings_host.updateGeometry()
-            settings_host.adjustSize()
-            lay = settings_host.layout()
-            if lay is not None:
-                lay.activate()
-            h = int(settings_host.sizeHint().height())
-            if h < 8:
-                h = int(settings_host.minimumSizeHint().height())
-            return max(48, h + 6)
-        except Exception:
-            return _FILTER_SETTINGS_VIEWPORT_MAX_PX
-
     def _sync_filter_settings_panel_height() -> None:
         try:
-            content_h = _settings_host_content_height()
-            vp = settings_scroll.viewport()
-            vp_w = int(vp.width()) if vp is not None and vp.width() > 0 else 0
-            if vp_w > 8:
-                host_w = vp_w
-            else:
-                try:
-                    settings_host.updateGeometry()
-                    settings_host.adjustSize()
-                    host_w = int(settings_host.sizeHint().width())
-                except Exception:
-                    host_w = 0
-            host_w = max(220, host_w)
-            settings_host.setFixedWidth(host_w)
-            settings_host.setFixedHeight(int(content_h))
             cap = _settings_viewport_cap_px()
-            viewport_h = max(72, min(content_h, cap))
             frame_extra = max(0, int(settings_scroll.frameWidth()) * 2)
+            content_hint = max(
+                settings_host.sizeHint().height(),
+                settings_host.minimumSizeHint().height(),
+            )
+            viewport_h = max(
+                PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT,
+                min(cap, content_hint),
+            )
             settings_scroll.setFixedHeight(viewport_h + frame_extra)
             fit_foci_table_columns(foci_table)
         except Exception:
@@ -1693,8 +1616,13 @@ def show_filter_preview(
             foci_group.setVisible(bool(is_foci_view and has_foci_image_files))
             if has_foci_image_files:
                 ch_key = _active_foci_channel_key()
-                title = f"Foci filtering — {ch_key}" if ch_key and ch_key != "_default" else "Foci filtering"
-                foci_group.setTitle(title)
+                foci_group.setTitle("Foci filtering")
+                if ch_key and ch_key != "_default":
+                    foci_channel_badge.setText(f"Channel: {ch_key}")
+                    foci_channel_badge.setVisible(True)
+                else:
+                    foci_channel_badge.setText("")
+                    foci_channel_badge.setVisible(False)
         except Exception:
             pass
         _sync_filter_settings_panel_height()
@@ -2654,41 +2582,49 @@ def show_filter_preview(
         return float(x) * scale, float(y) * scale
 
     def _refresh_foci_highlight_only() -> None:
-        """Redraw only the yellow focus highlight (table double-click); avoid full preview render."""
+        """Redraw only the selected-focus highlight (table double-click); avoid full preview render."""
         if dlg is None:
             return
         base = getattr(dlg, "_preview_overlay_base", None)
         if base is None:
             dlg.refresh()
             return
+        highlight_yx = getattr(dlg, "_highlight_foci_yx", None)
+        if not isinstance(highlight_yx, tuple):
+            return
         state = dlg.state()
         fid = int(getattr(state, "frame_idx", 0) or 0)
         src_key = _source_key_from_state(state, _selected_source)
+        foci_src = _foci_source_for_source_key(src_key)
         mpk = getattr(dlg, "_preview_mask_path_key", None)
         last = getattr(dlg, "_last_preview", {}) or {}
-        if not is_filter_apply_cache_hit(last, fid, mask_path_key=mpk):
-            dlg.refresh()
-            return
-        overlay = np.asarray(base).copy()
-        highlight_yx = getattr(dlg, "_highlight_foci_yx", None)
-        foci_plane = last.get("foci_plane")
-        mask_2d = last.get("mask_2d")
-        if (
-            isinstance(highlight_yx, tuple)
-            and foci_plane is not None
-            and mask_2d is not None
-        ):
+        if is_filter_apply_cache_hit(last, fid, mask_path_key=mpk) and last.get("mask_2d") is not None:
+            mask_2d = np.asarray(last.get("mask_2d"), dtype=np.int32)
+        else:
             try:
-                fs = dict(tab.get_filter_settings() if hasattr(tab, "get_filter_settings") else {})
-                _apply_foci_highlight_contour(
-                    overlay,
-                    np.asarray(mask_2d, dtype=np.int32),
-                    np.asarray(foci_plane),
-                    highlight_yx,
-                    fs,
-                )
+                mask_2d = np.asarray(_preview_mask_stack()[fid], dtype=np.int32)
             except Exception:
-                pass
+                dlg.refresh()
+                return
+        foci_plane = _get_foci_plane(fid, foci_src)
+        if foci_plane is None and is_filter_apply_cache_hit(last, fid, mask_path_key=mpk):
+            foci_plane = last.get("foci_plane")
+        overlay = np.asarray(base).copy()
+        try:
+            ch_fs = (
+                _foci_settings_for_source(foci_src)
+                if foci_src is not None
+                else dict(tab.get_filter_settings() if hasattr(tab, "get_filter_settings") else {})
+            )
+            _apply_foci_highlight_contour(
+                overlay,
+                mask_2d,
+                np.asarray(foci_plane) if foci_plane is not None else None,
+                highlight_yx,
+                ch_fs,
+            )
+        except Exception:
+            pass
         from bactomate.gui.image_utils import to_qpixmap
 
         pm = to_qpixmap(overlay)
@@ -3197,16 +3133,12 @@ def show_filter_preview(
                 from bactomate.logging_config import get_logger
 
                 get_logger().exception("Contour FI preview overlay failed")
-            if (
-                show_foci
-                and isinstance(highlight_yx, tuple)
-                and foci_plane is not None
-            ):
+            if isinstance(highlight_yx, tuple):
                 try:
                     _apply_foci_highlight_contour(
                         overlay,
                         mask_2d,
-                        np.asarray(foci_plane),
+                        np.asarray(foci_plane) if foci_plane is not None else None,
                         highlight_yx,
                         dict(foci_fs or {}),
                     )
