@@ -93,12 +93,14 @@ def test_merge_phase_and_fi_produces_one_excel():
         tab.folder_phase_per_mask = {}
         tab._merge_fi_channels_into_one_excel()
         assert merged_path.exists()
-        xl = pd.ExcelFile(merged_path)
-        assert "Summary" in xl.sheet_names
-        assert "Per-Cell Data" in xl.sheet_names
-        foci_sheet_name = next((s for s in xl.sheet_names if s.startswith("Foci ") and "mScarlet" in s), None)
-        assert foci_sheet_name is not None
-        per_cell = pd.read_excel(merged_path, sheet_name="Per-Cell Data")
+        with pd.ExcelFile(merged_path) as xl:
+            assert "Summary" in xl.sheet_names
+            assert "Per-Cell Data" in xl.sheet_names
+            foci_sheet_name = next((s for s in xl.sheet_names if s.startswith("Foci ") and "mScarlet" in s), None)
+            assert foci_sheet_name is not None
+            per_cell = pd.read_excel(xl, sheet_name="Per-Cell Data")
+            summary = pd.read_excel(xl, sheet_name="Summary")
+            foci_sheet = pd.read_excel(xl, sheet_name=foci_sheet_name)
         assert "Frame" in per_cell.columns
         assert "Cell_ID" in per_cell.columns
         # Should have morphology (Area) and FI (Mean FI Intensity (mScarlet) or similar)
@@ -109,10 +111,8 @@ def test_merge_phase_and_fi_produces_one_excel():
         # Per-Cell Data should not be cluttered with verbose foci aggregate columns
         assert all("Foci Mean Intensity" not in str(c) for c in per_cell.columns)
         assert len(per_cell) == 3
-        summary = pd.read_excel(merged_path, sheet_name="Summary")
         # Multi-channel merge should add frame-mean FI columns to Summary for each channel.
         assert any("Mean FI Intensity" in str(c) and "(mScarlet)" in str(c) for c in summary.columns)
-        foci_sheet = pd.read_excel(merged_path, sheet_name=foci_sheet_name)
         assert "cell_id" in foci_sheet.columns
         assert not foci_book_path.exists()
 
@@ -289,10 +289,10 @@ def test_coloc_pair_sheet_contains_pair_level_distance_and_ids():
         finally:
             aw.collect_channel_rows_for_mask = original_collect
             analysis_coloc.analyze_colocalization_foci_table = original_analyze
-        xl = pd.ExcelFile(analysis_path)
-        sheet = next((s for s in xl.sheet_names if s.startswith("Colocalization ")), None)
-        assert sheet is not None
-        d = pd.read_excel(analysis_path, sheet_name=sheet)
+        with pd.ExcelFile(analysis_path) as xl:
+            sheet = next((s for s in xl.sheet_names if s.startswith("Colocalization ")), None)
+            assert sheet is not None
+            d = pd.read_excel(xl, sheet_name=sheet)
         assert "foci_id" in d.columns
         assert "colocalized_foci_id" in d.columns
         assert "distance" in d.columns

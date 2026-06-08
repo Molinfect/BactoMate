@@ -35,7 +35,7 @@ def test_file_conversion_frame_range_first_n() -> None:
 
 def test_post_processing_parse_video_paths_pipe_separated() -> None:
     paths = PostProcessingTab._parse_growth_curve_video_paths("/a.tif|/b.tif")
-    assert [str(p) for p in paths] == ["/a.tif", "/b.tif"]
+    assert paths == [Path("/a.tif"), Path("/b.tif")]
 
 
 def test_post_processing_video_tile_key_normalizes() -> None:

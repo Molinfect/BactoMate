@@ -62,9 +62,9 @@ def test_combined_summary_builds_wide_sheet():
         )
         assert ok is True
         assert out_path.exists()
-        xl = pd.ExcelFile(out_path)
-        assert "Combined Summary (wide)" in xl.sheet_names
-        wide = pd.read_excel(out_path, sheet_name="Combined Summary (wide)")
+        with pd.ExcelFile(out_path) as xl:
+            assert "Combined Summary (wide)" in xl.sheet_names
+            wide = pd.read_excel(xl, sheet_name="Combined Summary (wide)")
         assert "Frame" in wide.columns
         assert list(wide["Frame"]) == [1, 2, 3]
         # At least one file's columns present (e.g. file1_Total Cell Area or file2_Number of Cells)
