@@ -20,6 +20,7 @@ class ImageCanvas(QWidget):
     """Widget that displays a pixmap with zoom and pan. Mouse wheel: zoom; middle button + drag: pan."""
 
     clicked_image = pyqtSignal(int, int)
+    double_clicked_image = pyqtSignal(int, int)
     drag_started = pyqtSignal(int, int)
     drag_updated = pyqtSignal(int, int)
     drag_finished = pyqtSignal(int, int)
@@ -106,6 +107,10 @@ class ImageCanvas(QWidget):
             self._zoom = 1.0
             self._pan_offset = QPointF(0.0, 0.0)
         self.update()
+
+    def pixmap(self) -> Optional[QPixmap]:
+        """Return the currently displayed pixmap (Qt QLabel compatibility)."""
+        return self._pixmap
 
     def set_editable_roi(
         self,
@@ -441,6 +446,15 @@ class ImageCanvas(QWidget):
             self._roi_edit_anchor = None
             self._roi_edit_start_image = None
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == self.click_button:
+            image_pos = self._widget_to_image(event.position())
+            if image_pos is not None:
+                self.double_clicked_image.emit(image_pos[0], image_pos[1])
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)

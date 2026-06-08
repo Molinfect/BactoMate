@@ -4,6 +4,18 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.6.0 (2026-06)
+
+### Preview UX: montage LUT, foci detection, and navigation
+
+- **Montage LUT:** histogram reads raw channel tiles (not rendered uint8), merged tiles use derived channel LUTs without global rescale oversaturation, LUT clamped to tile data range, taller histogram, and helper copy for merged tiles.
+- **Montage preview:** double-click a tile to open Edit tiles; top hint and merged-LUT note in the LUT panel.
+- **Foci detection toggle:** Spotiflow peak detection runs in a background thread so enabling “Detect foci” no longer freezes the UI; skips redundant TIFF reload when stacks are already in memory.
+- **Filtering preview:** “Show cell overlay” toggles via full refresh so masks hide/show reliably.
+- **Preview navigation:** taller frame/channel spinboxes and row spacing so controls are not clipped at the bottom.
+
+---
+
 ## v2.5.1 (2026-06)
 
 ### CI fix and install docs

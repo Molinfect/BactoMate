@@ -734,6 +734,32 @@ class OmniposeSegTab(QWidget):
                     pd._seg_worker_slot = None
                 except Exception:
                     pass
+            foci_worker = getattr(pd, "_foci_worker", None)
+            if foci_worker is not None:
+                foci_slot = getattr(pd, "_foci_worker_slot", None)
+                if foci_slot is not None:
+                    try:
+                        foci_worker.finished.disconnect(foci_slot)
+                    except Exception:
+                        pass
+                try:
+                    if foci_worker.isRunning():
+                        foci_worker.requestInterruption()
+                        foci_worker.quit()
+                        if not foci_worker.wait(120000):
+                            foci_worker.terminate()
+                            foci_worker.wait(5000)
+                except Exception:
+                    pass
+                try:
+                    foci_worker.deleteLater()
+                except Exception:
+                    pass
+                try:
+                    pd._foci_worker = None
+                    pd._foci_worker_slot = None
+                except Exception:
+                    pass
         self._embedded_segmentation_preview = None
         fn = getattr(self, "_seg_preview_detect_conn", None)
         if fn is not None:
@@ -2655,6 +2681,83 @@ class OmniposeSegTab(QWidget):
         except Exception:
             get_logger().debug("partial foci cache invalidate failed", exc_info=True)
 
+    def _foci_peak_cache_key(
+        self,
+        source_index: int,
+        frame_idx: int,
+        channel_key: str,
+        sf_local: dict[str, Any],
+        csv_minp: float,
+    ) -> tuple:
+        return (
+            int(source_index),
+            int(frame_idx),
+            str(channel_key),
+            bool(sf_local.get("use_optimized_threshold", True)),
+            float(sf_local.get("prob_thresh") if sf_local.get("prob_thresh") is not None else 0.5),
+            int(sf_local.get("min_distance", 1) or 1),
+            bool(sf_local.get("subpix", True)),
+            bool(sf_local.get("normalize", True)),
+            float(sf_local.get("perc_low", 1.0) or 1.0),
+            float(sf_local.get("perc_high", 99.8) or 99.8),
+            float(csv_minp),
+        )
+
+    def _filter_foci_peaks_by_csv_threshold(self, peaks: list, csv_minp: float) -> list:
+        thr = float(csv_minp or 0.0)
+        if thr <= 0:
+            return list(peaks)
+        return [
+            p for p in peaks
+            if (p.get("probability") is None or float(p.get("probability") or 0.0) >= thr)
+        ]
+
+    def _spotiflow_detect_peaks_on_plane(
+        self, plane: np.ndarray, sf: dict[str, Any]
+    ) -> tuple[Optional[list], bool]:
+        """Run Spotiflow on one 2D plane (thread-safe; no Qt). Returns (peaks, spotiflow_available)."""
+        try:
+            from bactomate.modules.foci_utils import detect_peaks_spotiflow, load_spotiflow_model
+        except Exception as e:
+            get_logger().warning("Spotiflow preview imports failed: %s", e, exc_info=True)
+            return None, False
+        _sf_opt = bool(sf.get("use_optimized_threshold", True))
+        _sf_prob = float(sf.get("prob_thresh") if sf.get("prob_thresh") is not None else 0.5)
+        _sf_min_dist = int(sf.get("min_distance", 1) or 1)
+        _sf_subpix = bool(sf.get("subpix", True))
+        _sf_norm = bool(sf.get("normalize", True))
+        _sf_pl = float(sf.get("perc_low", 1.0) or 1.0)
+        _sf_ph = float(sf.get("perc_high", 99.8) or 99.8)
+        try:
+            prob_kw = None if _sf_opt else float(_sf_prob)
+            mn = str(sf.get("model_name") or "general")
+            mp = str(sf.get("model_path") or "").strip() or None
+            spotiflow_model = load_spotiflow_model(model_name=mn, model_path=mp)
+            det_kw = {
+                k: v
+                for k, v in sf.items()
+                if k not in ("model_name", "model_path", "raise_on_error")
+            }
+            det_kw["use_optimized_threshold"] = bool(_sf_opt)
+            det_kw["prob_thresh"] = prob_kw
+            det_kw["min_distance"] = int(_sf_min_dist)
+            det_kw["subpix"] = bool(_sf_subpix)
+            det_kw["normalize"] = bool(_sf_norm)
+            det_kw["perc_low"] = float(_sf_pl)
+            det_kw["perc_high"] = float(_sf_ph)
+            det_kw["raise_on_error"] = False
+            result = detect_peaks_spotiflow(
+                np.asarray(plane, dtype=np.float64),
+                spotiflow_model=spotiflow_model,
+                **det_kw,
+            )
+        except Exception as e:
+            get_logger().warning("Spotiflow preview detection raised: %s", e, exc_info=True)
+            return None, False
+        if result is None:
+            return None, False
+        return list(result), True
+
     def _active_spotiflow_channel_key(self, dlg: QWidget) -> str:
         combo = getattr(dlg, "_sf_channel_combo", None) or getattr(dlg, "_foci_source_combo", None)
         if combo is not None:
@@ -3277,6 +3380,9 @@ class OmniposeSegTab(QWidget):
             preview_dialog._foci_source_paths = []
             preview_dialog._foci_peaks_cache = {}  # (source_idx, frame_idx) -> peaks list
             preview_dialog._foci_peaks_for_current = []
+            preview_dialog._foci_peaks_request_id = 0
+            preview_dialog._foci_worker = None
+            preview_dialog._foci_worker_slot = None
             preview_dialog._foci_preview_hint = ""
             try:
                 preview_dialog._segmentation_input_path = str(Path(file_path).resolve())
@@ -3435,11 +3541,106 @@ class OmniposeSegTab(QWidget):
             except Exception:
                 pass
 
+            class FociPeaksPreviewWorker(QThread):
+                """Spotiflow foci peak detection off the GUI thread (preview only)."""
+                finished = pyqtSignal(int, object, bool, object)  # request_id, cache_updates, ok, status_parts
+
+                def __init__(self, request_id: int, tab: "OmniposeSegTab", jobs: list[dict[str, Any]], parent=None):
+                    super().__init__(parent)
+                    self.setObjectName("FociPeaksPreviewWorker")
+                    self._request_id = int(request_id)
+                    self._tab = tab
+                    self._jobs = list(jobs)
+
+                def run(self) -> None:
+                    cache_updates: dict[tuple, list] = {}
+                    spotiflow_available = True
+                    status_parts: list[str] = []
+                    for job in self._jobs:
+                        if self.isInterruptionRequested():
+                            self.finished.emit(self._request_id, cache_updates, False, status_parts)
+                            return
+                        peaks_raw, avail = self._tab._spotiflow_detect_peaks_on_plane(
+                            job["plane"], job["sf"]
+                        )
+                        if not avail or peaks_raw is None:
+                            spotiflow_available = False
+                            break
+                        peaks = self._tab._filter_foci_peaks_by_csv_threshold(
+                            list(peaks_raw), float(job["csv_minp"])
+                        )
+                        cache_updates[job["key"]] = peaks
+                        if job.get("status_label"):
+                            status_parts.append(f"{job['status_label']}: {len(peaks)}")
+                    self.finished.emit(
+                        self._request_id, cache_updates, spotiflow_available, status_parts
+                    )
+
+            def _stop_foci_peaks_worker() -> None:
+                worker = getattr(preview_dialog, "_foci_worker", None)
+                slot = getattr(preview_dialog, "_foci_worker_slot", None)
+                if worker is not None and slot is not None:
+                    try:
+                        worker.finished.disconnect(slot)
+                    except Exception:
+                        pass
+                if worker is not None:
+                    try:
+                        if worker.isRunning():
+                            worker.requestInterruption()
+                            worker.quit()
+                    except Exception:
+                        pass
+                    try:
+                        worker.deleteLater()
+                    except Exception:
+                        pass
+                preview_dialog._foci_worker = None
+                preview_dialog._foci_worker_slot = None
+
+            def _finalize_foci_peaks_status(
+                src_idx: int,
+                frame_idx: int,
+                *,
+                spotiflow_available: bool,
+                status_parts: list[str],
+            ) -> None:
+                sf_cur = self._get_spotiflow_detection_params(
+                    channel_key=self._spotiflow_channel_key_for_preview_index(preview_dialog, src_idx)
+                )
+                ch_key = self._spotiflow_channel_key_for_preview_index(preview_dialog, src_idx)
+                csv_minp = float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0)
+                cur_key = self._foci_peak_cache_key(src_idx, frame_idx, ch_key, sf_cur, csv_minp)
+                cache = getattr(preview_dialog, "_foci_peaks_cache", None) or {}
+                preview_dialog._foci_peaks_for_current = list(cache.get(cur_key) or [])
+                if not spotiflow_available:
+                    try:
+                        status_label.setText(
+                            "Foci: Spotiflow unavailable — install spotiflow or check logs. "
+                            "No peaks drawn."
+                        )
+                    except Exception:
+                        pass
+                elif status_parts:
+                    try:
+                        status_label.setText("Foci — " + ", ".join(status_parts))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        status_label.setText(
+                            f"Foci: {len(preview_dialog._foci_peaks_for_current)} peak(s) on current frame."
+                        )
+                    except Exception:
+                        pass
+                refresh_image_display()
+
             def _compute_foci_peaks_for_current(
                 frame_idx: int,
                 *,
                 allow_detect: bool = True,
                 force_recalc: bool = False,
+                background: bool = False,
             ) -> None:
                 """Compute/cached foci peaks for the selected foci source + frame (preview only).
 
@@ -3461,6 +3662,9 @@ class OmniposeSegTab(QWidget):
                 preserved so a parameter tweak does not visually wipe the
                 overlay; the status line indicates the cache is stale and the
                 user must click ``Re-detect`` to refresh.
+
+                Set ``background=True`` to run Spotiflow off the GUI thread (used when
+                enabling Detect foci so the checkbox responds immediately).
                 """
                 combo = getattr(preview_dialog, "_sf_channel_combo", None) or getattr(
                     preview_dialog, "_foci_source_combo", None
@@ -3494,6 +3698,7 @@ class OmniposeSegTab(QWidget):
                         )
                     return
                 from bactomate.gui.filter_preview_utils import short_foci_stack_label
+                from bactomate.modules.image_stack_utils import coerce_plane_to_2d
 
                 paths = getattr(preview_dialog, "_foci_source_paths", None) or []
                 src_idx = 0
@@ -3511,28 +3716,83 @@ class OmniposeSegTab(QWidget):
 
                 def _cache_key(si: int, sf_local: dict[str, Any]) -> tuple:
                     ch_key = self._spotiflow_channel_key_for_preview_index(preview_dialog, si)
-                    return (
-                        si,
-                        int(frame_idx),
-                        ch_key,
-                        bool(sf_local.get("use_optimized_threshold", True)),
-                        float(sf_local.get("prob_thresh") if sf_local.get("prob_thresh") is not None else 0.5),
-                        int(sf_local.get("min_distance", 1) or 1),
-                        bool(sf_local.get("subpix", True)),
-                        bool(sf_local.get("normalize", True)),
-                        float(sf_local.get("perc_low", 1.0) or 1.0),
-                        float(sf_local.get("perc_high", 99.8) or 99.8),
-                        _csv_minp,
+                    return self._foci_peak_cache_key(si, frame_idx, ch_key, sf_local, _csv_minp)
+
+                pending_jobs: list[dict[str, Any]] = []
+                for si in range(len(sources)):
+                    ch_key = self._spotiflow_channel_key_for_preview_index(preview_dialog, si)
+                    sf = self._get_spotiflow_detection_params(channel_key=ch_key)
+                    key = _cache_key(si, sf)
+                    if key in cache and not force_recalc:
+                        continue
+                    if not allow_detect:
+                        continue
+                    arr = sources[si]
+                    fi = max(0, min(int(frame_idx), int(arr.shape[0]) - 1))
+                    plane = np.asarray(coerce_plane_to_2d(np.asarray(arr[fi])), dtype=np.float64)
+                    lbl = ""
+                    if si < len(paths):
+                        lbl = short_foci_stack_label(Path(paths[si]))
+                    pending_jobs.append(
+                        {
+                            "key": key,
+                            "plane": plane,
+                            "sf": dict(sf),
+                            "csv_minp": _csv_minp,
+                            "status_label": lbl,
+                        }
                     )
 
-                def _filter_peaks(peaks: list) -> list:
-                    thr = float(getattr(self, "_foci_csv_min_probability", 0.0) or 0.0)
-                    if thr <= 0:
-                        return peaks
-                    return [
-                        p for p in peaks
-                        if (p.get("probability") is None or float(p.get("probability") or 0.0) >= thr)
-                    ]
+                if background and pending_jobs and allow_detect:
+                    preview_dialog._foci_peaks_request_id = int(
+                        getattr(preview_dialog, "_foci_peaks_request_id", 0) or 0
+                    ) + 1
+                    request_id = int(preview_dialog._foci_peaks_request_id)
+                    n_jobs = len(pending_jobs)
+                    _set_status(
+                        f"Detecting foci… ({n_jobs} channel{'s' if n_jobs != 1 else ''})"
+                    )
+                    _stop_foci_peaks_worker()
+
+                    def _on_foci_worker_finished(rid, cache_updates, spotiflow_ok, status_parts):
+                        if int(rid) != int(getattr(preview_dialog, "_foci_peaks_request_id", 0) or 0):
+                            return
+                        if getattr(preview_dialog, "_dialog_closed", False):
+                            return
+                        try:
+                            for k, peaks in (cache_updates or {}).items():
+                                cache[k] = list(peaks)
+                        except Exception:
+                            pass
+                        full_status: list[str] = []
+                        try:
+                            for si in range(len(sources)):
+                                ch_key = self._spotiflow_channel_key_for_preview_index(
+                                    preview_dialog, si
+                                )
+                                sf_i = self._get_spotiflow_detection_params(channel_key=ch_key)
+                                k_i = _cache_key(si, sf_i)
+                                n_peaks = len(list(cache.get(k_i) or []))
+                                if si < len(paths):
+                                    lbl_i = short_foci_stack_label(Path(paths[si]))
+                                    full_status.append(f"{lbl_i}: {n_peaks}")
+                        except Exception:
+                            full_status = list(status_parts or [])
+                        _finalize_foci_peaks_status(
+                            src_idx,
+                            frame_idx,
+                            spotiflow_available=bool(spotiflow_ok),
+                            status_parts=full_status or list(status_parts or []),
+                        )
+                        preview_dialog._foci_worker = None
+                        preview_dialog._foci_worker_slot = None
+
+                    worker = FociPeaksPreviewWorker(request_id, self, pending_jobs, parent=preview_dialog)
+                    preview_dialog._foci_worker_slot = _on_foci_worker_finished
+                    worker.finished.connect(_on_foci_worker_finished)
+                    preview_dialog._foci_worker = worker
+                    worker.start()
+                    return
 
                 spotiflow_available = True
                 status_parts: list[str] = []
@@ -3540,13 +3800,6 @@ class OmniposeSegTab(QWidget):
                 for si in range(len(sources)):
                     ch_key = self._spotiflow_channel_key_for_preview_index(preview_dialog, si)
                     sf = self._get_spotiflow_detection_params(channel_key=ch_key)
-                    _sf_opt = bool(sf.get("use_optimized_threshold", True))
-                    _sf_prob = float(sf.get("prob_thresh") if sf.get("prob_thresh") is not None else 0.5)
-                    _sf_min_dist = int(sf.get("min_distance", 1) or 1)
-                    _sf_subpix = bool(sf.get("subpix", True))
-                    _sf_norm = bool(sf.get("normalize", True))
-                    _sf_pl = float(sf.get("perc_low", 1.0) or 1.0)
-                    _sf_ph = float(sf.get("perc_high", 99.8) or 99.8)
                     key = _cache_key(si, sf)
                     peaks: list
                     if key in cache and not force_recalc:
@@ -3554,55 +3807,18 @@ class OmniposeSegTab(QWidget):
                     else:
                         if not allow_detect:
                             continue
-                        try:
-                            from bactomate.modules.foci_utils import detect_peaks_spotiflow, load_spotiflow_model
-                            from bactomate.modules.image_stack_utils import coerce_plane_to_2d
-                        except Exception as e:
-                            get_logger().warning(
-                                "Spotiflow preview imports failed: %s", e, exc_info=True,
-                            )
-                            peaks = []
-                            spotiflow_available = False
-                            break
                         arr = sources[si]
                         fi = max(0, min(int(frame_idx), int(arr.shape[0]) - 1))
                         plane = np.asarray(coerce_plane_to_2d(np.asarray(arr[fi])), dtype=np.float64)
-                        try:
-                            prob_kw = None if _sf_opt else float(_sf_prob)
-                            mn = str(sf.get("model_name") or "general")
-                            mp = str(sf.get("model_path") or "").strip() or None
-                            spotiflow_model = load_spotiflow_model(model_name=mn, model_path=mp)
-                            det_kw = {
-                                k: v
-                                for k, v in sf.items()
-                                if k not in ("model_name", "model_path", "raise_on_error")
-                            }
-                            det_kw["use_optimized_threshold"] = bool(_sf_opt)
-                            det_kw["prob_thresh"] = prob_kw
-                            det_kw["min_distance"] = int(_sf_min_dist)
-                            det_kw["subpix"] = bool(_sf_subpix)
-                            det_kw["normalize"] = bool(_sf_norm)
-                            det_kw["perc_low"] = float(_sf_pl)
-                            det_kw["perc_high"] = float(_sf_ph)
-                            det_kw["raise_on_error"] = False
-                            result = detect_peaks_spotiflow(
-                                plane,
-                                spotiflow_model=spotiflow_model,
-                                **det_kw,
-                            )
-                        except Exception as e:
-                            get_logger().warning(
-                                "Spotiflow preview detection raised: %s", e, exc_info=True,
-                            )
-                            result = None
-                        if result is None:
+                        peaks_raw, avail = self._spotiflow_detect_peaks_on_plane(plane, sf)
+                        if not avail or peaks_raw is None:
                             spotiflow_available = False
                             peaks = []
                             break
-                        peaks = list(result)
+                        peaks = list(peaks_raw)
                         if spotiflow_available:
                             cache[key] = list(peaks)
-                    peaks = _filter_peaks(list(peaks))
+                    peaks = self._filter_foci_peaks_by_csv_threshold(list(peaks), _csv_minp)
                     cache[key] = peaks
                     if si < len(paths):
                         lbl = short_foci_stack_label(Path(paths[si]))
@@ -3623,21 +3839,12 @@ class OmniposeSegTab(QWidget):
                     refresh_image_display()
                     return
 
-                sf_cur = self._get_spotiflow_detection_params(
-                    channel_key=self._spotiflow_channel_key_for_preview_index(preview_dialog, src_idx)
+                _finalize_foci_peaks_status(
+                    src_idx,
+                    frame_idx,
+                    spotiflow_available=spotiflow_available,
+                    status_parts=status_parts,
                 )
-                cur_key = _cache_key(src_idx, sf_cur)
-                preview_dialog._foci_peaks_for_current = list(cache.get(cur_key) or [])
-                if not spotiflow_available:
-                    _set_status(
-                        "Foci: Spotiflow unavailable — install spotiflow or check logs. "
-                        "No peaks drawn."
-                    )
-                elif status_parts:
-                    _set_status("Foci — " + ", ".join(status_parts))
-                else:
-                    _set_status(f"Foci: {len(preview_dialog._foci_peaks_for_current)} peak(s) on current frame.")
-                refresh_image_display()
 
             # Store data for navigation
             preview_dialog.images = images
@@ -5038,6 +5245,7 @@ class OmniposeSegTab(QWidget):
                         preview_dialog.current_frame,
                         allow_detect=True,
                         force_recalc=True,
+                        background=True,
                     )
                 except Exception:
                     get_logger().exception("Re-detect: foci detection failed")
@@ -5805,14 +6013,17 @@ class OmniposeSegTab(QWidget):
                     pass
 
                 def _apply_detect_foci_preview_toggle() -> None:
-                    """Heavy foci enable/disable work (TIFF load, nav rebuild, peak detect)."""
+                    """Foci enable/disable: nav rebuild on main thread; Spotiflow runs in background."""
                     builder = nav_preview_spec_builder
                     if builder is None or nav_ctrl is None:
                         return
                     checked = bool(self.detect_foci.isChecked())
                     if checked:
                         inp = getattr(preview_dialog, "_segmentation_input_path", None)
-                        if inp:
+                        existing_paths = getattr(preview_dialog, "_foci_source_paths", None) or []
+                        existing_sources = getattr(preview_dialog, "_foci_sources", None) or []
+                        # Preview open already loads *_foci* stacks; avoid re-reading TIFFs on toggle.
+                        if inp and not (existing_paths and existing_sources):
                             try:
                                 found = self._find_foci_sources_for_input(Path(inp))
                                 loaded: list = []
@@ -5850,6 +6061,7 @@ class OmniposeSegTab(QWidget):
                     if not (checked and len(fps_t) > 1):
                         preview_dialog.set_extra("show_foci", bool(checked and fps_t))
                     if not checked:
+                        _stop_foci_peaks_worker()
                         preview_dialog._foci_peaks_for_current = []
                         if isinstance(getattr(preview_dialog, "_foci_peaks_cache", None), dict):
                             preview_dialog._foci_peaks_cache.clear()
@@ -5946,10 +6158,12 @@ class OmniposeSegTab(QWidget):
                             int(getattr(preview_dialog, "current_frame", 0) or 0),
                             allow_detect=bool(checked),
                             force_recalc=bool(checked and fps_t),
+                            background=bool(checked and fps_t),
                         )
                     except Exception:
                         get_logger().exception("Detect foci toggle: foci peak update failed")
-                    refresh_image_display()
+                    if not (checked and fps_t):
+                        refresh_image_display()
                     ts = getattr(preview_dialog, "top_section", None)
                     if ts is not None:
                         vis = bool(checked and fps_t)
@@ -6141,8 +6355,18 @@ class OmniposeSegTab(QWidget):
                 update_display(0, show_progress=True)
                 try:
                     _set_display_frame_for_selection(0)
-                    _compute_foci_peaks_for_current(0)
-                    refresh_image_display()
+                    _det_on = bool(
+                        getattr(getattr(self, "detect_foci", None), "isChecked", lambda: False)()
+                    )
+                    _has_foci = bool(getattr(preview_dialog, "_foci_source_paths", None) or [])
+                    _compute_foci_peaks_for_current(
+                        0,
+                        allow_detect=bool(_det_on),
+                        force_recalc=bool(_det_on and _has_foci),
+                        background=bool(_det_on and _has_foci),
+                    )
+                    if not (_det_on and _has_foci):
+                        refresh_image_display()
                 except Exception:
                     pass
             # Short delay so the preview window has time to paint before we run segmentation

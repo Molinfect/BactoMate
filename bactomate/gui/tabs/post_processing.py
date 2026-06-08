@@ -739,6 +739,38 @@ class PostProcessingTab(QWidget):
             return per_tile_lut[channel_norm]
         return None
 
+    @staticmethod
+    def _montage_clamp_lut_pair(
+        lut_pair: Optional[Tuple[float, float]],
+        arr: Any,
+    ) -> Optional[Tuple[float, float]]:
+        """Clamp manual LUT bounds to the selected tile's finite data range."""
+        if lut_pair is None:
+            return None
+        try:
+            vmin, vmax = float(lut_pair[0]), float(lut_pair[1])
+        except Exception:
+            return None
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            return None
+        plane = np.asarray(arr, dtype=np.float64)
+        valid = plane[np.isfinite(plane)]
+        if valid.size == 0:
+            return None
+        amin = float(np.min(valid))
+        amax = float(np.max(valid))
+        if not np.isfinite(amin) or not np.isfinite(amax):
+            return None
+        if amax <= amin:
+            amax = amin + 1.0
+        vmin = max(amin, min(vmin, amax - 1e-9))
+        vmax = min(amax, max(vmax, amin + 1e-9))
+        if vmax <= vmin:
+            vmax = min(amax, vmin + 1.0)
+        if vmax <= vmin:
+            return None
+        return (vmin, vmax)
+
     def _try_update_montage_pixel_size_from_paths(self) -> None:
         """Read pixel size from the first montage input file for embedded scale bar."""
         if not getattr(self, "montage_sb_pixel_size", None):
@@ -1968,8 +2000,8 @@ class PostProcessingTab(QWidget):
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
 
-        montage_lut_canvas_height = 92 if embedded else LUT_HIST_CANVAS_HEIGHT_PX
-        hist_fig = Figure(figsize=(LUT_HIST_FIGSIZE_INCHES[0], 1.35 if embedded else LUT_HIST_FIGSIZE_INCHES[1]))
+        montage_lut_canvas_height = 132 if embedded else LUT_HIST_CANVAS_HEIGHT_PX
+        hist_fig = Figure(figsize=(LUT_HIST_FIGSIZE_INCHES[0], 1.85 if embedded else LUT_HIST_FIGSIZE_INCHES[1]))
         hist_canvas = FigureCanvas(hist_fig)
         hist_canvas.setMinimumHeight(montage_lut_canvas_height)
         hist_canvas.setMaximumHeight(montage_lut_canvas_height)
@@ -1984,7 +2016,7 @@ class PostProcessingTab(QWidget):
         hist_ax.yaxis.label.set_color("white")
         apply_lut_histogram_figure_margins(hist_fig)
         if embedded:
-            hist_fig.subplots_adjust(left=0.15, right=0.98, top=0.86, bottom=0.28)
+            hist_fig.subplots_adjust(left=0.10, right=0.985, top=0.88, bottom=0.22)
         hist_canvas.setStyleSheet("background-color: #2b2b2b;")
         hist_canvas.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -2039,7 +2071,10 @@ class PostProcessingTab(QWidget):
                     dpi = float(self._fig.get_dpi() or 100.0)
                     self._fig.set_size_inches(w / dpi, h / dpi, forward=True)
                     try:
-                        apply_lut_histogram_figure_margins(self._fig)
+                        if embedded:
+                            self._fig.subplots_adjust(left=0.10, right=0.985, top=0.88, bottom=0.22)
+                        else:
+                            apply_lut_histogram_figure_margins(self._fig)
                     except Exception:
                         pass
                     self._canvas.draw_idle()
@@ -2061,7 +2096,10 @@ class PostProcessingTab(QWidget):
             dpi = float(hist_fig.get_dpi() or 100.0)
             hist_fig.set_size_inches(w / dpi, h / dpi, forward=True)
             try:
-                apply_lut_histogram_figure_margins(hist_fig)
+                if embedded:
+                    hist_fig.subplots_adjust(left=0.10, right=0.985, top=0.88, bottom=0.22)
+                else:
+                    apply_lut_histogram_figure_margins(hist_fig)
             except Exception:
                 pass
             hist_canvas.draw_idle()
@@ -3417,10 +3455,7 @@ class PostProcessingTab(QWidget):
                 comp_rgb[..., 0] += plane * r
                 comp_rgb[..., 1] += plane * g
                 comp_rgb[..., 2] += plane * b
-            if comp_rgb.max() > 1e-9:
-                comp_rgb = comp_rgb / comp_rgb.max()
-            out = comp_rgb / max(comp_rgb.max(), 1e-9)
-            return (out * 255).clip(0, 255).astype(np.uint8)
+            return (np.clip(comp_rgb, 0.0, 1.0) * 255).astype(np.uint8)
 
         def _select_z_plane_or_project(arr: np.ndarray, z_axis: int, *, z_max: bool) -> np.ndarray:
             """Take first z plane or max-project over z for montage display."""
@@ -3992,6 +4027,7 @@ class PostProcessingTab(QWidget):
         pil_images = []
         rendered_tiles: List[tuple] = []
         rendered_meta: List[dict] = []
+        rendered_raw_tiles: List[tuple] = []
         max_w, max_h = 0, 0
         placeholder_size = 100
 
@@ -4027,11 +4063,13 @@ class PostProcessingTab(QWidget):
                 placeholder = np.full((placeholder_size, placeholder_size, 3), 128, dtype=np.uint8)
                 pil_images.append((Image.fromarray(placeholder), label + "?"))
                 rendered_tiles.append((placeholder, label + "?", None))
+                rendered_raw_tiles.append((None, label + "?", None))
                 rendered_meta.append(meta)
                 max_w = max(max_w, placeholder_size)
                 max_h = max(max_h, placeholder_size)
                 continue
             arr = _collapse_tile_axes(np.asarray(arr))
+            raw_arr_for_lut = np.asarray(arr).copy()
             color_ov = self._montage_lookup_color_override_for_meta(
                 tile_key,
                 idx,
@@ -4102,7 +4140,9 @@ class PostProcessingTab(QWidget):
                             ch_meta = tile_meta[i] if i < len(tile_meta) else {}
                             lut_pair = self._montage_lookup_lut_for_meta(per_tile_lut, ch_lbl, i, ch_meta)
                             if lut_pair is not None:
-                                per_ch_lut[i] = lut_pair
+                                clamped_pair = self._montage_clamp_lut_pair(lut_pair, arr_hwc[..., i])
+                                if clamped_pair is not None:
+                                    per_ch_lut[i] = clamped_pair
                         for i in range(min(idx, arr_hwc.shape[-1])):
                             ch_lbl = self._montage_tile_key(tiles[i][1])
                             ch_meta = tile_meta[i] if i < len(tile_meta) else {}
@@ -4136,9 +4176,9 @@ class PostProcessingTab(QWidget):
             vmin_override, vmax_override = None, None
             lut_pair = self._montage_lookup_lut_for_meta(per_tile_lut, tile_key, idx, meta)
             if lut_pair is not None and not label.endswith(" Merged"):
-                vmin_override, vmax_override = lut_pair
-                if vmax_override <= vmin_override:
-                    vmax_override = vmin_override + 1e-9
+                clamped_pair = self._montage_clamp_lut_pair(lut_pair, arr)
+                if clamped_pair is not None:
+                    vmin_override, vmax_override = clamped_pair
             elif not label.endswith(" Merged"):
                 vmin_override, vmax_override = _lut_from_percentile(np.asarray(arr), tile_key, idx, label)
             # Single-channel with semantic color (r,g,b)
@@ -4212,6 +4252,7 @@ class PostProcessingTab(QWidget):
                 continue
             pil_images.append((Image.fromarray(arr), label))
             rendered_tiles.append((arr, label, color_or_none))
+            rendered_raw_tiles.append((raw_arr_for_lut, label, color_or_none))
             rendered_meta.append(meta)
             max_w = max(max_w, arr.shape[1])
             max_h = max(max_h, arr.shape[0])
@@ -4225,6 +4266,7 @@ class PostProcessingTab(QWidget):
                 return None
             pil_images = [item[0] for item in merged_items]
             rendered_tiles = [item[1] for item in merged_items]
+            rendered_raw_tiles = [item[1] for item in merged_items]
             rendered_meta = [item[2] for item in merged_items]
             max_w = max(int(pil_img.size[0]) for pil_img, _label in pil_images)
             max_h = max(int(pil_img.size[1]) for pil_img, _label in pil_images)
@@ -4304,6 +4346,7 @@ class PostProcessingTab(QWidget):
                 "out_h": out_h,
                 "n_tiles": n_tiles,
                 "tiles": rendered_tiles,
+                "raw_tiles": rendered_raw_tiles,
                 "tile_meta": rendered_meta,
                 "tile_labels": [label for _, label, _ in rendered_tiles],
                 "tile_boxes": tile_boxes,
@@ -4418,7 +4461,10 @@ class PostProcessingTab(QWidget):
         dlg._focus_drag_start = None
         dlg._current_displayed = self._apply_montage_scalebar_if_enabled(initial_montage.copy(), layout=layout)
 
-        selected_label = QLabel("Click a tile to adjust LUT. Enable Focus inset, then right-drag a box to add a zoom callout. Middle-drag to pan, wheel to zoom.")
+        selected_label = QLabel(
+            "Click a tile to adjust LUT. Double-click a tile to open Edit tiles. "
+            "Enable Focus inset, then right-drag a box to add a zoom callout. Middle-drag to pan, wheel to zoom."
+        )
         selected_label.setWordWrap(True)
         selected_label.setStyleSheet("color: #aaa; font-size: 11px;")
         main_layout.addWidget(selected_label)
@@ -4453,6 +4499,14 @@ class PostProcessingTab(QWidget):
             hist_canvas,
         ) = self._build_montage_lut_controls(dlg, embedded=embedded)
         lut_section = CollapsibleSection("LUTs", lut_group, parent=dlg, expanded=False, compact=True)
+        lut_note = QLabel(
+            "Merged tiles use the LUTs of the channels that compose them. "
+            "Select a single-channel tile to change the merged image."
+        )
+        lut_note.setWordWrap(True)
+        lut_note.setStyleSheet("color: #aeb6c2; font-size: 10pt; padding: 0px 4px 2px 4px;")
+        lut_note.setVisible(False)
+        lut_section.toggled.connect(lambda expanded: lut_note.setVisible(bool(expanded)))
         montage_chrome_host = QWidget(dlg)
         montage_chrome_layout = QVBoxLayout(montage_chrome_host)
         montage_chrome_layout.setContentsMargins(0, 0, 0, 0)
@@ -4462,6 +4516,7 @@ class PostProcessingTab(QWidget):
         montage_chrome_layout.addWidget(focus_section)
         montage_chrome_layout.addWidget(labels_section)
         montage_chrome_layout.addWidget(lut_section)
+        montage_chrome_layout.addWidget(lut_note)
         dlg._montage_chrome_host = montage_chrome_host
         dlg._montage_chrome_layout = montage_chrome_layout
         if embedded:
@@ -4477,6 +4532,7 @@ class PostProcessingTab(QWidget):
             main_layout.addWidget(focus_section)
             main_layout.addWidget(labels_section)
             main_layout.addWidget(lut_section)
+            main_layout.addWidget(lut_note)
 
         selected_index: List[Optional[int]] = [None]
         current_vmin: List[Optional[float]] = [None]
@@ -4507,7 +4563,7 @@ class PostProcessingTab(QWidget):
         def get_tile_raw_for_hist(tile_idx: int) -> Optional[tuple[np.ndarray, np.dtype]]:
             """Return (flat float array, original dtype) for histogram. dtype used for full intensity range."""
             layout = dlg._layout
-            tiles_list = layout["tiles"]
+            tiles_list = layout.get("raw_tiles") or layout.get("tiles") or []
             if tile_idx < 0 or tile_idx >= len(tiles_list):
                 return None
             arr, _label, _color = tiles_list[tile_idx]
@@ -4804,6 +4860,19 @@ class PostProcessingTab(QWidget):
         image_canvas.roi_changed.connect(on_roi_changed)
         image_canvas.roi_edit_finished.connect(on_roi_edit_finished)
 
+        def _store_manual_lut_for_tile(tile_idx: int, lut_pair: tuple[float, float]) -> None:
+            labels = dlg._layout.get("tile_labels", [])
+            if tile_idx < 0 or tile_idx >= len(labels):
+                return
+            value = (float(lut_pair[0]), float(lut_pair[1]))
+            tile_key = self._montage_tile_key(labels[tile_idx])
+            dlg._per_tile_lut[tile_key] = value
+            dlg._per_tile_lut[int(tile_idx)] = value
+            tile_meta = dlg._layout.get("tile_meta", [])
+            channel_norm = (tile_meta[tile_idx] if tile_idx < len(tile_meta) else {}).get("channel_norm")
+            if channel_norm:
+                dlg._per_tile_lut[channel_norm] = value
+
         def on_canvas_click(x: int, y: int) -> None:
             layout = dlg._layout
             x, y = display_to_montage_xy(x, y)
@@ -4816,10 +4885,12 @@ class PostProcessingTab(QWidget):
             is_merged_tile = label.endswith(" Merged")
             if is_merged_tile:
                 lut_group.setEnabled(False)
+                lut_note.setVisible(True)
                 selected_label.setText(f"Selected: tile {idx} — {label}. The merged image has no separate LUT; it is derived from the channel tiles above. Adjust those tiles to change the merge.")
                 current_vmin[0], current_vmax[0] = None, None
             else:
                 lut_group.setEnabled(True)
+                lut_note.setVisible(bool(lut_section.is_expanded()))
                 tile_key = self._montage_tile_key(label)
                 lut_pair = dlg._per_tile_lut.get(tile_key)
                 if lut_pair is not None:
@@ -4882,7 +4953,7 @@ class PostProcessingTab(QWidget):
             current_vmin[0], current_vmax[0] = vmin, vmax
             sel = selected_index[0]
             if sel is not None and sel < len(dlg._layout.get("tile_labels", [])):
-                dlg._per_tile_lut[self._montage_tile_key(dlg._layout["tile_labels"][sel])] = (vmin, vmax)
+                _store_manual_lut_for_tile(sel, (vmin, vmax))
             min_spin.setValue(vmin)
             max_spin.setValue(vmax)
             if hist_vmin_line[0] is not None:
@@ -4905,12 +4976,7 @@ class PostProcessingTab(QWidget):
             lut_pair = auto_lut_for_tile(tile_idx)
             if lut_pair is None:
                 return False
-            tile_key = self._montage_tile_key(label)
-            dlg._per_tile_lut[tile_key] = lut_pair
-            tile_meta = dlg._layout.get("tile_meta", [])
-            channel_norm = (tile_meta[tile_idx] if tile_idx < len(tile_meta) else {}).get("channel_norm")
-            if channel_norm:
-                dlg._per_tile_lut[channel_norm] = lut_pair
+            _store_manual_lut_for_tile(tile_idx, lut_pair)
             return True
 
         def on_auto_selected() -> None:
@@ -4988,7 +5054,7 @@ class PostProcessingTab(QWidget):
                 vmin, vmax = current_vmin[0], current_vmax[0]
                 sel = selected_index[0]
                 if sel is not None and sel < len(dlg._layout.get("tile_labels", [])):
-                    dlg._per_tile_lut[self._montage_tile_key(dlg._layout["tile_labels"][sel])] = (vmin, vmax)
+                    _store_manual_lut_for_tile(sel, (vmin, vmax))
                 min_spin.blockSignals(True)
                 min_spin.setValue(vmin)
                 min_spin.setRange(hmin, hmax)
@@ -5080,6 +5146,19 @@ class PostProcessingTab(QWidget):
 
         def on_edit_colors() -> None:
             self._edit_montage_tile_colors(dlg._layout, refresh_callback=on_update)
+
+        def on_canvas_double_click(x: int, y: int) -> None:
+            x, y = display_to_montage_xy(x, y)
+            idx = tile_at_xy(x, y)
+            if idx is not None:
+                selected_index[0] = idx
+                update_histogram_for_tile(idx)
+            on_edit_colors()
+
+        try:
+            image_canvas.double_clicked_image.connect(on_canvas_double_click)
+        except Exception:
+            pass
 
         def on_save() -> None:
             current_displayed = compose_current_displayed()

@@ -3580,6 +3580,14 @@ def show_filter_preview(
 
         def _on_overlay_changed(key: str, checked: bool) -> None:
             dlg.set_extra(str(key), bool(checked))
+            if str(key) == "show_cells":
+                # The cell overlay is baked into the base preview image, not just
+                # the foci marker layer. Force a normal redraw so deselecting the
+                # checkbox cannot reuse a cached base with cell masks still drawn.
+                _clear_preview_base_caches(dlg)
+                dlg.set_extra("overlay_only", False)
+                dlg.refresh()
+                return
             _refresh_foci_overlay_only()
 
         def _on_foci_channel_overlay_changed(_idx: int, _checked: bool) -> None:

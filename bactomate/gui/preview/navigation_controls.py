@@ -102,9 +102,10 @@ class PreviewNavigationControls(QWidget):
 
         self._root = QVBoxLayout(self)
         # Small bottom inset so bordered compact buttons (e.g. Clear Cache) are not clipped by the row.
-        self._root.setContentsMargins(0, 0, 0, 4)
+        self._root.setContentsMargins(0, 0, 0, 8)
         self._root.setSpacing(6)
         self._rows_host = QWidget(self)
+        self._rows_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._rows_layout = QVBoxLayout(self._rows_host)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
         self._rows_layout.setSpacing(6)
@@ -123,6 +124,7 @@ class PreviewNavigationControls(QWidget):
         except Exception:
             pass
         self._image_combo.setMinimumWidth(180)
+        self._image_combo.setFixedHeight(38)
         self._frame_label = QLabel("Frame:")
         self._frame_spin = QSpinBox()
         # Prevent intermediate jumps while typing (e.g. '55' briefly becoming '5').
@@ -151,7 +153,9 @@ class PreviewNavigationControls(QWidget):
         except Exception:
             pass
         for spin in (self._frame_spin, self._channel_spin, self._z_spin):
-            spin.setFixedHeight(32)
+            spin.setFixedHeight(38)
+            spin.setMinimumWidth(64)
+            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             try:
                 from bactomate.gui.styles import PREVIEW_NAV_SPINBOX_STYLESHEET
 
@@ -160,6 +164,7 @@ class PreviewNavigationControls(QWidget):
                 pass
         for lbl in (self._image_label, self._frame_label, self._frame_of_label, self._channel_label, self._z_label):
             lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            lbl.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         # Match Spotiflow / foci param row labels (e.g. "Peaks min prob"): same size, weight, hue.
         _nav_lbl = "QLabel { color: #c8d0dc; font-size: 10pt; font-weight: 500; }"
         self._image_label.setStyleSheet(_nav_lbl)
@@ -294,6 +299,8 @@ class PreviewNavigationControls(QWidget):
 
     def _add_nav_row(self, row: QHBoxLayout) -> None:
         wrap = QWidget(self._rows_host)
+        wrap.setMinimumHeight(46)
+        wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         wrap.setLayout(row)
         self._rows_layout.addWidget(wrap)
 
