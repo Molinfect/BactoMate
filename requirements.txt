@@ -8,7 +8,7 @@
 # - Upgrade pip first:  python -m pip install -U pip
 # - Floors below (numpy/scipy/skimage/trackastra/matplotlib/pandas) prefer wheels and avoid sdist builds
 #   that fail on 3.12 or against NumPy 2 (e.g. old matplotlib versioneer, pandas 2.1.0 vs NumPy 2).
-# - trackastra>=0.5 and torch>=2.5/torchvision>=0.20 narrow backtracking vs wide >=2.0 / old trackastra.
+# - trackastra>=0.5 pairs with the pinned torch stack below (tested on macOS MPS + CI).
 # - Omnipose still pulls aicsimageio (older stack); keep bioio/tifffile as documented—avoid double TIFF stacks.
 # - TensorFlow + PyTorch in one env is OK on CPU; for Apple GPU use tensorflow-metal matching your TF minor.
 # - Mixing conda base Python with a venv can confuse native builds (wrong headers); prefer a plain venv + `which pip`.
@@ -62,12 +62,11 @@ setproctitle>=1.3.0,<2.0.0  # "BactoMate" in macOS menu bar when run from .app
 # Testing (optional)
 pytest>=7.0.0,<9.0.0
 
-# PyTorch (Omnipose, Trackastra). For CUDA see comments below.
-# CUDA: after install, pip uninstall torch torchvision torchaudio -y
-#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-# >=2.5 / >=0.20: paired release line, cp312 wheels, cuts pip backtracking vs torch>=2.0
-torch>=2.5.0,<3.0.0
-torchvision>=0.20.0,<1.0.0
+# PyTorch (Omnipose, Trackastra). Pinned for reproducible installs across lab Macs/Windows.
+# torch 2.12+ breaks Omnipose preview segmentation on Apple MPS (float64 on MPS).
+# NVIDIA CUDA: after install, run setup/install_cuda_pytorch.sh (replaces CPU/MPS wheels).
+torch==2.11.0
+torchvision==0.26.0
 
 # Cell tracking (zarr 3.x required by trackastra; bioio-ome-tiff 1.2+ is compatible)
 # [etultra]: trackastra_pretrained_feats for general_2d_w_SAM2_features model

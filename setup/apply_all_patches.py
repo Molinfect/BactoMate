@@ -1401,6 +1401,33 @@ def patch_cellpose_omni_core_save_model() -> bool:
     return False
 
 
+def patch_cellpose_omni_dynamics_mps_float32() -> bool:
+    """cellpose_omni _extend_centers_gpu uses torch.double; Apple MPS rejects float64."""
+    dynamics_file = _find_in_syspath("cellpose_omni/dynamics.py")
+    if not dynamics_file:
+        print("  WARNING: Could not find cellpose_omni/dynamics.py")
+        return False
+
+    content = dynamics_file.read_text(encoding=_TEXT_ENCODING)
+    sentinel = "# BactoMate: MPS cannot use float64 in _extend_centers_gpu"
+    if sentinel in content:
+        print("  ✓ cellpose_omni dynamics (MPS float32) already patched")
+        return True
+
+    old = "    T = torch.zeros((nimg,Ly,Lx), dtype=torch.double, device=device)"
+    new = f"""    {sentinel}
+    _dtype = torch.float32 if (device is not None and getattr(device, "type", "") == "mps") else torch.double
+    T = torch.zeros((nimg,Ly,Lx), dtype=_dtype, device=device)"""
+    if old not in content:
+        print("  WARNING: Could not find _extend_centers_gpu torch.double line in cellpose_omni/dynamics.py")
+        return False
+
+    content = content.replace(old, new, 1)
+    dynamics_file.write_text(content, encoding=_TEXT_ENCODING)
+    print("  ✓ Patched cellpose_omni dynamics (MPS float32 in _extend_centers_gpu)")
+    return True
+
+
 def patch_cellpose_omni_core_mps_device() -> bool:
     """Fix MPS device string in cellpose_omni/core.py: use 'mps' not 'mps:{gpu_number}'.
     When use_gpu(True) is called, gpu_number is True and f'mps:{gpu_number}' becomes 'mps:True', which PyTorch rejects.
@@ -1464,6 +1491,7 @@ PATCH_LIST = [
     ("io", "cellpose_omni io: NumPy 2.0 TIFF read", patch_cellpose_omni_io),
     ("dynamics", "cellpose_omni dynamics: steps2D tr", patch_cellpose_omni_dynamics),
     ("dynamics_niter_none", "cellpose_omni dynamics: niter=None default to 200", patch_cellpose_omni_dynamics_niter_none),
+    ("dynamics_mps_float32", "cellpose_omni dynamics: float32 on Apple MPS (no float64)", patch_cellpose_omni_dynamics_mps_float32),
     ("resnet_load", "cellpose_omni resnet_torch: load checkpoint unwrap", patch_cellpose_omni_resnet_load_checkpoint),
     ("omnipose_gpu_mps", "omnipose gpu: MPS (Apple Silicon) detection + log GPU exception", patch_omnipose_gpu_mps),
     ("omnipose_gpu_empty_except", "[DEBUG] omnipose gpu: fix empty except SyntaxError only", patch_omnipose_gpu_empty_except),

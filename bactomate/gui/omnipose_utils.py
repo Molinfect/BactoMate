@@ -368,10 +368,12 @@ def bootstrap_cellpose_omni_for_bactomate() -> None:
         from bactomate.gui.patches import (
             _ensure_omnipose_omni_models_constant,
             _patch_cellpose_omni_affinity_architecture,
+            _patch_cellpose_omni_dynamics_mps_float32,
         )
 
         _ensure_omnipose_omni_models_constant()
         _patch_cellpose_omni_affinity_architecture()
+        _patch_cellpose_omni_dynamics_mps_float32()
     except Exception:
         pass
     try:

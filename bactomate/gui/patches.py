@@ -292,10 +292,52 @@ def _patch_cellpose_omni_affinity_architecture() -> None:
     CellposeModel.__init__ = _patched_init
 
 
+def _patch_cellpose_omni_dynamics_mps_float32() -> None:
+    """cellpose_omni _extend_centers_gpu uses torch.double; Apple MPS rejects float64."""
+    try:
+        import numpy as np
+        import torch
+        import cellpose_omni.dynamics as dyn
+    except ImportError:
+        return
+    if getattr(dyn._extend_centers_gpu, "_bactomate_mps_patch", False):
+        return
+
+    def _extend_centers_gpu(neighbors, centers, isneighbor, Ly, Lx, n_iter=200, device=torch.device("cuda")):
+        if device is not None:
+            device = device
+        nimg = neighbors.shape[0] // 9
+        pt = torch.from_numpy(neighbors).to(device)
+        dtype = (
+            torch.float32
+            if device is not None and getattr(device, "type", "") == "mps"
+            else torch.double
+        )
+        T = torch.zeros((nimg, Ly, Lx), dtype=dtype, device=device)
+        meds = torch.from_numpy(centers.astype(int)).to(device).long()
+        isneigh = torch.from_numpy(isneighbor).to(device)
+        for _ in range(n_iter):
+            T[:, meds[:, 0], meds[:, 1]] += 1
+            Tneigh = T[:, pt[:, :, 0], pt[:, :, 1]]
+            Tneigh *= isneigh
+            T[:, pt[0, :, 0], pt[0, :, 1]] = Tneigh.mean(axis=1)
+        del meds, isneigh, Tneigh
+        T = torch.log(1.0 + T)
+        grads = T[:, pt[[2, 1, 4, 3], :, 0], pt[[2, 1, 4, 3], :, 1]]
+        dy = grads[:, 0] - grads[:, 1]
+        dx = grads[:, 2] - grads[:, 3]
+        del grads
+        return np.stack((dy.cpu().squeeze(), dx.cpu().squeeze()), axis=-2)
+
+    _extend_centers_gpu._bactomate_mps_patch = True
+    dyn._extend_centers_gpu = _extend_centers_gpu
+
+
 # Run all patches on import
 _apply_pbr_patch()
 is_frozen = getattr(sys, "frozen", False) or hasattr(sys, "__compiled__")
 if is_frozen:
     _patch_omnipose_get_masks()
 _patch_cellpose_omni_affinity_architecture()
+_patch_cellpose_omni_dynamics_mps_float32()
 _apply_qt_paths()

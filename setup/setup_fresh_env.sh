@@ -71,6 +71,7 @@ echo "Installing requirements from requirements.txt..."
 if [ -f "requirements.txt" ]; then
     pip install -r requirements.txt
     echo "✓ Requirements installed"
+    python3 -c "import torch, torchvision; print(f'  PyTorch stack: torch {torch.__version__}, torchvision {torchvision.__version__}')"
 
     echo ""
     echo "Installing BactoMate in editable mode..."

@@ -111,10 +111,10 @@ if exist "%CU_TMP%" for /f "usebackq delims=" %%I in ("%CU_TMP%") do set "CU_IND
 if exist "%CU_TMP%" del /q "%CU_TMP%" >nul 2>&1
 if not defined CU_INDEX (
     echo   No NVIDIA GPU detected; installing matched CPU PyTorch wheels...
-    pip install --force-reinstall "torch>=2.5.0,<3.0.0" "torchvision>=0.20.0,<1.0.0" torchaudio
+    pip install --force-reinstall "torch==2.11.0" "torchvision==0.26.0" "torchaudio==2.11.0"
     if errorlevel 1 (
         echo [WARNING] PyTorch CPU reinstall failed. Try manually:
-        echo   pip install --force-reinstall "torch>=2.5.0,<3.0.0" "torchvision>=0.20.0,<1.0.0" torchaudio
+        echo   pip install --force-reinstall "torch==2.11.0" "torchvision==0.26.0" "torchaudio==2.11.0"
     ) else (
         "%PYEXE%" "%SETUP_DIR%check_torch_cuda_bundle.py" >nul 2>&1
         if not errorlevel 1 (

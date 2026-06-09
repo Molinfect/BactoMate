@@ -4,6 +4,16 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.6.1 (2026-06)
+
+### Reproducible installs, CI, and Apple MPS segmentation
+
+- **Pin PyTorch stack:** `torch==2.11.0` and `torchvision==0.26.0` in `requirements.txt` so fresh installs match tested lab/CI environments (avoids drift to torch 2.12+).
+- **Apple MPS preview fix:** patch `cellpose_omni` `_extend_centers_gpu` to use `float32` on MPS instead of `float64` (fixes preview segmentation crash on Apple Silicon GPU).
+- **CI green on macOS and Windows:** test fixes for Excel file-handle cleanup on Windows, path assertions, and regressions from v2.6.0 preview work.
+
+---
+
 ## v2.6.0 (2026-06)
 
 ### Preview UX: montage LUT, foci detection, and navigation
