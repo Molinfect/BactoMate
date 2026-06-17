@@ -1,62 +1,65 @@
-# BactoMate — remaining work plan
+# BactoMate — project plan
 
-Last updated: 2026-06-17 (after v2.7.10)
+**Status: closed** (2026-06-17, through **v2.7.10**)
 
----
-
-## Completed
-
-### v2.7.8–v2.7.9
-- Release hygiene, U-Net persistent Cell IDs, workers import tests, CI on `dev`, docs, slimming
-
-### v2.7.10 (optional items + Priority 5 start)
-- [x] `pytest-cov` dev extra + `[tool.coverage.*]` in `pyproject.toml`
-- [x] Workspace folder renamed `BactoMate_v1.9` → `BactoMate`
-- [x] `bactomate/modules/tiff_stack_io.py` — memmap for large stacks, preview page reads
-- [x] `bactomate/gui/workers/tracking_io.py` — stack helpers, auto-skip viz when frames > 150
-- [x] Tracking worker uses shared I/O; visualization split started (I/O module extracted)
-- [x] `tests/test_pipeline_integration.py` — masks → Cell IDs → analyze → preflight → join
-- [x] `tests/test_tiff_stack_io.py`
-
-**Coverage baseline** (run locally):
-
-```bash
-pip install -e ".[dev]"
-pytest tests/ --cov=bactomate --cov-report=term-missing
-```
+This plan tracked follow-up work after the v2.7.7–v2.7.9 refactor wave. All items that were scoped for this release cycle are **done**. What remains below is optional maintenance backlog — not blocking releases or daily use.
 
 ---
 
-## Still open (Priority 5 — long term)
+## Completed (v2.7.7 → v2.7.10)
 
-### 5.1 Split giant tab files
+### Release & hygiene
+- Version/docs/release-notes sync for v2.7.7–v2.7.10
+- Removed dead scripts (`repair_analysis_foci_workbook.py`, `workers/__main__.py`, `docs/archive/v1.6/`)
+- Workspace folder renamed `BactoMate_v1.9` → `BactoMate`
 
-| File | Lines | Suggested split |
-|------|-------|-----------------|
-| `omnipose_seg.py` | ~5,500 | inference UI vs training vs batch runner |
-| `post_processing.py` | ~5,400 | growth-curve video vs montage vs scale bar |
-| `file_conversion.py` | ~4,100 | preview/crop vs I/O vs metadata |
-| `tracking.py` (tab) | ~3,300 | preview vs batch vs lineage inspector |
-| `workers/tracking.py` | ~3,200 | **next:** move `_create_*_visualization` → `tracking_viz.py` |
+### Product
+- Persistent Cell IDs on **Omnipose, Cellpose-SAM, and U-Net**
+- Shared `write_persistent_cellid_mask_file()` in `cell_id_linking.py`
+- Lineage preflight + frame-index UX reminder in Tracking tab
 
-### 5.2 Large-stack I/O (partial)
-- [x] memmap read path in `tiff_stack_io.py`
-- [x] auto-skip disk visualization for stacks > 150 frames
-- [ ] frame-at-a-time processing inside Trackastra loop (if memory still an issue)
+### Tests & CI
+- `test_workers_imports.py`, U-Net Cell ID smoke tests
+- CI on `dev` branch
+- `test_pipeline_integration.py` (masks → Cell IDs → analyze → preflight → lineage join)
+- `test_tiff_stack_io.py`
+- `pytest-cov` dev extra + coverage config in `pyproject.toml`
 
-### 5.3 End-to-end integration test (partial)
-- [x] analyze + preflight + lineage join (no Trackastra GPU run)
-- [ ] optional slow test with mocked/minimal Trackastra when feasible
+### Performance & structure (Priority 5 — scoped items)
+- `bactomate/modules/tiff_stack_io.py` — memmap for large stacks, preview page reads
+- `bactomate/gui/workers/tracking_io.py` — stack helpers, viz skip when frames > 150
+- Tracking worker wired to shared I/O; `SCRIPT_LOG.propagate = False` for pytest stability
 
 ---
 
-## Release checklist
+## Maintenance backlog (optional, when needed)
+
+These were listed as Priority 5 “long term”. **No action required** unless you hit pain in development or user reports.
+
+| Item | When to revisit |
+|------|-----------------|
+| Split `omnipose_seg.py` (~5.5k lines) | When editing segmentation UI becomes unwieldy |
+| Split `post_processing.py`, `file_conversion.py` | Same |
+| Split `tracking.py` tab | Same |
+| Extract `tracking_viz.py` from `workers/tracking.py` | When changing trajectory/lineage rendering |
+| Frame-at-a-time Trackastra loop | If 500+ frame movies OOM despite memmap |
+| Full Trackastra GPU integration test | If tracking regressions become frequent |
+
+---
+
+## Release checklist (repeat for future v2.7.x)
 
 1. Bump `bactomate/__init__.py` and `pyproject.toml`
 2. Update README, user manual, Windows install doc
 3. Append `docs/RELEASE_NOTES.md`
 4. `pytest tests/` (macOS + Windows)
 5. Tag on `dev`, merge to `main`, push tag
+
+```bash
+git tag vX.Y.Z
+git push origin dev
+git push origin vX.Y.Z
+```
 
 ---
 
