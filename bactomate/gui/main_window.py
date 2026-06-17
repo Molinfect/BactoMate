@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QGroupBox, QHBoxLayout, Q
 _startup_import_log('after PyQt6 imports')
 _startup_import_log('before constants/preferences imports')
 from bactomate.gui.constants import LOGS_DIR, MAX_SESSION_LOGS, SESSION_TAB_KEYS, TAB_WIDGET_ATTR
+from bactomate.gui.session_schema import normalize_session_tabs
 from bactomate.gui.preferences import get_default_browse_dir, get_last_dir, get_state, set_last_dir, set_state
 _startup_import_log('after constants/preferences imports')
 
@@ -630,6 +631,7 @@ class MainWindow(QMainWindow):
     def apply_session_params(self, data: dict[str, Any]) -> None:
         if not isinstance(data, dict):
             return
+        data = normalize_session_tabs(data)
         for (key, _) in SESSION_TAB_KEYS:
             if key not in data:
                 continue
@@ -1081,6 +1083,7 @@ class MainWindow(QMainWindow):
         if not isinstance(tabs_data, dict):
             show_message_dialog(self, 'Re-run analysis', 'Session log has no tab data.', kind='warning')
             return
+        tabs_data = normalize_session_tabs(tabs_data)
         nd2_tab = getattr(self, TAB_WIDGET_ATTR.get('nd2'), None)
         if nd2_tab is None or not hasattr(nd2_tab, 'file_path'):
             show_message_dialog(self, 'Re-run analysis', 'File conversion module not available.', kind='warning')

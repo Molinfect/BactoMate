@@ -24,8 +24,7 @@ BATCH_PROCESS_TIFF_SCRIPT = _pkg_batch_tiff if _pkg_batch_tiff.exists() else get
 # Tab (key, display label) in display order. Used for session gather/apply and session log overview.
 SESSION_TAB_KEYS = [
     ("nd2", "File Conversion"),
-    ("segmentation", "Omnipose Segment"),
-    ("unet_segment", "U-NET Segment"),
+    ("segmentation", "Segmentation"),
     ("analyze_masks", "Analyze Masks"),
     ("tracking", "Tracking"),
     ("growth_curve_video", "Post-processing"),
@@ -35,8 +34,11 @@ SESSION_TAB_KEYS = [
 TAB_WIDGET_ATTR = {
     "nd2": "nd2_tab",
     "segmentation": "segmentation_tab",
-    "unet_segment": "unet_segment_tab",
     "analyze_masks": "analyze_tab",
     "tracking": "tracking_tab",
     "growth_curve_video": "post_processing_tab",
+}
+# Legacy session / training references (not in SESSION_TAB_KEYS gather loop).
+LEGACY_TAB_WIDGET_ATTR = {
+    "unet_segment": "unet_segment_tab",
 }
