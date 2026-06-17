@@ -1778,6 +1778,12 @@ class TrackingTab(QWidget):
         resolved = pf.resolved_mask_path or resolve_lineage_mask_path(mask_file)
         if resolved != Path(mask_file):
             msg += f'\n\nWill use mask:\n{resolved}'
+        excel_hint = (
+            '\n\nReminder: analysis Excel frames are 1-based; tracking frames are 0-based. '
+            'Use the same mask file as Analyze Masks (filtered if you analyzed filtered).'
+        )
+        if is_full_lineage or pf.analysis_workbook is not None:
+            msg += excel_hint
         if not show_confirm_dialog(self._main_window(), title=title, message=msg + '\n\nContinue?', confirm_label='Yes', cancel_label='No', default_confirm=True):
             return False
         return True

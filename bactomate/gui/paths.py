@@ -285,7 +285,10 @@ def get_unet_models_dir() -> Path:
 
 
 def get_scripts_dir() -> Path:
-    """Directory containing backend scripts (convert_nd2_to_tif.py, batch_process_*.py, etc.)."""
+    """Directory containing backend scripts (``bactomate/scripts`` in source installs)."""
+    pkg = get_app_root() / "bactomate" / "scripts"
+    if pkg.is_dir():
+        return pkg
     return get_app_root() / "scripts"
 
 

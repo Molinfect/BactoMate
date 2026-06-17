@@ -224,6 +224,18 @@ class UNetSegmentTab(QWidget):
         self.process_btn.clicked.connect(self._process_file_or_folder)
         action_layout.addWidget(self.process_btn)
         file_outer.addLayout(action_layout)
+        cellids_row = QHBoxLayout()
+        self.assign_persistent_cellids = QCheckBox('Assign persistent Cell IDs')
+        self.assign_persistent_cellids.setChecked(False)
+        cellids_info = create_info_icon(
+            'Link cells across frames after segmentation and write {stem}_cellids.tif beside each mask stack. '
+            'Use that file in Analyze Masks and Tracking so the same cell keeps the same ID through the pipeline.',
+            self,
+        )
+        cellids_row.addWidget(self.assign_persistent_cellids)
+        cellids_row.addWidget(cellids_info)
+        cellids_row.addStretch(1)
+        infer_layout.addLayout(cellids_row)
         infer_layout.addWidget(file_group, 0)
         self._infer_group_widget.setLayout(infer_layout)
         self._scroll_layout.addWidget(self._infer_group_widget)
@@ -1012,6 +1024,7 @@ class UNetSegmentTab(QWidget):
             self.parent_window.log_output(f'U-Net segmentation done: {output_dir}\n')
             self._performed_this_session = True
             self._log_unet_result_summaries(path, output_dir)
+            self._maybe_write_persistent_cellid_masks_for_output(output_dir)
             try:
                 self.workflow_step_finished.emit(True)
             except Exception:
@@ -1060,9 +1073,35 @@ class UNetSegmentTab(QWidget):
                 continue
             self.parent_window.log_output(f"[RESULT][SEGMENT] engine=unet mask={mask_file.resolve()} frames={summary['frames']} total_cells={summary['cells_total']} cells_min={summary['cells_min']} cells_mean={summary['cells_mean']:.2f} cells_max={summary['cells_max']}\n")
 
+    def _maybe_write_persistent_cellid_masks_for_output(self, output_dir: Path) -> None:
+        if not getattr(self, 'assign_persistent_cellids', None) or not self.assign_persistent_cellids.isChecked():
+            return
+        from bactomate.modules.cell_id_linking import write_persistent_cellid_mask_file
+
+        shared = getattr(self.parent_window, 'shared_metadata', None)
+        for mask_file in sorted(Path(output_dir).glob('*_unet_masks.tif')):
+            write_persistent_cellid_mask_file(
+                mask_file,
+                shared_metadata=shared,
+                log=self.parent_window.log_output,
+            )
+
+    def _maybe_write_persistent_cellid_masks(self, mask_path: Path) -> None:
+        """Write persistent Cell ID mask beside a single U-Net mask stack (for tests and reuse)."""
+        if not getattr(self, 'assign_persistent_cellids', None) or not self.assign_persistent_cellids.isChecked():
+            return
+        from bactomate.modules.cell_id_linking import write_persistent_cellid_mask_file
+
+        shared = getattr(self.parent_window, 'shared_metadata', None)
+        write_persistent_cellid_mask_file(
+            mask_path,
+            shared_metadata=shared,
+            log=self.parent_window.log_output,
+        )
+
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
-        d = get_from_widgets([('unet_epochs', self.n_epochs_spin), ('unet_batch_size', self.batch_spin), ('unet_use_gpu', self.use_gpu_cb)])
+        d = get_from_widgets([('unet_epochs', self.n_epochs_spin), ('unet_batch_size', self.batch_spin), ('unet_use_gpu', self.use_gpu_cb), ('assign_persistent_cellids', self.assign_persistent_cellids)])
         d['unet_model'] = self.model_combo.currentText() if self.model_combo.currentIndex() > 0 else ''
         d['unet_img_filter'] = self.img_filter_edit.text().strip()
         d['unet_mask_filter'] = self.mask_filter_edit.text().strip()
@@ -1072,7 +1111,7 @@ class UNetSegmentTab(QWidget):
 
     def set_session_params(self, data: dict[str, Any]) -> None:
         """Apply saved parameter values (parameters only)."""
-        apply_to_widgets(data, [('unet_epochs', self.n_epochs_spin), ('unet_batch_size', self.batch_spin), ('unet_use_gpu', self.use_gpu_cb)])
+        apply_to_widgets(data, [('unet_epochs', self.n_epochs_spin), ('unet_batch_size', self.batch_spin), ('unet_use_gpu', self.use_gpu_cb), ('assign_persistent_cellids', self.assign_persistent_cellids)])
         if 'unet_model' in data and data['unet_model']:
             idx = self.model_combo.findText(str(data['unet_model']))
             if idx >= 0:

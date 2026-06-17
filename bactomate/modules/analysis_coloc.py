@@ -50,8 +50,6 @@ class ColocSettings:
     coloc_save_unmatched: bool = False
     coloc_n_randomizations: int = 0
     coloc_randomization_seed: int = 0
-    coloc_one_to_one: bool = True
-    coloc_mutual_nearest: bool = True
 
 
 @dataclass
@@ -346,8 +344,6 @@ def analyze_colocalization_foci_table(
         chans = [str(c).strip() for c in foci_channels if str(c).strip()]
     if len(chans) < 2:
         return ColocalizationOutputs([], [], [])
-
-    _warn_ignored_matching_flags(settings)
 
     tolerance_px = float(settings.coloc_edge_tolerance)
     max_distance_px = settings.coloc_max_distance
@@ -968,22 +964,6 @@ def _count_cross_cell_pairs(
         same_cell_pairs += int(count) * s_lookup.get(int(cid), 0)
     total = int(primary_pos.size) * int(secondary_pos.size)
     return int(total - same_cell_pairs)
-
-
-# ---------------------------------------------------------------------------
-# Deprecated matching-mode warnings
-# ---------------------------------------------------------------------------
-
-def _warn_ignored_matching_flags(settings: ColocSettings) -> None:
-    if not settings.coloc_one_to_one:
-        LOGGER.warning(
-            "coloc_one_to_one=False is deprecated and ignored; using one-to-one pairing."
-        )
-    if not settings.coloc_mutual_nearest:
-        LOGGER.warning(
-            "coloc_mutual_nearest is deprecated and ignored; "
-            "colocalization always uses one-to-one pairing."
-        )
 
 
 # ---------------------------------------------------------------------------

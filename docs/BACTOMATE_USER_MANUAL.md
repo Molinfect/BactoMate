@@ -1,6 +1,6 @@
 # BactoMate — Complete User Manual
 
-**Version:** 2.7.6  
+**Version:** 2.7.9  
 **Document type:** Detailed user manual (GUI reference)  
 **Approximate length:** 30–40 A4 pages when printed (body text ~12,000+ words; with headings and lists, fills 30–40 pages at normal font size).  
 **Audience:** Researchers and users who want a full, structured reference to every tab, setting, and workflow in BactoMate.  
@@ -424,7 +424,7 @@ Use this tab when you prefer U-Net over Omnipose or have existing Building U-NET
 
 **Purpose:** Analyze mask TIFF files (single file or folder) with morphological and size filters; export to Excel; optionally analyze fluorescence intensity (FI) from a separate channel TIFF; create filter visualizations and combined summary.
 
-**CellIDs through the pipeline:** So that the same cell keeps the same ID from segmentation to tracking, BactoMate supports **persistent CellIDs**. (1) **After segmentation** (Omnipose or U-Net), mask stacks have per-frame labels (1, 2, 3, … per frame; not consistent across frames). In the Segmentation module, enable **Assign persistent Cell IDs** on the Omnipose/Cellpose panel to write `{stem}_masks_cellids.tif` automatically, or run **Assign persistent IDs** once on that stack from the command line so each cell gets a stable ID. (2) **Analyze Masks** keeps those IDs when the input already has them (filtering only removes cells; accepted cells keep their ID). If the input has per-frame labels, Analyze Masks assigns new persistent CellIDs to accepted cells. (3) **Tracking** preserves CellIDs from the input masks when present (or from the analysis Excel if you provide it). To assign persistent IDs right after segmentation from the shell, run from the project root: `python -m bactomate.scripts.assign_persistent_ids path/to/masks.tif -o path/to/masks_with_cellids.tif` (optional `--pixel-size 0.108` and `--max-distance 5.0`). Then use the output as the mask input for Analyze Masks and Tracking.
+**CellIDs through the pipeline:** So that the same cell keeps the same ID from segmentation to tracking, BactoMate supports **persistent CellIDs**. (1) **After segmentation** (Omnipose, Cellpose-SAM, or U-Net), mask stacks have per-frame labels (1, 2, 3, … per frame; not consistent across frames). In the **Segmentation** module, enable **Assign persistent Cell IDs** on the Omnipose/Cellpose or U-Net panel to write `{stem}_cellids.tif` automatically beside each mask stack, or run **Assign persistent IDs** once from the command line. (2) **Analyze Masks** keeps those IDs when the input already has them (filtering only removes cells; accepted cells keep their ID). If the input has per-frame labels, Analyze Masks assigns new persistent CellIDs to accepted cells. (3) **Tracking** preserves CellIDs from the input masks when present (or from the analysis Excel if you provide it). To assign persistent IDs right after segmentation from the shell, run from the project root: `python -m bactomate.scripts.assign_persistent_ids path/to/masks.tif -o path/to/masks_with_cellids.tif` (optional `--pixel-size 0.108` and `--max-distance 5.0`). Then use the output as the mask input for Analyze Masks and Tracking.
 
 ### 5.1 Mask File/Folder input
 
