@@ -4,6 +4,14 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.5 (2026-06-17)
+
+### Windows launcher fix
+
+- **`bactomate/__main__.py`:** add `if __name__ == "__main__"` guard so `python -m bactomate` (used by `launch_windows.bat` and the desktop shortcut) actually starts the GUI instead of exiting silently.
+
+---
+
 ## v2.7.4 (2026-06-17)
 
 ### Windows portable bundle build fixes

@@ -119,3 +119,7 @@ def run() -> None:
 def main() -> None:
     """Alias for run() for setuptools entry point."""
     run()
+
+
+if __name__ == "__main__":
+    main()
