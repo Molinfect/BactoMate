@@ -88,14 +88,14 @@ class SegmentationTab(QWidget):
         self,
         parent: Optional[QWidget],
         *,
-        omnipose_tab: OmniposeSegTab,
+        omnipose_tab: OmniposeSegTab | None = None,
         unet_tab: UNetSegmentTab,
         filtering_tab: FilteringTab,
         analyze_tab: AnalyzeTab,
     ) -> None:
         super().__init__(parent)
         self.parent_window = parent
-        self.omnipose_tab = omnipose_tab
+        self.omnipose_tab = omnipose_tab if omnipose_tab is not None else OmniposeSegTab(parent, inference_mode="omnipose")
         self.unet_tab = unet_tab
         self.filtering_tab = filtering_tab
         self.analyze_tab = analyze_tab

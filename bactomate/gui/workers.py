@@ -33,6 +33,23 @@ _TRACKASTRA_MODEL_CACHE: dict[tuple[str, str], Any] = {}
 _TRACKASTRA_MODEL_CACHE_LOCK = threading.Lock()
 _TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE = 384
 
+
+def _build_track_points_by_id(tracks_df) -> dict[int, list[tuple[int, float, float]]]:
+    """Index track points as ``track_id -> [(frame, y, x), ...]`` sorted by frame."""
+    required = ("frame", "track_id", "y", "x")
+    if tracks_df is None or not all(col in tracks_df.columns for col in required):
+        return {}
+    out: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
+    frames = tracks_df["frame"].to_numpy(dtype=int, copy=False)
+    track_ids = tracks_df["track_id"].to_numpy(dtype=int, copy=False)
+    ys = tracks_df["y"].to_numpy(dtype=float, copy=False)
+    xs = tracks_df["x"].to_numpy(dtype=float, copy=False)
+    for frame, track_id, y, x in zip(frames, track_ids, ys, xs):
+        out[int(track_id)].append((int(frame), float(y), float(x)))
+    for points in out.values():
+        points.sort(key=lambda item: item[0])
+    return dict(out)
+
 DEFAULT_GROWTH_GRAPH_STYLE: dict[str, Any] = {
     "x_label": "Time [min]",
     "y_label": "rel. cell area",
@@ -1385,8 +1402,7 @@ class TrackingWorker(QThread):
         """
         import pandas as pd
         import numpy as np
-        from skimage.measure import regionprops
-        from scipy.spatial.distance import cdist
+        from bactomate.modules.cell_id_linking import centroids_from_mask, hungarian_link_centroids
         
         # Load Excel data to get Cell_IDs
         try:
@@ -1421,17 +1437,14 @@ class TrackingWorker(QThread):
         
         # Build mapping: (frame, original_label) -> Cell_ID from Excel
         excel_mapping = {}
-        for _, row in excel_data.iterrows():
-            frame = int(row[frame_col]) - 1  # Convert to 0-based
-            cell_id = row[cell_id_col]
-            # Try to find original label (might be in 'Cell Label' column)
-            if 'Cell Label' in excel_data.columns:
-                original_label = row['Cell Label']
-            else:
-                # Can't map without original label
-                continue
-            if pd.notna(cell_id) and pd.notna(original_label):
-                excel_mapping[(frame, int(original_label))] = int(cell_id)
+        if "Cell Label" in excel_data.columns:
+            valid = excel_data[[frame_col, "Cell Label", cell_id_col]].dropna()
+            for frame_val, orig_label, cell_id in zip(
+                valid[frame_col].astype(int) - 1,
+                valid["Cell Label"].astype(int),
+                valid[cell_id_col].astype(int),
+            ):
+                excel_mapping[(int(frame_val), int(orig_label))] = int(cell_id)
         
         if not excel_mapping:
             return masks_tracked, {}
@@ -1446,57 +1459,35 @@ class TrackingWorker(QThread):
             frame_original = masks_original[frame_idx]
             frame_tracked = masks_tracked[frame_idx]
             
-            # Get centroids for both
-            regions_original = regionprops(frame_original)
-            regions_tracked = regionprops(frame_tracked)
+            orig_centroids = centroids_from_mask(frame_original, pixel_size=1.0)
+            tracked_centroids = centroids_from_mask(frame_tracked, pixel_size=1.0)
             
-            # Build mapping for this frame: original_label -> CellID
-            orig_label_to_cellid = {}
-            for region in regions_original:
-                if region.label > 0:
-                    if (frame_idx, region.label) in excel_mapping:
-                        orig_label_to_cellid[region.label] = excel_mapping[(frame_idx, region.label)]
+            orig_label_to_cellid = {
+                label: excel_mapping[(frame_idx, label)]
+                for label in orig_centroids
+                if (frame_idx, label) in excel_mapping
+            }
             
-            if not orig_label_to_cellid:
+            if not orig_label_to_cellid or not tracked_centroids:
                 continue
             
-            # Match tracked cells to original cells by position
-            orig_centroids = {}
-            for region in regions_original:
-                if region.label > 0 and region.label in orig_label_to_cellid:
-                    orig_centroids[region.label] = np.array(region.centroid)
+            orig_labels = np.array(
+                [label for label in orig_centroids if label in orig_label_to_cellid],
+                dtype=int,
+            )
+            tracked_labels = np.array(list(tracked_centroids.keys()), dtype=int)
+            orig_points = np.array([orig_centroids[int(label)] for label in orig_labels], dtype=np.float64)
+            tracked_points = np.array(list(tracked_centroids.values()), dtype=np.float64)
             
-            tracked_centroids = {}
-            for region in regions_tracked:
-                if region.label > 0:
-                    tracked_centroids[region.label] = np.array(region.centroid)
-            
-            if len(orig_centroids) > 0 and len(tracked_centroids) > 0:
-                orig_points = np.array(list(orig_centroids.values()))
-                orig_labels = list(orig_centroids.keys())
-                tracked_points = np.array(list(tracked_centroids.values()))
-                tracked_labels = list(tracked_centroids.keys())
-                
-                distances = cdist(orig_points, tracked_points)
-                
-                # Greedy assignment
-                used_orig = set()
-                used_tracked = set()
-                assignments = []
-                for i, orig_label in enumerate(orig_labels):
-                    for j, track_id in enumerate(tracked_labels):
-                        if distances[i, j] <= max_distance:
-                            assignments.append((distances[i, j], orig_label, track_id))
-                
-                assignments.sort()
-                
-                for dist, orig_label, track_id in assignments:
-                    if orig_label not in used_orig and track_id not in used_tracked:
-                        # Map track_id to analysis CellID
-                        cell_id = orig_label_to_cellid[orig_label]
-                        trackid_to_cellid[track_id] = cell_id
-                        used_orig.add(orig_label)
-                        used_tracked.add(track_id)
+            linked, _ = hungarian_link_centroids(
+                orig_points,
+                orig_labels,
+                tracked_points,
+                tracked_labels,
+                max_distance,
+            )
+            for orig_label, track_id in linked:
+                trackid_to_cellid[int(track_id)] = orig_label_to_cellid[int(orig_label)]
         
         # Remap tracked masks to use analysis CellIDs
         masks_tracked_remapped = np.zeros_like(masks_tracked)
@@ -1569,8 +1560,6 @@ class TrackingWorker(QThread):
         """Merge tracking results with Excel analysis data"""
         import pandas as pd
         import numpy as np
-        from skimage.measure import regionprops
-        from scipy.spatial.distance import cdist
         
         # Ensure cell_data is a DataFrame
         if not isinstance(cell_data, pd.DataFrame):
@@ -1623,74 +1612,58 @@ class TrackingWorker(QThread):
         excel_is_1_indexed = (frame_0_count == 0 and frame_1_count > 0)
         if excel_is_1_indexed:
             debug_info.append(f"Detected 1-based frame indexing in Excel (Frame 0 has {frame_0_count} cells, Frame 1 has {frame_1_count} cells)")
+
+        cell_data_by_frame: dict[int, pd.DataFrame] = {}
+        if frame_col:
+            for frame_key, group in cell_data.groupby(cell_data[frame_col].astype(int)):
+                cell_data_by_frame[int(frame_key)] = group.copy()
+
+        def _frame_cells_for_track(frame: int) -> pd.DataFrame:
+            excel_frame = frame + 1 if excel_is_1_indexed else frame
+            if excel_frame in cell_data_by_frame:
+                return cell_data_by_frame[excel_frame]
+            alt_frame = frame + 1 if not excel_is_1_indexed else frame
+            return cell_data_by_frame.get(alt_frame, pd.DataFrame())
         
-        for idx, track_row in tracks_df.iterrows():
-            # Get frame - try multiple column names
+        for track_row in tracks_df.to_dict("records"):
             frame = None
             for col in ['frame', 't', 'time', 'Frame', 'T', 'Time']:
-                if col in track_row.index:
-                    frame_val = track_row[col]
-                    if pd.notna(frame_val):
-                        frame = int(frame_val)
-                        break
+                if col in track_row and pd.notna(track_row[col]):
+                    frame = int(track_row[col])
+                    break
             
             # Get track_id
             track_id = None
             for col in ['track_id', 'track', 'Track', 'track_ID']:
-                if col in track_row.index:
-                    track_id_val = track_row[col]
-                    if pd.notna(track_id_val):
-                        track_id = int(track_id_val)
-                        break
+                if col in track_row and pd.notna(track_row[col]):
+                    track_id = int(track_row[col])
+                    break
             
             if frame is None:
-                debug_info.append(f"  Skipping row {idx}: frame is None")
+                debug_info.append("  Skipping row: frame is None")
                 continue
             if track_id is None:
-                debug_info.append(f"  Skipping row {idx}: track_id is None")
+                debug_info.append("  Skipping row: track_id is None")
                 continue
             
             # Get track position from tracks_df
             track_y = None
             track_x = None
             for col in ['y', 'Y', 'centroid_y', 'centroid-0']:
-                if col in track_row.index and pd.notna(track_row[col]):
+                if col in track_row and pd.notna(track_row[col]):
                     track_y = float(track_row[col])
                     break
             for col in ['x', 'X', 'centroid_x', 'centroid-1']:
-                if col in track_row.index and pd.notna(track_row[col]):
+                if col in track_row and pd.notna(track_row[col]):
                     track_x = float(track_row[col])
                     break
             
             # Start with track information
-            merged_row = track_row.to_dict()
+            merged_row = dict(track_row)
             
             # Find cells in this frame from cell_data
-            # Handle 0-based vs 1-based frame indexing
-            # Tracking uses 0-based (0, 1, 2...), Excel might use 1-based (1, 2, 3...)
-            frame_cells = pd.DataFrame()
-            
-            # Use detected indexing preference
+            frame_cells = _frame_cells_for_track(frame)
             excel_frame = frame + 1 if excel_is_1_indexed else frame
-            
-            # Try to find cells for this frame
-            try:
-                frame_cells = cell_data[cell_data[frame_col].astype(int) == excel_frame].copy()
-            except:
-                try:
-                    frame_cells = cell_data[cell_data[frame_col] == excel_frame].copy()
-                except:
-                    pass
-            
-            # If still no match and we haven't tried the other indexing, try it
-            if len(frame_cells) == 0 and not excel_is_1_indexed:
-                try:
-                    frame_cells = cell_data[cell_data[frame_col].astype(int) == (frame + 1)].copy()
-                    if len(frame_cells) > 0:
-                        excel_is_1_indexed = True  # Update detection
-                        debug_info.append(f"Detected 1-based frame indexing: Frame {frame} matched to Excel Frame {frame + 1}")
-                except:
-                    pass
             
             if len(frame_cells) > 0:
                 matched = False
@@ -1735,7 +1708,7 @@ class TrackingWorker(QThread):
                     # frame fabricates repeated area values and makes lineage growth plots misleading.
                     candidate_ids = [track_id]
                     try:
-                        if "Cell_ID" in track_row.index and pd.notna(track_row["Cell_ID"]):
+                        if "Cell_ID" in track_row and pd.notna(track_row["Cell_ID"]):
                             candidate_ids.insert(0, int(track_row["Cell_ID"]))
                     except Exception:
                         pass
@@ -2759,19 +2732,8 @@ class TrackingWorker(QThread):
             track_colors[int(track_id)] = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
         
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
-        
-        if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns:
-            tracks_by_frame = {}
-            for _, row in tracks_df.iterrows():
-                frame = int(row['frame'])
-                track_id = int(row['track_id'])
-                if frame not in tracks_by_frame:
-                    tracks_by_frame[frame] = {}
-                if track_id not in tracks_by_frame[frame]:
-                    tracks_by_frame[frame][track_id] = []
-                y = row.get('y', 0)
-                x = row.get('x', 0)
-                tracks_by_frame[frame][track_id].append((y, x))
+        track_points_by_id = _build_track_points_by_id(tracks_df)
+        unique_track_set = {int(t) for t in unique_tracks}
         
         for frame_idx in range(num_frames):
             try:
@@ -2795,30 +2757,24 @@ class TrackingWorker(QThread):
                             vis_frame[mask_region, 2] = np.clip(vis_frame[mask_region, 2] * 0.45 + color[2] * 0.55, 0, 255)
                 
                 labels_to_draw = []
-                # Draw trajectories up to current frame (only for tracks visible in this frame)
-                # Pre-filter tracks to only those present in current frame for speed
-                if 'frame' in tracks_df.columns and 'track_id' in tracks_df.columns and 'y' in tracks_df.columns and 'x' in tracks_df.columns:
-                    # Get tracks that have points up to current frame
-                    tracks_in_frame = tracks_df[
-                        (tracks_df['frame'] <= frame_idx) & 
-                        (tracks_df['track_id'].isin(unique_tracks))
-                    ]['track_id'].unique()
+                if track_points_by_id:
+                    tracks_in_frame = [
+                        track_id_int
+                        for track_id_int, points in track_points_by_id.items()
+                        if track_id_int in unique_track_set and any(f <= frame_idx for f, _, _ in points)
+                    ]
                     
                     for track_id_int in tracks_in_frame:
-                        track_id_int = int(track_id_int)
                         if track_id_int not in track_colors:
                             continue
                         
-                        # Get all points for this track up to current frame
-                        track_points = tracks_df[
-                            (tracks_df['track_id'] == track_id_int) & 
-                            (tracks_df['frame'] <= frame_idx)
+                        points_up_to = [
+                            (y, x) for f, y, x in track_points_by_id[track_id_int] if f <= frame_idx
                         ]
                         
-                        if len(track_points) > 1:
+                        if len(points_up_to) > 1:
                             color = track_colors[track_id_int]
-                            # Draw lines connecting consecutive points using vectorized operations
-                            points = track_points[['y', 'x']].values.astype(int)
+                            points = np.array(points_up_to, dtype=int)
                             # Clip points to valid bounds
                             points[:, 0] = np.clip(points[:, 0], 0, height - 1)
                             points[:, 1] = np.clip(points[:, 1], 0, width - 1)
@@ -2892,10 +2848,14 @@ class TrackingWorker(QThread):
                         
                         # Centroid markers only for full-quality export (preview uses mask tint above).
                         if not preview_fast:
-                            current_track = track_points[track_points['frame'] == frame_idx]
-                            if len(current_track) > 0:
-                                y = int(current_track.iloc[0]['y'])
-                                x = int(current_track.iloc[0]['x'])
+                            current_points = [
+                                (y, x)
+                                for f, y, x in track_points_by_id[track_id_int]
+                                if f == frame_idx
+                            ]
+                            if current_points:
+                                y = int(current_points[0][0])
+                                x = int(current_points[0][1])
                                 if 0 <= y < height and 0 <= x < width:
                                     dot_size = 5
                                     outline_size = 2

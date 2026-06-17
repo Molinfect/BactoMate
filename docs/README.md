@@ -289,6 +289,10 @@ See repo for full test checklist (launch, model loading, segmentation, batch, er
 
 ## Available Scripts
 
+Full reference: **[bactomate/scripts/README.md](../bactomate/scripts/README.md)** (GUI subprocesses, CLI tools, diagnostics).
+
+Quick list:
+
 - `main.py` — GUI entrypoint
 - `launch_gui.sh` — Launch GUI (venv, patches, main.py)
 - `python -m bactomate.scripts.analyze_cell_areas` — Analyze masks, Excel/CSV
@@ -301,7 +305,7 @@ See repo for full test checklist (launch, model loading, segmentation, batch, er
 - `setup/repair_pyqt6.sh`, `setup/setup_fresh_env.sh`, `setup/install_cuda_pytorch.sh`, `setup/clear_models.sh`
 - `build/build_app_bundle.sh`, `build/create_dmg.sh`, `build/create_icons.sh`
 
-**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**.
+**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Historical v1.6 refactor notes: **[docs/archive/v1.6/](archive/v1.6/)**.
 
 ## Release Notes
 

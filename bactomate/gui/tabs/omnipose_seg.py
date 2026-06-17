@@ -1365,6 +1365,13 @@ class OmniposeSegTab(QWidget):
         self.create_overlay = QCheckBox('Create overlay visualization')
         self.create_overlay.setChecked(True)
         overlay_info = create_info_icon("Create overlay TIFF (masks over original). Saved in an 'overlays' subfolder so the main folder has only mask files for Analyze Masks. Disable to speed up when you only need masks.", self)
+        self.assign_persistent_cellids = QCheckBox('Assign persistent Cell IDs')
+        self.assign_persistent_cellids.setChecked(False)
+        cellids_info = create_info_icon(
+            'Link cells across frames after segmentation and write {stem}_masks_cellids.tif beside the raw mask stack. '
+            'Use that file in Analyze Masks and Tracking so the same cell keeps the same ID through the pipeline.',
+            self,
+        )
         self.detect_foci = QCheckBox('Detect foci')
         self.detect_foci.setChecked(False)
         foci_info = create_info_icon('When enabled, BactoMate looks for `*_foci.tif` next to the input file/folder and runs spot detection.\n\nOutputs a raw foci CSV in the segmentation output folder (one per foci channel).\nTune Spotiflow per channel in the preview (Foci channel dropdown under Spotiflow).\nColumns: y, x, intensity, probability (and frame when stacks have multiple frames).', self)
@@ -1377,12 +1384,17 @@ class OmniposeSegTab(QWidget):
         overlay_row.addWidget(self.create_overlay)
         overlay_row.addWidget(overlay_info)
         overlay_row.addStretch(1)
+        cellids_row = QHBoxLayout()
+        cellids_row.addWidget(self.assign_persistent_cellids)
+        cellids_row.addWidget(cellids_info)
+        cellids_row.addStretch(1)
         foci_row = QHBoxLayout()
         foci_row.addWidget(self.detect_foci)
         foci_row.addWidget(foci_info)
         foci_row.addStretch(1)
         options_panel.add_widget(hbox_row_widget(gpu_row))
         options_panel.add_widget(hbox_row_widget(overlay_row))
+        options_panel.add_widget(hbox_row_widget(cellids_row))
         options_panel.add_widget(hbox_row_widget(foci_row))
         options_panel.set_defer_reflow(False)
         options_panel.reflow()
@@ -2224,6 +2236,7 @@ class OmniposeSegTab(QWidget):
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
+        self.assign_persistent_cellids.setChecked(False)
         self.detect_foci.setChecked(False)
         self._spotiflow_detection_params = dict(SPOTIFLOW_DETECTION_DEFAULTS)
         self._spotiflow_channel_params = {}
@@ -2235,7 +2248,7 @@ class OmniposeSegTab(QWidget):
 
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
-        out = get_from_widgets([('model', self.model_combo), ('diameter', self.diameter), ('flow_threshold', self.flow_threshold), ('mask_threshold', self.mask_threshold), ('use_gpu', self.use_gpu), ('cluster', self.cluster), ('create_overlay', self.create_overlay), ('detect_foci', self.detect_foci)])
+        out = get_from_widgets([('model', self.model_combo), ('diameter', self.diameter), ('flow_threshold', self.flow_threshold), ('mask_threshold', self.mask_threshold), ('use_gpu', self.use_gpu), ('cluster', self.cluster), ('create_overlay', self.create_overlay), ('assign_persistent_cellids', self.assign_persistent_cellids), ('detect_foci', self.detect_foci)])
         spotiflow_params = self._get_spotiflow_detection_params()
         for (key, value) in spotiflow_params.items():
             out[f'spotiflow_{key}'] = value
@@ -2258,7 +2271,7 @@ class OmniposeSegTab(QWidget):
 
     def set_session_params(self, data: dict[str, Any]) -> None:
         """Apply saved parameter values (parameters only)."""
-        apply_to_widgets(data, [('model', self.model_combo), ('diameter', self.diameter), ('flow_threshold', self.flow_threshold), ('mask_threshold', self.mask_threshold), ('use_gpu', self.use_gpu), ('cluster', self.cluster), ('create_overlay', self.create_overlay), ('detect_foci', self.detect_foci)])
+        apply_to_widgets(data, [('model', self.model_combo), ('diameter', self.diameter), ('flow_threshold', self.flow_threshold), ('mask_threshold', self.mask_threshold), ('use_gpu', self.use_gpu), ('cluster', self.cluster), ('create_overlay', self.create_overlay), ('assign_persistent_cellids', self.assign_persistent_cellids), ('detect_foci', self.detect_foci)])
         if hasattr(self, 'omnipose_train_dir_edit'):
             apply_to_widgets(data, [('omnipose_train_dir', self.omnipose_train_dir_edit), ('omnipose_img_filter', self.omnipose_img_filter_edit), ('omnipose_mask_filter', self.omnipose_mask_filter_edit), ('omnipose_model_name', self.omnipose_model_name_edit), ('omnipose_pretrained', self.omnipose_pretrained_combo), ('omnipose_n_epochs', self.omnipose_n_epochs_spin), ('omnipose_lr', self.omnipose_lr_spin), ('omnipose_batch', self.omnipose_batch_spin), ('omnipose_tyx_y', self.omnipose_tyx_y_spin), ('omnipose_tyx_x', self.omnipose_tyx_x_spin), ('omnipose_save_each', self.omnipose_save_each_spin)])
             if 'omnipose_use_gpu' in data:
@@ -5228,12 +5241,53 @@ class OmniposeSegTab(QWidget):
         self.worker.progress.connect(self._parse_segmentation_progress)
         self.worker.start()
 
+    def _maybe_write_persistent_cellid_masks(self, mask_path: Path) -> None:
+        if not getattr(self, 'assign_persistent_cellids', None) or not self.assign_persistent_cellids.isChecked():
+            return
+        mask_path = Path(mask_path)
+        if not mask_path.is_file():
+            return
+        try:
+            import tifffile
+            from bactomate.scripts.analyze_cell_areas import link_persistent_cell_ids_raw
+            from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
+
+            pixel_size = 0.108
+            try:
+                ps = getattr(self.parent_window, 'shared_metadata', {}).get('pixel_size')
+                if ps is not None and float(ps) > 0:
+                    pixel_size = float(ps)
+                else:
+                    cal_ps, _, _, _ = resolve_calibration_for_mask(mask_path)
+                    if cal_ps and float(cal_ps) > 0:
+                        pixel_size = float(cal_ps)
+            except Exception:
+                pass
+            masks = tifffile.imread(str(mask_path))
+            if masks.ndim == 2:
+                masks = masks[np.newaxis, ...]
+            masks_with_cellids = link_persistent_cell_ids_raw(masks, pixel_size=pixel_size)
+            out_path = mask_path.parent / f'{mask_path.stem}_cellids{mask_path.suffix}'
+            tifffile.imwrite(str(out_path), masks_with_cellids)
+            self.parent_window.log_output(f'Persistent Cell IDs: {mask_path.name} → {out_path.name}\n')
+        except Exception as exc:
+            get_logger().debug('Persistent Cell ID assignment failed', exc_info=True)
+            self.parent_window.log_output(f'[Cell IDs] Failed for {mask_path.name}: {exc}\n')
+
     def _on_segmentation_file_finished(self, success, message, script_path):
         """Handle completion of a single file in folder mode"""
         self.parent_window.log_output(message)
         if success:
             self.parent_window.log_output(f'✓ File {self.current_file_index + 1}/{len(self.folder_files)} processed successfully!\n')
             self.current_file_progress = 1.0
+            try:
+                tiff_file = self.folder_files[self.current_file_index]
+                base_dir = Path(tiff_file).parent
+                output_dir = base_dir / self._get_omnipose_segmentation_folder_name() if base_dir.name.startswith('Tif_') else base_dir / f'{Path(tiff_file).stem}_omnipose_segmentation'
+                mask_guess = output_dir / f'{Path(tiff_file).stem}_masks.tif'
+                self._maybe_write_persistent_cellid_masks(mask_guess)
+            except Exception:
+                get_logger().debug('Folder-mode persistent Cell ID export failed', exc_info=True)
             try:
                 if getattr(self, 'detect_foci', None) is not None and self.detect_foci.isChecked():
                     tiff_file = self.folder_files[self.current_file_index]
@@ -5377,6 +5431,13 @@ class OmniposeSegTab(QWidget):
                 self.parent_window.log_output('✓ Folder processed successfully!\n')
             else:
                 self.parent_window.log_output('✓ File processed successfully!\n')
+            try:
+                if not is_folder and getattr(self, '_last_output_dir', None):
+                    in_path = Path(self.file_path.text())
+                    mask_guess = Path(self._last_output_dir) / f'{in_path.stem}_masks.tif'
+                    self._maybe_write_persistent_cellid_masks(mask_guess)
+            except Exception:
+                get_logger().debug('Persistent Cell ID export failed', exc_info=True)
             try:
                 if not is_folder and getattr(self, 'detect_foci', None) is not None and self.detect_foci.isChecked() and getattr(self, '_last_output_dir', None):
                     in_path = Path(self.file_path.text())

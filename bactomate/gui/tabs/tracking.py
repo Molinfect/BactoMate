@@ -1758,7 +1758,14 @@ class TrackingTab(QWidget):
     def _lineage_preflight_check(self, mask_file: Path, *, title: str, always_confirm: bool = False) -> bool:
         """Warn about mask/analysis mismatch and linker before lineage jobs."""
         from bactomate.modules.lineage_integration import preflight_lineage_run, preflight_summary_lines, resolve_lineage_mask_path
-        pf = preflight_lineage_run(mask_file, linker_mode=self.mode_combo.currentText(), model_name=self._selected_trackastra_model())
+        is_full_lineage = title == 'Run lineage tracking'
+        pf = preflight_lineage_run(
+            mask_file,
+            linker_mode=self.mode_combo.currentText(),
+            model_name=self._selected_trackastra_model(),
+            require_analysis_workbook=is_full_lineage,
+            strict_lineage=is_full_lineage,
+        )
         if not pf.ok:
             show_message_dialog(self._main_window(), title, 'Cannot start lineage tracking:\n\n' + '\n'.join((f'• {e}' for e in pf.errors)), kind='warning')
             return False

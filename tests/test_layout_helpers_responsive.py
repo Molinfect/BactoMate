@@ -45,7 +45,8 @@ def test_compact_control_fixed_mode(qapp) -> None:
     combo = QComboBox()
     combo.addItems(["A", "B"])
     compact_control(combo, 120, fixed=True)
-    assert combo.styleSheet() == PREVIEW_NAV_COMBO_STYLESHEET
+    assert combo.styleSheet().startswith(PREVIEW_NAV_COMBO_STYLESHEET)
+    assert "combobox-popup: 0" in combo.styleSheet()
     assert combo.minimumWidth() == 120
     assert combo.maximumWidth() == 120
 
