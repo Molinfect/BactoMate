@@ -4,6 +4,16 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.4 (2026-06-17)
+
+### Windows portable bundle build fixes
+
+- **`build_windows_bundle.py`:** fix `_should_skip_dir()` call that crashed the bundle build; rewrite `pyvenv.cfg` with absolute runtime paths (Windows venv launcher does not accept relative paths).
+- **Portable bundle launcher:** add `setup/launch_windows_bundle.bat` and `setup/patch_bundle_pyvenv.py` so `BactoMate.bat` re-patches venv paths when the bundle folder is moved.
+- **`create_windows_zip.bat`:** use 7-Zip or built-in `tar` instead of PowerShell `Compress-Archive` for much faster zip creation on large bundles.
+
+---
+
 ## v2.7.3 (2026-06-17)
 
 ### Track Windows bundle build scripts in git

@@ -46,7 +46,7 @@ def _should_skip_dir(name: str) -> bool:
 def _copy_project_tree(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():
-        if item.name in _should_skip_dir() or item.name.endswith(".pyc"):
+        if _should_skip_dir(item.name) or item.name.endswith(".pyc"):
             continue
         if item.name == "venv":
             continue
@@ -93,12 +93,18 @@ def _copy_python_runtime(base_prefix: Path, runtime_dir: Path) -> None:
     )
 
 
-def _rewrite_pyvenv_cfg(pyvenv_cfg: Path, runtime_rel: str) -> None:
+def _rewrite_pyvenv_cfg(pyvenv_cfg: Path, runtime_dir: Path) -> None:
+    runtime = runtime_dir.resolve()
     text = pyvenv_cfg.read_text(encoding="utf-8")
-    text = re.sub(r"^home = .*$", f"home = {runtime_rel}", text, flags=re.MULTILINE)
+    text = re.sub(
+        r"^home = .*$",
+        lambda _: f"home = {runtime}",
+        text,
+        flags=re.MULTILINE,
+    )
     text = re.sub(
         r"^executable = .*$",
-        f"executable = {runtime_rel}\\python.exe",
+        lambda _: f"executable = {runtime}\\python.exe",
         text,
         flags=re.MULTILINE,
     )
@@ -107,7 +113,7 @@ def _rewrite_pyvenv_cfg(pyvenv_cfg: Path, runtime_rel: str) -> None:
 
 def _write_bundle_launcher(dist: Path) -> None:
     launcher = dist / "BactoMate.bat"
-    shutil.copy2(_project_root() / "setup" / "launch_windows_strict.bat", launcher)
+    shutil.copy2(_project_root() / "setup" / "launch_windows_bundle.bat", launcher)
 
 
 def main() -> int:
@@ -123,7 +129,6 @@ def main() -> int:
 
     dist = root / "dist" / "BactoMate"
     runtime_dir = dist / "runtime" / "Python311"
-    runtime_rel = r"..\runtime\Python311"
 
     if dist.exists():
         print(f"Removing existing {dist} ...")
@@ -142,10 +147,10 @@ def main() -> int:
     if not pyvenv_cfg.is_file():
         print(f"Error: missing {pyvenv_cfg}", file=sys.stderr)
         return 1
-    _rewrite_pyvenv_cfg(pyvenv_cfg, runtime_rel)
+    _rewrite_pyvenv_cfg(pyvenv_cfg, runtime_dir)
 
     _write_bundle_launcher(dist)
-    shutil.copy2(root / "setup" / "launch_windows_strict.bat", dist / "launch_windows.bat")
+    shutil.copy2(root / "setup" / "launch_windows_bundle.bat", dist / "launch_windows.bat")
 
     bundle_py = dist / "venv" / "Scripts" / "python.exe"
     print("Verifying bundle (--version) ...")
