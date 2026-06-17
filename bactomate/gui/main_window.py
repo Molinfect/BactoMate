@@ -265,6 +265,8 @@ class MainWindow(QMainWindow):
         self._session_autosave_timer.timeout.connect(lambda : self._save_session_log(refresh_panel=False))
         self._session_autosave_timer.start()
         QTimer.singleShot(0, lambda : self._save_session_log(refresh_panel=True))
+        from bactomate.gui.layout_helpers import patch_all_combo_popups
+        QTimer.singleShot(0, lambda : patch_all_combo_popups(self))
 
     def init_ui(self) -> None:
         self.setWindowTitle('BactoMate')
@@ -1305,7 +1307,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = '2.7.0'
+            version = '2.7.1'
         show_message_dialog(self, 'About BactoMate', f'BactoMate – bacteria time-lapse batch processing and analysis.\n\nVersion {version}\n\nDocumentation: Help → User manual.', kind='info')
 
     def _check_environment(self) -> None:

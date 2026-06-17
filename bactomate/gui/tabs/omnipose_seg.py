@@ -22,7 +22,7 @@ from bactomate.gui.paths import get_omnipose_user_models_dir, get_python_executa
 from bactomate.gui.patches import _patch_omnipose_get_masks
 from bactomate.gui.preferences import LAST_DIR_SEGMENTATION
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
-from bactomate.gui.layout_helpers import ResponsivePanel, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
+from bactomate.gui.layout_helpers import ResponsivePanel, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET, UI_THEME
 from bactomate.gui.mask_utils import OMNIPOSE_MASKS_SUBDIR, OMNIPOSE_MASKS_TILED_SUBDIR, ensure_omnipose_masks_has_images, ensure_training_images_nchan, get_training_pairs, infer_training_filters, prepare_omnipose_masks_from_pairs, tile_training_data
 from bactomate.gui.omnipose_utils import eval_uses_affinity_segmentation, omnipose_eval_first_mask, inspect_omnipose_checkpoint, is_affinity_builtin_model, load_bact_phase_affinity_model, load_cellpose_segmentation_model, prepare_user_pretrained_loader_path
@@ -716,7 +716,7 @@ class OmniposeSegTab(QWidget):
         start_from_layout.addWidget(QLabel('Start from:'))
         self.omnipose_pretrained_combo = QComboBox()
         self.omnipose_pretrained_combo.setMinimumWidth(260)
-        self.omnipose_pretrained_combo.setStyleSheet(MODULE_PANEL_COMBO_STYLESHEET)
+        style_module_combo(self.omnipose_pretrained_combo)
         for (display_name, _) in _get_pretrained_training_options():
             self.omnipose_pretrained_combo.addItem(display_name)
         if self.omnipose_pretrained_combo.count() >= 2:
@@ -1290,6 +1290,7 @@ class OmniposeSegTab(QWidget):
             else:
                 self.model_combo.setCurrentText(available_models[0])
         model_row.addWidget(self.model_combo, 1)
+        style_module_combo(self.model_combo)
         self.model_status_label = QLabel('')
         self.model_status_label.setStyleSheet('color: #7F8C8D; font-size: 9pt; font-style: italic;')
         self.model_status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)

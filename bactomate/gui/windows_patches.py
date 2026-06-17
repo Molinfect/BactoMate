@@ -79,8 +79,6 @@ def apply_after_ui(app: Any) -> None:
     """
     Apply UI patches after QApplication is created and stylesheet is set.
     Call once from main_window.main() when sys.platform == 'win32'.
-    Ensures push buttons have a minimum width so labels like "Browse File..." are not cut off
-    on Windows (different default font/DPI than macOS).
     """
     try:
         from PyQt6.QtWidgets import QApplication
@@ -88,10 +86,18 @@ def apply_after_ui(app: Any) -> None:
         return
     if app is None:
         return
-    # Append a minimal override so QPushButton gets a reasonable min width on Windows.
-    # 140px fits "Browse Folder..." with typical Windows font; existing setStyleSheet is preserved.
+    # Path-row browse buttons only: Windows font metrics need a touch more width than macOS.
+    # Do not set min-width on all QPushButton — that fights compact buttons and clips labels.
     extra = """
-    QPushButton { min-width: 140px; }
+    QPushButton#pathBrowseButton { min-width: 84px; }
+    QComboBox QAbstractItemView, QComboBox QListView {
+        background-color: #1f1f1f;
+        color: #ffffff;
+        border: 1px solid #4a9eff;
+        selection-background-color: #4a9eff;
+        selection-color: #ffffff;
+        outline: 0;
+    }
     """
     current = app.styleSheet() or ""
     app.setStyleSheet(current + extra)

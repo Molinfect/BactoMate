@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from bactomate.gui.module_shell import PreviewSurface
 from bactomate.gui.qt_thread_utils import dismiss_embedded_segmentation_preview
+from bactomate.gui.layout_helpers import style_module_combo
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
 from bactomate.gui.widgets import create_info_icon
 from bactomate.gui.preview.preview_window import CollapsibleSection
@@ -141,6 +142,7 @@ class SegmentationTab(QWidget):
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
+        style_module_combo(self.backend_combo)
 
         self.stack = QStackedWidget()
         self._omni_panel = OmniposeInferenceWidget(

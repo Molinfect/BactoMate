@@ -42,6 +42,63 @@ def _suffix_to_file_type(suffix: str) -> Optional[str]:
     return None
 
 
+def _tiff_has_ome_metadata(path: Path) -> bool:
+    """True when TIFF ImageDescription or ome_metadata contains OME XML."""
+    try:
+        import tifffile
+
+        with tifffile.TiffFile(path) as tif:
+            ome = getattr(tif, "ome_metadata", None)
+            if ome:
+                text = ome if isinstance(ome, str) else ome.decode("utf-8", errors="ignore")
+                if "<OME" in text:
+                    return True
+            if not tif.pages:
+                return False
+            desc = tif.pages[0].description or ""
+            if not isinstance(desc, str):
+                desc = str(desc)
+            return "<OME" in desc
+    except Exception:
+        return False
+
+
+def _open_bioimage(path: Path):
+    """Open BioImage with TIFF reader order that avoids OME parse warnings on plain TIFF."""
+    from bioio import BioImage
+
+    file_type = _suffix_to_file_type(path.suffix)
+    if file_type != "tiff":
+        return BioImage(path)
+
+    has_ome = _tiff_has_ome_metadata(path)
+    readers: list[type] = []
+    if has_ome:
+        try:
+            from bioio_ome_tiff import Reader as OmeTiffReader
+
+            readers.append(OmeTiffReader)
+        except ImportError:
+            pass
+    else:
+        try:
+            from bioio_tifffile import Reader as TiffReader
+
+            readers.append(TiffReader)
+        except ImportError:
+            return None
+        try:
+            from bioio_ome_tiff import Reader as OmeTiffReader
+
+            readers.append(OmeTiffReader)
+        except ImportError:
+            pass
+
+    if readers:
+        return BioImage(path, reader=readers)
+    return None if not has_ome else BioImage(path)
+
+
 def get_info(
     path: Path | str,
     scene_index: int = 0,
@@ -60,10 +117,11 @@ def get_info(
     if file_type is None:
         return None
     try:
-        from bioio import BioImage
         import numpy as np
 
-        img = BioImage(path)
+        img = _open_bioimage(path)
+        if img is None:
+            return None
         try:
             scenes = list(img.scenes) if hasattr(img, "scenes") and img.scenes else ["0"]
             if scene_index != 0 and scenes and scene_index < len(scenes):
@@ -148,10 +206,11 @@ def load_data(
     if _suffix_to_file_type(path.suffix) is None:
         return None
     try:
-        from bioio import BioImage
         import numpy as np
 
-        img = BioImage(path)
+        img = _open_bioimage(path)
+        if img is None:
+            return None
         try:
             scenes = list(img.scenes) if hasattr(img, "scenes") and img.scenes else ["0"]
             if scene_index != 0 and scenes and scene_index < len(scenes):

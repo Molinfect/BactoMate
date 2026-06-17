@@ -220,6 +220,7 @@ def get_modern_stylesheet() -> str:
         color: #ffffff;
         font-size: 11pt;
         min-height: 28px;
+        combobox-popup: 0;
     }
     
     QComboBox:hover {
@@ -248,7 +249,61 @@ def get_modern_stylesheet() -> str:
         border-radius: 6px;
         selection-background-color: #4a9eff;
         selection-color: #ffffff;
+        color: #ffffff;
         padding: 2px;
+        outline: 0;
+    }
+
+    QComboBox QListView {
+        background-color: #1f1f1f;
+        border: 1px solid #4a9eff;
+        color: #ffffff;
+        outline: 0;
+        selection-background-color: #4a9eff;
+        selection-color: #ffffff;
+    }
+
+    /* ===== MENUS (menu bar + context menus) ===== */
+    QMenuBar {
+        background-color: #1a1a1a;
+        color: #e0e0e0;
+        border-bottom: 1px solid #2d2d2d;
+        padding: 2px 0;
+    }
+
+    QMenuBar::item {
+        background-color: transparent;
+        padding: 6px 12px;
+        border-radius: 4px;
+    }
+
+    QMenuBar::item:selected {
+        background-color: #3a3a3a;
+        color: #ffffff;
+    }
+
+    QMenu {
+        background-color: #1f1f1f;
+        color: #ffffff;
+        border: 1px solid #4a9eff;
+        border-radius: 6px;
+        padding: 4px;
+    }
+
+    QMenu::item {
+        padding: 6px 28px 6px 16px;
+        border-radius: 4px;
+    }
+
+    QMenu::item:selected {
+        background-color: #4a9eff;
+        color: #ffffff;
+    }
+
+    QMenu::separator {
+        height: 1px;
+        background-color: #3a3a3a;
+        margin: 4px 8px;
     }
     
     /* ===== MODERN CHECKBOXES ===== */

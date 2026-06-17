@@ -194,7 +194,11 @@ class DashboardWidget(QWidget):
         )
         clear_btn.clicked.connect(on_clear_workspace)
         btn_row.addWidget(clear_btn)
-        ws_row.addLayout(btn_row)
+        btn_host = QWidget()
+        btn_host.setLayout(btn_row)
+        btn_host.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        btn_host.setMinimumHeight(max(open_btn.height(), clear_btn.height()))
+        ws_row.addWidget(btn_host)
         root.addLayout(ws_row)
 
         modules = QGroupBox("Modules")

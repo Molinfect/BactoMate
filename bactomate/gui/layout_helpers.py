@@ -1,6 +1,7 @@
 """Small layout helpers for narrow module left panes (no horizontal scroll)."""
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -24,6 +26,7 @@ from PyQt6.QtWidgets import (
 
 from bactomate.gui.styles import (
     COMPACT_BROWSE_BUTTON_STYLESHEET,
+    MODULE_PANEL_COMBO_STYLESHEET,
     MODULE_PATH_ACTION_PANEL_STYLESHEET,
     PATH_ROW_BROWSE_BUTTON_STYLESHEET,
     PATH_ROW_LINE_EDIT_STYLESHEET,
@@ -33,6 +36,54 @@ from bactomate.gui.styles import (
     RESPONSIVE_WIDE_BREAKPOINT,
     preview_settings_card_stylesheet,
 )
+
+_COMBO_POPUP_LISTVIEW_STYLESHEET = (
+    "QListView {"
+    " background-color: #1f1f1f;"
+    " color: #ffffff;"
+    " border: 1px solid #4a9eff;"
+    " outline: 0;"
+    " padding: 2px;"
+    "}"
+    "QListView::item {"
+    " padding: 6px 12px;"
+    " min-height: 24px;"
+    "}"
+    "QListView::item:selected {"
+    " background-color: #4a9eff;"
+    " color: #ffffff;"
+    "}"
+    "QListView::item:hover {"
+    " background-color: #2a3540;"
+    "}"
+)
+
+
+def ensure_dark_combo_popup(combo: QComboBox) -> None:
+    """Use a styled QListView popup instead of the native Windows dropdown list."""
+    view = combo.view()
+    if view is None or view.objectName() != "bactomateDarkComboPopup":
+        view = QListView(combo)
+        view.setObjectName("bactomateDarkComboPopup")
+        combo.setView(view)
+    view.setFrameShape(QFrame.Shape.NoFrame)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    view.setStyleSheet(_COMBO_POPUP_LISTVIEW_STYLESHEET)
+    existing = (combo.styleSheet() or "").strip()
+    if "combobox-popup" not in existing:
+        combo.setStyleSheet((existing + " QComboBox { combobox-popup: 0; }").strip())
+
+
+def style_module_combo(combo: QComboBox) -> None:
+    """Module-pane combo: dark field + dark dropdown popup (Windows-safe)."""
+    combo.setStyleSheet(MODULE_PANEL_COMBO_STYLESHEET + " QComboBox { combobox-popup: 0; }")
+    ensure_dark_combo_popup(combo)
+
+
+def patch_all_combo_popups(root: QWidget) -> None:
+    """Apply dark popup styling to every combo under *root*."""
+    for combo in root.findChildren(QComboBox):
+        ensure_dark_combo_popup(combo)
 
 
 # Re-export breakpoints for tests and module code.
@@ -79,8 +130,9 @@ def style_preview_nav_spinbox(widget: QWidget) -> None:
 def style_preview_nav_combo(widget: QWidget) -> None:
     """Nav-row combo styling (32px tall, shared across preview toolbars)."""
     if isinstance(widget, QComboBox):
-        widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET)
+        widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET + " QComboBox { combobox-popup: 0; }")
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        ensure_dark_combo_popup(widget)
 
 
 def flex_control(
@@ -95,7 +147,8 @@ def flex_control(
         # Only apply nav combo sheet when parent has no card stylesheet (standalone nav rows).
         parent = widget.parentWidget()
         if parent is not None and not (parent.styleSheet() or "").strip():
-            widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET)
+            widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET + " QComboBox { combobox-popup: 0; }")
+        ensure_dark_combo_popup(widget)
     widget.setMinimumWidth(int(min_width))
     if max_width is not None and int(max_width) > 0:
         widget.setMaximumWidth(max(int(min_width), int(max_width)))
@@ -109,7 +162,8 @@ def compact_control(widget: QWidget, width: int, *, combo_style: bool = True, fi
     """Preview/module control sizing; defaults to expanding width unless ``fixed=True``."""
     if fixed:
         if combo_style and isinstance(widget, QComboBox):
-            widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET)
+            widget.setStyleSheet(PREVIEW_NAV_COMBO_STYLESHEET + " QComboBox { combobox-popup: 0; }")
+            ensure_dark_combo_popup(widget)
         widget.setMinimumWidth(int(width))
         widget.setMaximumWidth(int(width))
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -800,12 +854,14 @@ def _style_path_row_line_edit(edit: QLineEdit, height: int) -> None:
 
 
 def _style_path_row_browse_button(btn: QPushButton, height: int) -> None:
+    btn.setObjectName("pathBrowseButton")
     btn.setStyleSheet(PATH_ROW_BROWSE_BUTTON_STYLESHEET)
     btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     btn.setFixedHeight(int(height))
     fm = btn.fontMetrics()
-    text_w = int(fm.horizontalAdvance(btn.text() or ""))
-    btn.setFixedWidth(max(72, text_w + 24))
+    text_w = int(fm.boundingRect(btn.text() or "").width())
+    pad = 28 if sys.platform == "win32" else 24
+    btn.setFixedWidth(max(84 if sys.platform == "win32" else 72, text_w + pad))
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
 
@@ -829,17 +885,33 @@ def style_compact_action_button(
                 " padding: 2px 10px;"
                 " min-height: 0px;"
                 " max-height: 30px;"
+                " min-width: 0px;"
                 "}"
             )
         )
     else:
-        btn.setStyleSheet(COMPACT_BROWSE_BUTTON_STYLESHEET)
+        btn.setStyleSheet(
+            COMPACT_BROWSE_BUTTON_STYLESHEET + " QPushButton { min-width: 0px; }"
+        )
     btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    # Dense cards stay compact, but need enough real content height for QSS padding/borders.
-    btn.setFixedHeight(30 if dense else 34)
+    text = btn.text() or ""
     fm = btn.fontMetrics()
-    text_w = int(fm.horizontalAdvance(btn.text() or ""))
-    btn.setFixedWidth(max(72, text_w + int(horizontal_padding)))
+    # boundingRect can underestimate vs painted text (ellipsis, Windows Segoe UI); prefer advance.
+    text_w = max(int(fm.horizontalAdvance(text)), int(fm.boundingRect(text).width()))
+    # COMPACT_BROWSE_BUTTON_STYLESHEET: 12px horizontal padding per side + 1px border each side.
+    chrome = 26
+    win_fudge = 6 if sys.platform == "win32" else 2
+    width = text_w + chrome + max(int(horizontal_padding), win_fudge)
+    btn.setMinimumWidth(0)
+    btn.setMaximumWidth(16777215)
+    btn.setMinimumHeight(0)
+    btn.setMaximumHeight(16777215)
+    btn.adjustSize()
+    width = max(width, btn.sizeHint().width() + win_fudge)
+    btn.setFixedWidth(max(72, width))
+    height_floor = 30 if dense else 34
+    height = max(height_floor, btn.sizeHint().height() + (2 if sys.platform == "win32" else 0))
+    btn.setFixedHeight(height)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
 

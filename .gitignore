@@ -54,6 +54,7 @@ build/*
 # Application bundles (built)
 *.app/
 BactoMate.app/
+*.lnk
 
 # Models and caches (user-specific or downloaded)
 models/

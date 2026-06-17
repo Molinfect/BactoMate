@@ -1,6 +1,5 @@
 @echo off
-:: BactoMate launcher for Windows. Double-click or run from project root.
-:: Project root is parent of setup/ (where this script lives).
+:: BactoMate launcher for Windows. Prefer BactoMate.lnk (logo icon) in the project root.
 set "SETUP_DIR=%~dp0"
 set "ROOT=%SETUP_DIR%.."
 cd /d "%ROOT%"
@@ -12,6 +11,7 @@ if not exist "venv\Scripts\activate.bat" (
     exit /b 1
 )
 call venv\Scripts\activate.bat
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\setup\minimize_console.ps1" >nul 2>&1
 bactomate
 if errorlevel 1 (
     echo.

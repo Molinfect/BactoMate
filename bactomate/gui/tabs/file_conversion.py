@@ -36,6 +36,7 @@ from bactomate.gui.workspace_scanner import list_convertible_microscopy_files
 from bactomate.gui.preview.preview_window import CollapsibleSection, LUT_HIST_CANVAS_HEIGHT_PX, LUT_HIST_FIGSIZE_INCHES, apply_lut_histogram_figure_margins
 _RIGHT_PANEL_LIST_CAP = 2500
 _FOLDER_CONVERTIBLE_CAP_FOR_LOAD = 400
+_METADATA_SOURCE_SUFFIXES = frozenset({'.nd2', '.lif', '.czi', '.tif', '.tiff'})
 
 def _nd2_build_index(axis_keys: tuple[str, ...], t: int, c: int, z: int, position: int=0) -> tuple:
     """Index tuple for an ND2 ndarray where axis_keys matches ndarray.shape order (see nd2.ND2File.sizes)."""
@@ -134,15 +135,20 @@ class ND2ConversionTab(QWidget):
         self.metadata_text.setSizePolicy(size_policy)
         metadata_layout.addWidget(self.metadata_text)
         metadata_btn_row = QHBoxLayout()
-        metadata_btn_row.addStretch(1)
         self.edit_tiff_metadata_btn = QPushButton('Edit output metadata')
         self.edit_tiff_metadata_btn.setToolTip(
             'Manually correct pixel size, timing, channel names, and acquisition notes, '
             'then write them into generated TIFF files. Source files are not modified.'
         )
-        style_compact_action_button(self.edit_tiff_metadata_btn, horizontal_padding=18)
+        style_compact_action_button(self.edit_tiff_metadata_btn, horizontal_padding=32)
+        self.edit_tiff_metadata_btn.setMinimumWidth(self.edit_tiff_metadata_btn.width())
+        self.edit_tiff_metadata_btn.setMaximumWidth(16777215)
         self.edit_tiff_metadata_btn.clicked.connect(self._open_tiff_metadata_editor)
         self.edit_tiff_metadata_btn.setEnabled(False)
+        self.edit_tiff_metadata_btn.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         metadata_btn_row.addWidget(self.edit_tiff_metadata_btn)
         metadata_layout.addLayout(metadata_btn_row)
         metadata_group.setLayout(metadata_layout)
@@ -777,6 +783,7 @@ class ND2ConversionTab(QWidget):
                     self.parent_window.shared_metadata['time_per_frame_min'] = None
                 self.parent_window.update_all_tabs_with_metadata()
                 QTimer.singleShot(100, self._refresh_embedded_conversion_preview)
+                self._update_tiff_metadata_button_state()
             else:
                 self.metadata_text.setText('No files could be read from the selected folder.\n' + '\n'.join(errors) if errors else '')
                 self.metadata_text.setStyleSheet('background-color: #2b2b2b; color: #ff6b6b; font-size: 12pt;')
@@ -784,6 +791,7 @@ class ND2ConversionTab(QWidget):
                 self._update_tiff_metadata_button_state()
         finally:
             self.refresh_conversion_candidate_list()
+            self._update_tiff_metadata_button_state()
 
     def _display_folder_summary(self, all_files_info, errors):
         """Display a summary of all files in the folder"""
@@ -1512,17 +1520,54 @@ class ND2ConversionTab(QWidget):
             self.parent_window.log_output(f'✓ Pixel size extracted: {pixel_size:.4f} µm (updated in all tabs)\n')
         self._update_tiff_metadata_button_state()
 
-    def _active_metadata_source_path(self) -> Optional[Path]:
-        info = getattr(self, 'file_info', None)
-        if not isinstance(info, dict):
+    def _metadata_dialog_parent(self) -> QWidget:
+        """Top-level parent so the editor dialog is not hidden behind the module shell."""
+        parent_window = getattr(self, 'parent_window', None)
+        if parent_window is not None:
+            return parent_window
+        win = self.window()
+        return win if win is not None else self
+
+    def _preview_selected_file_path(self) -> Optional[Path]:
+        surf = self._preview_surface
+        if surf is None:
             return None
-        raw = str(info.get('path') or '').strip()
+        combo = getattr(surf, '_file_combo', None)
+        if combo is None:
+            return None
+        raw = combo.currentData()
         if not raw:
             return None
-        path = Path(raw)
-        if not path.is_file() or path.suffix.lower() not in ('.nd2', '.lif', '.czi', '.tif', '.tiff'):
+        try:
+            path = Path(str(raw))
+        except (TypeError, ValueError):
             return None
-        return path
+        if path.is_file() and path.suffix.lower() in _METADATA_SOURCE_SUFFIXES:
+            return path
+        return None
+
+    def _coerce_metadata_source_path(self, raw: str | Path) -> Optional[Path]:
+        try:
+            path = Path(raw)
+        except (TypeError, ValueError):
+            return None
+        if path.is_file() and path.suffix.lower() in _METADATA_SOURCE_SUFFIXES:
+            return path
+        return None
+
+    def _active_metadata_source_path(self) -> Optional[Path]:
+        """File whose output metadata can be edited (preview pick, loaded file_info, or path line)."""
+        for candidate in (
+            self._preview_selected_file_path(),
+            (self.file_info or {}).get('path') if isinstance(self.file_info, dict) else None,
+            (self.file_path.text() or '').strip(),
+        ):
+            if not candidate:
+                continue
+            path = self._coerce_metadata_source_path(candidate)
+            if path is not None:
+                return path
+        return None
 
     def _update_tiff_metadata_button_state(self) -> None:
         btn = getattr(self, 'edit_tiff_metadata_btn', None)
@@ -1533,21 +1578,50 @@ class ND2ConversionTab(QWidget):
     def _open_tiff_metadata_editor(self) -> None:
         source_path = self._active_metadata_source_path()
         if source_path is None:
-            show_message_dialog(self, 'Output metadata', 'Load a single ND2, LIF, CZI, or TIFF file to edit output metadata.', kind='warning')
+            show_message_dialog(
+                self._metadata_dialog_parent(),
+                'Output metadata',
+                'Load a microscopy file (or pick one from the preview list when using a folder) to edit output metadata.',
+                kind='warning',
+            )
             return
-        info = self.file_info or {}
-        file_type = str(info.get('file_type') or source_path.suffix.lstrip('.')).lower()
-        is_tiff = source_path.suffix.lower() in ('.tif', '.tiff')
+        try:
+            self._show_output_metadata_editor_dialog(source_path)
+        except Exception as exc:
+            self.parent_window.log_output(f'Error opening metadata editor: {exc}\n')
+            show_message_dialog(
+                self._metadata_dialog_parent(),
+                'Output metadata',
+                f'Could not open the metadata editor:\n{exc}',
+                kind='error',
+            )
+
+    def _show_output_metadata_editor_dialog(self, source_path: Path) -> None:
+        info = self.file_info if isinstance(self.file_info, dict) else {}
         meta = read_metadata_from_path(source_path)
-        num_channels = max(1, int(info.get('num_channels') or meta.get('channel_count') or 1))
+        suffix = source_path.suffix.lower()
+        if suffix in ('.tif', '.tiff'):
+            file_type = 'tiff'
+        elif suffix == '.nd2':
+            file_type = 'nd2'
+        elif suffix == '.lif':
+            file_type = 'lif'
+        elif suffix == '.czi':
+            file_type = 'czi'
+        else:
+            file_type = str(info.get('file_type') or suffix.lstrip('.')).lower()
+        is_tiff = suffix in ('.tif', '.tiff')
+        num_channels = max(1, int(meta.get('channel_count') or info.get('num_channels') or 1))
         channel_names = list(meta.get('channel_names') or info.get('channel_names') or [f'Channel_{i + 1}' for i in range(num_channels)])
         if len(channel_names) < num_channels:
             channel_names.extend([f'Channel_{i + 1}' for i in range(len(channel_names), num_channels)])
         channel_names = channel_names[:num_channels]
 
-        dlg = QDialog(self)
+        parent = self._metadata_dialog_parent()
+        dlg = QDialog(parent)
         dlg.setWindowTitle('Edit output metadata')
-        dlg.setMinimumWidth(520)
+        dlg.setMinimumWidth(560)
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.setStyleSheet(
             'QDialog { background-color: #1e1e1e; }'
             'QLabel { color: #e8eef6; font-size: 11pt; }'
@@ -1659,10 +1733,10 @@ class ND2ConversionTab(QWidget):
         outer.addWidget(notes_edit)
 
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
-        style_dialog_button_box(button_box)
         save_btn = button_box.button(QDialogButtonBox.StandardButton.Save)
         if save_btn is not None:
             save_btn.setText('Use for output TIFFs')
+        style_dialog_button_box(button_box, horizontal_padding=36)
         button_box.rejected.connect(dlg.reject)
         outer.addWidget(button_box)
 
@@ -1705,6 +1779,14 @@ class ND2ConversionTab(QWidget):
             )
 
         button_box.accepted.connect(_on_write)
+        dlg.adjustSize()
+        try:
+            center = parent.frameGeometry().center()
+            dlg.move(center.x() - dlg.width() // 2, center.y() - dlg.height() // 2)
+        except Exception:
+            pass
+        dlg.raise_()
+        dlg.activateWindow()
         dlg.exec()
 
     def _apply_output_metadata_overrides(self, overrides: TiffMetadataOverrides) -> None:

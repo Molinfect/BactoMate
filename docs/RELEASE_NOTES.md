@@ -4,6 +4,20 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+---
+
+## v2.7.1 (2026-06-17)
+
+### Windows install, UI polish, and TIFF loading
+
+- **Windows installer:** fix `install_windows.bat` batch parsing after PyTorch install; pin pip below 26; reinstall PyTorch with `--no-deps` and realign NumPy `<2`; suppress pip upgrade nag.
+- **Windows launcher:** root `launch_windows.bat` minimizes the console on start; generates `BactoMate.ico` and Desktop/project shortcuts during install.
+- **GUI fixes:** dark dropdown menus on Windows; compact buttons no longer clip labels (dashboard workspace row, metadata dialog, segmentation combos); metadata editor opens reliably and “Use for output TIFFs” sizes correctly.
+- **TIFF I/O:** plain TIFFs load via `bioio-tifffile` to avoid OME XML parse warnings; added `bioio-tifffile` dependency.
+- **Dependencies:** `numpy>=1.26,<2` for TensorFlow compatibility.
+
+---
+
 ## v2.7.0 (2026-06)
 
 ### Lineage workspace, conversion crop, and preview refactors

@@ -15,7 +15,7 @@ _ANSI_ESCAPE = re.compile('\\x1B(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])')
 from PyQt6.QtCore import Qt, QEventLoop, QThread, QUrl, pyqtSignal, QTimer
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTextEdit, QVBoxLayout, QWidget
-from bactomate.gui.layout_helpers import module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, stacked_path_block, style_compact_action_button, style_module_primary_button, vbox_from_rows
+from bactomate.gui.layout_helpers import module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, vbox_from_rows
 from bactomate.gui.log_config import get_logger
 from bactomate.gui.module_shell import detach_mount_widget
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
@@ -189,6 +189,7 @@ class UNetSegmentTab(QWidget):
         self._refresh_model_combo()
         self.model_combo.currentIndexChanged.connect(lambda _idx: QTimer.singleShot(0, self._rerun_open_unet_preview_after_model_change))
         model_row.addWidget(self.model_combo, 1)
+        style_module_combo(self.model_combo)
         refresh_btn = QPushButton('Refresh')
         refresh_btn.setFixedWidth(80)
         style_compact_action_button(refresh_btn)
