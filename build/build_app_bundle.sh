@@ -131,6 +131,80 @@ else
     echo "Warning: Python.framework not found. Bundle will only work where this venv's base Python exists."
 fi
 
+# Relink copied Python.framework so subprocesses (venv/bin/python3) do not depend on Homebrew paths.
+relink_bundled_python_framework() {
+    local fw_ver="$1"
+    local py_mm="$2"
+    local launcher_bin="${3:-}"
+
+    if ! command -v install_name_tool >/dev/null 2>&1; then
+        echo "Warning: install_name_tool not available; bundled subprocess Python may not be portable."
+        return 0
+    fi
+
+    local py_dylib="$fw_ver/Python"
+    local py_bin="$fw_ver/bin/python$py_mm"
+    if [ ! -f "$py_dylib" ] || [ ! -f "$py_bin" ]; then
+        return 0
+    fi
+
+    local framework_bin_py_ref="@loader_path/../Python"
+    local launcher_py_ref="@executable_path/../Frameworks/Python.framework/Versions/$py_mm/Python"
+    local dylib_id="@rpath/Python"
+    local launcher_rpath="@executable_path/../Frameworks/Python.framework/Versions/$py_mm"
+
+    install_name_tool -id "$dylib_id" "$py_dylib" 2>/dev/null || true
+
+    fix_macho_python_ref() {
+        local target="$1"
+        local new_ref="$2"
+        local rpath="${3:-}"
+        [ -f "$target" ] || return 0
+        if ! file "$target" | grep -q "Mach-O"; then
+            return 0
+        fi
+        local ref
+        while IFS= read -r ref; do
+            case "$ref" in
+                *Python.framework*/Python|*Cellar/python@*|@rpath/Python)
+                    install_name_tool -change "$ref" "$new_ref" "$target" 2>/dev/null || true
+                    ;;
+            esac
+        done < <(otool -L "$target" 2>/dev/null | awk 'NR>1 {print $1}' | grep -E 'Python$|python@|@rpath/Python' || true)
+        if [ -n "$rpath" ]; then
+            install_name_tool -add_rpath "$rpath" "$target" 2>/dev/null || true
+        fi
+    }
+
+    fix_macho_python_ref "$py_bin" "$framework_bin_py_ref"
+    if [ -d "$fw_ver/bin" ]; then
+        for bin in "$fw_ver/bin"/*; do
+            fix_macho_python_ref "$bin" "$framework_bin_py_ref"
+        done
+    fi
+    fix_macho_python_ref \
+        "$fw_ver/Resources/Python.app/Contents/MacOS/Python" \
+        "@loader_path/../../../../Python"
+    if [ -n "$launcher_bin" ] && [ -f "$launcher_bin" ]; then
+        fix_macho_python_ref "$launcher_bin" "$launcher_py_ref" "$launcher_rpath"
+    fi
+
+    if otool -L "$py_bin" 2>/dev/null | grep -q "Cellar/python"; then
+        echo "Error: failed to relink $py_bin away from Homebrew Python."
+        exit 1
+    fi
+    local python_app="$fw_ver/Resources/Python.app/Contents/MacOS/Python"
+    if [ -f "$python_app" ] && otool -L "$python_app" 2>/dev/null | grep -q "Cellar/python"; then
+        echo "Error: failed to relink $py_bin away from Homebrew Python."
+        exit 1
+    fi
+}
+
+if [ -d "$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM" ]; then
+    echo "Relinking bundled Python.framework for portable subprocesses..."
+    relink_bundled_python_framework "$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM" "$PY_MM"
+fi
+
 echo "Relinking bundled venv Python..."
 (
     cd "$RESOURCES_DIR/venv/bin"
@@ -144,6 +218,18 @@ echo "Relinking bundled venv Python..."
     ln -s "python$PY_MM" python3
     ln -s "python$PY_MM" python
 )
+
+if [ -d "$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM" ]; then
+    PY_MICRO="$("$VENV_PYTHON" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
+    FRAMEWORK_BIN="$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM/bin"
+    cat > "$RESOURCES_DIR/venv/pyvenv.cfg" <<EOF
+home = $FRAMEWORK_BIN
+include-system-site-packages = false
+version = $PY_MICRO
+executable = $FRAMEWORK_BIN/python$PY_MM
+command = $PY_EXECUTABLE -m venv $VENV_DIR
+EOF
+fi
 
 cat > "$RESOURCES_DIR/venv/bin/BactoMate" <<'EOF'
 #!/bin/bash
@@ -185,14 +271,7 @@ if [ -d "$LINK_FRAMEWORK_DIR" ] && [ -f "$LINK_INCLUDE_DIR/Python.h" ] && [ -f "
         "${LAUNCHER_LDFLAGS[@]}" \
         "$LAUNCHER_SRC" \
         -o "$LAUNCHER_BIN"
-    if command -v install_name_tool >/dev/null 2>&1; then
-        PY_FRAMEWORK_ID="$(otool -D "$LINK_FRAMEWORK_DIR/Python" 2>/dev/null | sed -n '2p' || true)"
-        BUNDLED_PY_ID="@executable_path/../Frameworks/Python.framework/Versions/$PY_MM/Python"
-        install_name_tool -id "$BUNDLED_PY_ID" "$LINK_FRAMEWORK_DIR/Python" 2>/dev/null || true
-        if [ -n "$PY_FRAMEWORK_ID" ]; then
-            install_name_tool -change "$PY_FRAMEWORK_ID" "$BUNDLED_PY_ID" "$LAUNCHER_BIN" 2>/dev/null || true
-        fi
-    fi
+    relink_bundled_python_framework "$LINK_FRAMEWORK_DIR" "$PY_MM" "$LAUNCHER_BIN"
 else
     echo "  Warning: Python.framework headers not found; building exec fallback launcher."
     clang "${LAUNCHER_CFLAGS[@]}" \
@@ -259,16 +338,30 @@ xattr -cr "$APP_DIR" 2>/dev/null || true
 
 if command -v codesign >/dev/null 2>&1; then
     echo "Ad-hoc signing native binaries and app bundle..."
+    if [ -d "$FRAMEWORKS_DIR/Python.framework" ]; then
+        find "$FRAMEWORKS_DIR/Python.framework" -type f \( -perm -111 -o -name "Python" -o -name "*.dylib" \) -print0 \
+            | xargs -0 -n 1 codesign -f -s - 2>/dev/null || true
+    fi
     find "$APP_DIR" \( -name "*.dylib" -o -name "*.so" \) -type f -print0 \
         | xargs -0 -n 1 codesign -f -s - 2>/dev/null || true
     find "$RESOURCES_DIR/venv/bin" -type f -perm -111 -print0 \
         | xargs -0 -n 1 codesign -f -s - 2>/dev/null || true
+    codesign -f -s - "$LAUNCHER_BIN" 2>/dev/null || true
     codesign -f -s - --deep "$APP_DIR" >/dev/null 2>&1 || true
 fi
 
 echo "Verifying bundled Python..."
+"$LAUNCHER_BIN" --version
+"$LAUNCHER_BIN" --smoke-test
 "$RESOURCES_DIR/venv/bin/BactoMate" --version
 "$RESOURCES_DIR/venv/bin/BactoMate" --smoke-test
+FW_PY="$FRAMEWORKS_DIR/Python.framework/Versions/$PY_MM/bin/python$PY_MM"
+if otool -L "$FW_PY" 2>/dev/null | grep -q "Cellar/python"; then
+    echo "Error: bundled framework python still references Homebrew."
+    exit 1
+fi
+"$RESOURCES_DIR/venv/bin/python3" --version
+"$RESOURCES_DIR/venv/bin/python3" -c "import numpy; print('subprocess numpy ok')"
 "$RESOURCES_DIR/venv/bin/python3" - <<'PY'
 import importlib.util
 import sys

@@ -343,6 +343,18 @@ def eval_uses_affinity_segmentation(
     return uses_affinity_architecture(model_type=model_type, loader_path=pretrained_path)
 
 
+def omnipose_eval_first_mask(eval_result):
+    """
+    Extract the mask from cellpose_omni model.eval output.
+
+    CellposeModel.eval returns (masks, flows, styles); the Cellpose wrapper returns
+    (masks, flows, styles, diams). Callers should use this instead of fixed 4-tuple unpack.
+    """
+    if isinstance(eval_result, tuple):
+        return eval_result[0]
+    return eval_result
+
+
 def prepare_builtin_pretrained_loader_path(
     checkpoint_path: str | Path,
     model_type: str | None,

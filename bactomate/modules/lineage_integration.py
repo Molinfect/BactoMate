@@ -495,6 +495,8 @@ def build_lineage_events(
         "mother_x",
         "daughter_y",
         "daughter_x",
+        "has_post_frame",
+        "qc_warning",
         "link_status",
         "review_status",
     ]
@@ -520,6 +522,12 @@ def build_lineage_events(
                 area_by_track_frame[(tid, fr)] = ar
     point_lookup = _track_point_lookup(tracks_df)
     prior_div_by_parent: dict[int, list[int]] = defaultdict(list)
+    max_frame = None
+    if tracks_df is not None and hasattr(tracks_df, "columns") and "frame" in tracks_df.columns and len(tracks_df) > 0:
+        try:
+            max_frame = int(tracks_df["frame"].dropna().astype(int).max())
+        except (TypeError, ValueError):
+            max_frame = None
     rows = []
     for er in edges_df.itertuples(index=False):
         p = _safe_int(getattr(er, "parent_track_id", None))
@@ -528,6 +536,8 @@ def build_lineage_events(
         plf = _safe_int(getattr(er, "parent_last_frame", None))
         if p is None or d is None or div_f is None:
             continue
+        has_post_frame = max_frame is None or int(div_f) < int(max_frame)
+        qc_warning = "" if has_post_frame else "terminal_frame_division_unconfirmed"
         lid = founder.get(p) or founder.get(d)
         plf_use = plf if plf is not None else max(0, div_f - 1)
         mother_a = area_by_track_frame.get((p, plf_use))
@@ -546,6 +556,14 @@ def build_lineage_events(
             interval = int(div_f - max(prior_div_by_parent[p]))
         prior_div_by_parent[p].append(div_f)
         d_meta = meta_by_tid.get(d, {})
+        link_status = getattr(er, "link_status", LINK_STATUS_CANDIDATE) if hasattr(er, "link_status") else LINK_STATUS_CANDIDATE
+        review_status = (
+            getattr(er, "review_status", REVIEW_STATUS_CANDIDATE)
+            if hasattr(er, "review_status")
+            else REVIEW_STATUS_CANDIDATE
+        )
+        if not has_post_frame and str(link_status).lower() != "manual":
+            review_status = REVIEW_STATUS_FLAGGED
         rows.append(
             {
                 "parent_track_id": p,
@@ -567,12 +585,10 @@ def build_lineage_events(
                 "mother_x": mother_pt[1] if mother_pt else np.nan,
                 "daughter_y": daughter_pt[0] if daughter_pt else np.nan,
                 "daughter_x": daughter_pt[1] if daughter_pt else np.nan,
-                "link_status": getattr(er, "link_status", LINK_STATUS_CANDIDATE)
-                if hasattr(er, "link_status")
-                else LINK_STATUS_CANDIDATE,
-                "review_status": getattr(er, "review_status", REVIEW_STATUS_CANDIDATE)
-                if hasattr(er, "review_status")
-                else REVIEW_STATUS_CANDIDATE,
+                "has_post_frame": bool(has_post_frame),
+                "qc_warning": qc_warning,
+                "link_status": link_status,
+                "review_status": review_status,
             }
         )
     return pd.DataFrame(rows, columns=cols)
@@ -636,8 +652,23 @@ def build_lineage_qc(
             p = _safe_int(getattr(er, "parent_track_id", None))
             d = _safe_int(getattr(er, "daughter_track_id", None))
             div_f = _safe_int(getattr(er, "division_frame", None))
+            has_post_frame = getattr(er, "has_post_frame", True)
             dist = _safe_float(getattr(er, "division_distance_px", None))
             asym = _safe_float(getattr(er, "area_asymmetry", None))
+            if not bool(has_post_frame):
+                rows.append(
+                    {
+                        "flag_type": "terminal_frame_division",
+                        "track_id": p,
+                        "related_track_id": str(d) if d is not None else None,
+                        "frame": div_f,
+                        "severity": "warning",
+                        "message": (
+                            f"Division {p}->{d} is at the final frame; no next movie frame "
+                            "exists to confirm the post-division state."
+                        ),
+                    }
+                )
             if dist is not None and dist > max_daughter_distance_px:
                 rows.append(
                     {
@@ -708,8 +739,11 @@ def build_lineage_growth_timeseries(
     if "area_source" in df.columns:
         sources = sorted(set(df["area_source"].astype(str).tolist()))
         analysis_sources = [s for s in sources if s.startswith("analysis:")]
+        um_sources = [s for s in sources if "mask_um2" in s.lower() or "µm" in s.lower() or "um2" in s.lower()]
         if analysis_sources:
             metric = analysis_sources[0]
+        elif um_sources:
+            metric = um_sources[0]
     rows = []
     for (lid, fr), g in df.groupby(["lineage_id", "frame"]):
         rows.append(
@@ -725,6 +759,556 @@ def build_lineage_growth_timeseries(
         )
     out = pd.DataFrame(rows, columns=cols)
     return out.sort_values(["lineage_id", "frame"])
+
+
+def filter_lineage_edges_for_curation(
+    edges_df: Any,
+    events_df: Any = None,
+    *,
+    strict: bool = False,
+) -> Any:
+    """
+    Return edges for curated lineage views.
+
+    strict=False: drop rejected divisions; keep candidate, accepted, flagged, manual.
+    strict=True: keep only accepted and manual links.
+    """
+    import pandas as pd
+
+    if edges_df is None or not hasattr(edges_df, "columns") or len(edges_df) == 0:
+        return edges_df
+    status_by_edge: dict[tuple[int, int], str] = {}
+    if events_df is not None and hasattr(events_df, "columns") and len(events_df) > 0:
+        for row in events_df.itertuples(index=False):
+            try:
+                key = (int(getattr(row, "parent_track_id")), int(getattr(row, "daughter_track_id")))
+                status_by_edge[key] = str(getattr(row, "review_status", REVIEW_STATUS_CANDIDATE)).lower()
+            except (TypeError, ValueError):
+                continue
+    rows: list[dict[str, Any]] = []
+    for _, er in edges_df.iterrows():
+        p = _safe_int(er.get("parent_track_id"))
+        d = _safe_int(er.get("daughter_track_id"))
+        if p is None or d is None:
+            continue
+        link_status = str(er.get("link_status", LINK_STATUS_CANDIDATE)).lower()
+        if link_status == "manual":
+            rows.append(er.to_dict())
+            continue
+        review = status_by_edge.get((p, d), REVIEW_STATUS_CANDIDATE)
+        if review == REVIEW_STATUS_REJECTED:
+            continue
+        if strict and review != REVIEW_STATUS_ACCEPTED:
+            continue
+        rows.append(er.to_dict())
+    if not rows:
+        return pd.DataFrame(columns=list(edges_df.columns))
+    return pd.DataFrame(rows)
+
+
+def area_table_for_lineage_growth(tables: dict[str, Any]) -> Any:
+    """Pick the best per-track area table available for growth curves."""
+    import pandas as pd
+
+    area_df = tables.get("track_area")
+    if area_df is not None and hasattr(area_df, "columns") and len(area_df) > 0:
+        out = area_df.copy()
+        pts = tables.get("lineage_points")
+        if pts is not None and hasattr(pts, "columns") and len(pts) > 0 and "area_source" in pts.columns:
+            manual = pts[pts["area_source"].astype(str) == "manual_mask_px"].copy()
+            if len(manual) > 0 and {"track_id", "frame", "area"}.issubset(manual.columns):
+                manual = manual[["track_id", "frame", "area", "area_source"]]
+                existing = set()
+                if {"track_id", "frame"}.issubset(out.columns):
+                    existing = {
+                        (int(r.track_id), int(r.frame))
+                        for r in out[["track_id", "frame"]].dropna().itertuples(index=False)
+                    }
+                manual = manual[
+                    ~manual.apply(lambda r: (int(r["track_id"]), int(r["frame"])) in existing, axis=1)
+                ]
+                if len(manual) > 0:
+                    for col in out.columns:
+                        if col not in manual.columns:
+                            manual[col] = pd.NA
+                    out = pd.concat([out, manual[out.columns]], ignore_index=True)
+        return out
+    pts = tables.get("lineage_points")
+    if pts is None or not hasattr(pts, "columns") or len(pts) == 0:
+        return None
+    col = None
+    source = "mask_px"
+    if "Area (µm²)" in pts.columns:
+        col = "Area (µm²)"
+        source = "analysis:Area (µm²)"
+    elif "area" in pts.columns:
+        col = "area"
+    if col is None or not {"track_id", "frame"}.issubset(pts.columns):
+        return None
+    out = pts[["track_id", "frame", col]].copy()
+    out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna(subset=[col])
+    if len(out) == 0:
+        return None
+    out = out.rename(columns={col: "area"})
+    out["area_source"] = source
+    return out
+
+
+def calibrate_area_table(area_df: Any, pixel_size_um: float) -> Any:
+    """Convert mask-count areas to µm² when calibration is available."""
+    if area_df is None or not hasattr(area_df, "columns") or len(area_df) == 0:
+        return area_df
+    if "area" not in area_df.columns or "area_source" not in area_df.columns:
+        return area_df
+    if float(pixel_size_um or 0.0) <= 0:
+        return area_df
+    import pandas as pd
+
+    out = area_df.copy()
+    src = out["area_source"].astype(str)
+    mask_rows = src.isin(["mask_px", "manual_mask_px"])
+    if mask_rows.any():
+        scale = float(pixel_size_um) ** 2
+        out.loc[mask_rows, "area"] = pd.to_numeric(out.loc[mask_rows, "area"], errors="coerce") * scale
+        out.loc[src == "mask_px", "area_source"] = "mask_um2_from_metadata"
+        out.loc[src == "manual_mask_px", "area_source"] = "manual_mask_um2_from_metadata"
+    return out
+
+
+def rebuild_curated_lineage_views(
+    tables: dict[str, Any],
+    tracks_df: Any,
+    *,
+    strict: bool = False,
+    time_per_frame_min: float = 0.0,
+) -> dict[str, Any]:
+    """Recompute tree, meta, and growth timeseries from curated division links."""
+    from bactomate.modules.lineage_viz import build_lineage_tree_layout
+
+    edges_src = tables.get("lineage_edges")
+    events = tables.get("lineage_events")
+    curated_edges = filter_lineage_edges_for_curation(edges_src, events, strict=strict)
+    tracks_src = tables.get("lineage_points")
+    if tracks_src is None or not hasattr(tracks_src, "columns") or "track_id" not in tracks_src.columns:
+        tracks_src = tracks_df
+    founder = lineage_founder_map(curated_edges, tracks_src)
+    meta = tables.get("lineage_tracks_meta")
+    if meta is None or not hasattr(meta, "columns") or len(meta) == 0:
+        meta = track_lineage_metadata(curated_edges, tracks_src)
+    cal = tables.get("lineage_calibration") or {}
+    if not time_per_frame_min:
+        time_per_frame_min = float(cal.get("time_per_frame_min", 0.0) or 0.0)
+    area_df = area_table_for_lineage_growth(tables)
+    area_df = calibrate_area_table(area_df, float(cal.get("pixel_size_um", 0.0) or 0.0))
+    growth_ts = build_lineage_growth_timeseries(area_df, founder, time_per_frame_min=time_per_frame_min)
+    nodes, tree_edges = build_lineage_tree_layout(curated_edges, meta)
+    biology_labels = build_biology_track_labels(curated_edges, tracks_src, meta)
+    return {
+        "lineage_edges_curated": curated_edges,
+        "lineage_tracks_meta_curated": meta,
+        "lineage_growth_timeseries_curated": growth_ts,
+        "lineage_tree_nodes_curated": nodes,
+        "lineage_tree_edges_curated": tree_edges,
+        "founder_by_track_curated": founder,
+        "biology_track_labels": biology_labels,
+    }
+
+
+def build_biology_track_labels(
+    edges_df: Any,
+    tracks_df: Any,
+    lineage_tracks_meta: Any = None,
+    *,
+    founder_lineage_order: Optional[list[int]] = None,
+) -> Any:
+    """
+    Map each track_id to a biology-facing label (Cell 1, Cell 1.1, Cell 1.2, …).
+
+    Labels follow the curated lineage tree, not raw Trackastra IDs.
+    """
+    import pandas as pd
+
+    cols = ["track_id", "biology_label", "lineage_id", "lineage_display", "branch_role", "is_manual"]
+    parent_of: dict[int, int] = {}
+    children_of: dict[int, list[int]] = defaultdict(list)
+    manual_children: set[int] = set()
+    if edges_df is not None and hasattr(edges_df, "columns") and len(edges_df) > 0:
+        for _, row in edges_df.iterrows():
+            p = _safe_int(row.get("parent_track_id"))
+            d = _safe_int(row.get("daughter_track_id"))
+            if p is None or d is None:
+                continue
+            parent_of[d] = p
+            children_of[p].append(d)
+            if str(row.get("link_status", "")).lower() == "manual":
+                manual_children.add(d)
+
+    track_ids: set[int] = set()
+    if tracks_df is not None and hasattr(tracks_df, "columns") and "track_id" in tracks_df.columns:
+        for v in tracks_df["track_id"].dropna().unique():
+            tid = _safe_int(v)
+            if tid is not None:
+                track_ids.add(tid)
+    if lineage_tracks_meta is not None and hasattr(lineage_tracks_meta, "columns") and "track_id" in lineage_tracks_meta.columns:
+        for v in lineage_tracks_meta["track_id"].dropna().unique():
+            tid = _safe_int(v)
+            if tid is not None:
+                track_ids.add(tid)
+
+    founder_map = lineage_founder_map(edges_df, tracks_df)
+    founders = [int(x) for x in (founder_lineage_order or sorted(set(founder_map.values())))]
+    lineage_number = {lid: idx + 1 for idx, lid in enumerate(founders)}
+    labels: dict[int, dict[str, Any]] = {}
+
+    def _role_for(tid: int, biology_label: str) -> str:
+        if tid < 0 or tid in manual_children:
+            return "manual_daughter"
+        if biology_label.count(".") == 0:
+            return "founder"
+        return "daughter"
+
+    def _assign_subtree(root_tid: int, root_label: str, lineage_id: int) -> None:
+        if root_tid in labels:
+            return
+        labels[root_tid] = {
+            "track_id": root_tid,
+            "biology_label": root_label,
+            "lineage_id": lineage_id,
+            "lineage_display": f"Lineage {lineage_number.get(lineage_id, '?')}",
+            "branch_role": _role_for(root_tid, root_label),
+            "is_manual": bool(root_tid < 0 or root_tid in manual_children),
+        }
+        children = sorted(set(children_of.get(root_tid, [])))
+        for i, child in enumerate(children, 1):
+            _assign_subtree(child, f"{root_label}.{i}", lineage_id)
+
+    tracks_by_lineage: dict[int, list[int]] = defaultdict(list)
+    for tid in track_ids:
+        lid = int(founder_map.get(tid, tid))
+        tracks_by_lineage[lid].append(tid)
+
+    for lid in founders:
+        lineage_tracks = tracks_by_lineage.get(lid, [])
+        roots = [t for t in lineage_tracks if parent_of.get(t) is None or parent_of.get(t) not in track_ids]
+        if not roots:
+            roots = [lid] if lid in track_ids else (sorted(lineage_tracks)[:1] if lineage_tracks else [lid])
+        if lid in roots:
+            roots = [lid] + [r for r in sorted(roots) if r != lid]
+        else:
+            roots = sorted(roots)
+        cell_num = lineage_number.get(lid, 1)
+        for root_idx, root in enumerate(roots):
+            root_label = f"Cell {cell_num}" if len(roots) == 1 else f"Cell {cell_num}.{root_idx + 1}"
+            _assign_subtree(int(root), root_label, lid)
+
+    for tid in sorted(track_ids):
+        if tid in labels:
+            continue
+        lid = int(founder_map.get(tid, tid))
+        cell_num = lineage_number.get(lid, 1)
+        fallback = f"Cell {cell_num}?" if len(founders) == 1 else f"track {tid}"
+        labels[tid] = {
+            "track_id": tid,
+            "biology_label": fallback,
+            "lineage_id": lid,
+            "lineage_display": f"Lineage {lineage_number.get(lid, '?')}",
+            "branch_role": "orphan",
+            "is_manual": tid < 0,
+        }
+
+    if not labels:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(list(labels.values()), columns=cols)
+
+
+def biology_label_map(labels_df: Any) -> dict[int, str]:
+    """track_id -> biology_label from a biology_track_labels table."""
+    out: dict[int, str] = {}
+    if labels_df is None or not hasattr(labels_df, "columns") or len(labels_df) == 0:
+        return out
+    if not {"track_id", "biology_label"}.issubset(labels_df.columns):
+        return out
+    for row in labels_df.itertuples(index=False):
+        tid = _safe_int(getattr(row, "track_id", None))
+        if tid is None:
+            continue
+        out[tid] = str(getattr(row, "biology_label", tid))
+    return out
+
+
+def division_daughters_at_frame(events_df: Any, parent_id: int, division_frame: int) -> list[int]:
+    """Sorted daughter track IDs for one mother at one division frame."""
+    import pandas as pd
+
+    if events_df is None or not isinstance(events_df, pd.DataFrame) or len(events_df) == 0:
+        return []
+    if not {"parent_track_id", "daughter_track_id", "division_frame"}.issubset(events_df.columns):
+        return []
+    sub = events_df[
+        (events_df["parent_track_id"].astype(int) == int(parent_id))
+        & (events_df["division_frame"].astype(int) == int(division_frame))
+    ]
+    if len(sub) == 0:
+        return []
+    return sorted(int(x) for x in sub["daughter_track_id"].dropna().unique().tolist())
+
+
+def format_biology_division_split(
+    parent_id: int,
+    daughter_id: int,
+    division_frame: int,
+    events_df: Any,
+    label_map: dict[int, str],
+) -> str:
+    """Biology-facing division text, grouping co-split daughters on one row."""
+    daughters = division_daughters_at_frame(events_df, parent_id, division_frame)
+    if not daughters:
+        daughters = [int(daughter_id)]
+    parent_lbl = label_map.get(int(parent_id), f"track {parent_id}")
+    daughter_lbls = [label_map.get(int(d), f"track {d}") for d in daughters]
+    if len(daughter_lbls) > 1:
+        return f"{parent_lbl} → {' + '.join(daughter_lbls)} @ frame {int(division_frame) + 1}"
+    return f"{parent_lbl} → {daughter_lbls[0]} @ frame {int(division_frame) + 1}"
+
+
+def refresh_lineage_events_table(
+    tables: dict[str, Any],
+    tracks_df: Any,
+    *,
+    preserve_review: bool = True,
+) -> Any:
+    """Rebuild lineage_events from edges while keeping user review decisions."""
+    import pandas as pd
+
+    edges = tables.get("lineage_edges")
+    if edges is None or not hasattr(edges, "columns") or len(edges) == 0:
+        return tables.get("lineage_events")
+    review_map: dict[tuple[int, int], str] = {}
+    old = tables.get("lineage_events")
+    if preserve_review and old is not None and hasattr(old, "columns") and len(old) > 0:
+        for row in old.itertuples(index=False):
+            p = _safe_int(getattr(row, "parent_track_id", None))
+            d = _safe_int(getattr(row, "daughter_track_id", None))
+            if p is None or d is None:
+                continue
+            review_map[(p, d)] = str(getattr(row, "review_status", REVIEW_STATUS_CANDIDATE)).lower()
+    meta = tables.get("lineage_tracks_meta")
+    cal = tables.get("lineage_calibration") or {}
+    events = build_lineage_events(
+        edges,
+        tracks_df,
+        area_df=area_table_for_lineage_growth(tables),
+        time_per_frame_min=float(cal.get("time_per_frame_min", 0.0) or 0.0),
+        lineage_tracks_meta=meta,
+        pixel_size_um=float(cal.get("pixel_size_um", 0.0) or 0.0),
+    )
+    if events is None or not hasattr(events, "columns") or len(events) == 0:
+        return events
+    for i, row in events.iterrows():
+        key = (int(row["parent_track_id"]), int(row["daughter_track_id"]))
+        if key in review_map:
+            events.at[i, "review_status"] = review_map[key]
+        elif str(row.get("link_status", "")).lower() == "manual":
+            events.at[i, "review_status"] = REVIEW_STATUS_ACCEPTED
+        if (
+            "has_post_frame" in events.columns
+            and not bool(events.at[i, "has_post_frame"])
+            and str(row.get("link_status", "")).lower() != "manual"
+        ):
+            events.at[i, "review_status"] = REVIEW_STATUS_FLAGGED
+    return events
+
+
+def resolve_lineage_area_unit(
+    tables: dict[str, Any],
+    *,
+    growth_ts: Any = None,
+) -> str:
+    """Consistent area unit for summary text and plots (µm² vs px)."""
+    from bactomate.modules.lineage_viz import lineage_area_unit_label
+
+    if growth_ts is None:
+        growth_ts = tables.get("lineage_growth_timeseries_curated")
+    if growth_ts is None:
+        growth_ts = tables.get("lineage_growth_timeseries")
+    if growth_ts is not None and hasattr(growth_ts, "columns") and len(growth_ts) > 0:
+        unit = lineage_area_unit_label(growth_ts)
+        if unit == "µm²":
+            return unit
+
+    pts = tables.get("lineage_points")
+    if pts is not None and hasattr(pts, "columns"):
+        if "Area (µm²)" in pts.columns:
+            return "µm²"
+        if "area_source" in pts.columns:
+            src = " ".join(str(v) for v in pts["area_source"].dropna().unique().tolist()).lower()
+            if "analysis:" in src or "mask_um2" in src or "µm" in src or "um2" in src:
+                return "µm²"
+
+    area_df = tables.get("track_area")
+    if area_df is not None and hasattr(area_df, "columns") and "area_source" in area_df.columns:
+        src = " ".join(str(v) for v in area_df["area_source"].dropna().unique().tolist()).lower()
+        if "analysis:" in src or "mask_um2" in src:
+            return "µm²"
+
+    cal = tables.get("lineage_calibration") or {}
+    if float(cal.get("pixel_size_um", 0.0) or 0.0) > 0 and growth_ts is not None:
+        unit = lineage_area_unit_label(growth_ts)
+        if unit == "µm²":
+            return unit
+
+    return lineage_area_unit_label(growth_ts) if growth_ts is not None else "px"
+
+
+def compute_lineage_analysis_summary(
+    tables: dict[str, Any],
+    *,
+    lineage_id: Optional[int] = None,
+    growth_ts: Any = None,
+    untracked_unresolved: int = 0,
+) -> dict[str, Any]:
+    """Build a compact summary dict for the Analysis panel."""
+    import pandas as pd
+
+    out: dict[str, Any] = {
+        "lineage_id": lineage_id,
+        "start_frame": None,
+        "end_frame": None,
+        "n_descendants_final": None,
+        "n_divisions_accepted": 0,
+        "n_divisions_rejected": 0,
+        "n_divisions_candidate": 0,
+        "n_divisions_flagged": 0,
+        "untracked_unresolved": int(untracked_unresolved),
+        "area_start": None,
+        "area_end": None,
+        "area_fold_change": None,
+        "growth_rate": None,
+        "doubling_time": None,
+        "growth_unit": None,
+        "area_unit": "px",
+    }
+    if lineage_id is None:
+        return out
+    lid = int(lineage_id)
+    summary = tables.get("lineage_summary")
+    if summary is not None and hasattr(summary, "columns") and len(summary) > 0 and "lineage_id" in summary.columns:
+        row = summary[summary["lineage_id"].astype(int) == lid]
+        if len(row):
+            r0 = row.iloc[0]
+            out["start_frame"] = _safe_int(r0.get("start_frame"))
+            out["end_frame"] = _safe_int(r0.get("end_frame"))
+            out["n_descendants_final"] = _safe_int(r0.get("n_tracks"))
+    events = tables.get("lineage_events")
+    if events is not None and hasattr(events, "columns") and len(events) > 0:
+        if "lineage_id" in events.columns:
+            ev = events[events["lineage_id"].astype(int) == lid]
+        else:
+            ev = events
+        if "review_status" in ev.columns:
+            for status_col, key in (
+                (REVIEW_STATUS_ACCEPTED, "n_divisions_accepted"),
+                (REVIEW_STATUS_REJECTED, "n_divisions_rejected"),
+                (REVIEW_STATUS_CANDIDATE, "n_divisions_candidate"),
+                (REVIEW_STATUS_FLAGGED, "n_divisions_flagged"),
+            ):
+                status_ev = ev[ev["review_status"].astype(str).str.lower() == status_col]
+                if {"parent_track_id", "division_frame"}.issubset(status_ev.columns):
+                    out[key] = int(status_ev[["parent_track_id", "division_frame"]].drop_duplicates().shape[0])
+                else:
+                    out[key] = int(len(status_ev))
+    growth = tables.get("lineage_growth")
+    if growth is not None and hasattr(growth, "columns") and len(growth) > 0 and "lineage_id" in growth.columns:
+        gr = growth[growth["lineage_id"].astype(int) == lid]
+        if len(gr):
+            g0 = gr.iloc[0]
+            out["growth_rate"] = _safe_float(g0.get("growth"))
+            out["doubling_time"] = _safe_float(g0.get("doubling_time"))
+            out["growth_unit"] = g0.get("growth_unit")
+    if growth_ts is None:
+        growth_ts = tables.get("lineage_growth_timeseries_curated")
+        if growth_ts is None:
+            growth_ts = tables.get("lineage_growth_timeseries")
+    if growth_ts is not None and hasattr(growth_ts, "columns") and len(growth_ts) > 0:
+        sub = growth_ts.copy()
+        if "lineage_id" in sub.columns:
+            sub = sub[sub["lineage_id"].astype(int) == lid]
+        if len(sub) and "total_area" in sub.columns:
+            sub = sub.sort_values("frame")
+            out["area_start"] = _safe_float(sub.iloc[0]["total_area"])
+            out["area_end"] = _safe_float(sub.iloc[-1]["total_area"])
+            if out["area_start"] and out["area_end"] and out["area_start"] > 0:
+                out["area_fold_change"] = float(out["area_end"]) / float(out["area_start"])
+            out["area_unit"] = resolve_lineage_area_unit(tables, growth_ts=sub)
+    pts = tables.get("lineage_points")
+    if out["n_descendants_final"] is None and pts is not None and hasattr(pts, "columns") and "lineage_id" in pts.columns:
+        sub = pts[pts["lineage_id"].astype(int) == lid]
+        if len(sub) and "track_id" in sub.columns:
+            out["n_descendants_final"] = int(sub["track_id"].nunique())
+    return out
+
+
+def aggregate_division_review_status(statuses: list[str]) -> str:
+    """Combine per-edge review flags for one biological division (worst case wins)."""
+    normalized = [str(s or REVIEW_STATUS_CANDIDATE).strip().lower() for s in statuses]
+    if any(s == REVIEW_STATUS_REJECTED for s in normalized):
+        return REVIEW_STATUS_REJECTED
+    if any(s == REVIEW_STATUS_FLAGGED for s in normalized):
+        return REVIEW_STATUS_FLAGGED
+    if normalized and all(s == REVIEW_STATUS_ACCEPTED for s in normalized):
+        return REVIEW_STATUS_ACCEPTED
+    if normalized and all(s == REVIEW_STATUS_CANDIDATE for s in normalized):
+        return REVIEW_STATUS_CANDIDATE
+    return REVIEW_STATUS_CANDIDATE
+
+
+def collapse_lineage_events_for_display(events_df: Any) -> Any:
+    """One row per mother cell division (groups co-split daughter edges)."""
+    import pandas as pd
+
+    if events_df is None or not isinstance(events_df, pd.DataFrame) or len(events_df) == 0:
+        return events_df
+    required = {"parent_track_id", "daughter_track_id", "division_frame"}
+    if not required.issubset(events_df.columns):
+        return events_df
+    rows: list[dict[str, Any]] = []
+    grouped = events_df.groupby(
+        [events_df["parent_track_id"].astype(int), events_df["division_frame"].astype(int)],
+        sort=False,
+    )
+    for (parent_id, division_frame), sub in grouped:
+        sub = sub.sort_values("daughter_track_id")
+        first = sub.iloc[0]
+        review_vals = (
+            sub["review_status"].astype(str).tolist()
+            if "review_status" in sub.columns
+            else [REVIEW_STATUS_CANDIDATE] * len(sub)
+        )
+        link_vals = (
+            sub["link_status"].astype(str).str.lower().tolist()
+            if "link_status" in sub.columns
+            else ["candidate"] * len(sub)
+        )
+        has_post = True
+        if "has_post_frame" in sub.columns:
+            has_post = bool(sub["has_post_frame"].astype(bool).all())
+        row: dict[str, Any] = {
+            "parent_track_id": int(parent_id),
+            "daughter_track_id": int(sub.iloc[0]["daughter_track_id"]),
+            "division_frame": int(division_frame),
+            "review_status": aggregate_division_review_status(review_vals),
+            "link_status": "manual" if any(v == "manual" for v in link_vals) else "candidate",
+            "has_post_frame": has_post,
+        }
+        if "division_frame_1based" in sub.columns:
+            row["division_frame_1based"] = int(sub.iloc[0]["division_frame_1based"])
+        elif "division_frame" in sub.columns:
+            row["division_frame_1based"] = int(division_frame) + 1
+        if "generation" in sub.columns:
+            row["generation"] = first.get("generation")
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def apply_event_review_status(
@@ -750,6 +1334,31 @@ def apply_event_review_status(
     return out
 
 
+def apply_division_review_status(
+    events_df: Any,
+    *,
+    parent_track_id: int,
+    division_frame: int,
+    review_status: str,
+) -> Any:
+    """Update review_status for every daughter edge at one mother division."""
+    import pandas as pd
+
+    if events_df is None or not hasattr(events_df, "columns"):
+        return events_df
+    status = str(review_status or REVIEW_STATUS_CANDIDATE).strip().lower()
+    if status not in VALID_REVIEW_STATUSES:
+        status = REVIEW_STATUS_FLAGGED
+    out = events_df.copy()
+    if "review_status" not in out.columns:
+        out["review_status"] = REVIEW_STATUS_CANDIDATE
+    mask = (out["parent_track_id"].astype(int) == int(parent_track_id)) & (
+        out["division_frame"].astype(int) == int(division_frame)
+    )
+    out.loc[mask, "review_status"] = status
+    return out
+
+
 def enrich_lineage_tables(
     base_tables: dict[str, Any],
     *,
@@ -771,6 +1380,7 @@ def enrich_lineage_tables(
     lineage_points = out.get("lineage_points")
     if per_cell_df is not None and lineage_points is not None and len(lineage_points) > 0:
         lineage_points = join_analysis_to_lineage_points(lineage_points, per_cell_df)
+    area_df = calibrate_area_table(area_df, pixel_size_um)
     lineage_events = build_lineage_events(
         edges_df,
         tracks_df,
@@ -789,6 +1399,11 @@ def enrich_lineage_tables(
     lineage_growth_timeseries = build_lineage_growth_timeseries(
         area_df, founder, time_per_frame_min=time_per_frame_min
     )
+    out["track_area"] = area_df
+    out["lineage_calibration"] = {
+        "pixel_size_um": float(pixel_size_um or 0.0),
+        "time_per_frame_min": float(time_per_frame_min or 0.0),
+    }
     tree_nodes, tree_edges = build_lineage_tree_layout(edges_df, lineage_tracks_meta)
     measure_cols = []
     if lineage_points is not None and len(lineage_points) > 0:
@@ -812,6 +1427,7 @@ def enrich_lineage_tables(
     out["lineage_tree_nodes"] = tree_nodes
     out["lineage_tree_edges"] = tree_edges
     out["founder_by_track"] = founder
+    out["biology_track_labels"] = build_biology_track_labels(edges_df, tracks_df, lineage_tracks_meta)
     return out
 
 
@@ -952,8 +1568,641 @@ def export_lineage_artifacts(
     *,
     stem: str,
 ) -> list[Path]:
-    """Write static PNG figures for lineage overview (tree, growth, divisions)."""
+    """Write static PNG figures for lineage overview and figures/analysis/ detail plots."""
     from bactomate.modules.lineage_viz import export_lineage_figures
 
     fig_dir = Path(output_dir) / "figures"
     return export_lineage_figures(fig_dir, tables, stem=stem)
+
+
+def _read_lineage_table_file(path: Path) -> Any:
+    import pandas as pd
+
+    path = Path(path)
+    if path.suffix == ".parquet":
+        return pd.read_parquet(path)
+    if path.suffixes[-2:] == [".csv", ".gz"] or path.name.endswith(".csv.gz"):
+        return pd.read_csv(path)
+    if path.suffix == ".csv":
+        return pd.read_csv(path)
+    raise ValueError(f"Unsupported table format: {path}")
+
+
+def load_lineage_tables_from_output_dir(output_dir: Path) -> dict[str, Any]:
+    """Load lineage tables from a completed ``_tracking/{stem}_tracking/`` folder."""
+    import json
+
+    output_dir = Path(output_dir)
+    tables_dir = output_dir / "tables"
+    if not tables_dir.is_dir():
+        raise FileNotFoundError(f"No tables/ in {output_dir}")
+    tables: dict[str, Any] = {}
+    meta_json = tables_dir / "metadata.json"
+    if meta_json.is_file():
+        try:
+            meta = json.loads(meta_json.read_text(encoding="utf-8"))
+            tables["lineage_calibration"] = {
+                "pixel_size_um": float(meta.get("pixel_size_um", 0.0) or 0.0),
+                "time_per_frame_min": float(meta.get("time_per_frame_min", 0.0) or 0.0),
+            }
+        except Exception:
+            pass
+    for key in (
+        "lineage_points",
+        "lineage_edges",
+        "lineage_tracks_meta",
+        "lineage_events",
+        "lineage_qc",
+        "lineage_summary",
+        "lineage_growth",
+        "lineage_growth_timeseries",
+        "lineage_tree_nodes",
+        "lineage_tree_edges",
+        "lineage_measurements",
+        "track_area",
+        "biology_track_labels",
+    ):
+        for ext in (".parquet", ".csv.gz", ".csv"):
+            p = tables_dir / f"{key}{ext}"
+            if p.is_file():
+                tables[key] = _read_lineage_table_file(p)
+                break
+    if tables.get("lineage_points") is None:
+        raise FileNotFoundError("lineage_points table not found")
+    return tables
+
+
+def load_lineage_tables_from_report_xlsx(xlsx_path: Path) -> dict[str, Any]:
+    """Load lineage tables from ``{stem}_lineage_report.xlsx``."""
+    import pandas as pd
+    from bactomate.modules.lineage_viz import LINEAGE_REPORT_SHEET_TO_KEY
+
+    xlsx_path = Path(xlsx_path)
+    if not xlsx_path.is_file():
+        raise FileNotFoundError(xlsx_path)
+    xl = pd.ExcelFile(xlsx_path)
+    tables: dict[str, Any] = {}
+    for sheet_name, key in LINEAGE_REPORT_SHEET_TO_KEY.items():
+        if sheet_name in xl.sheet_names:
+            df = pd.read_excel(xlsx_path, sheet_name=sheet_name)
+            if df is not None and hasattr(df, "columns") and len(df.columns) > 0:
+                tables[key] = df
+    if tables.get("lineage_points") is None:
+        raise FileNotFoundError("Lineage Points sheet not found in workbook")
+    return tables
+
+
+def _is_lineage_tracking_output_dir(path: Path) -> bool:
+    """True when ``path`` looks like ``_tracking/{stem}_tracking/`` output."""
+    path = Path(path)
+    if not path.is_dir():
+        return False
+    if (path / "tables").is_dir():
+        return True
+    return any(path.glob("*_lineage_report.xlsx"))
+
+
+def discover_lineage_tracking_dirs(search_root: Path) -> list[Path]:
+    """
+    Find completed lineage tracking folders under a user-selected path.
+
+    Supports:
+    - ``…/{stem}_tracking/`` directly under the folder
+    - ``…/_tracking/{stem}_tracking/`` (standard BactoMate layout)
+    - nested ``…/_tracking/*`` when the child contains ``tables/`` or a report
+    """
+    search_root = Path(search_root).resolve()
+    if not search_root.is_dir():
+        return []
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(candidate: Path) -> None:
+        resolved = candidate.resolve()
+        key = str(resolved)
+        if key in seen or not _is_lineage_tracking_output_dir(resolved):
+            return
+        seen.add(key)
+        found.append(resolved)
+
+    if _is_lineage_tracking_output_dir(search_root):
+        add(search_root)
+
+    for pattern in ("*_tracking", "*/*_tracking"):
+        for candidate in search_root.glob(pattern):
+            if candidate.is_dir():
+                add(candidate)
+
+    tracking_root = search_root / "_tracking"
+    if tracking_root.is_dir():
+        for candidate in tracking_root.iterdir():
+            if candidate.is_dir():
+                add(candidate)
+
+    return sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def resolve_lineage_source(source: Path) -> tuple[Path, str, Path]:
+    """
+    Resolve a user-selected path to (tables_parent_dir, stem, figures_dir).
+
+    Accepts a tracking output folder, a parent folder containing ``_tracking/``,
+    or a ``*_lineage_report.xlsx`` file.
+    """
+    source = Path(source).resolve()
+    if source.is_file() and source.suffix.lower() == ".xlsx" and "lineage_report" in source.name.lower():
+        stem = source.stem
+        if stem.endswith("_lineage_report"):
+            stem = stem[: -len("_lineage_report")]
+        parent = source.parent
+        fig_dir = parent / "figures"
+        if (parent / "tables").is_dir():
+            return parent, stem, fig_dir
+        return parent, stem, fig_dir
+    if source.is_dir():
+        if (source / "tables").is_dir():
+            stem = source.name
+            if stem.endswith("_tracking"):
+                stem = stem[: -len("_tracking")]
+            return source, stem, source / "figures"
+        reports = sorted(source.glob("*_lineage_report.xlsx"))
+        if reports:
+            rep = reports[0]
+            stem = rep.stem
+            if stem.endswith("_lineage_report"):
+                stem = stem[: -len("_lineage_report")]
+            parent = rep.parent
+            return parent, stem, parent / "figures"
+        nested = sorted(source.glob("*_tracking"))
+        for d in nested:
+            if (d / "tables").is_dir():
+                stem = d.name
+                if stem.endswith("_tracking"):
+                    stem = stem[: -len("_tracking")]
+                return d, stem, d / "figures"
+        discovered = discover_lineage_tracking_dirs(source)
+        if discovered:
+            parent = discovered[0]
+            stem = parent.name
+            if stem.endswith("_tracking"):
+                stem = stem[: -len("_tracking")]
+            return parent, stem, parent / "figures"
+    raise FileNotFoundError(f"Could not resolve lineage source: {source}")
+
+
+def load_lineage_tables_from_source(source: Path) -> tuple[dict[str, Any], Path, str, Path]:
+    """Load tables from tracking output folder or lineage report workbook."""
+    parent, stem, fig_dir = resolve_lineage_source(source)
+    source = Path(source).resolve()
+    if source.is_file() and source.suffix.lower() == ".xlsx":
+        tables = load_lineage_tables_from_report_xlsx(source)
+    else:
+        tables = load_lineage_tables_from_output_dir(parent)
+    return tables, parent, stem, fig_dir
+
+
+LINEAGE_CURATION_SCHEMA_VERSION = 2
+LINEAGE_CURATION_FILENAME = "lineage_curation.json"
+LINEAGE_CURATION_LEGACY_FILENAME = "lineage_manual_edits.json"
+
+
+def resolve_lineage_curation_path(mask_path: Path, *, output_dir: Optional[Path] = None) -> Path:
+    """Staging path for lineage curation (written during preview QC, read on full export)."""
+    if output_dir is not None:
+        return Path(output_dir) / "tables" / LINEAGE_CURATION_FILENAME
+    mask_path = resolve_lineage_mask_path(Path(mask_path))
+    try:
+        from bactomate.gui.analysis_paths import base_dir_for_mask
+
+        base = base_dir_for_mask(mask_path)
+    except Exception:
+        base = mask_path.parent
+    stem = mask_path.stem
+    return base / "_tracking" / f"{stem}_tracking" / "tables" / LINEAGE_CURATION_FILENAME
+
+
+def _curation_legacy_path(path: Path) -> Path:
+    return path.parent / LINEAGE_CURATION_LEGACY_FILENAME
+
+
+def pack_lineage_curation_payload(
+    tables: dict[str, Any],
+    *,
+    mask_path: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Serialize inspector tables into a JSON-friendly curation bundle."""
+    import pandas as pd
+
+    edits = tables.get("manual_lineage_edits")
+    edit_rows: list[dict[str, Any]] = []
+    if edits is not None and hasattr(edits, "columns") and len(edits) > 0:
+        edit_rows = edits.where(edits.notna(), None).to_dict(orient="records")
+
+    ignored_raw = tables.get("manual_ignored_untracked", set()) or set()
+    ignored: list[list[int]] = []
+    for item in ignored_raw:
+        try:
+            ignored.append([int(item[0]), int(item[1])])
+        except (TypeError, ValueError, IndexError):
+            continue
+    ignored.sort()
+
+    division_reviews: list[dict[str, Any]] = []
+    events = tables.get("lineage_events")
+    if events is not None and hasattr(events, "columns") and len(events) > 0:
+        for row in events.itertuples(index=False):
+            p = _safe_int(getattr(row, "parent_track_id", None))
+            d = _safe_int(getattr(row, "daughter_track_id", None))
+            div_f = _safe_int(getattr(row, "division_frame", None))
+            if p is None or d is None or div_f is None:
+                continue
+            division_reviews.append(
+                {
+                    "parent_track_id": p,
+                    "daughter_track_id": d,
+                    "division_frame": div_f,
+                    "review_status": str(getattr(row, "review_status", REVIEW_STATUS_CANDIDATE)).lower(),
+                    "mother_y": _safe_float(getattr(row, "mother_y", None)),
+                    "mother_x": _safe_float(getattr(row, "mother_x", None)),
+                    "daughter_y": _safe_float(getattr(row, "daughter_y", None)),
+                    "daughter_x": _safe_float(getattr(row, "daughter_x", None)),
+                }
+            )
+
+    payload: dict[str, Any] = {
+        "schema_version": LINEAGE_CURATION_SCHEMA_VERSION,
+        "manual_lineage_edits": edit_rows,
+        "manual_ignored_untracked": ignored,
+        "division_reviews": division_reviews,
+    }
+    if mask_path is not None:
+        payload["mask_path"] = str(Path(mask_path).resolve())
+    return payload
+
+
+def save_lineage_curation(path: Path, tables: dict[str, Any], *, mask_path: Optional[Path] = None) -> Path:
+    """Write curation bundle next to the tracking output tables/."""
+    path = Path(path)
+    payload = pack_lineage_curation_payload(tables, mask_path=mask_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    return path
+
+
+def load_lineage_curation(path: Path) -> Optional[dict[str, Any]]:
+    """Load curation bundle (falls back to legacy manual-edits JSON)."""
+    path = Path(path)
+    if not path.is_file():
+        legacy = _curation_legacy_path(path)
+        if legacy.is_file():
+            path = legacy
+        else:
+            return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if "division_reviews" not in data and data.get("manual_lineage_edits") is not None:
+        data.setdefault("division_reviews", [])
+    return data
+
+
+def _track_point_at_frame(tracks_df: Any, track_id: int, frame: int) -> Optional[tuple[float, float]]:
+    if tracks_df is None or not hasattr(tracks_df, "columns"):
+        return None
+    if not {"track_id", "frame", "y", "x"}.issubset(tracks_df.columns):
+        return None
+    sub = tracks_df[
+        (tracks_df["track_id"].astype(int) == int(track_id)) & (tracks_df["frame"].astype(int) == int(frame))
+    ]
+    if len(sub) == 0:
+        sub = tracks_df[tracks_df["track_id"].astype(int) == int(track_id)].sort_values("frame")
+        if len(sub) == 0:
+            return None
+        row = sub.iloc[-1]
+    else:
+        row = sub.iloc[0]
+    y = _safe_float(row.get("y"))
+    x = _safe_float(row.get("x"))
+    if y is None or x is None:
+        return None
+    return float(y), float(x)
+
+
+def nearest_track_id_at_frame(
+    tracks_df: Any,
+    frame: int,
+    y: float,
+    x: float,
+    *,
+    max_dist_px: float = 120.0,
+) -> Optional[int]:
+    """Pick the track whose centroid is closest to (y, x) on a given frame."""
+    if tracks_df is None or not hasattr(tracks_df, "columns"):
+        return None
+    if not {"track_id", "frame", "y", "x"}.issubset(tracks_df.columns):
+        return None
+    sub = tracks_df[tracks_df["frame"].astype(int) == int(frame)]
+    if len(sub) == 0:
+        return None
+    best_tid: Optional[int] = None
+    best_d2 = float(max_dist_px) ** 2
+    for row in sub.itertuples(index=False):
+        py = _safe_float(getattr(row, "y", None))
+        px = _safe_float(getattr(row, "x", None))
+        tid = _safe_int(getattr(row, "track_id", None))
+        if py is None or px is None or tid is None:
+            continue
+        d2 = (float(py) - float(y)) ** 2 + (float(px) - float(x)) ** 2
+        if d2 <= best_d2:
+            best_d2 = d2
+            best_tid = int(tid)
+    return best_tid
+
+
+def _match_division_review_to_edge(
+    review: dict[str, Any],
+    edges_df: Any,
+    tracks_df: Any,
+    *,
+    max_dist_px: float = 100.0,
+) -> Optional[tuple[int, int]]:
+    """Map a saved division review onto an edge in a fresh tracking run."""
+    import pandas as pd
+
+    if edges_df is None or not hasattr(edges_df, "columns") or len(edges_df) == 0:
+        return None
+    div_f = _safe_int(review.get("division_frame"))
+    p_hint = _safe_int(review.get("parent_track_id"))
+    d_hint = _safe_int(review.get("daughter_track_id"))
+    if div_f is None:
+        return None
+    if p_hint is not None and d_hint is not None:
+        exact = edges_df[
+            (edges_df["division_frame"].astype(int) == int(div_f))
+            & (edges_df["parent_track_id"].astype(int) == int(p_hint))
+            & (edges_df["daughter_track_id"].astype(int) == int(d_hint))
+        ]
+        if len(exact) > 0:
+            return int(p_hint), int(d_hint)
+    my = _safe_float(review.get("mother_y"))
+    mx = _safe_float(review.get("mother_x"))
+    dy = _safe_float(review.get("daughter_y"))
+    dx = _safe_float(review.get("daughter_x"))
+    if my is None or mx is None or dy is None or dx is None:
+        return None
+    candidates = edges_df[edges_df["division_frame"].astype(int) == int(div_f)]
+    if len(candidates) == 0:
+        return None
+    best_key: Optional[tuple[int, int]] = None
+    best_score = float(max_dist_px) ** 2 * 2.0
+    for er in candidates.itertuples(index=False):
+        p = _safe_int(getattr(er, "parent_track_id", None))
+        d = _safe_int(getattr(er, "daughter_track_id", None))
+        if p is None or d is None:
+            continue
+        mpt = _track_point_at_frame(tracks_df, p, int(div_f)) or _track_point_at_frame(
+            tracks_df, p, max(0, int(div_f) - 1)
+        )
+        dpt = _track_point_at_frame(tracks_df, d, int(div_f))
+        if mpt is None or dpt is None:
+            continue
+        score = (mpt[0] - my) ** 2 + (mpt[1] - mx) ** 2 + (dpt[0] - dy) ** 2 + (dpt[1] - dx) ** 2
+        if score < best_score:
+            best_score = score
+            best_key = (p, d)
+    return best_key
+
+
+def _append_table_row(df: Any, row: dict[str, Any]) -> Any:
+    import pandas as pd
+
+    row_df = pd.DataFrame([row])
+    if df is None or not hasattr(df, "columns") or len(df) == 0:
+        return row_df
+    out = df.copy()
+    for col in row_df.columns:
+        if col not in out.columns:
+            out[col] = np.nan
+    for col in out.columns:
+        if col not in row_df.columns:
+            row_df[col] = np.nan
+    return pd.concat([out, row_df[out.columns]], ignore_index=True)
+
+
+def _next_free_track_id(tracks_df: Any, masks_tracked: Any) -> int:
+    used: set[int] = set()
+    if tracks_df is not None and hasattr(tracks_df, "columns") and "track_id" in tracks_df.columns:
+        for v in tracks_df["track_id"].dropna().unique():
+            tid = _safe_int(v)
+            if tid is not None and tid > 0:
+                used.add(int(tid))
+    if masks_tracked is not None and getattr(masks_tracked, "ndim", 0) == 3:
+        for fi in range(int(masks_tracked.shape[0])):
+            for v in np.unique(masks_tracked[fi]):
+                tid = _safe_int(v)
+                if tid is not None and tid > 0:
+                    used.add(int(tid))
+    candidate = max(used) + 1 if used else 1
+    while candidate in used:
+        candidate += 1
+    return int(candidate)
+
+
+def _apply_manual_lineage_edits(
+    edits: list[dict[str, Any]],
+    *,
+    tracks_df: Any,
+    edges_df: Any,
+    masks_tracked: Any,
+    masks_input: Any = None,
+) -> tuple[Any, Any, Any, int]:
+    """Replay orange-cell manual assignments onto a fresh tracking run."""
+    import pandas as pd
+
+    if not edits:
+        return tracks_df, edges_df, masks_tracked, 0
+    manual_counter = 0
+    for edit in edits:
+        try:
+            manual_counter = max(manual_counter, abs(int(edit.get("manual_track_id", 0) or 0)))
+        except (TypeError, ValueError):
+            continue
+    applied = 0
+    for edit in edits:
+        frame = _safe_int(edit.get("frame"))
+        label = _safe_int(edit.get("untracked_label"))
+        if frame is None or label is None:
+            continue
+        y = _safe_float(edit.get("y"))
+        x = _safe_float(edit.get("x"))
+        area = _safe_float(edit.get("area_px")) or 0.0
+        if y is None or x is None:
+            continue
+        parent_tid = _safe_int(edit.get("parent_track_id"))
+        py = _safe_float(edit.get("parent_y"))
+        px = _safe_float(edit.get("parent_x"))
+        if py is not None and px is not None:
+            remapped = nearest_track_id_at_frame(tracks_df, frame, py, px)
+            if remapped is not None:
+                parent_tid = remapped
+        elif parent_tid is not None:
+            if tracks_df is not None and hasattr(tracks_df, "columns"):
+                exists = (
+                    (tracks_df["track_id"].astype(int) == int(parent_tid))
+                    & (tracks_df["frame"].astype(int) == int(frame))
+                ).any()
+                if not exists:
+                    parent_tid = nearest_track_id_at_frame(tracks_df, frame, y, x)
+        if parent_tid is None:
+            continue
+        lineage_id = _safe_int(edit.get("lineage_id")) or int(parent_tid)
+        manual_tid = _safe_int(edit.get("manual_track_id"))
+        if manual_tid is None:
+            manual_counter += 1
+            manual_tid = _next_free_track_id(tracks_df, masks_tracked)
+        elif int(manual_tid) < 0:
+            manual_tid = _next_free_track_id(tracks_df, masks_tracked)
+        else:
+            manual_tid = int(manual_tid)
+
+        edge_row = {
+            "parent_track_id": int(parent_tid),
+            "daughter_track_id": int(manual_tid),
+            "division_frame": int(frame),
+            "parent_last_frame": max(0, int(frame) - 1),
+            "link_status": "manual",
+        }
+        if edges_df is None or not hasattr(edges_df, "columns"):
+            edges_df = pd.DataFrame(columns=list(edge_row.keys()))
+        edge_exists = (
+            len(edges_df) > 0
+            and "daughter_track_id" in edges_df.columns
+            and (edges_df["daughter_track_id"].astype(int) == int(manual_tid)).any()
+        )
+        if not edge_exists:
+            edges_df = _append_table_row(edges_df, edge_row)
+
+        point_row = {
+            "track_id": int(manual_tid),
+            "frame": int(frame),
+            "y": float(y),
+            "x": float(x),
+            "lineage_id": int(lineage_id),
+        }
+        if tracks_df is None or not hasattr(tracks_df, "columns"):
+            tracks_df = pd.DataFrame(columns=["track_id", "frame", "y", "x"])
+        point_exists = (
+            len(tracks_df) > 0
+            and (tracks_df["track_id"].astype(int) == int(manual_tid))
+            & (tracks_df["frame"].astype(int) == int(frame))
+        ).any()
+        if not point_exists:
+            tracks_df = _append_table_row(tracks_df, point_row)
+
+        if masks_tracked is not None and getattr(masks_tracked, "ndim", 0) == 3:
+            if int(frame) < int(masks_tracked.shape[0]):
+                region = None
+                if masks_input is not None and getattr(masks_input, "ndim", 0) == 3:
+                    if int(frame) < int(masks_input.shape[0]):
+                        region = np.asarray(masks_input[int(frame)]) == int(label)
+                if region is None or not np.any(region):
+                    yy = int(round(float(y)))
+                    xx = int(round(float(x)))
+                    mf = np.asarray(masks_tracked[int(frame)])
+                    if 0 <= yy < mf.shape[0] and 0 <= xx < mf.shape[1]:
+                        lbl = int(mf[yy, xx])
+                        if lbl > 0:
+                            region = mf == lbl
+                if region is not None and np.any(region):
+                    masks_tracked = np.array(masks_tracked, copy=True)
+                    masks_tracked[int(frame)][region] = int(manual_tid)
+        applied += 1
+    return tracks_df, edges_df, masks_tracked, applied
+
+
+def apply_lineage_curation_to_run(
+    curation: dict[str, Any],
+    *,
+    tracks_df: Any,
+    edges_df: Any,
+    masks_tracked: Any,
+    masks_input: Any = None,
+) -> tuple[Any, Any, Any, dict[tuple[int, int], str], dict[str, int]]:
+    """
+    Apply saved lineage curation onto a fresh Trackastra run.
+
+    Returns updated (tracks_df, edges_df, masks_tracked), division review map, and stats.
+    """
+    import pandas as pd
+
+    stats = {"manual_edits_applied": 0, "division_reviews_applied": 0, "divisions_dropped": 0}
+    review_map: dict[tuple[int, int], str] = {}
+    if not curation:
+        return tracks_df, edges_df, masks_tracked, review_map, stats
+
+    edits = curation.get("manual_lineage_edits") or []
+    if isinstance(edits, list) and edits:
+        tracks_df, edges_df, masks_tracked, n_manual = _apply_manual_lineage_edits(
+            edits,
+            tracks_df=tracks_df,
+            edges_df=edges_df,
+            masks_tracked=masks_tracked,
+            masks_input=masks_input,
+        )
+        stats["manual_edits_applied"] = int(n_manual)
+
+    division_reviews = curation.get("division_reviews") or []
+    if isinstance(division_reviews, list):
+        for rev in division_reviews:
+            if not isinstance(rev, dict):
+                continue
+            status = str(rev.get("review_status", REVIEW_STATUS_CANDIDATE)).lower()
+            if status not in VALID_REVIEW_STATUSES:
+                status = REVIEW_STATUS_CANDIDATE
+            key = _match_division_review_to_edge(rev, edges_df, tracks_df)
+            if key is None:
+                continue
+            review_map[key] = status
+            stats["division_reviews_applied"] += 1
+
+    if review_map and edges_df is not None and hasattr(edges_df, "columns") and len(edges_df) > 0:
+        kept: list[dict[str, Any]] = []
+        for er in edges_df.itertuples(index=False):
+            p = _safe_int(getattr(er, "parent_track_id", None))
+            d = _safe_int(getattr(er, "daughter_track_id", None))
+            if p is None or d is None:
+                continue
+            link_status = str(getattr(er, "link_status", LINK_STATUS_CANDIDATE)).lower()
+            if link_status == "manual":
+                kept.append(er._asdict())
+                continue
+            status = review_map.get((p, d))
+            if status == REVIEW_STATUS_REJECTED:
+                stats["divisions_dropped"] += 1
+                continue
+            kept.append(er._asdict())
+        if kept:
+            edges_df = pd.DataFrame(kept)
+        else:
+            edges_df = pd.DataFrame(columns=list(edges_df.columns))
+
+    return tracks_df, edges_df, masks_tracked, review_map, stats
+
+
+def apply_curation_review_map_to_events(events_df: Any, review_map: dict[tuple[int, int], str]) -> Any:
+    """Overlay saved division review decisions onto a freshly built events table."""
+    if events_df is None or not hasattr(events_df, "columns") or len(events_df) == 0:
+        return events_df
+    if not review_map:
+        return events_df
+    out = events_df.copy()
+    if "review_status" not in out.columns:
+        out["review_status"] = REVIEW_STATUS_CANDIDATE
+    for i, row in out.iterrows():
+        key = (int(row["parent_track_id"]), int(row["daughter_track_id"]))
+        if key in review_map:
+            out.at[i, "review_status"] = review_map[key]
+    return out

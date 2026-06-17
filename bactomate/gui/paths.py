@@ -89,6 +89,31 @@ def _running_from_app_bundle() -> bool:
         return False
 
 
+def configure_macos_bundle_subprocess_env(env: dict[str, str]) -> None:
+    """
+    Ensure child processes spawned from the .app bundle can load the bundled
+    Python.framework (ND2 conversion, segmentation scripts, etc.).
+    """
+    if sys.platform != "darwin" or not _running_from_app_bundle():
+        return
+    try:
+        resources = get_app_root()
+        contents = resources.parent
+        py_mm = f"{sys.version_info.major}.{sys.version_info.minor}"
+        framework_root = contents / "Frameworks" / "Python.framework"
+        python_home = framework_root / "Versions" / py_mm
+        if not python_home.is_dir():
+            return
+        # Do not set PYTHONHOME here: the bundled venv must keep its own site-packages.
+        dyld_parts = [str(framework_root)]
+        qt_fw = resources / "venv" / f"lib/python{py_mm}/site-packages/PyQt6/Qt6/lib"
+        if qt_fw.is_dir():
+            dyld_parts.append(str(qt_fw))
+        env["DYLD_FRAMEWORK_PATH"] = os.pathsep.join(dyld_parts)
+    except Exception:
+        pass
+
+
 def get_python_executable_for_subprocess() -> str:
     """
     Python executable to use when running scripts in a subprocess (e.g. batch_process_tiff_sequence.py).

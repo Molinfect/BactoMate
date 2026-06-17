@@ -4,6 +4,19 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.0 (2026-06)
+
+### Lineage workspace, conversion crop, and preview refactors
+
+- **Lineage analysis workspace:** expanded in-app lineage inspector and dedicated analysis panel with plots, metrics, and export from tracking outputs.
+- **File conversion crop:** optional extract-crop ROI in the conversion preview (right-drag box, handles, clear crop); drift correction runs on the full frame before cropping.
+- **Preview/module refactors:** shared preview patterns across file conversion, filtering, segmentation, tracking, and post-processing modules.
+- **TIFF metadata:** improved ImageJ-style metadata read/write helpers and tests.
+- **Build:** macOS launcher and app-bundle script updates.
+- **Tests:** conversion crop, lineage integration/viz, TIFF metadata write, and Omnipose affinity model loading.
+
+---
+
 ## v2.6.1 (2026-06)
 
 ### Reproducible installs, CI, and Apple MPS segmentation

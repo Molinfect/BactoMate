@@ -13,6 +13,8 @@ from bactomate.modules.tiff_metadata import (
     normalize_tiff_array_to_tcyx,
     read_calibration_from_path,
     read_metadata_from_path,
+    resolve_calibration_for_mask,
+    resolve_original_for_mask,
 )
 
 HOOK_TIF = Path("/Users/philipppopp/Desktop/hans/Hook-mal_001.tif")
@@ -109,3 +111,29 @@ def test_write_minimal_imagej_tiff_roundtrip(tmp_path):
     assert info is not None
     assert info["num_time"] == 1
     assert info["num_channels"] == 3
+
+
+def test_resolve_calibration_for_filtered_mask_case_insensitive_source(tmp_path):
+    tifffile = pytest.importorskip("tifffile")
+    tif_dir = tmp_path / "Tif_files"
+    mask_dir = tif_dir / "_segmentation_cellpose_sam" / "filtered_masks"
+    mask_dir.mkdir(parents=True)
+    source = tif_dir / "2_Phase60x_phase.tif"
+    mask = mask_dir / "2_Phase60X_phase_mask_filtered.tif"
+    stack = np.zeros((2, 8, 8), dtype=np.uint16)
+    tifffile.imwrite(
+        source,
+        stack,
+        imagej=True,
+        metadata={"axes": "TYX", "frames": 2, "images": 2, "finterval": 120.0},
+        resolution=(1e4 / 0.108333, 1e4 / 0.108333),
+        resolutionunit=3,
+    )
+    tifffile.imwrite(mask, stack, imagej=True, metadata={"axes": "TYX", "frames": 2, "images": 2})
+
+    assert resolve_original_for_mask(mask) == source
+    ps, tp, src, kind = resolve_calibration_for_mask(mask)
+    assert src == source
+    assert kind == "original"
+    assert ps == pytest.approx(0.108333, rel=1e-4)
+    assert tp == pytest.approx(2.0)

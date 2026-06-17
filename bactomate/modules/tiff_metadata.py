@@ -6,6 +6,9 @@ All time-per-frame values are in minutes when returned or passed to build_metada
 """
 from __future__ import annotations
 
+import os
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -478,6 +481,7 @@ def read_metadata_from_path(image_path: Optional[Path]) -> dict[str, Any]:
         out["pixel_size_um"] = ps if ps > 0 else None
         out["time_per_frame_min"] = tp if tp > 0 else None
         _read_tiff_metadata_into(image_path, out)
+        _fill_missing_tiff_metadata_from_source(image_path, out)
         return out
     if suffix == ".nd2":
         _read_nd2_metadata_into(image_path, out)
@@ -485,6 +489,71 @@ def read_metadata_from_path(image_path: Optional[Path]) -> dict[str, Any]:
     if suffix in (".lif", ".czi"):
         _read_lif_czi_metadata_into(image_path, out)
     return out
+
+
+def _derived_tiff_base_stems(stem: str) -> list[str]:
+    """Possible source stems for converted channel/crop TIFFs."""
+    out: list[str] = []
+
+    def add(value: str) -> None:
+        value = value.strip("_")
+        if value and value not in out:
+            out.append(value)
+
+    add(stem)
+    for suffix in ("_phase", "_mask", "_masks", "_mask_filtered"):
+        if stem.endswith(suffix):
+            add(stem[: -len(suffix)])
+    for marker in ("_fi_foci_", "_fi_", "_foci_"):
+        if marker in stem:
+            add(stem.split(marker, 1)[0])
+    if "_ch" in stem:
+        base, tail = stem.rsplit("_ch", 1)
+        if tail.isdigit():
+            add(base)
+    if "_" in stem:
+        add(stem.rsplit("_", 1)[0])
+    return out
+
+
+def resolve_source_for_derived_tiff(path: Optional[Path]) -> Optional[Path]:
+    """Find the likely source TIFF for a converted output TIFF.
+
+    Example: ``sample/Tif_files/2_Phase60x_phase.tif`` -> ``sample/2_Phase60x.tif``.
+    This is only a metadata fallback; image data still comes from the selected file.
+    """
+    if not path or not path.is_file() or path.suffix.lower() not in (".tif", ".tiff"):
+        return None
+    stems = _derived_tiff_base_stems(path.stem)
+    search_dirs: list[Path] = []
+    for candidate in (path.parent, path.parent.parent, path.parent.parent.parent):
+        if candidate and candidate.is_dir() and candidate not in search_dirs:
+            search_dirs.append(candidate)
+    for directory in search_dirs:
+        for stem in stems:
+            for suffix in (".tif", ".tiff", ".TIF", ".TIFF"):
+                candidate = directory / f"{stem}{suffix}"
+                if candidate.parent == path.parent and candidate.stem == path.stem:
+                    continue
+                if candidate.is_file() and candidate.resolve() != path.resolve():
+                    return candidate
+    return None
+
+
+def _fill_missing_tiff_metadata_from_source(path: Path, out: dict[str, Any]) -> None:
+    """Fill missing TIFF calibration from a likely source file next to converted outputs."""
+    if out.get("pixel_size_um") is not None and out.get("time_per_frame_min") is not None:
+        return
+    source = resolve_source_for_derived_tiff(path)
+    if source is None:
+        return
+    ps, tp = read_calibration_from_path(source)
+    if out.get("pixel_size_um") is None and ps > 0:
+        out["pixel_size_um"] = ps
+        out["metadata_fallback_source"] = str(source)
+    if out.get("time_per_frame_min") is None and tp > 0:
+        out["time_per_frame_min"] = tp
+        out["metadata_fallback_source"] = str(source)
 
 
 def _read_lif_czi_metadata_into(path: Path, out: dict[str, Any]) -> None:
@@ -1109,17 +1178,32 @@ def resolve_calibration_for_mask(
     """
     if not image_path or not image_path.is_file():
         return (0.0, 0.0, None, "none")
+
+    def _rich_calibration(path: Path) -> tuple[float, float]:
+        ps, tp = read_calibration_from_path(path)
+        if ps > 0 and tp > 0:
+            return ps, tp
+        try:
+            meta = read_metadata_from_path(path)
+            if ps <= 0 and meta.get("pixel_size_um") is not None:
+                ps = float(meta.get("pixel_size_um") or 0.0)
+            if tp <= 0 and meta.get("time_per_frame_min") is not None:
+                tp = float(meta.get("time_per_frame_min") or 0.0)
+        except Exception:
+            pass
+        return ps, tp
+
     if _looks_like_mask_path(image_path):
         original = resolve_original_for_mask(image_path)
         if original and original.is_file():
-            ps, tp = read_calibration_from_path(original)
+            ps, tp = _rich_calibration(original)
             if ps > 0 or tp > 0:
                 return (ps, tp, original, "original")
-        ps, tp = read_calibration_from_path(image_path)
+        ps, tp = _rich_calibration(image_path)
         if ps > 0 or tp > 0:
             return (ps, tp, image_path, "mask")
         return (0.0, 0.0, original, "none")
-    ps, tp = read_calibration_from_path(image_path)
+    ps, tp = _rich_calibration(image_path)
     if ps > 0 or tp > 0:
         return (ps, tp, image_path, "image")
     return (0.0, 0.0, None, "none")
@@ -1242,13 +1326,14 @@ def _search_dirs_for_original(mask_path: Path) -> list[Path]:
 
 
 def _find_original_in_dir(search_dir: Path, stems: list[str]) -> Optional[Path]:
+    stems_lower = {s.lower() for s in stems}
     for stem in stems:
         for f in search_dir.iterdir():
             if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
                 continue
             if "_fi" in f.stem.lower() or "_masks" in f.stem.lower():
                 continue
-            if f.stem == stem:
+            if f.stem == stem or f.stem.lower() in stems_lower:
                 return f
     for sub in search_dir.iterdir():
         if not sub.is_dir() or sub.name.startswith("."):
@@ -1259,7 +1344,7 @@ def _find_original_in_dir(search_dir: Path, stems: list[str]) -> Optional[Path]:
                     continue
                 if "_fi" in f.stem.lower() or "_masks" in f.stem.lower():
                     continue
-                if f.stem == stem:
+                if f.stem == stem or f.stem.lower() in stems_lower:
                     return f
     return None
 
@@ -1335,3 +1420,247 @@ def resolve_calibration_from_trajectories_path(traj_path: Optional[Path]) -> tup
             if ps > 0 or tp > 0:
                 return (ps, tp)
     return (0.0, 0.0)
+
+
+@dataclass
+class TiffMetadataOverrides:
+    """User-edited metadata fields for rewriting an existing TIFF."""
+
+    pixel_size_um: Optional[float] = None
+    time_per_frame_min: Optional[float] = None
+    channel_names: Optional[list[str]] = None
+    objective_name: Optional[str] = None
+    objective_magnification: Optional[float] = None
+    exposure_ms: Optional[float] = None
+    optics: Optional[str] = None
+    capturing: Optional[str] = None
+    acquisition_notes: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "pixel_size_um": self.pixel_size_um,
+            "time_per_frame_min": self.time_per_frame_min,
+            "channel_names": list(self.channel_names) if self.channel_names is not None else None,
+            "objective_name": self.objective_name,
+            "objective_magnification": self.objective_magnification,
+            "exposure_ms": self.exposure_ms,
+            "optics": self.optics,
+            "capturing": self.capturing,
+            "acquisition_notes": self.acquisition_notes,
+        }
+
+
+def overrides_from_dict(data: Optional[dict[str, Any]]) -> TiffMetadataOverrides:
+    """Build :class:`TiffMetadataOverrides` from a plain mapping."""
+    if not data:
+        return TiffMetadataOverrides()
+    names = data.get("channel_names")
+    if names is not None:
+        names = [str(x).strip() for x in names if str(x).strip()]
+    return TiffMetadataOverrides(
+        pixel_size_um=_optional_positive_float(data.get("pixel_size_um")),
+        time_per_frame_min=_optional_positive_float(data.get("time_per_frame_min")),
+        channel_names=names,
+        objective_name=_optional_str(data.get("objective_name")),
+        objective_magnification=_optional_positive_float(data.get("objective_magnification")),
+        exposure_ms=_optional_positive_float(data.get("exposure_ms")),
+        optics=_optional_str(data.get("optics")),
+        capturing=_optional_str(data.get("capturing")),
+        acquisition_notes=_optional_str(data.get("acquisition_notes")),
+    )
+
+
+def _optional_positive_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def validate_tiff_metadata_overrides(
+    path: Union[str, Path],
+    overrides: Union[TiffMetadataOverrides, dict[str, Any]],
+) -> tuple[bool, str]:
+    """Validate overrides against an on-disk TIFF. Returns ``(ok, error_message)``."""
+    p = Path(path)
+    if p.suffix.lower() not in (".tif", ".tiff"):
+        return (False, "Only TIFF files can be rewritten.")
+    if not p.is_file():
+        return (False, f"File not found: {p}")
+    ov = overrides if isinstance(overrides, TiffMetadataOverrides) else overrides_from_dict(overrides)
+    info = get_tiff_file_info(p)
+    if info is None:
+        return (False, "Could not read TIFF dimensions from file.")
+    expected_channels = max(1, int(info.get("num_channels") or 1))
+    if ov.channel_names is not None:
+        names = [str(n).strip() for n in ov.channel_names if str(n).strip()]
+        if len(names) != expected_channels:
+            return (
+                False,
+                f"Channel name count ({len(names)}) must match file channel count ({expected_channels}).",
+            )
+        if any(not n for n in names):
+            return (False, "Channel names cannot be empty.")
+    if ov.pixel_size_um is not None and float(ov.pixel_size_um) <= 0:
+        return (False, "Pixel size must be greater than zero.")
+    if ov.time_per_frame_min is not None and float(ov.time_per_frame_min) <= 0:
+        return (False, "Time per frame must be greater than zero.")
+    if ov.objective_magnification is not None and float(ov.objective_magnification) <= 0:
+        return (False, "Objective magnification must be greater than zero.")
+    if ov.exposure_ms is not None and float(ov.exposure_ms) <= 0:
+        return (False, "Exposure must be greater than zero.")
+    return (True, "")
+
+
+def _merge_metadata_for_write(
+    base: dict[str, Any],
+    overrides: TiffMetadataOverrides,
+) -> dict[str, Any]:
+    """Merge read metadata with user overrides for Info-block generation."""
+    merged = dict(base)
+    if overrides.pixel_size_um is not None:
+        merged["pixel_size_um"] = float(overrides.pixel_size_um)
+    if overrides.time_per_frame_min is not None:
+        merged["time_per_frame_min"] = float(overrides.time_per_frame_min)
+    if overrides.channel_names is not None:
+        merged["channel_names"] = list(overrides.channel_names)
+        merged["channel_names_source"] = "user"
+        merged["channel_wavelengths"] = [{"name": n} for n in overrides.channel_names]
+    if overrides.objective_name is not None:
+        merged["objective_name"] = overrides.objective_name
+    if overrides.objective_magnification is not None:
+        merged["objective_magnification"] = float(overrides.objective_magnification)
+    if overrides.exposure_ms is not None:
+        merged["exposure_ms"] = float(overrides.exposure_ms)
+    if overrides.optics is not None:
+        merged["optics"] = overrides.optics
+    if overrides.capturing is not None:
+        merged["capturing"] = overrides.capturing
+    return merged
+
+
+def _build_info_string_for_write(merged: dict[str, Any], overrides: TiffMetadataOverrides) -> str:
+    parts: list[str] = []
+    base_info = build_acquisition_info_string(merged)
+    if base_info:
+        parts.append(base_info)
+    if overrides.optics:
+        parts.append(f"Optics: {overrides.optics}")
+    if overrides.capturing:
+        parts.append(f"Capturing: {overrides.capturing}")
+    if overrides.exposure_ms is not None:
+        parts.append(f"Exposure: {float(overrides.exposure_ms):.3f} ms")
+    if overrides.acquisition_notes:
+        parts.append(str(overrides.acquisition_notes).strip())
+    return "\n".join(p for p in parts if p)
+
+
+def _infer_write_axes(num_time: int, num_channels: int, num_z: int, arr_ndim: int) -> str:
+    if num_channels > 1 and num_time == 1 and num_z == 1 and arr_ndim == 3:
+        return "CYX"
+    if num_z > 1:
+        return "TZCYX" if num_channels > 1 else "TZYX"
+    if num_channels > 1 and num_time > 1:
+        return "TCYX"
+    return "TYX"
+
+
+def _load_tiff_array_for_rewrite(path: Path) -> np.ndarray:
+    import tifffile
+
+    with tifffile.TiffFile(path) as tif:
+        return np.asarray(tif.asarray())
+
+
+def rewrite_tiff_with_metadata(
+    path: Union[str, Path],
+    overrides: Union[TiffMetadataOverrides, dict[str, Any]],
+    *,
+    backup: bool = True,
+) -> Path:
+    """Rewrite *path* with updated metadata while preserving image data.
+
+    Creates ``<filename>.bak`` when *backup* is true, writes to a temp file, then
+    atomically replaces the original.
+    """
+    import tifffile
+
+    p = Path(path).expanduser().resolve()
+    ov = overrides if isinstance(overrides, TiffMetadataOverrides) else overrides_from_dict(overrides)
+    ok, err = validate_tiff_metadata_overrides(p, ov)
+    if not ok:
+        raise ValueError(err)
+
+    info = get_tiff_file_info(p)
+    assert info is not None
+    num_time = max(1, int(info.get("num_time") or 1))
+    num_channels = max(1, int(info.get("num_channels") or 1))
+    num_z = max(1, int(info.get("num_z") or 1))
+
+    base_meta = read_metadata_from_path(p)
+    merged = _merge_metadata_for_write(base_meta, ov)
+    pixel_size = merged.get("pixel_size_um")
+    time_per_frame = merged.get("time_per_frame_min")
+    channel_names = merged.get("channel_names") or info.get("channel_names") or []
+
+    data = _load_tiff_array_for_rewrite(p)
+    if data.size == 0:
+        raise ValueError("TIFF contains no image data.")
+
+    axes = _infer_write_axes(num_time, num_channels, num_z, data.ndim)
+    total_images = num_time * num_channels * num_z
+    write_meta = build_metadata_dict(
+        pixel_size_um=float(pixel_size) if pixel_size and float(pixel_size) > 0 else None,
+        time_per_frame_min=float(time_per_frame) if time_per_frame and float(time_per_frame) > 0 else None,
+        axes=axes,
+        images=total_images,
+        frames=num_time,
+        acquisition_metadata=merged,
+    )
+    write_meta["channels"] = num_channels
+    write_meta["slices"] = num_z
+    if channel_names and len(channel_names) == num_channels:
+        write_meta["Labels"] = list(channel_names)
+
+    info_str = _build_info_string_for_write(merged, ov)
+    if info_str:
+        write_meta["Info"] = info_str
+
+    imwrite_kw: dict[str, Any] = {
+        "photometric": "minisblack",
+        "metadata": write_meta,
+        "imagej": True,
+    }
+    if pixel_size and float(pixel_size) > 0:
+        ps = float(pixel_size)
+        imwrite_kw["resolution"] = (1e4 / ps, 1e4 / ps)
+        imwrite_kw["resolutionunit"] = 3
+
+    backup_path: Optional[Path] = None
+    if backup:
+        backup_path = p.with_name(p.name + ".bak")
+        shutil.copy2(p, backup_path)
+
+    temp_path = p.with_name(p.name + ".tmp_rewrite.tif")
+    try:
+        tifffile.imwrite(str(temp_path), data, **imwrite_kw)
+        os.replace(temp_path, p)
+    except Exception:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise
+
+    return backup_path if backup_path is not None else p

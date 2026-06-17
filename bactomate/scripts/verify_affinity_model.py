@@ -30,10 +30,13 @@ def main() -> int:
         print(f"omnipose import failed: {e}")
         return 1
 
+    import numpy as np
+
     from bactomate.gui.omnipose_utils import (
         BACTOMATE_AFFINITY_LOADER_ID,
         load_bact_phase_affinity_model,
         materialize_bact_phase_affinity_checkpoint,
+        omnipose_eval_first_mask,
     )
 
     safe = materialize_bact_phase_affinity_checkpoint(ckpt)
@@ -49,6 +52,25 @@ def main() -> int:
     if nc != 3 or omni:
         print("FAIL: expected nclasses=3 and omni=False")
         return 1
+    img = np.random.randint(0, 255, (128, 128), dtype=np.uint16).astype(np.float32)
+    result = model.eval(
+        img,
+        channels=[0, 0],
+        diameter=30.0,
+        flow_threshold=0.4,
+        mask_threshold=0.0,
+        omni=True,
+        affinity_seg=True,
+        cluster=False,
+        net_avg=False,
+        resample=False,
+        verbose=False,
+    )
+    if not isinstance(result, tuple) or len(result) != 3:
+        print(f"FAIL: eval returned {type(result).__name__} len={len(result) if isinstance(result, tuple) else 'n/a'}")
+        return 1
+    mask = omnipose_eval_first_mask(result)
+    print(f"eval OK mask_shape={mask.shape}")
     print("Affinity model load verified.")
     return 0
 

@@ -13,6 +13,7 @@ from bactomate.gui.omnipose_utils import (
     is_affinity_builtin_model,
     is_affinity_checkpoint_path,
     load_cellpose_segmentation_model,
+    omnipose_eval_first_mask,
     prepare_builtin_pretrained_loader_path,
 )
 
@@ -47,6 +48,15 @@ def test_cellpose_omni_load_flag():
 def test_eval_uses_affinity_segmentation():
     assert eval_uses_affinity_segmentation(model_type="bact_phase_affinity")
     assert not eval_uses_affinity_segmentation(model_type="bact_phase_omni")
+
+
+def test_omnipose_eval_first_mask_accepts_three_or_four_tuple():
+    import numpy as np
+
+    mask = np.zeros((4, 4), dtype=np.uint16)
+    assert omnipose_eval_first_mask((mask, [], [])) is mask
+    assert omnipose_eval_first_mask((mask, [], [], None)) is mask
+    assert omnipose_eval_first_mask(mask) is mask
 
 
 def test_prepare_builtin_skips_omni_symlink_for_affinity(tmp_path):
@@ -91,3 +101,37 @@ def test_load_bact_phase_affinity_cellpose_nclasses():
     )
     nclasses = getattr(model, "nclasses", None) or getattr(getattr(model, "cp", None), "nclasses", None)
     assert nclasses == 3
+
+
+@pytest.mark.skipif(
+    not Path(__file__).resolve().parents[1].joinpath("omnipose_pretrained", "bact_phase_affinitytorch_0").is_file(),
+    reason="bundled affinity checkpoint missing",
+)
+def test_bact_phase_affinity_eval_returns_three_tuple():
+    """CellposeModel.eval returns 3 values; preview must not unpack 4."""
+    import numpy as np
+
+    from bactomate.gui.omnipose_utils import load_bact_phase_affinity_model, omnipose_eval_first_mask
+
+    ckpt = Path(__file__).resolve().parents[1] / "omnipose_pretrained" / "bact_phase_affinitytorch_0"
+    pytest.importorskip("cellpose_omni")
+
+    model = load_bact_phase_affinity_model(gpu=False, checkpoint_path=ckpt)
+    img = np.random.randint(0, 255, (128, 128), dtype=np.uint16).astype(np.float32)
+    result = model.eval(
+        img,
+        channels=[0, 0],
+        diameter=30.0,
+        flow_threshold=0.4,
+        mask_threshold=0.0,
+        omni=True,
+        affinity_seg=True,
+        cluster=False,
+        net_avg=False,
+        resample=False,
+        verbose=False,
+    )
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    mask = omnipose_eval_first_mask(result)
+    assert mask.shape == (128, 128)

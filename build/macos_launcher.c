@@ -97,6 +97,57 @@ static bool resolve_paths(
     return true;
 }
 
+static bool bundled_framework_paths(
+    const char *exe_path,
+    char *framework_root,
+    size_t framework_root_len,
+    char *python_home,
+    size_t python_home_len,
+    char *python_executable,
+    size_t python_executable_len
+) {
+    const char *marker = "/Contents/MacOS/";
+    char *found = strstr((char *)exe_path, marker);
+    if (!found) {
+        return false;
+    }
+
+    size_t prefix_len = (size_t)(found - exe_path);
+    if (snprintf(
+            framework_root,
+            framework_root_len,
+            "%.*s/Contents/Frameworks/Python.framework",
+            (int)prefix_len,
+            exe_path
+        ) >= (int)framework_root_len) {
+        return false;
+    }
+    if (snprintf(
+            python_home,
+            python_home_len,
+            "%s/Versions/%s",
+            framework_root,
+            BACTOMATE_PY_MM
+        ) >= (int)python_home_len) {
+        return false;
+    }
+    if (snprintf(
+            python_executable,
+            python_executable_len,
+            "%s/bin/python%s",
+            python_home,
+            BACTOMATE_PY_MM
+        ) >= (int)python_executable_len) {
+        return false;
+    }
+
+    struct stat st;
+    if (stat(python_home, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return false;
+    }
+    return true;
+}
+
 static void configure_runtime_env(
     const char *exe_path,
     const char *resources_dir,
@@ -105,6 +156,9 @@ static void configure_runtime_env(
     char venv_bin[PATH_MAX];
     char venv_site[PATH_MAX];
     char qt_frameworks[PATH_MAX];
+    char framework_root[PATH_MAX];
+    char python_home[PATH_MAX];
+    char python_executable[PATH_MAX];
     snprintf(venv_bin, sizeof(venv_bin), "%s/venv/bin", resources_dir);
     snprintf(venv_site, sizeof(venv_site), "%s/venv/lib/python%s/site-packages", resources_dir, BACTOMATE_PY_MM);
     snprintf(qt_frameworks, sizeof(qt_frameworks), "%s/venv/lib/python%s/site-packages/PyQt6/Qt6/lib", resources_dir, BACTOMATE_PY_MM);
@@ -112,14 +166,45 @@ static void configure_runtime_env(
     unsetenv("PYTHONHOME");
     unsetenv("QT_QPA_PLATFORM_PLUGIN_PATH");
 
+    bool has_framework = bundled_framework_paths(
+        exe_path,
+        framework_root,
+        sizeof(framework_root),
+        python_home,
+        sizeof(python_home),
+        python_executable,
+        sizeof(python_executable)
+    );
+    char dyld_framework_path[PATH_MAX * 3];
+    dyld_framework_path[0] = '\0';
+    if (has_framework) {
+        // Bundled venvs depend on the copied Python.framework for stdlib modules.
+        setenv("PYTHONHOME", python_home, 1);
+        snprintf(dyld_framework_path, sizeof(dyld_framework_path), "%s:%s", framework_root, qt_frameworks);
+    } else {
+        snprintf(dyld_framework_path, sizeof(dyld_framework_path), "%s", qt_frameworks);
+    }
+    const char *existing_dyld = getenv("DYLD_FRAMEWORK_PATH");
+    if (existing_dyld && existing_dyld[0]) {
+        char dyld_path[PATH_MAX * 4];
+        snprintf(dyld_path, sizeof(dyld_path), "%s:%s", dyld_framework_path, existing_dyld);
+        setenv("DYLD_FRAMEWORK_PATH", dyld_path, 1);
+    } else {
+        setenv("DYLD_FRAMEWORK_PATH", dyld_framework_path, 1);
+    }
+
     setenv("PYTHONPATH", venv_site, 1);
-    setenv("PYTHONEXECUTABLE", exe_path, 1);
+    struct stat py_exec_st;
+    if (has_framework && stat(python_executable, &py_exec_st) == 0) {
+        setenv("PYTHONEXECUTABLE", python_executable, 1);
+    } else {
+        setenv("PYTHONEXECUTABLE", exe_path, 1);
+    }
     setenv("PYTHONUNBUFFERED", "1", 1);
     setenv("QT_PLUGIN_PATH", qt_plugins, 1);
     setenv("QT_FRAMEWORK_PATH", qt_frameworks, 1);
     setenv("QT_MAC_WANTS_LAYER", "1", 1);
     setenv("QT_AUTO_SCREEN_SCALE_FACTOR", "1", 1);
-    setenv("DYLD_FRAMEWORK_PATH", qt_frameworks, 1);
 
     char path_env[PATH_MAX * 2];
     const char *existing = getenv("PATH");
@@ -213,7 +298,12 @@ int main(int argc, char *argv[]) {
     }
 
     configure_runtime_env(exe_path, resources_dir, qt_plugins);
-    append_log(resources_dir, "Native launcher starting in-process Python: %s", main_py);
+    append_log(
+        resources_dir,
+        "Native launcher starting in-process Python: %s (PYTHONHOME=%s)",
+        main_py,
+        getenv("PYTHONHOME") ? getenv("PYTHONHOME") : "<unset>"
+    );
 
 #ifdef BACTOMATE_LINK_PYTHON
     return run_inprocess_python(exe_path, main_py, argc, argv);

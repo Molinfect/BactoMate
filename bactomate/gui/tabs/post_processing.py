@@ -2,120 +2,31 @@
 Post-processing tab: growth curve video, scale bar on image, and montage.
 """
 from __future__ import annotations
-
 import math
 import numpy as np
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QShortcut
-from PyQt6.QtWidgets import (
-    QColorDialog,
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGroupBox,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
-    QMessageBox,
-    QProgressBar,
-    QProgressDialog,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QSlider,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
-)
-
+from PyQt6.QtWidgets import QColorDialog, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget
 from bactomate.gui.image_canvas import ImageCanvas
 from bactomate.gui.module_shell import PreviewSurface, mount_embedded_preview
-from bactomate.gui.preview.preview_window import (
-    CollapsibleSection,
-    LUT_HIST_CANVAS_HEIGHT_PX,
-    LUT_HIST_FIGSIZE_INCHES,
-    apply_lut_histogram_figure_margins,
-)
+from bactomate.gui.preview.preview_window import CollapsibleSection, LUT_HIST_CANVAS_HEIGHT_PX, LUT_HIST_FIGSIZE_INCHES, apply_lut_histogram_figure_margins
 from bactomate.gui.image_utils import to_qpixmap, scale_for_preview
-from bactomate.gui.preferences import (
-    delete_montage_preset,
-    get_default_browse_dir,
-    list_montage_preset_names,
-    load_montage_preset,
-    save_montage_preset,
-)
-from bactomate.modules.tiff_metadata import (
-    normalize_tiff_array_to_tcyx,
-    read_calibration_from_path,
-    read_metadata_from_path,
-)
+from bactomate.gui.preferences import delete_montage_preset, get_default_browse_dir, list_montage_preset_names, load_montage_preset, save_montage_preset
+from bactomate.modules.tiff_metadata import normalize_tiff_array_to_tcyx, read_calibration_from_path, read_metadata_from_path
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.utils import safe_imread
-from bactomate.gui.widgets import (
-    create_info_icon,
-    show_file_selection_dialog,
-    show_task_complete_dialog,
-)
-
-from bactomate.gui.layout_helpers import (
-    ResponsivePanel,
-    build_settings_card,
-    build_path_drop_group,
-    build_preview_settings_scroll,
-    compact_control,
-    flex_control,
-    inline_controls,
-    labeled_control,
-    preview_settings_group,
-    scrollable_control_panel,
-    setting_cell,
-    setting_field,
-    stacked_control_rows,
-    style_compact_action_button,
-    style_compact_browse_button,
-    style_module_primary_button,
-    style_preview_nav_spinbox,
-    vbox_from_rows,
-)
+from bactomate.gui.widgets import create_info_icon, show_file_selection_dialog, show_task_complete_dialog, show_confirm_dialog, show_message_dialog
+from bactomate.gui.layout_helpers import ResponsivePanel, build_settings_card, build_path_drop_group, build_preview_settings_scroll, compact_control, flex_control, inline_controls, labeled_control, preview_settings_group, scrollable_control_panel, setting_cell, setting_field, stacked_control_rows, style_compact_action_button, style_compact_browse_button, style_module_primary_button, style_preview_nav_spinbox, vbox_from_rows
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
-from bactomate.gui.workers import (
-    DEFAULT_GROWTH_GRAPH_STYLE,
-    DEFAULT_GROWTH_Y_COLUMN,
-    DEFAULT_VIDEO_FI_LAYOUT,
-    DEFAULT_VIDEO_OVERLAY_COLORS,
-    MAX_VIDEO_FI_COLOR_CHANNELS,
-    VIDEO_FI_AUTO_LUT_NAMES,
-    GrowthCurveVideoWorker,
-    VIDEO_FI_LAYOUT_MERGED,
-    VIDEO_FI_LAYOUT_SEPARATE,
-    apply_video_montage_overlays,
-    apply_video_montage_overlays_to_tiles,
-    compose_growth_curve_combined_frame,
-    list_growth_curve_excel_columns,
-    load_growth_curve_summary_data,
-    load_growth_curve_video_source,
-    normalize_video_overlay_colors,
-)
-
+from bactomate.gui.workers import DEFAULT_GROWTH_GRAPH_STYLE, DEFAULT_GROWTH_Y_COLUMN, DEFAULT_VIDEO_FI_LAYOUT, DEFAULT_VIDEO_OVERLAY_COLORS, MAX_VIDEO_FI_COLOR_CHANNELS, VIDEO_FI_AUTO_LUT_NAMES, GrowthCurveVideoWorker, VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE, apply_video_montage_overlays, apply_video_montage_overlays_to_tiles, compose_growth_curve_combined_frame, list_growth_curve_excel_columns, load_growth_curve_summary_data, load_growth_curve_video_source, normalize_video_overlay_colors
 
 class _GrowthCurvePreviewLabel(QLabel):
     """Preview label that opens graph appearance settings on double-click of the left pane."""
-
     graph_double_clicked = pyqtSignal()
 
-    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
+    def mouseDoubleClickEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self.width() > 0:
             if event.position().x() <= self.width() * 0.52:
                 self.graph_double_clicked.emit()
@@ -123,14 +34,12 @@ class _GrowthCurvePreviewLabel(QLabel):
                 return
         super().mouseDoubleClickEvent(event)
 
-
 class PostProcessingTab(QWidget):
     """Tab for post-processing: growth curve video, scale bar on image, and montage."""
-
     MONTAGE_AUTO_LUT_LOW = 0.5
     MONTAGE_AUTO_LUT_HIGH = 99.8
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget]=None) -> None:
         super().__init__(parent)
         self.parent_window = parent
         self._module_preview_mount: Optional[QWidget] = None
@@ -138,7 +47,7 @@ class PostProcessingTab(QWidget):
         self._embedded_post_preview: Optional[QWidget] = None
         self._active_video_preview_dialog: Optional[QWidget] = None
         self._active_montage_preview: Optional[QWidget] = None
-        self._post_preview_mode = "montage"
+        self._post_preview_mode = 'montage'
         self._video_preview_cache: Optional[dict[str, Any]] = None
         self._video_preview_refresh_timer: Optional[QTimer] = None
         self._growth_graph_style: dict[str, Any] = dict(DEFAULT_GROWTH_GRAPH_STYLE)
@@ -148,14 +57,14 @@ class PostProcessingTab(QWidget):
         self._video_tile_visibility: dict[str, bool] = {}
         self._video_overlay_colors: dict[str, Any] = normalize_video_overlay_colors(DEFAULT_VIDEO_OVERLAY_COLORS)
         self._video_montage_widgets_ready = False
-        self.montage_channel_color_overrides: dict = {}  # (path_stem, ch_idx) -> "auto"|"gray"|"red"|"green"|...
-        self.montage_tile_color_overrides: Dict[Any, Tuple[float, float, float]] = {}  # tile label or idx -> (r,g,b)
-        self.montage_tile_percentile_overrides: Dict[Any, Tuple[float, float]] = {}  # tile label or idx -> (p_low, p_high)
+        self.montage_channel_color_overrides: dict = {}
+        self.montage_tile_color_overrides: Dict[Any, Tuple[float, float, float]] = {}
+        self.montage_tile_percentile_overrides: Dict[Any, Tuple[float, float]] = {}
         self.montage_excluded_tile_keys: set[str] = set()
         self.montage_tile_order: list[str] = []
-        self.montage_tile_z_modes: Dict[str, str] = {}  # tile label -> global|first|max
+        self.montage_tile_z_modes: Dict[str, str] = {}
         self._montage_z_projection_max = False
-        self._montage_border_color = "Gray"
+        self._montage_border_color = 'Gray'
         self._last_montage_layout: dict[str, Any] = {}
         self.init_ui()
 
@@ -170,7 +79,7 @@ class PostProcessingTab(QWidget):
             return False
 
     @classmethod
-    def _safe_spin_value(cls, widget: Any, default: int = 0) -> int:
+    def _safe_spin_value(cls, widget: Any, default: int=0) -> int:
         if not cls._qt_widget_alive(widget):
             return default
         try:
@@ -179,7 +88,7 @@ class PostProcessingTab(QWidget):
             return default
 
     @classmethod
-    def _safe_combo_text(cls, widget: Any, default: str = "") -> str:
+    def _safe_combo_text(cls, widget: Any, default: str='') -> str:
         if not cls._qt_widget_alive(widget):
             return default
         try:
@@ -188,7 +97,7 @@ class PostProcessingTab(QWidget):
             return default
 
     @classmethod
-    def _safe_checked(cls, widget: Any, *, default: bool = False) -> bool:
+    def _safe_checked(cls, widget: Any, *, default: bool=False) -> bool:
         if not cls._qt_widget_alive(widget):
             return default
         try:
@@ -197,64 +106,59 @@ class PostProcessingTab(QWidget):
             return default
 
     def _montage_use_z_max_projection(self) -> bool:
-        combo = getattr(self, "montage_z_projection", None)
+        combo = getattr(self, 'montage_z_projection', None)
         if self._qt_widget_alive(combo):
-            use_max = "Max" in self._safe_combo_text(combo, "First Z plane")
+            use_max = 'Max' in self._safe_combo_text(combo, 'First Z plane')
             self._montage_z_projection_max = use_max
             return use_max
-        return bool(getattr(self, "_montage_z_projection_max", False))
+        return bool(getattr(self, '_montage_z_projection_max', False))
 
-    def _sync_montage_z_projection_mode(self, text: str = "") -> None:
-        combo = getattr(self, "montage_z_projection", None)
-        if self._qt_widget_alive(combo) and not text:
+    def _sync_montage_z_projection_mode(self, text: str='') -> None:
+        combo = getattr(self, 'montage_z_projection', None)
+        if self._qt_widget_alive(combo) and (not text):
             text = combo.currentText()
-        self._montage_z_projection_max = "Max" in str(text or "")
+        self._montage_z_projection_max = 'Max' in str(text or '')
 
     def _montage_border_color_name(self) -> str:
-        combo = getattr(self, "montage_border_color", None)
+        combo = getattr(self, 'montage_border_color', None)
         if self._qt_widget_alive(combo):
-            self._montage_border_color = self._safe_combo_text(combo, "Gray") or "Gray"
-        return str(getattr(self, "_montage_border_color", "Gray") or "Gray")
+            self._montage_border_color = self._safe_combo_text(combo, 'Gray') or 'Gray'
+        return str(getattr(self, '_montage_border_color', 'Gray') or 'Gray')
 
-    def _sync_montage_border_color(self, text: str = "") -> None:
-        combo = getattr(self, "montage_border_color", None)
-        if self._qt_widget_alive(combo) and not text:
+    def _sync_montage_border_color(self, text: str='') -> None:
+        combo = getattr(self, 'montage_border_color', None)
+        if self._qt_widget_alive(combo) and (not text):
             text = combo.currentText()
-        self._montage_border_color = str(text or "Gray")
+        self._montage_border_color = str(text or 'Gray')
 
     def _montage_border_fill(self) -> tuple[str, tuple[int, ...]]:
         name = self._montage_border_color_name().strip().lower()
-        if name == "white":
-            return "RGB", (255, 255, 255)
-        if name == "black":
-            return "RGB", (0, 0, 0)
-        if name == "transparent":
-            return "RGBA", (0, 0, 0, 0)
-        return "RGB", (150, 150, 150)
+        if name == 'white':
+            return ('RGB', (255, 255, 255))
+        if name == 'black':
+            return ('RGB', (0, 0, 0))
+        if name == 'transparent':
+            return ('RGBA', (0, 0, 0, 0))
+        return ('RGB', (150, 150, 150))
 
     def _montage_export_mode(self) -> str:
-        combo = getattr(self, "montage_export_mode", None)
-        return self._safe_combo_text(combo, "Full montage") or "Full montage"
+        combo = getattr(self, 'montage_export_mode', None)
+        return self._safe_combo_text(combo, 'Full montage') or 'Full montage'
 
     def _montage_export_is_merged_only(self) -> bool:
-        return "merged" in self._montage_export_mode().lower()
+        return 'merged' in self._montage_export_mode().lower()
 
     def _montage_label_settings(self) -> dict[str, Any]:
-        show = self._safe_checked(getattr(self, "montage_show_labels", None), default=False)
-        position = self._safe_combo_text(getattr(self, "montage_label_position", None), "Below") or "Below"
-        color_name = self._safe_combo_text(getattr(self, "montage_label_color", None), "Black") or "Black"
-        font_size = self._safe_spin_value(getattr(self, "montage_label_font_size", None), 12)
-        return {
-            "show": show,
-            "position": position,
-            "color_name": color_name,
-            "font_size": max(8, font_size),
-        }
+        show = self._safe_checked(getattr(self, 'montage_show_labels', None), default=False)
+        position = self._safe_combo_text(getattr(self, 'montage_label_position', None), 'Below') or 'Below'
+        color_name = self._safe_combo_text(getattr(self, 'montage_label_color', None), 'Black') or 'Black'
+        font_size = self._safe_spin_value(getattr(self, 'montage_label_font_size', None), 12)
+        return {'show': show, 'position': position, 'color_name': color_name, 'font_size': max(8, font_size)}
 
     @staticmethod
-    def _montage_label_fill(color_name: str, *, rgba: bool = False) -> tuple[int, ...]:
-        name = str(color_name or "Black").strip().lower()
-        if name == "white":
+    def _montage_label_fill(color_name: str, *, rgba: bool=False) -> tuple[int, ...]:
+        name = str(color_name or 'Black').strip().lower()
+        if name == 'white':
             rgb = (255, 255, 255)
         else:
             rgb = (0, 0, 0)
@@ -262,15 +166,15 @@ class PostProcessingTab(QWidget):
 
     @staticmethod
     def _montage_short_label(text: str) -> str:
-        stem = str(text or "").strip()
-        if stem.endswith(" Merged"):
-            return "Merged"
-        if " " in stem:
-            return stem.split(" ", 1)[-1][:32]
-        return stem[:32] + ("…" if len(stem) > 32 else "")
+        stem = str(text or '').strip()
+        if stem.endswith(' Merged'):
+            return 'Merged'
+        if ' ' in stem:
+            return stem.split(' ', 1)[-1][:32]
+        return stem[:32] + ('…' if len(stem) > 32 else '')
 
     @staticmethod
-    def _nice_scalebar_length_um(pixel_size: float, tile_width_px: int, *, target_fraction: float = 0.2) -> float:
+    def _nice_scalebar_length_um(pixel_size: float, tile_width_px: int, *, target_fraction: float=0.2) -> float:
         if pixel_size <= 0 or tile_width_px <= 0:
             return 10.0
         target_um = float(tile_width_px) * float(pixel_size) * float(target_fraction)
@@ -284,438 +188,280 @@ class PostProcessingTab(QWidget):
                 return float(candidate)
         return float(10.0 * base)
 
-    def _auto_montage_scalebar_length(self, layout: Optional[dict] = None) -> None:
+    def _auto_montage_scalebar_length(self, layout: Optional[dict]=None) -> None:
         params = self._montage_scalebar_params()
-        pixel_size = float(params.get("pixel_size") or 0.108)
+        pixel_size = float(params.get('pixel_size') or 0.108)
         target_rect = self._montage_scalebar_target_rect(layout)
         tile_w = int(target_rect[2]) if target_rect is not None else 512
         length_um = self._nice_scalebar_length_um(pixel_size, tile_w)
-        widget = getattr(self, "montage_sb_length_um", None)
+        widget = getattr(self, 'montage_sb_length_um', None)
         if self._qt_widget_alive(widget):
             widget.setValue(length_um)
 
     def _montage_export_extension(self, fmt_text: str) -> str:
-        return {
-            "PNG": ".png",
-            "TIFF": ".tif",
-            "JPEG": ".jpg",
-        }.get(str(fmt_text or "PNG"), ".png")
+        return {'PNG': '.png', 'TIFF': '.tif', 'JPEG': '.jpg'}.get(str(fmt_text or 'PNG'), '.png')
 
-    def _montage_export_dpi(self, dlg: Optional[Any] = None) -> int:
-        combo = getattr(dlg, "_export_dpi_combo", None) if dlg is not None else getattr(self, "montage_export_dpi", None)
-        text = self._safe_combo_text(combo, "300 DPI") or "300 DPI"
+    def _montage_export_dpi(self, dlg: Optional[Any]=None) -> int:
+        combo = getattr(dlg, '_export_dpi_combo', None) if dlg is not None else getattr(self, 'montage_export_dpi', None)
+        text = self._safe_combo_text(combo, '300 DPI') or '300 DPI'
         try:
             return int(str(text).split()[0])
         except Exception:
             return 300
 
-    def _montage_export_format(self, dlg: Optional[Any] = None) -> str:
-        combo = getattr(dlg, "_export_format_combo", None) if dlg is not None else getattr(self, "montage_export_format", None)
-        return self._safe_combo_text(combo, "PNG") or "PNG"
+    def _montage_export_format(self, dlg: Optional[Any]=None) -> str:
+        combo = getattr(dlg, '_export_format_combo', None) if dlg is not None else getattr(self, 'montage_export_format', None)
+        return self._safe_combo_text(combo, 'PNG') or 'PNG'
 
-    def _save_montage_array_to_path(self, arr: np.ndarray, out_path: Path, *, dpi: int = 300) -> None:
+    def _save_montage_array_to_path(self, arr: np.ndarray, out_path: Path, *, dpi: int=300) -> None:
         from PIL import Image
-
         img = Image.fromarray(arr)
         suffix = out_path.suffix.lower()
-        if suffix in (".jpg", ".jpeg"):
-            if img.mode == "RGBA":
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                background.paste(img, mask=img.getchannel("A"))
+        if suffix in ('.jpg', '.jpeg'):
+            if img.mode == 'RGBA':
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.getchannel('A'))
                 img = background
-            img.convert("RGB").save(out_path, quality=95, subsampling=0, dpi=(dpi, dpi))
-        elif suffix in (".png", ".tif", ".tiff"):
+            img.convert('RGB').save(out_path, quality=95, subsampling=0, dpi=(dpi, dpi))
+        elif suffix in ('.png', '.tif', '.tiff'):
             img.save(out_path, dpi=(dpi, dpi))
         else:
             img.save(out_path)
 
-    def _default_montage_output_stem(self, paths: Optional[List[Path]] = None, *, merged_only: bool = False) -> str:
+    def _default_montage_output_stem(self, paths: Optional[List[Path]]=None, *, merged_only: bool=False) -> str:
         """Default export stem: source filename/base name plus _montage or _merged."""
-        suffix = "_merged" if merged_only else "_montage"
+        suffix = '_merged' if merged_only else '_montage'
         paths = list(paths or self._get_montage_image_paths() or [])
         if len(paths) == 1:
-            return f"{paths[0].stem}{suffix}"
+            return f'{paths[0].stem}{suffix}'
         inferred_bases = []
         for p in paths:
             inferred = self._infer_channel_from_stem(p.stem)
             if inferred and inferred[0]:
-                inferred_bases.append(inferred[0].strip("_"))
+                inferred_bases.append(inferred[0].strip('_'))
         unique_bases = {b for b in inferred_bases if b}
         if len(unique_bases) == 1:
-            return f"{next(iter(unique_bases))}{suffix}"
+            return f'{next(iter(unique_bases))}{suffix}'
         if paths:
             parent_name = paths[0].parent.name or paths[0].stem
-            return f"{parent_name}{suffix}"
-        path_widget = getattr(self, "montage_path", None)
-        raw = path_widget.text().strip() if self._qt_widget_alive(path_widget) else ""
+            return f'{parent_name}{suffix}'
+        path_widget = getattr(self, 'montage_path', None)
+        raw = path_widget.text().strip() if self._qt_widget_alive(path_widget) else ''
         if raw:
-            p = Path(raw.split("|")[0].strip())
+            p = Path(raw.split('|')[0].strip())
             return f"{p.stem or p.name or 'montage'}{suffix}"
-        return "merged" if merged_only else "montage"
+        return 'merged' if merged_only else 'montage'
 
-    def _capture_montage_preset_state(self, dlg: Optional[Any] = None) -> dict[str, Any]:
+    def _capture_montage_preset_state(self, dlg: Optional[Any]=None) -> dict[str, Any]:
         state = dict(self.get_session_params())
-        state["montage_tile_color_overrides"] = {
-            str(k): [float(v[0]), float(v[1]), float(v[2])]
-            for k, v in (getattr(self, "montage_tile_color_overrides", None) or {}).items()
-        }
-        state["montage_export_mode"] = self._montage_export_mode()
-        if dlg is not None and self._qt_widget_alive(getattr(dlg, "_export_format_combo", None)):
-            state["montage_export_format"] = dlg._export_format_combo.currentText()
+        state['montage_tile_color_overrides'] = {str(k): [float(v[0]), float(v[1]), float(v[2])] for (k, v) in (getattr(self, 'montage_tile_color_overrides', None) or {}).items()}
+        state['montage_export_mode'] = self._montage_export_mode()
+        if dlg is not None and self._qt_widget_alive(getattr(dlg, '_export_format_combo', None)):
+            state['montage_export_format'] = dlg._export_format_combo.currentText()
         else:
-            state["montage_export_format"] = self._montage_export_format(dlg)
-        if dlg is not None and self._qt_widget_alive(getattr(dlg, "_export_dpi_combo", None)):
-            state["montage_export_dpi"] = dlg._export_dpi_combo.currentText()
+            state['montage_export_format'] = self._montage_export_format(dlg)
+        if dlg is not None and self._qt_widget_alive(getattr(dlg, '_export_dpi_combo', None)):
+            state['montage_export_dpi'] = dlg._export_dpi_combo.currentText()
         else:
-            state["montage_export_dpi"] = f"{self._montage_export_dpi(dlg)} DPI"
+            state['montage_export_dpi'] = f'{self._montage_export_dpi(dlg)} DPI'
         label_settings = self._montage_label_settings()
-        state.update(
-            {
-                "montage_show_labels": label_settings["show"],
-                "montage_label_position": label_settings["position"],
-                "montage_label_color": label_settings["color_name"],
-                "montage_label_font_size": label_settings["font_size"],
-            }
-        )
+        state.update({'montage_show_labels': label_settings['show'], 'montage_label_position': label_settings['position'], 'montage_label_color': label_settings['color_name'], 'montage_label_font_size': label_settings['font_size']})
         if dlg is not None:
-            per_tile_lut = getattr(dlg, "_per_tile_lut", None) or {}
+            per_tile_lut = getattr(dlg, '_per_tile_lut', None) or {}
             serial_lut: dict[str, list[float]] = {}
-            for key, value in per_tile_lut.items():
+            for (key, value) in per_tile_lut.items():
                 if isinstance(value, (list, tuple)) and len(value) == 2:
                     serial_lut[str(key)] = [float(value[0]), float(value[1])]
-            state["montage_per_tile_lut"] = serial_lut
-            focus_roi = getattr(dlg, "_focus_roi", None)
+            state['montage_per_tile_lut'] = serial_lut
+            focus_roi = getattr(dlg, '_focus_roi', None)
             if focus_roi is not None and len(focus_roi) == 4:
-                state["montage_focus_roi"] = [int(v) for v in focus_roi]
+                state['montage_focus_roi'] = [int(v) for v in focus_roi]
         return state
 
-    def _apply_montage_preset_state(self, data: dict[str, Any], dlg: Optional[Any] = None) -> None:
+    def _apply_montage_preset_state(self, data: dict[str, Any], dlg: Optional[Any]=None) -> None:
         self.set_session_params(data)
-        colors = data.get("montage_tile_color_overrides")
+        colors = data.get('montage_tile_color_overrides')
         if isinstance(colors, dict):
             self.montage_tile_color_overrides = {}
-            for key, value in colors.items():
+            for (key, value) in colors.items():
                 try:
                     if isinstance(value, (list, tuple)) and len(value) == 3:
-                        self.montage_tile_color_overrides[str(key)] = (
-                            float(value[0]),
-                            float(value[1]),
-                            float(value[2]),
-                        )
+                        self.montage_tile_color_overrides[str(key)] = (float(value[0]), float(value[1]), float(value[2]))
                 except Exception:
                     continue
-        export_mode = getattr(self, "montage_export_mode", None)
-        if self._qt_widget_alive(export_mode) and "montage_export_mode" in data:
-            idx = export_mode.findText(str(data["montage_export_mode"]))
+        export_mode = getattr(self, 'montage_export_mode', None)
+        if self._qt_widget_alive(export_mode) and 'montage_export_mode' in data:
+            idx = export_mode.findText(str(data['montage_export_mode']))
             if idx >= 0:
                 export_mode.setCurrentIndex(idx)
-        export_format = getattr(dlg, "_export_format_combo", None) if dlg is not None else getattr(self, "montage_export_format", None)
-        if self._qt_widget_alive(export_format) and "montage_export_format" in data:
-            idx = export_format.findText(str(data["montage_export_format"]))
+        export_format = getattr(dlg, '_export_format_combo', None) if dlg is not None else getattr(self, 'montage_export_format', None)
+        if self._qt_widget_alive(export_format) and 'montage_export_format' in data:
+            idx = export_format.findText(str(data['montage_export_format']))
             if idx >= 0:
                 export_format.setCurrentIndex(idx)
-        export_dpi = getattr(dlg, "_export_dpi_combo", None) if dlg is not None else getattr(self, "montage_export_dpi", None)
-        if self._qt_widget_alive(export_dpi) and "montage_export_dpi" in data:
-            idx = export_dpi.findText(str(data["montage_export_dpi"]))
+        export_dpi = getattr(dlg, '_export_dpi_combo', None) if dlg is not None else getattr(self, 'montage_export_dpi', None)
+        if self._qt_widget_alive(export_dpi) and 'montage_export_dpi' in data:
+            idx = export_dpi.findText(str(data['montage_export_dpi']))
             if idx >= 0:
                 export_dpi.setCurrentIndex(idx)
-        if dlg is not None and isinstance(data.get("montage_per_tile_lut"), dict):
+        if dlg is not None and isinstance(data.get('montage_per_tile_lut'), dict):
             dlg._per_tile_lut = {}
-            for key, value in data["montage_per_tile_lut"].items():
+            for (key, value) in data['montage_per_tile_lut'].items():
                 try:
                     if isinstance(value, (list, tuple)) and len(value) == 2:
                         dlg._per_tile_lut[str(key)] = (float(value[0]), float(value[1]))
                 except Exception:
                     continue
-        if dlg is not None and isinstance(data.get("montage_focus_roi"), (list, tuple)) and len(data["montage_focus_roi"]) == 4:
-            dlg._focus_roi = tuple(int(v) for v in data["montage_focus_roi"])
+        if dlg is not None and isinstance(data.get('montage_focus_roi'), (list, tuple)) and (len(data['montage_focus_roi']) == 4):
+            dlg._focus_roi = tuple((int(v) for v in data['montage_focus_roi']))
 
     @staticmethod
     def _montage_figure_preset_tooltips() -> dict[str, str]:
         """Hover text for quick figure-style buttons (does not change tile LUT/order)."""
-        return {
-            "Nature": (
-                "Journal-style export for print.\n"
-                "• TIFF, 600 DPI\n"
-                "• White background, 4 px spacing\n"
-                "• Scale bar on (white, 4 px thick, 16 pt label)\n"
-                "• Tile labels on (black, 12 pt)\n"
-                "• Focus inset: white box, 5 px line"
-            ),
-            "Presentation": (
-                "Slides / screen viewing.\n"
-                "• PNG, 300 DPI\n"
-                "• Black background, 8 px spacing\n"
-                "• Scale bar on (white, thicker 6 px, 24 pt label)\n"
-                "• Tile labels on (white, 16 pt)\n"
-                "• Does not change your LUTs or tile order"
-            ),
-            "Supplement": (
-                "Minimal supplementary figure.\n"
-                "• PNG, 300 DPI\n"
-                "• Transparent background, 2 px spacing\n"
-                "• No scale bar, no tile labels\n"
-                "• Good for overlaying in other figures"
-            ),
-        }
+        return {'Nature': 'Journal-style export for print.\n• TIFF, 600 DPI\n• White background, 4 px spacing\n• Scale bar on (white, 4 px thick, 16 pt label)\n• Tile labels on (black, 12 pt)\n• Focus inset: white box, 5 px line', 'Presentation': 'Slides / screen viewing.\n• PNG, 300 DPI\n• Black background, 8 px spacing\n• Scale bar on (white, thicker 6 px, 24 pt label)\n• Tile labels on (white, 16 pt)\n• Does not change your LUTs or tile order', 'Supplement': 'Minimal supplementary figure.\n• PNG, 300 DPI\n• Transparent background, 2 px spacing\n• No scale bar, no tile labels\n• Good for overlaying in other figures'}
 
-    def _apply_montage_figure_preset(self, name: str, dlg: Optional[Any] = None) -> None:
-        presets = {
-            "Nature": {
-                "montage_export_format": "TIFF",
-                "montage_export_dpi": "600 DPI",
-                "montage_sb_enable": True,
-                "montage_sb_thickness": 4,
-                "montage_sb_font_size": 16,
-                "montage_sb_color": "White",
-                "montage_sb_show_label": True,
-                "montage_border": 0,
-                "montage_border_color": "White",
-                "montage_spacing": 4,
-                "montage_show_labels": True,
-                "montage_label_font_size": 12,
-                "montage_label_color": "Black",
-                "montage_focus_line_width": 5,
-                "montage_focus_color": "White",
-            },
-            "Presentation": {
-                "montage_export_format": "PNG",
-                "montage_export_dpi": "300 DPI",
-                "montage_sb_enable": True,
-                "montage_sb_thickness": 6,
-                "montage_sb_font_size": 24,
-                "montage_sb_color": "White",
-                "montage_border": 0,
-                "montage_border_color": "Black",
-                "montage_spacing": 8,
-                "montage_show_labels": True,
-                "montage_label_font_size": 16,
-                "montage_label_color": "White",
-            },
-            "Supplement": {
-                "montage_export_format": "PNG",
-                "montage_export_dpi": "300 DPI",
-                "montage_sb_enable": False,
-                "montage_border": 0,
-                "montage_border_color": "Transparent",
-                "montage_spacing": 2,
-                "montage_show_labels": False,
-            },
-        }
-        payload = presets.get(str(name or "").strip())
+    def _apply_montage_figure_preset(self, name: str, dlg: Optional[Any]=None) -> None:
+        presets = {'Nature': {'montage_export_format': 'TIFF', 'montage_export_dpi': '600 DPI', 'montage_sb_enable': True, 'montage_sb_thickness': 4, 'montage_sb_font_size': 16, 'montage_sb_color': 'White', 'montage_sb_show_label': True, 'montage_border': 0, 'montage_border_color': 'White', 'montage_spacing': 4, 'montage_show_labels': True, 'montage_label_font_size': 12, 'montage_label_color': 'Black', 'montage_focus_line_width': 5, 'montage_focus_color': 'White'}, 'Presentation': {'montage_export_format': 'PNG', 'montage_export_dpi': '300 DPI', 'montage_sb_enable': True, 'montage_sb_thickness': 6, 'montage_sb_font_size': 24, 'montage_sb_color': 'White', 'montage_border': 0, 'montage_border_color': 'Black', 'montage_spacing': 8, 'montage_show_labels': True, 'montage_label_font_size': 16, 'montage_label_color': 'White'}, 'Supplement': {'montage_export_format': 'PNG', 'montage_export_dpi': '300 DPI', 'montage_sb_enable': False, 'montage_border': 0, 'montage_border_color': 'Transparent', 'montage_spacing': 2, 'montage_show_labels': False}}
+        payload = presets.get(str(name or '').strip())
         if payload is None:
             return
         self._apply_montage_preset_state(payload, dlg)
 
-    def _map_focus_roi_to_export_layout(
-        self,
-        roi: Optional[tuple[int, int, int, int]],
-        *,
-        source_layout: Optional[dict],
-        export_layout: Optional[dict],
-    ) -> Optional[tuple[int, int, int, int]]:
+    def _map_focus_roi_to_export_layout(self, roi: Optional[tuple[int, int, int, int]], *, source_layout: Optional[dict], export_layout: Optional[dict]) -> Optional[tuple[int, int, int, int]]:
         """Map a focus ROI from the full montage layout onto a merged-only export layout."""
-        if roi is None or not source_layout or not export_layout:
+        if roi is None or not source_layout or (not export_layout):
             return roi
-        source_labels = list(source_layout.get("tile_labels", []) or [])
-        source_boxes = list(source_layout.get("tile_boxes", []) or [])
-        export_boxes = list(export_layout.get("tile_boxes", []) or [])
+        source_labels = list(source_layout.get('tile_labels', []) or [])
+        source_boxes = list(source_layout.get('tile_boxes', []) or [])
+        export_boxes = list(export_layout.get('tile_boxes', []) or [])
         if not source_boxes or not export_boxes:
             return roi
-        merged_source = [
-            (i, source_boxes[i])
-            for i, label in enumerate(source_labels)
-            if i < len(source_boxes) and str(label).endswith(" Merged")
-        ]
+        merged_source = [(i, source_boxes[i]) for (i, label) in enumerate(source_labels) if i < len(source_boxes) and str(label).endswith(' Merged')]
         if not merged_source:
             return roi
-
-        rx0, ry0, rx1, ry1 = [int(v) for v in roi]
+        (rx0, ry0, rx1, ry1) = [int(v) for v in roi]
         cx = (rx0 + rx1) / 2.0
         cy = (ry0 + ry1) / 2.0
 
         def score(box: tuple[int, int, int, int]) -> float:
-            bx, by, bw, bh = [int(v) for v in box]
+            (bx, by, bw, bh) = [int(v) for v in box]
             ix0 = max(rx0, bx)
             iy0 = max(ry0, by)
             ix1 = min(rx1, bx + bw)
             iy1 = min(ry1, by + bh)
             inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
             contains_center = bx <= cx <= bx + bw and by <= cy <= by + bh
-            return float(inter) + (1e12 if contains_center else 0.0)
-
-        source_rank, source_box = max(merged_source, key=lambda item: score(item[1]))
-        merged_order = [i for i, _box in merged_source]
+            return float(inter) + (1000000000000.0 if contains_center else 0.0)
+        (source_rank, source_box) = max(merged_source, key=lambda item: score(item[1]))
+        merged_order = [i for (i, _box) in merged_source]
         export_idx = merged_order.index(source_rank) if source_rank in merged_order else 0
         export_idx = max(0, min(export_idx, len(export_boxes) - 1))
-
-        sx, sy, sw, sh = [int(v) for v in source_box]
-        ex, ey, ew, eh = [int(v) for v in export_boxes[export_idx]]
-        if sw <= 0 or sh <= 0 or ew <= 0 or eh <= 0:
+        (sx, sy, sw, sh) = [int(v) for v in source_box]
+        (ex, ey, ew, eh) = [int(v) for v in export_boxes[export_idx]]
+        if sw <= 0 or sh <= 0 or ew <= 0 or (eh <= 0):
             return roi
-
-        mapped = (
-            int(round(ex + (rx0 - sx) * ew / sw)),
-            int(round(ey + (ry0 - sy) * eh / sh)),
-            int(round(ex + (rx1 - sx) * ew / sw)),
-            int(round(ey + (ry1 - sy) * eh / sh)),
-        )
-        width = int(export_layout.get("out_w", 0) or 0)
-        height = int(export_layout.get("out_h", 0) or 0)
+        mapped = (int(round(ex + (rx0 - sx) * ew / sw)), int(round(ey + (ry0 - sy) * eh / sh)), int(round(ex + (rx1 - sx) * ew / sw)), int(round(ey + (ry1 - sy) * eh / sh)))
+        width = int(export_layout.get('out_w', 0) or 0)
+        height = int(export_layout.get('out_h', 0) or 0)
         if width <= 0 or height <= 0:
             return mapped
         return self._normalize_montage_roi(*mapped, width, height)
 
-    def _compose_montage_for_export(
-        self,
-        *,
-        per_tile_lut: Optional[Dict[Any, Tuple[float, float]]] = None,
-        per_tile_color_override: Optional[Dict[Any, Tuple[float, float, float]]] = None,
-        per_tile_percentile_override: Optional[Dict[Any, Tuple[float, float]]] = None,
-        focus_roi: Optional[tuple[int, int, int, int]] = None,
-        merged_only: bool = False,
-        source_layout: Optional[dict] = None,
-    ) -> Optional[tuple[np.ndarray, dict]]:
-        result = self._build_montage_array(
-            per_tile_lut=per_tile_lut,
-            per_tile_color_override=per_tile_color_override or getattr(self, "montage_tile_color_overrides", None) or {},
-            per_tile_percentile_override=per_tile_percentile_override or getattr(self, "montage_tile_percentile_overrides", None) or {},
-            return_layout=True,
-            merged_only=merged_only,
-        )
+    def _compose_montage_for_export(self, *, per_tile_lut: Optional[Dict[Any, Tuple[float, float]]]=None, per_tile_color_override: Optional[Dict[Any, Tuple[float, float, float]]]=None, per_tile_percentile_override: Optional[Dict[Any, Tuple[float, float]]]=None, focus_roi: Optional[tuple[int, int, int, int]]=None, merged_only: bool=False, source_layout: Optional[dict]=None) -> Optional[tuple[np.ndarray, dict]]:
+        result = self._build_montage_array(per_tile_lut=per_tile_lut, per_tile_color_override=per_tile_color_override or getattr(self, 'montage_tile_color_overrides', None) or {}, per_tile_percentile_override=per_tile_percentile_override or getattr(self, 'montage_tile_percentile_overrides', None) or {}, return_layout=True, merged_only=merged_only)
         if result is None:
             return None
-        out, export_layout = result
+        (out, export_layout) = result
         displayed = self._apply_montage_scalebar_if_enabled(out, layout=export_layout)
-        export_focus_roi = (
-            self._map_focus_roi_to_export_layout(
-                focus_roi,
-                source_layout=source_layout,
-                export_layout=export_layout,
-            )
-            if merged_only
-            else focus_roi
-        )
+        export_focus_roi = self._map_focus_roi_to_export_layout(focus_roi, source_layout=source_layout, export_layout=export_layout) if merged_only else focus_roi
         displayed = self._apply_montage_focus_inset_if_enabled(displayed, roi=export_focus_roi)
-        return displayed, export_layout
+        return (displayed, export_layout)
 
     def _montage_batch_signature(self, path: Path) -> Optional[dict[str, Any]]:
         try:
-            if path.suffix.lower() == ".nd2":
+            if path.suffix.lower() == '.nd2':
                 meta = read_metadata_from_path(path)
-                channel_count = int(meta.get("channel_count") or 1)
-                channel_names = [str(x) for x in (meta.get("channel_names") or [])[:channel_count]]
-                return {"channel_count": channel_count, "channel_names": channel_names, "has_merged": channel_count >= 2}
+                channel_count = int(meta.get('channel_count') or 1)
+                channel_names = [str(x) for x in (meta.get('channel_names') or [])[:channel_count]]
+                return {'channel_count': channel_count, 'channel_names': channel_names, 'has_merged': channel_count >= 2}
             datasets = self._get_montage_datasets()
             if not datasets:
                 return None
-            # Lightweight peek: count expected tiles from one dataset pattern.
-            return {"channel_count": None, "channel_names": [], "has_merged": None}
+            return {'channel_count': None, 'channel_names': [], 'has_merged': None}
         except Exception:
             return None
 
-    def _summarize_montage_batch_export(
-        self,
-        selected_files: List[Path],
-        *,
-        export_mode: str,
-        export_format: str,
-        export_dpi: int,
-    ) -> tuple[str, list[str]]:
+    def _summarize_montage_batch_export(self, selected_files: List[Path], *, export_mode: str, export_format: str, export_dpi: int) -> tuple[str, list[str]]:
         warnings: list[str] = []
         current_labels: list[str] = []
-        preview_dlg = getattr(self, "_active_montage_preview", None) or getattr(self, "_embedded_post_preview", None)
-        if preview_dlg is not None and hasattr(preview_dlg, "_layout"):
-            current_labels = list(getattr(preview_dlg, "_layout", {}).get("tile_labels", []) or [])
+        preview_dlg = getattr(self, '_active_montage_preview', None) or getattr(self, '_embedded_post_preview', None)
+        if preview_dlg is not None and hasattr(preview_dlg, '_layout'):
+            current_labels = list(getattr(preview_dlg, '_layout', {}).get('tile_labels', []) or [])
         else:
-            current_labels = list(getattr(self, "_last_montage_layout", {}).get("tile_labels", []) or [])
-        current_merged = sum(1 for lb in current_labels if str(lb).endswith(" Merged"))
-        if "merged" in export_mode.lower() and current_merged == 0:
-            warnings.append("Current preview has no merged tile; merged-only export may fail for some files.")
-        lines = [
-            f"Export {len(selected_files)} file(s)",
-            f"Mode: {export_mode}",
-            f"Format: {export_format} at {export_dpi} DPI",
-            f"Output suffix: {'_merged' if 'merged' in export_mode.lower() else '_montage'}",
-        ]
+            current_labels = list(getattr(self, '_last_montage_layout', {}).get('tile_labels', []) or [])
+        current_merged = sum((1 for lb in current_labels if str(lb).endswith(' Merged')))
+        if 'merged' in export_mode.lower() and current_merged == 0:
+            warnings.append('Current preview has no merged tile; merged-only export may fail for some files.')
+        lines = [f'Export {len(selected_files)} file(s)', f'Mode: {export_mode}', f'Format: {export_format} at {export_dpi} DPI', f"Output suffix: {('_merged' if 'merged' in export_mode.lower() else '_montage')}"]
         if warnings:
-            lines.append("")
+            lines.append('')
             lines.extend(warnings)
-        return "\n".join(lines), warnings
+        return ('\n'.join(lines), warnings)
 
     @staticmethod
     def _montage_tile_key(label: str) -> str:
-        return str(label or "").strip()
+        return str(label or '').strip()
 
     def _montage_tile_included(self, tile_key: str) -> bool:
-        return tile_key not in getattr(self, "montage_excluded_tile_keys", set())
+        return tile_key not in getattr(self, 'montage_excluded_tile_keys', set())
 
     def _montage_z_max_for_tile(self, tile_key: str) -> bool:
-        mode = str(self.montage_tile_z_modes.get(tile_key, "global")).lower()
-        if mode == "first":
+        mode = str(self.montage_tile_z_modes.get(tile_key, 'global')).lower()
+        if mode == 'first':
             return False
-        if mode == "max":
+        if mode == 'max':
             return True
         return self._montage_use_z_max_projection()
 
-    def _montage_lookup_color_override(
-        self, tile_key: str, tile_idx: int, default: Optional[Tuple[float, float, float]]
-    ) -> Optional[Tuple[float, float, float]]:
-        overrides = getattr(self, "montage_tile_color_overrides", None) or {}
+    def _montage_lookup_color_override(self, tile_key: str, tile_idx: int, default: Optional[Tuple[float, float, float]]) -> Optional[Tuple[float, float, float]]:
+        overrides = getattr(self, 'montage_tile_color_overrides', None) or {}
         if tile_key in overrides:
             return overrides[tile_key]
         if tile_idx in overrides:
             return overrides[tile_idx]
         return default
 
-    def _montage_lookup_color_override_for_meta(
-        self,
-        tile_key: str,
-        tile_idx: int,
-        meta: Optional[dict],
-        default: Optional[Tuple[float, float, float]],
-        overrides: Optional[Dict[Any, Tuple[float, float, float]]] = None,
-    ) -> Optional[Tuple[float, float, float]]:
-        overrides = overrides if overrides is not None else (getattr(self, "montage_tile_color_overrides", None) or {})
+    def _montage_lookup_color_override_for_meta(self, tile_key: str, tile_idx: int, meta: Optional[dict], default: Optional[Tuple[float, float, float]], overrides: Optional[Dict[Any, Tuple[float, float, float]]]=None) -> Optional[Tuple[float, float, float]]:
+        overrides = overrides if overrides is not None else getattr(self, 'montage_tile_color_overrides', None) or {}
         if tile_key in overrides:
             return overrides[tile_key]
         if tile_idx in overrides:
             return overrides[tile_idx]
-        channel_norm = (meta or {}).get("channel_norm")
+        channel_norm = (meta or {}).get('channel_norm')
         if channel_norm and channel_norm in overrides:
             return overrides[channel_norm]
         return default
 
-    def _montage_lookup_percentile_override(
-        self, tile_key: str, tile_idx: int
-    ) -> Optional[Tuple[float, float]]:
-        overrides = getattr(self, "montage_tile_percentile_overrides", None) or {}
+    def _montage_lookup_percentile_override(self, tile_key: str, tile_idx: int) -> Optional[Tuple[float, float]]:
+        overrides = getattr(self, 'montage_tile_percentile_overrides', None) or {}
         if tile_key in overrides:
             return overrides[tile_key]
         if tile_idx in overrides:
             return overrides[tile_idx]
         return None
 
-    def _montage_lookup_percentile_override_for_meta(
-        self,
-        tile_key: str,
-        tile_idx: int,
-        meta: Optional[dict],
-        overrides: Optional[Dict[Any, Tuple[float, float]]] = None,
-    ) -> Optional[Tuple[float, float]]:
-        overrides = overrides if overrides is not None else (getattr(self, "montage_tile_percentile_overrides", None) or {})
+    def _montage_lookup_percentile_override_for_meta(self, tile_key: str, tile_idx: int, meta: Optional[dict], overrides: Optional[Dict[Any, Tuple[float, float]]]=None) -> Optional[Tuple[float, float]]:
+        overrides = overrides if overrides is not None else getattr(self, 'montage_tile_percentile_overrides', None) or {}
         if tile_key in overrides:
             return overrides[tile_key]
         if tile_idx in overrides:
             return overrides[tile_idx]
-        channel_norm = (meta or {}).get("channel_norm")
+        channel_norm = (meta or {}).get('channel_norm')
         if channel_norm and channel_norm in overrides:
             return overrides[channel_norm]
         return None
 
-    def _montage_lookup_lut(
-        self, per_tile_lut: Optional[Dict[Any, Tuple[float, float]]], tile_key: str, tile_idx: int
-    ) -> Optional[Tuple[float, float]]:
+    def _montage_lookup_lut(self, per_tile_lut: Optional[Dict[Any, Tuple[float, float]]], tile_key: str, tile_idx: int) -> Optional[Tuple[float, float]]:
         if not per_tile_lut:
             return None
         if tile_key in per_tile_lut:
@@ -724,31 +470,22 @@ class PostProcessingTab(QWidget):
             return per_tile_lut[tile_idx]
         return None
 
-    def _montage_lookup_lut_for_meta(
-        self,
-        per_tile_lut: Optional[Dict[Any, Tuple[float, float]]],
-        tile_key: str,
-        tile_idx: int,
-        meta: Optional[dict],
-    ) -> Optional[Tuple[float, float]]:
+    def _montage_lookup_lut_for_meta(self, per_tile_lut: Optional[Dict[Any, Tuple[float, float]]], tile_key: str, tile_idx: int, meta: Optional[dict]) -> Optional[Tuple[float, float]]:
         lut_pair = self._montage_lookup_lut(per_tile_lut, tile_key, tile_idx)
         if lut_pair is not None:
             return lut_pair
-        channel_norm = (meta or {}).get("channel_norm")
+        channel_norm = (meta or {}).get('channel_norm')
         if per_tile_lut and channel_norm in per_tile_lut:
             return per_tile_lut[channel_norm]
         return None
 
     @staticmethod
-    def _montage_clamp_lut_pair(
-        lut_pair: Optional[Tuple[float, float]],
-        arr: Any,
-    ) -> Optional[Tuple[float, float]]:
+    def _montage_clamp_lut_pair(lut_pair: Optional[Tuple[float, float]], arr: Any) -> Optional[Tuple[float, float]]:
         """Clamp manual LUT bounds to the selected tile's finite data range."""
         if lut_pair is None:
             return None
         try:
-            vmin, vmax = float(lut_pair[0]), float(lut_pair[1])
+            (vmin, vmax) = (float(lut_pair[0]), float(lut_pair[1]))
         except Exception:
             return None
         if not np.isfinite(vmin) or not np.isfinite(vmax):
@@ -763,8 +500,8 @@ class PostProcessingTab(QWidget):
             return None
         if amax <= amin:
             amax = amin + 1.0
-        vmin = max(amin, min(vmin, amax - 1e-9))
-        vmax = min(amax, max(vmax, amin + 1e-9))
+        vmin = max(amin, min(vmin, amax - 1e-09))
+        vmax = min(amax, max(vmax, amin + 1e-09))
         if vmax <= vmin:
             vmax = min(amax, vmin + 1.0)
         if vmax <= vmin:
@@ -773,17 +510,17 @@ class PostProcessingTab(QWidget):
 
     def _try_update_montage_pixel_size_from_paths(self) -> None:
         """Read pixel size from the first montage input file for embedded scale bar."""
-        if not getattr(self, "montage_sb_pixel_size", None):
+        if not getattr(self, 'montage_sb_pixel_size', None):
             return
         paths = self._get_montage_image_paths()
         if not paths:
             return
         try:
-            ps, _ = read_calibration_from_path(paths[0])
+            (ps, _) = read_calibration_from_path(paths[0])
             if ps > 0:
                 self.montage_sb_pixel_size.setValue(ps)
-                if getattr(self, "montage_sb_pixel_size_source", None) is not None:
-                    self.montage_sb_pixel_size_source.setText(f"(from {paths[0].name})")
+                if getattr(self, 'montage_sb_pixel_size_source', None) is not None:
+                    self.montage_sb_pixel_size_source.setText(f'(from {paths[0].name})')
         except Exception:
             pass
 
@@ -795,14 +532,14 @@ class PostProcessingTab(QWidget):
             parent = mount.parent()
             if isinstance(parent, PreviewSurface):
                 self._preview_surface = parent
-                parent.set_preview_context("post_processing")
+                parent.set_preview_context('post_processing')
                 parent.set_pick_callback(self._on_pick_post_preview_file)
         self.refresh_post_candidate_list()
 
     def _on_pick_post_preview_file(self, path: str) -> None:
         try:
-            mode = str(getattr(self, "_post_preview_mode", "montage"))
-            if mode == "video":
+            mode = str(getattr(self, '_post_preview_mode', 'montage'))
+            if mode == 'video':
                 self.video_path.setText(str(Path(path)))
             else:
                 self.montage_path.setText(str(Path(path)))
@@ -810,76 +547,53 @@ class PostProcessingTab(QWidget):
             pass
 
     def _set_post_preview_mode(self, mode: str) -> None:
-        mode = str(mode or "montage")
-        if mode not in {"montage", "video"}:
-            mode = "montage"
+        mode = str(mode or 'montage')
+        if mode not in {'montage', 'video'}:
+            mode = 'montage'
         self._post_preview_mode = mode
         surf = self._preview_surface
         if surf is not None:
-            if mode == "video":
-                surf.set_preview_context("post_processing_video")
+            if mode == 'video':
+                surf.set_preview_context('post_processing_video')
             else:
-                surf.set_preview_context("post_processing")
+                surf.set_preview_context('post_processing')
         self.refresh_post_candidate_list()
 
     def _on_post_section_toggled(self, section: str, expanded: bool) -> None:
         if not expanded:
             return
-        if str(getattr(self, "_post_preview_mode", "montage")) != section:
+        if str(getattr(self, '_post_preview_mode', 'montage')) != section:
             self._close_embedded_post_preview()
         self._set_post_preview_mode(section)
 
-    def refresh_post_candidate_list(self, *, selected: Optional[str] = None) -> None:
+    def refresh_post_candidate_list(self, *, selected: Optional[str]=None) -> None:
         """Populate the right-hand picker from the active post-processing section."""
         surf = self._preview_surface
         if surf is None:
             return
         try:
-            mode = str(getattr(self, "_post_preview_mode", "montage"))
-            if mode == "video":
-                raw = (self.video_path.text() or "").strip() if hasattr(self, "video_path") else ""
+            mode = str(getattr(self, '_post_preview_mode', 'montage'))
+            if mode == 'video':
+                raw = (self.video_path.text() or '').strip() if hasattr(self, 'video_path') else ''
                 video_paths = self._resolve_growth_curve_video_paths(raw)
                 paths = [str(p.resolve()) for p in video_paths if p.exists()]
             else:
                 paths = [str(p.resolve()) for p in self._get_montage_image_paths()]
         except Exception:
             paths = []
-        surf.set_candidate_files(
-            paths,
-            selected=selected,
-            advance_placeholder=bool(getattr(self, "_embedded_post_preview", None) is not None),
-        )
+        surf.set_candidate_files(paths, selected=selected, advance_placeholder=bool(getattr(self, '_embedded_post_preview', None) is not None))
 
-    def _reparent_video_montage_controls(self, parent: Optional[QWidget] = None) -> None:
+    def _reparent_video_montage_controls(self, parent: Optional[QWidget]=None) -> None:
         """Keep shared spinboxes/buttons alive when the embedded video preview closes."""
         host = parent or self
-        for widget in (
-            self.time_interval,
-            self.yaxis_min,
-            self.yaxis_max,
-            self.fps,
-            self.format_all,
-            self.format_tif,
-            self.format_avi,
-            self.format_gif,
-            self.format_mp4,
-            self.video_mask_contours,
-            self.video_mask_path,
-            self.video_foci_overlay,
-            self.video_foci_path,
-            self.video_fi_channels,
-            self.use_excel_graph,
-            self.excel_path,
-            self.video_fi_layout_combo,
-            self.process_btn,
-        ):
+        for widget in (self.time_interval, self.yaxis_min, self.yaxis_max, self.fps, self.format_all, self.format_tif, self.format_avi, self.format_gif, self.format_mp4, self.video_mask_contours, self.video_mask_path, self.video_foci_overlay, self.video_foci_path, self.video_fi_channels, self.use_excel_graph, self.excel_path, self.video_fi_layout_combo, self.process_btn):
             if self._qt_widget_alive(widget):
                 widget.setParent(host)
 
     def _close_embedded_post_preview(self) -> None:
-        prev = getattr(self, "_embedded_post_preview", None)
+        prev = getattr(self, '_embedded_post_preview', None)
         if prev is not None:
-            if prev.objectName() == "EmbeddedVideoMontagePreview":
+            if prev.objectName() == 'EmbeddedVideoMontagePreview':
                 self._reparent_video_montage_controls(self)
             try:
                 prev.close()
@@ -908,30 +622,23 @@ class PostProcessingTab(QWidget):
         scroll_layout.setContentsMargins(4, 4, 4, 4)
         scroll_layout.setSpacing(12)
         scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
         self._init_video_montage_widgets()
-
-        # Order: Image montage → Video montage (scale bar lives in image montage preview)
         montage_group = self._build_montage_group()
-        self.montage_section = CollapsibleSection("Image montage", montage_group, parent=self, expanded=True)
+        self.montage_section = CollapsibleSection('Image montage', montage_group, parent=self, expanded=True)
         scroll_layout.addWidget(self.montage_section)
-
         growth_curve_group = self._build_growth_curve_video_group()
-        self.video_montage_section = CollapsibleSection("Video montage", growth_curve_group, parent=self, expanded=False)
+        self.video_montage_section = CollapsibleSection('Video montage', growth_curve_group, parent=self, expanded=False)
         scroll_layout.addWidget(self.video_montage_section)
-
         self.video_path.textChanged.connect(self._update_button_state)
         self.excel_path.textChanged.connect(self._update_button_state)
-        self.excel_path.textChanged.connect(lambda _text="": self._refresh_growth_y_column_combo())
-        self.excel_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
-        self.excel_path.textChanged.connect(lambda _text="": self._schedule_video_preview_refresh())
+        self.excel_path.textChanged.connect(lambda _text='': self._refresh_growth_y_column_combo())
+        self.excel_path.textChanged.connect(lambda _text='': self._invalidate_video_preview_cache())
+        self.excel_path.textChanged.connect(lambda _text='': self._schedule_video_preview_refresh())
         self._refresh_growth_y_column_combo()
-        self.video_path.textChanged.connect(lambda _text="": self.refresh_post_candidate_list())
-        self.video_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
-
-        self.montage_section.toggled.connect(lambda expanded: self._on_post_section_toggled("montage", expanded))
-        self.video_montage_section.toggled.connect(lambda expanded: self._on_post_section_toggled("video", expanded))
-
+        self.video_path.textChanged.connect(lambda _text='': self.refresh_post_candidate_list())
+        self.video_path.textChanged.connect(lambda _text='': self._invalidate_video_preview_cache())
+        self.montage_section.toggled.connect(lambda expanded: self._on_post_section_toggled('montage', expanded))
+        self.video_montage_section.toggled.connect(lambda expanded: self._on_post_section_toggled('video', expanded))
         scroll_widget.setLayout(scroll_layout)
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll)
@@ -947,26 +654,20 @@ class PostProcessingTab(QWidget):
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(3)
         self.video_path = QLineEdit()
-        self.video_path.setPlaceholderText("TIFF file, folder, or channel stacks separated by |")
+        self.video_path.setPlaceholderText('TIFF file, folder, or channel stacks separated by |')
         self.video_path.setMinimumWidth(0)
         file_font = QFont()
         file_font.setPointSize(11)
         self.video_path.setFont(file_font)
-        file_btn = QPushButton("File…")
+        file_btn = QPushButton('File…')
         file_btn.clicked.connect(self.select_video_file)
-        folder_btn = QPushButton("Folder…")
+        folder_btn = QPushButton('Folder…')
         folder_btn.clicked.connect(self.select_video_folder)
-        channels_btn = QPushButton("Ch…")
-        channels_btn.setToolTip(
-            "Select one TIFF stack per fluorescence channel (same frame count and image size). "
-            "Channels are merged with color lookup tables (green, magenta, cyan, …)."
-        )
+        channels_btn = QPushButton('Ch…')
+        channels_btn.setToolTip('Select one TIFF stack per fluorescence channel (same frame count and image size). Channels are merged with color lookup tables (green, magenta, cyan, …).')
         channels_btn.clicked.connect(self.select_video_multi_channel)
-        autofill_btn = QPushButton("Auto")
-        autofill_btn.setToolTip(
-            "Auto-detect phase/FI channels, analysis workbook, masks, and foci files "
-            "from the selected dataset folder."
-        )
+        autofill_btn = QPushButton('Auto')
+        autofill_btn.setToolTip('Auto-detect phase/FI channels, analysis workbook, masks, and foci files from the selected dataset folder.')
         autofill_btn.clicked.connect(self._auto_fill_video_inputs)
         for btn in (file_btn, folder_btn):
             style_compact_browse_button(btn)
@@ -974,27 +675,7 @@ class PostProcessingTab(QWidget):
         style_compact_action_button(autofill_btn, horizontal_padding=16)
         channels_btn.setFixedWidth(58)
         autofill_btn.setFixedWidth(58)
-
-        video_layout.addWidget(
-            build_path_drop_group(
-                self,
-                self.handle_dropped_video_path,
-                path_label="Input:",
-                line_edit=self.video_path,
-                buttons=(),
-                info_icon=create_info_icon(
-                    "Video input options:\n\n"
-                    "• Single TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (TCYX / T,C,H,W). "
-                    "Multiple channels are composited with additive color LUTs (green, magenta, cyan, yellow, …).\n\n"
-                    "• Folder: auto-detects likely TL/phase/FI TIFF stacks. If no stacks are found, "
-                    "the folder is treated as a sorted grayscale TIFF sequence.\n\n"
-                    "• Channels: pick several single-channel TIFF stacks (one file per channel); "
-                    "paths are joined with |. Same T×H×W required.\n\n"
-                    "Tip: You can also paste multiple paths separated by | or one path per line.",
-                    parent_widget=self,
-                ),
-            )
-        )
+        video_layout.addWidget(build_path_drop_group(self, self.handle_dropped_video_path, path_label='Input:', line_edit=self.video_path, buttons=(), info_icon=create_info_icon('Video input options:\n\n• Single TIFF: grayscale time series, RGB (T,H,W,3), or multi-channel (TCYX / T,C,H,W). Multiple channels are composited with additive color LUTs (green, magenta, cyan, yellow, …).\n\n• Folder: auto-detects likely TL/phase/FI TIFF stacks. If no stacks are found, the folder is treated as a sorted grayscale TIFF sequence.\n\n• Channels: pick several single-channel TIFF stacks (one file per channel); paths are joined with |. Same T×H×W required.\n\nTip: You can also paste multiple paths separated by | or one path per line.', parent_widget=self)))
         input_button_panel = ResponsivePanel(self, breakpoint=300)
         input_button_panel.set_defer_reflow(True)
         for btn in (file_btn, folder_btn, channels_btn, autofill_btn):
@@ -1010,155 +691,127 @@ class PostProcessingTab(QWidget):
         if self._video_montage_widgets_ready:
             return
         self._video_montage_widgets_ready = True
-
         self.time_interval = QDoubleSpinBox()
         self.time_interval.setMinimum(0.0)
         self.time_interval.setMaximum(10000.0)
         self.time_interval.setValue(10.0)
         self.time_interval.setDecimals(2)
-        self.time_interval.setSuffix(" min")
+        self.time_interval.setSuffix(' min')
         self.time_interval.setFixedWidth(100)
-
         self.yaxis_min = QDoubleSpinBox()
         self.yaxis_min.setMinimum(0.0)
-        self.yaxis_min.setMaximum(1_000_000.0)
+        self.yaxis_min.setMaximum(1000000.0)
         self.yaxis_min.setValue(0.0)
         self.yaxis_min.setDecimals(2)
-        self.yaxis_min.setSpecialValueText("Auto")
+        self.yaxis_min.setSpecialValueText('Auto')
         compact_control(self.yaxis_min, 90)
-
         self.yaxis_max = QDoubleSpinBox()
         self.yaxis_max.setMinimum(0.0)
-        self.yaxis_max.setMaximum(1_000_000.0)
+        self.yaxis_max.setMaximum(1000000.0)
         self.yaxis_max.setValue(0.0)
         self.yaxis_max.setDecimals(2)
-        self.yaxis_max.setSpecialValueText("Auto")
+        self.yaxis_max.setSpecialValueText('Auto')
         compact_control(self.yaxis_max, 90)
-
         self.fps = QDoubleSpinBox()
         self.fps.setMinimum(0.1)
         self.fps.setMaximum(60.0)
         self.fps.setValue(5.0)
         self.fps.setDecimals(1)
-        self.fps.setSuffix(" fps")
+        self.fps.setSuffix(' fps')
         compact_control(self.fps, 95)
-
         self.excel_y_column = QComboBox()
-        self.excel_y_column.setToolTip("Summary-sheet column plotted on the growth-curve Y axis.")
+        self.excel_y_column.setToolTip('Summary-sheet column plotted on the growth-curve Y axis.')
         self.excel_y_column.setMinimumWidth(0)
         compact_control(self.excel_y_column, 220)
         self.excel_y_column.currentTextChanged.connect(self._on_growth_y_column_changed)
-
         self.graph_width_ratio_spin = QSpinBox()
         self.graph_width_ratio_spin.setRange(20, 80)
         self.graph_width_ratio_spin.setValue(50)
-        self.graph_width_ratio_spin.setSuffix(" %")
-        self.graph_width_ratio_spin.setToolTip("Share of total width used by the growth graph (video gets the rest).")
+        self.graph_width_ratio_spin.setSuffix(' %')
+        self.graph_width_ratio_spin.setToolTip('Share of total width used by the growth graph (video gets the rest).')
         compact_control(self.graph_width_ratio_spin, 80)
         self.graph_width_ratio_spin.valueChanged.connect(self._on_graph_width_ratio_changed)
-
-        self.format_all = QCheckBox("Select All")
+        self.format_all = QCheckBox('Select All')
         self.format_all.stateChanged.connect(self._on_select_all_changed)
-        self.format_tif = QCheckBox("TIFF")
+        self.format_tif = QCheckBox('TIFF')
         self.format_tif.setChecked(True)
-        self.format_avi = QCheckBox("AVI")
+        self.format_avi = QCheckBox('AVI')
         self.format_avi.setChecked(True)
-        self.format_gif = QCheckBox("GIF")
-        self.format_mp4 = QCheckBox("MP4")
+        self.format_gif = QCheckBox('GIF')
+        self.format_mp4 = QCheckBox('MP4')
         self.format_tif.stateChanged.connect(self._on_format_changed)
         self.format_avi.stateChanged.connect(self._on_format_changed)
         self.format_gif.stateChanged.connect(self._on_format_changed)
         self.format_mp4.stateChanged.connect(self._on_format_changed)
-
-        self.video_mask_contours = QCheckBox("Mask contours")
-        self.video_mask_contours.setToolTip("Draw segmentation masks as thin contours over the real video frames.")
-        self.video_mask_contours.setText("")
+        self.video_mask_contours = QCheckBox('Mask contours')
+        self.video_mask_contours.setToolTip('Draw segmentation masks as thin contours over the real video frames.')
+        self.video_mask_contours.setText('')
         self.video_mask_path = QLineEdit()
-        self.video_mask_path.setPlaceholderText("Optional mask TIFF for contour overlay")
+        self.video_mask_path.setPlaceholderText('Optional mask TIFF for contour overlay')
         self.video_mask_path.setMinimumWidth(0)
-
-        self.video_foci_overlay = QCheckBox("Foci markers")
-        self.video_foci_overlay.setToolTip("Draw foci markers from a CSV/XLSX with frame, x, and y columns.")
-        self.video_foci_overlay.setText("")
+        self.video_foci_overlay = QCheckBox('Foci markers')
+        self.video_foci_overlay.setToolTip('Draw foci markers from a CSV/XLSX with frame, x, and y columns.')
+        self.video_foci_overlay.setText('')
         self.video_foci_path = QLineEdit()
-        self.video_foci_path.setPlaceholderText("Optional foci CSV/XLSX with frame, x, y columns")
+        self.video_foci_path.setPlaceholderText('Optional foci CSV/XLSX with frame, x, y columns')
         self.video_foci_path.setMinimumWidth(0)
-
-        self.video_fi_channels = QCheckBox("FI channels")
+        self.video_fi_channels = QCheckBox('FI channels')
         self.video_fi_channels.setChecked(True)
-        self.video_fi_channels.setToolTip("Include FI channel stack(s) in the video montage. Disable for phase/TL only.")
-        self.video_fi_channels.setText("")
+        self.video_fi_channels.setToolTip('Include FI channel stack(s) in the video montage. Disable for phase/TL only.')
+        self.video_fi_channels.setText('')
         self.video_fi_path = QLineEdit()
-        self.video_fi_path.setPlaceholderText("Optional FI TIFF stack(s), separated by |")
+        self.video_fi_path.setPlaceholderText('Optional FI TIFF stack(s), separated by |')
         self.video_fi_path.setMinimumWidth(0)
-
-        self.use_excel_graph = QCheckBox("Growth graph")
+        self.use_excel_graph = QCheckBox('Growth graph')
         self.use_excel_graph.setChecked(True)
-        self.use_excel_graph.setToolTip("Use the Excel analysis file for the growth graph. Disable for video-only montage.")
-        self.use_excel_graph.setText("")
-
+        self.use_excel_graph.setToolTip('Use the Excel analysis file for the growth graph. Disable for video-only montage.')
+        self.use_excel_graph.setText('')
         self.excel_path = QLineEdit()
-        self.excel_path.setPlaceholderText("Optional Excel file for growth curve")
+        self.excel_path.setPlaceholderText('Optional Excel file for growth curve')
         self.excel_path.setMinimumWidth(0)
         excel_font = QFont()
         excel_font.setPointSize(11)
         self.excel_path.setFont(excel_font)
         self.excel_path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
         self.video_fi_layout_combo = QComboBox()
-        self.video_fi_layout_combo.addItem("Merged tile", VIDEO_FI_LAYOUT_MERGED)
-        self.video_fi_layout_combo.addItem("Separate tiles", VIDEO_FI_LAYOUT_SEPARATE)
-        self.video_fi_layout_combo.setToolTip(
-            "Merged tile: phase/FI/foci image channels are color-merged into one microscopy tile.\n"
-            "Separate tiles: show individual image-channel tiles and choose which tiles are visible."
-        )
+        self.video_fi_layout_combo.addItem('Merged tile', VIDEO_FI_LAYOUT_MERGED)
+        self.video_fi_layout_combo.addItem('Separate tiles', VIDEO_FI_LAYOUT_SEPARATE)
+        self.video_fi_layout_combo.setToolTip('Merged tile: phase/FI/foci image channels are color-merged into one microscopy tile.\nSeparate tiles: show individual image-channel tiles and choose which tiles are visible.')
         compact_control(self.video_fi_layout_combo, 180)
-
-        self.process_btn = QPushButton("Create video montage")
+        self.process_btn = QPushButton('Create video montage')
         style_module_primary_button(self.process_btn)
         self.process_btn.setEnabled(False)
         self.process_btn.clicked.connect(self.create_video)
-
         self.time_interval.valueChanged.connect(self._invalidate_video_preview_cache)
         self.time_interval.valueChanged.connect(self._schedule_video_preview_refresh)
         self.yaxis_min.valueChanged.connect(self._schedule_video_preview_refresh)
         self.yaxis_max.valueChanged.connect(self._schedule_video_preview_refresh)
         self.video_mask_contours.toggled.connect(self._invalidate_video_preview_cache)
         self.video_mask_contours.toggled.connect(self._schedule_video_preview_refresh)
-        self.video_mask_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
-        self.video_mask_path.textChanged.connect(lambda _text="": self._schedule_video_preview_refresh())
+        self.video_mask_path.textChanged.connect(lambda _text='': self._invalidate_video_preview_cache())
+        self.video_mask_path.textChanged.connect(lambda _text='': self._schedule_video_preview_refresh())
         self.video_foci_overlay.toggled.connect(self._invalidate_video_preview_cache)
         self.video_foci_overlay.toggled.connect(self._schedule_video_preview_refresh)
-        self.video_foci_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
-        self.video_foci_path.textChanged.connect(lambda _text="": self._schedule_video_preview_refresh())
+        self.video_foci_path.textChanged.connect(lambda _text='': self._invalidate_video_preview_cache())
+        self.video_foci_path.textChanged.connect(lambda _text='': self._schedule_video_preview_refresh())
         self.video_fi_channels.toggled.connect(self._on_video_fi_channels_toggled)
-        self.video_fi_path.textChanged.connect(lambda _text="": self._invalidate_video_preview_cache())
-        self.video_fi_path.textChanged.connect(lambda _text="": self._schedule_video_preview_refresh())
+        self.video_fi_path.textChanged.connect(lambda _text='': self._invalidate_video_preview_cache())
+        self.video_fi_path.textChanged.connect(lambda _text='': self._schedule_video_preview_refresh())
         self.use_excel_graph.toggled.connect(self._on_use_excel_graph_toggled)
         self.video_fi_layout_combo.currentIndexChanged.connect(lambda _idx=0: self._on_video_fi_layout_changed())
 
     def _on_video_fi_channels_toggled(self, checked: bool) -> None:
-        for widget in (
-            getattr(self, "video_fi_path", None),
-            getattr(self, "video_fi_layout_combo", None),
-            getattr(self, "video_tile_select_btn", None),
-        ):
+        for widget in (getattr(self, 'video_fi_path', None), getattr(self, 'video_fi_layout_combo', None), getattr(self, 'video_tile_select_btn', None)):
             if self._qt_widget_alive(widget):
                 widget.setEnabled(bool(checked))
-        btn = getattr(self, "video_tile_select_btn", None)
+        btn = getattr(self, 'video_tile_select_btn', None)
         if self._qt_widget_alive(btn):
             btn.setEnabled(bool(checked) and self._get_video_fi_layout() == VIDEO_FI_LAYOUT_SEPARATE)
         self._invalidate_video_preview_cache()
         self._schedule_video_preview_refresh()
 
     def _on_use_excel_graph_toggled(self, checked: bool) -> None:
-        for widget in (
-            getattr(self, "excel_path", None),
-            getattr(self, "excel_y_column", None),
-            getattr(self, "yaxis_min", None),
-            getattr(self, "yaxis_max", None),
-            getattr(self, "graph_width_ratio_spin", None),
-        ):
+        for widget in (getattr(self, 'excel_path', None), getattr(self, 'excel_y_column', None), getattr(self, 'yaxis_min', None), getattr(self, 'yaxis_max', None), getattr(self, 'graph_width_ratio_spin', None)):
             if self._qt_widget_alive(widget):
                 widget.setEnabled(bool(checked))
         self._refresh_growth_y_column_combo()
@@ -1167,7 +820,7 @@ class PostProcessingTab(QWidget):
 
     def _on_video_fi_layout_changed(self) -> None:
         self._video_fi_layout = self._get_video_fi_layout()
-        btn = getattr(self, "video_tile_select_btn", None)
+        btn = getattr(self, 'video_tile_select_btn', None)
         if self._qt_widget_alive(btn):
             btn.setEnabled(self._video_fi_enabled() and self._video_fi_layout == VIDEO_FI_LAYOUT_SEPARATE)
         self._invalidate_video_preview_cache()
@@ -1175,7 +828,7 @@ class PostProcessingTab(QWidget):
 
     @staticmethod
     def _video_tile_key(label: str) -> str:
-        return str(label or "").strip().lower()
+        return str(label or '').strip().lower()
 
     def _video_tile_visible(self, label: str) -> bool:
         return bool(self._video_tile_visibility.get(self._video_tile_key(label), True))
@@ -1183,46 +836,41 @@ class PostProcessingTab(QWidget):
     def _filter_video_tiles_for_visibility(self, tiles: Optional[list[tuple[str, np.ndarray]]]) -> list[tuple[str, np.ndarray]]:
         if not tiles:
             return []
-        visible = [(label, frames) for label, frames in tiles if self._video_tile_visible(label)]
+        visible = [(label, frames) for (label, frames) in tiles if self._video_tile_visible(label)]
         return visible or list(tiles)
 
     def _open_video_tile_visibility_dialog(self) -> None:
         if self._get_video_fi_layout() != VIDEO_FI_LAYOUT_SEPARATE:
-            QMessageBox.information(self, "Video tiles", "Switch Layout to Separate tiles before choosing tiles.")
+            show_message_dialog(self, 'Video tiles', 'Switch Layout to Separate tiles before choosing tiles.', kind='info')
             return
         try:
             cache = self._load_video_preview_cache()
         except Exception as exc:
-            QMessageBox.warning(self, "Video tiles", f"Could not load current video tiles:\n{exc}")
+            show_message_dialog(self, 'Video tiles', f'Could not load current video tiles:\n{exc}', kind='warning')
             return
-        all_tiles = list((cache or {}).get("all_tiles") or (cache or {}).get("tiles") or [])
+        all_tiles = list((cache or {}).get('all_tiles') or (cache or {}).get('tiles') or [])
         if not all_tiles:
-            QMessageBox.information(self, "Video tiles", "No separate video tiles are available yet.")
+            show_message_dialog(self, 'Video tiles', 'No separate video tiles are available yet.', kind='info')
             return
-
         dlg = QDialog(self)
-        dlg.setWindowTitle("Video tiles")
+        dlg.setWindowTitle('Video tiles')
         dlg.setMinimumWidth(360)
         dlg.setMinimumHeight(320)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
-        layout.addWidget(QLabel("Choose which tiles to show in Separate tiles layout."))
+        layout.addWidget(QLabel('Choose which tiles to show in Separate tiles layout.'))
         checks: list[tuple[str, QCheckBox]] = []
-        for label, _frames in all_tiles:
+        for (label, _frames) in all_tiles:
             cb = QCheckBox(str(label))
             cb.setChecked(self._video_tile_visible(str(label)))
             layout.addWidget(cb)
             checks.append((str(label), cb))
-
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        restore_btn = QPushButton("Show all")
+        restore_btn = QPushButton('Show all')
         style_compact_action_button(restore_btn, horizontal_padding=16)
         buttons.addButton(restore_btn, QDialogButtonBox.ButtonRole.ResetRole)
-        for std_btn, padding in (
-            (QDialogButtonBox.StandardButton.Cancel, 26),
-            (QDialogButtonBox.StandardButton.Ok, 26),
-        ):
+        for (std_btn, padding) in ((QDialogButtonBox.StandardButton.Cancel, 26), (QDialogButtonBox.StandardButton.Ok, 26)):
             btn = buttons.button(std_btn)
             if btn is not None:
                 style_compact_action_button(btn, horizontal_padding=padding)
@@ -1230,21 +878,19 @@ class PostProcessingTab(QWidget):
         buttons.setMinimumHeight(48)
 
         def _show_all() -> None:
-            for _label, cb in checks:
+            for (_label, cb) in checks:
                 cb.setChecked(True)
-
         restore_btn.clicked.connect(_show_all)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
         dlg.adjustSize()
-
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        if not any(cb.isChecked() for _label, cb in checks):
-            QMessageBox.information(self, "Video tiles", "At least one tile must stay visible.")
+        if not any((cb.isChecked() for (_label, cb) in checks)):
+            show_message_dialog(self, 'Video tiles', 'At least one tile must stay visible.', kind='info')
             return
-        for label, cb in checks:
+        for (label, cb) in checks:
             self._video_tile_visibility[self._video_tile_key(label)] = cb.isChecked()
         self._invalidate_video_preview_cache()
         self._schedule_video_preview_refresh()
@@ -1260,7 +906,7 @@ class PostProcessingTab(QWidget):
     @staticmethod
     def _video_path_looks_like_foci_channel(path: Path) -> bool:
         stem = path.stem.lower()
-        return "foci" in stem or "focus" in stem
+        return 'foci' in stem or 'focus' in stem
 
     @staticmethod
     def _video_color_channel_label(path: Path, index: int) -> str:
@@ -1268,23 +914,23 @@ class PostProcessingTab(QWidget):
 
     @staticmethod
     def _video_color_channel_label_from_name(name: str, index: int) -> str:
-        text = str(name or "").strip()
+        text = str(name or '').strip()
         text_lower = text.lower()
-        if "foci" in text_lower or "focus" in text_lower:
+        if 'foci' in text_lower or 'focus' in text_lower:
             label = text
-            for token in ("_fi_foci_", "_fi_focus_", "_foci_", "_focus_", "foci_", "focus_"):
+            for token in ('_fi_foci_', '_fi_focus_', '_foci_', '_focus_', 'foci_', 'focus_'):
                 if token in text_lower:
                     pos = text_lower.find(token)
                     label = text[pos + len(token):] or text
                     break
-            label = label.replace("_", " ").strip()
-            return f"Foci channel ({label})" if label else "Foci channel"
+            label = label.replace('_', ' ').strip()
+            return f'Foci channel ({label})' if label else 'Foci channel'
         label = text
-        if "_fi_" in text_lower:
-            pos = text_lower.find("_fi_")
-            label = text[pos + len("_fi_"):] or text
-        label = label.replace("_", " ").strip()
-        return f"FI channel {index + 1} ({label})" if label else f"FI channel {index + 1}"
+        if '_fi_' in text_lower:
+            pos = text_lower.find('_fi_')
+            label = text[pos + len('_fi_'):] or text
+        label = label.replace('_', ' ').strip()
+        return f'FI channel {index + 1} ({label})' if label else f'FI channel {index + 1}'
 
     def _metadata_video_color_channel_labels(self, path: Path) -> list[str]:
         """Use TIFF/ND2 channel names when available, excluding phase-like channels."""
@@ -1294,17 +940,17 @@ class PostProcessingTab(QWidget):
             meta = read_metadata_from_path(path)
         except Exception:
             return []
-        names = [str(n).strip() for n in (meta.get("channel_names") or []) if str(n).strip()]
+        names = [str(n).strip() for n in meta.get('channel_names') or [] if str(n).strip()]
         if not names:
             return []
         labels: list[str] = []
         path_is_foci = self._video_path_looks_like_foci_channel(path)
         for name in names:
-            if any(token in name.lower() for token in ("phase", "brightfield", "transmission", "dic")):
+            if any((token in name.lower() for token in ('phase', 'brightfield', 'transmission', 'dic'))):
                 continue
-            if path_is_foci and "foci" not in name.lower() and "focus" not in name.lower():
-                clean_name = name.replace("_", " ").strip()
-                labels.append(f"Foci channel ({clean_name})" if clean_name else "Foci channel")
+            if path_is_foci and 'foci' not in name.lower() and ('focus' not in name.lower()):
+                clean_name = name.replace('_', ' ').strip()
+                labels.append(f'Foci channel ({clean_name})' if clean_name else 'Foci channel')
             else:
                 labels.append(self._video_color_channel_label_from_name(name, len(labels)))
         return labels[:MAX_VIDEO_FI_COLOR_CHANNELS]
@@ -1313,59 +959,43 @@ class PostProcessingTab(QWidget):
         """Show color rows for the image channels currently selected, not the renderer maximum."""
         if not self._video_fi_enabled():
             return []
-
-        fi_edit = getattr(self, "video_fi_path", None)
-        fi_raw = fi_edit.text().strip() if self._qt_widget_alive(fi_edit) else ""
+        fi_edit = getattr(self, 'video_fi_path', None)
+        fi_raw = fi_edit.text().strip() if self._qt_widget_alive(fi_edit) else ''
         explicit_fi_paths = self._parse_growth_curve_video_paths(fi_raw)
         if explicit_fi_paths:
             labels: list[str] = []
             for path in explicit_fi_paths:
                 if path.is_dir():
-                    discovered = self._discover_growth_curve_video_inputs(
-                        path,
-                        include_sequence_folders=True,
-                    )
+                    discovered = self._discover_growth_curve_video_inputs(path, include_sequence_folders=True)
                     for discovered_path in discovered or [path]:
                         labels.append(self._video_color_channel_label(discovered_path, len(labels)))
                 else:
                     metadata_labels = self._metadata_video_color_channel_labels(path)
                     labels.extend(metadata_labels or [self._video_color_channel_label(path, len(labels))])
-            return labels[:MAX_VIDEO_FI_COLOR_CHANNELS] or ["FI channel 1"]
-
-        video_edit = getattr(self, "video_path", None)
-        video_raw = video_edit.text().strip() if self._qt_widget_alive(video_edit) else ""
+            return labels[:MAX_VIDEO_FI_COLOR_CHANNELS] or ['FI channel 1']
+        video_edit = getattr(self, 'video_path', None)
+        video_raw = video_edit.text().strip() if self._qt_widget_alive(video_edit) else ''
         base_paths = self._candidate_growth_curve_video_paths(video_raw)
         if len(base_paths) > 1:
-            _, fi_paths = self._split_phase_and_fi_video_paths(base_paths)
+            (_, fi_paths) = self._split_phase_and_fi_video_paths(base_paths)
             if fi_paths:
-                return [
-                    self._video_color_channel_label(path, idx)
-                    for idx, path in enumerate(fi_paths[:MAX_VIDEO_FI_COLOR_CHANNELS])
-                ]
+                return [self._video_color_channel_label(path, idx) for (idx, path) in enumerate(fi_paths[:MAX_VIDEO_FI_COLOR_CHANNELS])]
         if len(base_paths) == 1:
             metadata_labels = self._metadata_video_color_channel_labels(base_paths[0])
             if metadata_labels:
                 return metadata_labels
-
-        # A single multi-channel TIFF may still contain one or more FI channels; keep the UI minimal.
-        return ["FI channel 1"]
+        return ['FI channel 1']
 
     def _open_video_overlay_colors_dialog(self) -> None:
         colors = self._get_video_overlay_colors()
         channel_labels = self._infer_video_color_channel_labels()
-        fi_preset_names = ["Auto"] + list(VIDEO_FI_AUTO_LUT_NAMES) + ["Gray", "Pick…"]
-        marker_preset_names = ["Auto", "Yellow", "Magenta", "Cyan", "Red", "Green", "White", "Pick…"]
-
+        fi_preset_names = ['Auto'] + list(VIDEO_FI_AUTO_LUT_NAMES) + ['Gray', 'Pick…']
+        marker_preset_names = ['Auto', 'Yellow', 'Magenta', 'Cyan', 'Red', 'Green', 'White', 'Pick…']
         dlg = QDialog(self)
-        dlg.setWindowTitle("Video overlay colors")
+        dlg.setWindowTitle('Video overlay colors')
         dlg.setMinimumWidth(420)
         layout = QVBoxLayout(dlg)
-        layout.addWidget(
-            QLabel(
-                "Choose how FI/foci image channels are tinted and how mask contours and foci markers are drawn. "
-                "Auto keeps the current default palette."
-            )
-        )
+        layout.addWidget(QLabel('Choose how FI/foci image channels are tinted and how mask contours and foci markers are drawn. Auto keeps the current default palette.'))
         form = QFormLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
@@ -1376,21 +1006,20 @@ class PostProcessingTab(QWidget):
             label.setMinimumWidth(150)
             label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             form.addRow(label, widget)
-
         fi_combos: list[QComboBox] = []
         fi_custom: list[Optional[tuple[int, int, int]]] = [None] * len(channel_labels)
-        fi_saved = list(colors.get("fi_channels") or [])
-        for idx, label in enumerate(channel_labels):
+        fi_saved = list(colors.get('fi_channels') or [])
+        for (idx, label) in enumerate(channel_labels):
             combo = QComboBox()
             combo.addItems(fi_preset_names)
-            entry = fi_saved[idx] if idx < len(fi_saved) else "auto"
+            entry = fi_saved[idx] if idx < len(fi_saved) else 'auto'
             if isinstance(entry, (list, tuple)) and len(entry) == 3:
                 fi_custom[idx] = (int(entry[0]), int(entry[1]), int(entry[2]))
-                combo.addItem("Custom")
-                combo.setCurrentText("Custom")
+                combo.addItem('Custom')
+                combo.setCurrentText('Custom')
             else:
-                text = str(entry or "auto")
-                if text.lower() in {"", "auto", "default"}:
+                text = str(entry or 'auto')
+                if text.lower() in {'', 'auto', 'default'}:
                     combo.setCurrentIndex(0)
                 elif text in fi_preset_names:
                     combo.setCurrentText(text)
@@ -1405,104 +1034,78 @@ class PostProcessingTab(QWidget):
             custom_store: list[Optional[tuple[int, int, int]]] = [None]
             if isinstance(entry, (list, tuple)) and len(entry) == 3:
                 custom_store[0] = (int(entry[0]), int(entry[1]), int(entry[2]))
-                combo.addItem("Custom")
-                combo.setCurrentText("Custom")
+                combo.addItem('Custom')
+                combo.setCurrentText('Custom')
             else:
-                text = str(entry or "auto")
-                if text.lower() in {"", "auto", "default"}:
+                text = str(entry or 'auto')
+                if text.lower() in {'', 'auto', 'default'}:
                     combo.setCurrentIndex(0)
                 elif text in presets:
                     combo.setCurrentText(text)
                 else:
                     combo.setCurrentIndex(0)
-            return combo, custom_store
-
-        mask_combo, mask_custom = _marker_combo(colors.get("mask_contour"), marker_preset_names)
-        foci_combo, foci_custom = _marker_combo(colors.get("foci_marker"), marker_preset_names)
-        _add_color_row("Mask contours", mask_combo)
-        _add_color_row("Foci markers", foci_combo)
+            return (combo, custom_store)
+        (mask_combo, mask_custom) = _marker_combo(colors.get('mask_contour'), marker_preset_names)
+        (foci_combo, foci_custom) = _marker_combo(colors.get('foci_marker'), marker_preset_names)
+        _add_color_row('Mask contours', mask_combo)
+        _add_color_row('Foci markers', foci_combo)
         layout.addLayout(form)
 
         def _pick_custom_color(title: str, current: Optional[tuple[int, int, int]]) -> Optional[tuple[int, int, int]]:
             base = current or (255, 255, 255)
-            qc = QColorDialog.getColor(
-                QColor(base[0], base[1], base[2]),
-                dlg,
-                title,
-            )
+            qc = QColorDialog.getColor(QColor(base[0], base[1], base[2]), dlg, title)
             if not qc.isValid():
                 return None
             return (qc.red(), qc.green(), qc.blue())
 
-        def _read_combo_value(
-            combo: QComboBox,
-            custom_rgb: Optional[tuple[int, int, int]],
-            *,
-            pick_title: str,
-        ) -> Any:
+        def _read_combo_value(combo: QComboBox, custom_rgb: Optional[tuple[int, int, int]], *, pick_title: str) -> Any:
             text = combo.currentText()
-            if text == "Pick…":
+            if text == 'Pick…':
                 picked = _pick_custom_color(pick_title, custom_rgb)
                 if picked is None:
-                    return custom_rgb or "auto"
+                    return custom_rgb or 'auto'
                 return list(picked)
-            if text == "Custom" and custom_rgb is not None:
+            if text == 'Custom' and custom_rgb is not None:
                 return list(custom_rgb)
-            if text == "Auto":
-                return "auto"
+            if text == 'Auto':
+                return 'auto'
             return text
 
-        def _on_combo_changed(
-            combo: QComboBox,
-            custom_holder: list[Optional[tuple[int, int, int]]],
-            *,
-            pick_title: str,
-        ) -> None:
-            if combo.currentText() != "Pick…":
+        def _on_combo_changed(combo: QComboBox, custom_holder: list[Optional[tuple[int, int, int]]], *, pick_title: str) -> None:
+            if combo.currentText() != 'Pick…':
                 return
             picked = _pick_custom_color(pick_title, custom_holder[0])
             if picked is None:
                 combo.setCurrentIndex(0)
                 return
             custom_holder[0] = picked
-            if combo.findText("Custom") < 0:
-                combo.addItem("Custom")
-            combo.setCurrentText("Custom")
-
-        for idx, combo in enumerate(fi_combos):
+            if combo.findText('Custom') < 0:
+                combo.addItem('Custom')
+            combo.setCurrentText('Custom')
+        for (idx, combo) in enumerate(fi_combos):
             holder = [fi_custom[idx]]
-            label = channel_labels[idx] if idx < len(channel_labels) else f"FI channel {idx + 1}"
+            label = channel_labels[idx] if idx < len(channel_labels) else f'FI channel {idx + 1}'
 
-            def _fi_changed(_index: int = 0, c=combo, h=holder, i=idx, row_label=label) -> None:
-                if c.currentText() != "Pick…":
+            def _fi_changed(_index: int=0, c=combo, h=holder, i=idx, row_label=label) -> None:
+                if c.currentText() != 'Pick…':
                     return
-                picked = _pick_custom_color(f"Pick color for {row_label}", h[0])
+                picked = _pick_custom_color(f'Pick color for {row_label}', h[0])
                 if picked is None:
                     c.setCurrentIndex(0)
                     return
                 h[0] = picked
                 fi_custom[i] = picked
-                if c.findText("Custom") < 0:
-                    c.addItem("Custom")
-                c.setCurrentText("Custom")
-
+                if c.findText('Custom') < 0:
+                    c.addItem('Custom')
+                c.setCurrentText('Custom')
             combo.currentIndexChanged.connect(_fi_changed)
-
-        mask_combo.currentIndexChanged.connect(
-            lambda _idx=0: _on_combo_changed(mask_combo, mask_custom, pick_title="Pick mask contour color")
-        )
-        foci_combo.currentIndexChanged.connect(
-            lambda _idx=0: _on_combo_changed(foci_combo, foci_custom, pick_title="Pick foci marker color")
-        )
-
+        mask_combo.currentIndexChanged.connect(lambda _idx=0: _on_combo_changed(mask_combo, mask_custom, pick_title='Pick mask contour color'))
+        foci_combo.currentIndexChanged.connect(lambda _idx=0: _on_combo_changed(foci_combo, foci_custom, pick_title='Pick foci marker color'))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        restore_btn = QPushButton("Restore")
+        restore_btn = QPushButton('Restore')
         style_compact_action_button(restore_btn, horizontal_padding=14)
         buttons.addButton(restore_btn, QDialogButtonBox.ButtonRole.ResetRole)
-        for std_btn, padding in (
-            (QDialogButtonBox.StandardButton.Cancel, 26),
-            (QDialogButtonBox.StandardButton.Ok, 26),
-        ):
+        for (std_btn, padding) in ((QDialogButtonBox.StandardButton.Cancel, 26), (QDialogButtonBox.StandardButton.Ok, 26)):
             btn = buttons.button(std_btn)
             if btn is not None:
                 style_compact_action_button(btn, horizontal_padding=padding)
@@ -1511,105 +1114,66 @@ class PostProcessingTab(QWidget):
 
         def _restore_defaults() -> None:
             defaults = normalize_video_overlay_colors(DEFAULT_VIDEO_OVERLAY_COLORS)
-            for idx, combo in enumerate(fi_combos):
+            for (idx, combo) in enumerate(fi_combos):
                 fi_custom[idx] = None
                 combo.blockSignals(True)
                 combo.clear()
                 combo.addItems(fi_preset_names)
                 combo.setCurrentIndex(0)
                 combo.blockSignals(False)
-            for combo, key, custom_holder in (
-                (mask_combo, "mask_contour", mask_custom),
-                (foci_combo, "foci_marker", foci_custom),
-            ):
+            for (combo, key, custom_holder) in ((mask_combo, 'mask_contour', mask_custom), (foci_combo, 'foci_marker', foci_custom)):
                 custom_holder[0] = None
                 combo.blockSignals(True)
                 combo.clear()
                 combo.addItems(marker_preset_names)
                 entry = defaults.get(key)
-                if str(entry).lower() in {"", "auto"}:
+                if str(entry).lower() in {'', 'auto'}:
                     combo.setCurrentIndex(0)
                 elif str(entry) in marker_preset_names:
                     combo.setCurrentText(str(entry))
                 else:
                     combo.setCurrentIndex(0)
                 combo.blockSignals(False)
-
         restore_btn.clicked.connect(_restore_defaults)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
-
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-
         fi_values: list[Any] = []
-        for idx, combo in enumerate(fi_combos):
-            label = channel_labels[idx] if idx < len(channel_labels) else f"FI channel {idx + 1}"
-            fi_values.append(
-                _read_combo_value(
-                    combo,
-                    fi_custom[idx],
-                    pick_title=f"Pick color for {label}",
-                )
-            )
-        self._set_video_overlay_colors(
-            {
-                "fi_channels": fi_values,
-                "mask_contour": _read_combo_value(
-                    mask_combo,
-                    mask_custom[0],
-                    pick_title="Pick mask contour color",
-                ),
-                "foci_marker": _read_combo_value(
-                    foci_combo,
-                    foci_custom[0],
-                    pick_title="Pick foci marker color",
-                ),
-            }
-        )
+        for (idx, combo) in enumerate(fi_combos):
+            label = channel_labels[idx] if idx < len(channel_labels) else f'FI channel {idx + 1}'
+            fi_values.append(_read_combo_value(combo, fi_custom[idx], pick_title=f'Pick color for {label}'))
+        self._set_video_overlay_colors({'fi_channels': fi_values, 'mask_contour': _read_combo_value(mask_combo, mask_custom[0], pick_title='Pick mask contour color'), 'foci_marker': _read_combo_value(foci_combo, foci_custom[0], pick_title='Pick foci marker color')})
 
     def _get_video_fi_layout(self) -> str:
         if not self._video_fi_enabled():
             return VIDEO_FI_LAYOUT_MERGED
-        combo = getattr(self, "video_fi_layout_combo", None)
+        combo = getattr(self, 'video_fi_layout_combo', None)
         if self._qt_widget_alive(combo):
             value = combo.currentData()
             if value in (VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE):
                 return str(value)
-        layout = getattr(self, "_video_fi_layout", DEFAULT_VIDEO_FI_LAYOUT)
+        layout = getattr(self, '_video_fi_layout', DEFAULT_VIDEO_FI_LAYOUT)
         return layout if layout in (VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE) else DEFAULT_VIDEO_FI_LAYOUT
 
-    def _build_graph_and_video_settings(self, *, connect_live_refresh: bool = False) -> QWidget:
+    def _build_graph_and_video_settings(self, *, connect_live_refresh: bool=False) -> QWidget:
         """Build time, graph, FPS, and output-format controls for the video montage preview pane."""
         settings_container_layout = QVBoxLayout()
         settings_container_layout.setSpacing(8)
-
-        time_group = QGroupBox("Time Settings")
+        time_group = QGroupBox('Time Settings')
         time_group.setMinimumWidth(0)
         time_layout = QHBoxLayout()
-        time_label = QLabel("Time per frame (min.):")
-        time_info_icon = create_info_icon(
-            "Time difference between consecutive frames.\n\n"
-            "This is used to convert frame numbers to time (minutes) for the growth-curve x-axis.\n\n"
-            "Example: If images were taken every 10 minutes, enter 10.0",
-            parent_widget=self,
-        )
+        time_label = QLabel('Time per frame (min.):')
+        time_info_icon = create_info_icon('Time difference between consecutive frames.\n\nThis is used to convert frame numbers to time (minutes) for the growth-curve x-axis.\n\nExample: If images were taken every 10 minutes, enter 10.0', parent_widget=self)
         time_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         time_layout.addWidget(time_label)
         time_layout.addWidget(time_info_icon)
         time_layout.addSpacing(12)
         time_layout.addWidget(self.time_interval)
         time_layout.addSpacing(18)
-        fps_label = QLabel("FPS:")
-        fps_info_icon = create_info_icon(
-            "Playback speed for the output video.\n\n"
-            "Higher values = faster playback\n"
-            "Lower values = slower playback\n\n"
-            "Default: 5.0 fps\n"
-            "Typical range: 1-10 fps for time-lapse videos",
-            parent_widget=self
-        )
+        fps_label = QLabel('FPS:')
+        fps_info_icon = create_info_icon('Playback speed for the output video.\n\nHigher values = faster playback\nLower values = slower playback\n\nDefault: 5.0 fps\nTypical range: 1-10 fps for time-lapse videos', parent_widget=self)
         fps_info_icon.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         time_layout.addWidget(fps_label)
         time_layout.addWidget(self.fps)
@@ -1617,160 +1181,119 @@ class PostProcessingTab(QWidget):
         time_layout.addStretch()
         time_group.setLayout(time_layout)
         settings_container_layout.addWidget(time_group)
-        
-        # Graph settings
-        graph_group = QGroupBox("Graph Settings")
+        graph_group = QGroupBox('Graph Settings')
         graph_group.setMinimumWidth(0)
         graph_layout = QVBoxLayout()
-
         graph_main_row = QHBoxLayout()
         graph_main_row.setSpacing(8)
-        graph_main_row.addWidget(QLabel("Y:"))
+        graph_main_row.addWidget(QLabel('Y:'))
         graph_main_row.addWidget(self.excel_y_column, 2)
-        graph_main_row.addWidget(
-            create_info_icon(
-                "Choose which Excel Summary column is plotted on the Y axis.\n"
-                "Examples: relative cell area, total area, cell count, or foci metrics.",
-                parent_widget=self,
-            )
-        )
+        graph_main_row.addWidget(create_info_icon('Choose which Excel Summary column is plotted on the Y axis.\nExamples: relative cell area, total area, cell count, or foci metrics.', parent_widget=self))
         graph_main_row.addSpacing(8)
-        graph_main_row.addWidget(QLabel("Width:"))
+        graph_main_row.addWidget(QLabel('Width:'))
         graph_main_row.addWidget(self.graph_width_ratio_spin)
-        graph_main_row.addWidget(
-            create_info_icon(
-                "How much of the final montage width is used by the growth graph.\n"
-                "Only visible when the Excel growth graph is enabled. Updates live in the preview.",
-                parent_widget=self,
-            )
-        )
+        graph_main_row.addWidget(create_info_icon('How much of the final montage width is used by the growth graph.\nOnly visible when the Excel growth graph is enabled. Updates live in the preview.', parent_widget=self))
         graph_main_row.addStretch(1)
-        appearance_btn = QPushButton("Appearance…")
+        appearance_btn = QPushButton('Appearance…')
         style_compact_action_button(appearance_btn, horizontal_padding=14)
-        appearance_btn.setToolTip(
-            "Edit growth-graph axis labels, Y range, fonts, line/marker stroke, and grid. "
-            "You can also double-click the left side of the preview."
-        )
+        appearance_btn.setToolTip('Edit growth-graph axis labels, Y range, fonts, line/marker stroke, and grid. You can also double-click the left side of the preview.')
         appearance_btn.clicked.connect(self._open_growth_graph_style_dialog)
         graph_main_row.addWidget(appearance_btn)
         graph_layout.addLayout(graph_main_row)
-        
         graph_group.setLayout(graph_layout)
         graph_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_container_layout.addWidget(graph_group)
-        
-        overlay_group = QGroupBox("Video overlays")
+        overlay_group = QGroupBox('Video overlays')
         overlay_group.setMinimumWidth(0)
         overlay_layout = QVBoxLayout()
         overlay_toggle_row = QHBoxLayout()
         overlay_toggle_row.setSpacing(6)
-        overlay_toggle_row.addWidget(
-            create_info_icon(
-                "Layout: choose one merged microscopy tile or separate tiles "
-                "(Phase, FI/foci image channels, and Merged side by side).\n\n"
-                "Use Tiles… to choose which separate tiles are visible.\n\n"
-                "Pick channel TIFFs with the Channels button on the left; phase/FI roles are inferred "
-                "from filenames when possible.\n\n"
-                "Mask contours: draws segmentation masks as outlines only, so the microscopy signal stays visible.\n\n"
-                "Foci markers: draws simple rings from CSV/XLSX columns named frame, x, y (or common variants).",
-                parent_widget=self,
-            )
-        )
-        mask_btn = QPushButton("Mask…")
+        overlay_toggle_row.addWidget(create_info_icon('Layout: choose one merged microscopy tile or separate tiles (Phase, FI/foci image channels, and Merged side by side).\n\nUse Tiles… to choose which separate tiles are visible.\n\nPick channel TIFFs with the Channels button on the left; phase/FI roles are inferred from filenames when possible.\n\nMask contours: draws segmentation masks as outlines only, so the microscopy signal stays visible.\n\nFoci markers: draws simple rings from CSV/XLSX columns named frame, x, y (or common variants).', parent_widget=self))
+        mask_btn = QPushButton('Mask…')
         style_compact_action_button(mask_btn, horizontal_padding=10)
         mask_btn.clicked.connect(self._select_video_mask_file)
-        foci_btn = QPushButton("Foci…")
+        foci_btn = QPushButton('Foci…')
         style_compact_action_button(foci_btn, horizontal_padding=10)
         foci_btn.clicked.connect(self._select_video_foci_file)
-        fi_btn = QPushButton("FI…")
+        fi_btn = QPushButton('FI…')
         style_compact_action_button(fi_btn, horizontal_padding=10)
-        fi_btn.setToolTip("Browse FI TIFF stack(s) or an image-series folder.")
+        fi_btn.setToolTip('Browse FI TIFF stack(s) or an image-series folder.')
         fi_btn.clicked.connect(lambda _checked=False, btn=fi_btn: self._show_video_fi_browse_menu(btn))
-        colors_btn = QPushButton("Colors…")
+        colors_btn = QPushButton('Colors…')
         style_compact_action_button(colors_btn, horizontal_padding=12)
-        colors_btn.setToolTip("Set FI channel, mask contour, and foci marker colors.")
+        colors_btn.setToolTip('Set FI channel, mask contour, and foci marker colors.')
         colors_btn.clicked.connect(self._open_video_overlay_colors_dialog)
-        update_preview_btn = QPushButton("Update")
+        update_preview_btn = QPushButton('Update')
         style_compact_action_button(update_preview_btn, horizontal_padding=12)
-        update_preview_btn.setToolTip("Reload inputs and redraw the current video montage preview.")
+        update_preview_btn.setToolTip('Reload inputs and redraw the current video montage preview.')
         update_preview_btn.clicked.connect(self._force_video_preview_refresh)
         overlay_toggle_row.addStretch(1)
         overlay_toggle_row.addWidget(colors_btn)
         overlay_toggle_row.addWidget(update_preview_btn)
         overlay_layout.addLayout(overlay_toggle_row)
-
         fi_row = QHBoxLayout()
         fi_row.setSpacing(4)
-        fi_label = QLabel("FI:")
+        fi_label = QLabel('FI:')
         fi_label.setMinimumWidth(36)
         fi_row.addWidget(self.video_fi_channels)
         fi_row.addWidget(fi_label)
         fi_row.addWidget(self.video_fi_path, 1)
         fi_row.addWidget(fi_btn)
         overlay_layout.addLayout(fi_row)
-
         mask_row = QHBoxLayout()
         mask_row.setSpacing(4)
-        mask_label = QLabel("Mask:")
+        mask_label = QLabel('Mask:')
         mask_label.setMinimumWidth(36)
         mask_row.addWidget(self.video_mask_contours)
         mask_row.addWidget(mask_label)
         mask_row.addWidget(self.video_mask_path, 1)
         mask_row.addWidget(mask_btn)
         overlay_layout.addLayout(mask_row)
-
         foci_row = QHBoxLayout()
         foci_row.setSpacing(4)
-        foci_label = QLabel("Foci:")
+        foci_label = QLabel('Foci:')
         foci_label.setMinimumWidth(36)
         foci_row.addWidget(self.video_foci_overlay)
         foci_row.addWidget(foci_label)
         foci_row.addWidget(self.video_foci_path, 1)
         foci_row.addWidget(foci_btn)
         overlay_layout.addLayout(foci_row)
-
-        excel_btn = QPushButton("Excel…")
+        excel_btn = QPushButton('Excel…')
         style_compact_action_button(excel_btn, horizontal_padding=10)
-        excel_btn.setToolTip("Select the optional Excel analysis file used for the growth graph.")
+        excel_btn.setToolTip('Select the optional Excel analysis file used for the growth graph.')
         excel_btn.setEnabled(self._use_excel_graph_enabled())
         excel_btn.clicked.connect(self.select_excel_file)
         self.use_excel_graph.toggled.connect(excel_btn.setEnabled)
         excel_row = QHBoxLayout()
         excel_row.setSpacing(4)
-        excel_label = QLabel("Excel:")
+        excel_label = QLabel('Excel:')
         excel_label.setMinimumWidth(36)
         excel_row.addWidget(self.use_excel_graph)
         excel_row.addWidget(excel_label)
         excel_row.addWidget(self.excel_path, 1)
         excel_row.addWidget(excel_btn)
         overlay_layout.addLayout(excel_row)
-
         layout_row = QHBoxLayout()
         layout_row.setSpacing(4)
-        layout_label = QLabel("Layout:")
+        layout_label = QLabel('Layout:')
         layout_label.setMinimumWidth(58)
-        self.video_tile_select_btn = QPushButton("Tiles…")
+        self.video_tile_select_btn = QPushButton('Tiles…')
         style_compact_action_button(self.video_tile_select_btn, horizontal_padding=10)
-        self.video_tile_select_btn.setToolTip("Choose which tiles are shown in Separate tiles layout.")
-        self.video_tile_select_btn.setEnabled(
-            self._video_fi_enabled() and self._get_video_fi_layout() == VIDEO_FI_LAYOUT_SEPARATE
-        )
+        self.video_tile_select_btn.setToolTip('Choose which tiles are shown in Separate tiles layout.')
+        self.video_tile_select_btn.setEnabled(self._video_fi_enabled() and self._get_video_fi_layout() == VIDEO_FI_LAYOUT_SEPARATE)
         self.video_tile_select_btn.clicked.connect(self._open_video_tile_visibility_dialog)
         layout_row.addWidget(layout_label)
         layout_row.addWidget(self.video_fi_layout_combo, 1)
         layout_row.addWidget(self.video_tile_select_btn)
         overlay_layout.addLayout(layout_row)
-
         overlay_group.setLayout(overlay_layout)
         overlay_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_container_layout.addWidget(overlay_group)
-        
-        # Output format selection (in same row)
-        format_group = QGroupBox("Output Formats")
+        format_group = QGroupBox('Output Formats')
         format_group.setMinimumWidth(0)
         format_layout = QHBoxLayout()
         format_layout.setSpacing(12)
-        format_layout.addWidget(QLabel("Save:"))
+        format_layout.addWidget(QLabel('Save:'))
         format_layout.addWidget(self.format_all)
         format_checkbox_row = QHBoxLayout()
         format_checkbox_row.setSpacing(12)
@@ -1778,11 +1301,9 @@ class PostProcessingTab(QWidget):
             format_checkbox_row.addWidget(cb)
         format_layout.addLayout(format_checkbox_row)
         format_layout.addStretch(1)
-        
         format_group.setLayout(format_layout)
         format_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_container_layout.addWidget(format_group)
-        
         settings_container = QWidget()
         settings_container.setMinimumWidth(0)
         settings_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1791,14 +1312,14 @@ class PostProcessingTab(QWidget):
 
     def _build_growth_curve_video_group(self) -> QWidget:
         """Build video montage inputs on the left; preview/settings/export live on the right."""
-        group = QGroupBox("")
+        group = QGroupBox('')
         group.setFlat(True)
         group.setStyleSheet(FLAT_GROUPBOX_FRAME_STYLESHEET)
         group.setMinimumWidth(0)
         group_layout = QVBoxLayout()
         video_group = self._build_video_input_group()
         group_layout.addWidget(video_group)
-        self.preview_video_btn = QPushButton("Preview video montage")
+        self.preview_video_btn = QPushButton('Preview video montage')
         style_module_primary_button(self.preview_video_btn)
         self.preview_video_btn.setEnabled(False)
         self.preview_video_btn.clicked.connect(self._preview_video_montage)
@@ -1808,90 +1329,54 @@ class PostProcessingTab(QWidget):
 
     def _build_montage_group(self) -> QWidget:
         """Build the Montage group: one image or folder → Phase first, then FI channels, then merged."""
-        group = QGroupBox("")
+        group = QGroupBox('')
         group.setFlat(True)
         group.setStyleSheet(FLAT_GROUPBOX_FRAME_STYLESHEET)
         group.setMinimumWidth(0)
         layout = QVBoxLayout()
-
-        # —— Input (own drag-and-drop zone) ———
         self.montage_path = QLineEdit()
-        self.montage_path.setPlaceholderText("One ND2 or TIFF file, or a folder of images")
+        self.montage_path.setPlaceholderText('One ND2 or TIFF file, or a folder of images')
         self.montage_path.setMinimumWidth(0)
-        self.montage_path.textChanged.connect(lambda _text="": self.refresh_post_candidate_list())
-        folder_btn = QPushButton("Browse folder…")
+        self.montage_path.textChanged.connect(lambda _text='': self.refresh_post_candidate_list())
+        folder_btn = QPushButton('Browse folder…')
         folder_btn.clicked.connect(self._select_montage_folder)
-        files_btn = QPushButton("Add files…")
+        files_btn = QPushButton('Add files…')
         files_btn.clicked.connect(self._select_montage_files)
-        layout.addWidget(
-            build_path_drop_group(
-                self,
-                lambda p: self.montage_path.setText(p) if getattr(self, "montage_path", None) else None,
-                line_edit=self.montage_path,
-                buttons=(folder_btn, files_btn),
-                path_label="Input:",
-            )
-        )
-
-        overlay_group = QGroupBox("Optional overlay: segmented cells")
+        layout.addWidget(build_path_drop_group(self, lambda p: self.montage_path.setText(p) if getattr(self, 'montage_path', None) else None, line_edit=self.montage_path, buttons=(folder_btn, files_btn), path_label='Input:'))
+        overlay_group = QGroupBox('Optional overlay: segmented cells')
         overlay_group.setMinimumWidth(0)
         overlay_layout = QVBoxLayout()
         overlay_toggle_row = QHBoxLayout()
-        self.montage_overlay_enable = QCheckBox("Enable cell boundary overlay")
+        self.montage_overlay_enable = QCheckBox('Enable cell boundary overlay')
         self.montage_overlay_enable.setChecked(False)
         overlay_toggle_row.addWidget(self.montage_overlay_enable)
-        overlay_toggle_row.addWidget(create_info_icon(
-            "When enabled, cell boundaries from a mask TIFF are drawn on montage tiles (yellow contours).\n"
-            "Leave Mask empty to auto-find ``*_masks.tif`` next to the montage input.",
-            parent_widget=self,
-        ))
+        overlay_toggle_row.addWidget(create_info_icon('When enabled, cell boundaries from a mask TIFF are drawn on montage tiles (yellow contours).\nLeave Mask empty to auto-find ``*_masks.tif`` next to the montage input.', parent_widget=self))
         overlay_toggle_row.addStretch()
         overlay_layout.addLayout(overlay_toggle_row)
-
         self.montage_overlay_mask_path = QLineEdit()
-        self.montage_overlay_mask_path.setPlaceholderText("Optional mask TIFF override (auto-find base_masks.tif if empty)")
+        self.montage_overlay_mask_path.setPlaceholderText('Optional mask TIFF override (auto-find base_masks.tif if empty)')
         self.montage_overlay_mask_path.setMinimumWidth(0)
-        overlay_mask_btn = QPushButton("Mask…")
+        overlay_mask_btn = QPushButton('Mask…')
         style_compact_action_button(overlay_mask_btn, horizontal_padding=18)
 
         def _select_overlay_mask() -> None:
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select mask TIFF",
-                get_default_browse_dir(),
-                "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
-            )
+            (path, _) = QFileDialog.getOpenFileName(self, 'Select mask TIFF', get_default_browse_dir(), 'TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)')
             if path:
                 self.montage_overlay_mask_path.setText(path)
-
         overlay_mask_btn.clicked.connect(_select_overlay_mask)
-        overlay_layout.addWidget(
-            build_path_drop_group(
-                self,
-                lambda p: self.montage_overlay_mask_path.setText(p)
-                if getattr(self, "montage_overlay_mask_path", None)
-                else None,
-                line_edit=self.montage_overlay_mask_path,
-                buttons=(overlay_mask_btn,),
-                path_label="Mask:",
-            )
-        )
-
+        overlay_layout.addWidget(build_path_drop_group(self, lambda p: self.montage_overlay_mask_path.setText(p) if getattr(self, 'montage_overlay_mask_path', None) else None, line_edit=self.montage_overlay_mask_path, buttons=(overlay_mask_btn,), path_label='Mask:'))
         overlay_params_row = QHBoxLayout()
-        overlay_params_row.addWidget(QLabel("Frame (0-based):"))
+        overlay_params_row.addWidget(QLabel('Frame (0-based):'))
         self.montage_overlay_frame = QSpinBox()
         self.montage_overlay_frame.setRange(0, 100000)
         self.montage_overlay_frame.setValue(0)
         overlay_params_row.addWidget(self.montage_overlay_frame)
         overlay_params_row.addStretch()
         overlay_layout.addLayout(overlay_params_row)
-
         overlay_group.setLayout(overlay_layout)
         layout.addWidget(overlay_group)
-
-        # Layout/export controls live in the preview, where their effect is visible immediately.
         btn_row = QHBoxLayout()
-        preview_montage_btn = QPushButton("Preview image montage")
+        preview_montage_btn = QPushButton('Preview image montage')
         style_module_primary_button(preview_montage_btn)
         preview_montage_btn.clicked.connect(self._preview_montage)
         btn_row.addWidget(preview_montage_btn, 1)
@@ -1904,102 +1389,56 @@ class PostProcessingTab(QWidget):
         self.montage_rows = QSpinBox(parent)
         self.montage_rows.setRange(1, 50)
         self.montage_rows.setValue(1)
-        self.montage_rows.setToolTip("Number of rows. Default 1 = single row of tiles.")
+        self.montage_rows.setToolTip('Number of rows. Default 1 = single row of tiles.')
         self.montage_cols = QSpinBox(parent)
         self.montage_cols.setRange(0, 50)
         self.montage_cols.setValue(0)
-        self.montage_cols.setSpecialValueText("Auto")
-        self.montage_cols.setToolTip("Auto = derived from number of tiles and rows.")
-
+        self.montage_cols.setSpecialValueText('Auto')
+        self.montage_cols.setToolTip('Auto = derived from number of tiles and rows.')
         self.montage_spacing = QSpinBox(parent)
         self.montage_spacing.setRange(0, 100)
         self.montage_spacing.setValue(4)
-        self.montage_spacing.setSuffix(" px")
+        self.montage_spacing.setSuffix(' px')
         self.montage_border = QSpinBox(parent)
         self.montage_border.setRange(0, 100)
         self.montage_border.setValue(0)
-        self.montage_border.setSuffix(" px")
+        self.montage_border.setSuffix(' px')
         self.montage_border_color = QComboBox(parent)
-        self.montage_border_color.addItems(["Gray", "White", "Black", "Transparent"])
-        self.montage_border_color.setToolTip(
-            "Fill color for montage spacing and outer border. Transparent is preserved for PNG/TIFF exports."
-        )
-        saved_border_color = str(getattr(self, "_montage_border_color", "White") or "White")
+        self.montage_border_color.addItems(['Gray', 'White', 'Black', 'Transparent'])
+        self.montage_border_color.setToolTip('Fill color for montage spacing and outer border. Transparent is preserved for PNG/TIFF exports.')
+        saved_border_color = str(getattr(self, '_montage_border_color', 'White') or 'White')
         border_color_idx = self.montage_border_color.findText(saved_border_color)
         if border_color_idx >= 0:
             self.montage_border_color.setCurrentIndex(border_color_idx)
         self.montage_border_color.currentTextChanged.connect(self._sync_montage_border_color)
-
         self.montage_order = QComboBox(parent)
-        self.montage_order.addItems(["Row-major", "Column-major"])
-        self.montage_order.setToolTip(
-            "Row-major: left to right, then top to bottom. Column-major: top to bottom, then left to right."
-        )
+        self.montage_order.addItems(['Row-major', 'Column-major'])
+        self.montage_order.setToolTip('Row-major: left to right, then top to bottom. Column-major: top to bottom, then left to right.')
         self.montage_z_projection = QComboBox(parent)
-        self.montage_z_projection.addItems(["First Z", "Max projection"])
-        self.montage_z_projection.setToolTip(
-            "For z-stacks, choose the first z plane or collapse each channel with a max-intensity projection."
-        )
-        if getattr(self, "_montage_z_projection_max", False):
+        self.montage_z_projection.addItems(['First Z', 'Max projection'])
+        self.montage_z_projection.setToolTip('For z-stacks, choose the first z plane or collapse each channel with a max-intensity projection.')
+        if getattr(self, '_montage_z_projection_max', False):
             self.montage_z_projection.setCurrentIndex(1)
         self.montage_z_projection.currentTextChanged.connect(self._sync_montage_z_projection_mode)
-
-        return build_settings_card(
-            "",
-            object_name="MontageLayoutControls",
-            parent=parent,
-            min_cell_width=130,
-            label_min_width=58,
-            control_max_width=132,
-            fields=[
-                setting_field("Rows", self.montage_rows, min_width=56, max_width=84),
-                setting_field("Cols", self.montage_cols, min_width=64, max_width=92),
-                setting_field("Spacing", self.montage_spacing, min_width=64, max_width=92),
-                setting_field("Border", self.montage_border, min_width=64, max_width=92),
-                setting_field("Color", self.montage_border_color, min_width=72, max_width=116),
-                setting_field("Order", self.montage_order, min_width=96, max_width=132),
-                setting_field("Z-stack", self.montage_z_projection, min_width=96, max_width=132),
-            ],
-        )
+        return build_settings_card('', object_name='MontageLayoutControls', parent=parent, min_cell_width=130, label_min_width=58, control_max_width=132, fields=[setting_field('Rows', self.montage_rows, min_width=56, max_width=84), setting_field('Cols', self.montage_cols, min_width=64, max_width=92), setting_field('Spacing', self.montage_spacing, min_width=64, max_width=92), setting_field('Border', self.montage_border, min_width=64, max_width=92), setting_field('Color', self.montage_border_color, min_width=72, max_width=116), setting_field('Order', self.montage_order, min_width=96, max_width=132), setting_field('Z-stack', self.montage_z_projection, min_width=96, max_width=132)])
 
     def _build_montage_label_controls(self, parent: QWidget) -> QGroupBox:
         """Per-tile label options for montage export."""
-        self.montage_show_labels = QCheckBox("Show tile labels", parent)
-        self.montage_show_labels.setToolTip("Draw channel/tile names on the montage (e.g. Phase, GFP, Merged).")
-
+        self.montage_show_labels = QCheckBox('Show tile labels', parent)
+        self.montage_show_labels.setToolTip('Draw channel/tile names on the montage (e.g. Phase, GFP, Merged).')
         self.montage_label_position = QComboBox(parent)
-        self.montage_label_position.addItems(["Below", "Inside top-left", "Inside bottom-left"])
+        self.montage_label_position.addItems(['Below', 'Inside top-left', 'Inside bottom-left'])
         self.montage_label_color = QComboBox(parent)
-        self.montage_label_color.addItems(["Black", "White"])
+        self.montage_label_color.addItems(['Black', 'White'])
         self.montage_label_font_size = QSpinBox(parent)
         self.montage_label_font_size.setRange(8, 48)
         self.montage_label_font_size.setValue(12)
+        return build_settings_card('', object_name='MontageLabelControls', parent=parent, min_cell_width=160, label_min_width=70, control_max_width=120, fields=[setting_cell(self.montage_show_labels), setting_field('Position', self.montage_label_position, min_width=96, max_width=132), setting_field('Color', self.montage_label_color, min_width=72, max_width=104), setting_field('Font', self.montage_label_font_size, min_width=56, max_width=84)])
 
-        return build_settings_card(
-            "",
-            object_name="MontageLabelControls",
-            parent=parent,
-            min_cell_width=160,
-            label_min_width=70,
-            control_max_width=120,
-            fields=[
-                setting_cell(self.montage_show_labels),
-                setting_field("Position", self.montage_label_position, min_width=96, max_width=132),
-                setting_field("Color", self.montage_label_color, min_width=72, max_width=104),
-                setting_field("Font", self.montage_label_font_size, min_width=56, max_width=84),
-            ],
-        )
-
-    def _build_montage_lut_controls(
-        self,
-        parent: QWidget,
-        *,
-        embedded: bool = False,
-    ) -> tuple[QGroupBox, QDoubleSpinBox, QDoubleSpinBox, QPushButton, QPushButton, Any, Any, Any]:
+    def _build_montage_lut_controls(self, parent: QWidget, *, embedded: bool=False) -> tuple[QGroupBox, QDoubleSpinBox, QDoubleSpinBox, QPushButton, QPushButton, Any, Any, Any]:
         """LUT histogram + min/max controls for montage preview."""
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
-
         montage_lut_canvas_height = 132 if embedded else LUT_HIST_CANVAS_HEIGHT_PX
         hist_fig = Figure(figsize=(LUT_HIST_FIGSIZE_INCHES[0], 1.85 if embedded else LUT_HIST_FIGSIZE_INCHES[1]))
         hist_canvas = FigureCanvas(hist_fig)
@@ -2007,19 +1446,18 @@ class PostProcessingTab(QWidget):
         hist_canvas.setMaximumHeight(montage_lut_canvas_height)
         hist_canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         hist_ax = hist_fig.add_subplot(111)
-        hist_fig.patch.set_facecolor("#2b2b2b")
-        hist_ax.set_facecolor("#2b2b2b")
-        hist_ax.tick_params(colors="white", labelsize=8 if embedded else 10)
-        for spine in ["bottom", "top", "left", "right"]:
-            hist_ax.spines[spine].set_color("white")
-        hist_ax.xaxis.label.set_color("white")
-        hist_ax.yaxis.label.set_color("white")
+        hist_fig.patch.set_facecolor('#2b2b2b')
+        hist_ax.set_facecolor('#2b2b2b')
+        hist_ax.tick_params(colors='white', labelsize=8 if embedded else 10)
+        for spine in ['bottom', 'top', 'left', 'right']:
+            hist_ax.spines[spine].set_color('white')
+        hist_ax.xaxis.label.set_color('white')
+        hist_ax.yaxis.label.set_color('white')
         apply_lut_histogram_figure_margins(hist_fig)
         if embedded:
-            hist_fig.subplots_adjust(left=0.10, right=0.985, top=0.88, bottom=0.22)
-        hist_canvas.setStyleSheet("background-color: #2b2b2b;")
+            hist_fig.subplots_adjust(left=0.1, right=0.985, top=0.88, bottom=0.22)
+        hist_canvas.setStyleSheet('background-color: #2b2b2b;')
         hist_canvas.setCursor(Qt.CursorShape.PointingHandCursor)
-
         min_spin = QDoubleSpinBox(parent)
         min_spin.setRange(0, 65535)
         min_spin.setValue(0)
@@ -2030,18 +1468,17 @@ class PostProcessingTab(QWidget):
         max_spin.setValue(65535)
         max_spin.setDecimals(0)
         flex_control(max_spin, 64, combo_style=False, max_width=88)
-        auto_selected_btn = QPushButton("Auto selected", parent)
+        auto_selected_btn = QPushButton('Auto selected', parent)
         style_compact_action_button(auto_selected_btn, horizontal_padding=12, dense=True)
-        auto_selected_btn.setToolTip("Set the selected tile to the automatic robust LUT range.")
-        auto_all_btn = QPushButton("Auto all", parent)
+        auto_selected_btn.setToolTip('Set the selected tile to the automatic robust LUT range.')
+        auto_all_btn = QPushButton('Auto all', parent)
         style_compact_action_button(auto_all_btn, horizontal_padding=12, dense=True)
-        auto_all_btn.setToolTip("Set automatic robust LUTs for all non-merged tiles.")
-
+        auto_all_btn.setToolTip('Set automatic robust LUTs for all non-merged tiles.')
         controls_row = QHBoxLayout()
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(8)
-        min_lbl = QLabel("Min:", parent)
-        max_lbl = QLabel("Max:", parent)
+        min_lbl = QLabel('Min:', parent)
+        max_lbl = QLabel('Max:', parent)
         controls_row.addWidget(min_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
         controls_row.addWidget(min_spin, 0, Qt.AlignmentFlag.AlignVCenter)
         controls_row.addWidget(max_lbl, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -2049,7 +1486,6 @@ class PostProcessingTab(QWidget):
         controls_row.addStretch(1)
         controls_row.addWidget(auto_selected_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         controls_row.addWidget(auto_all_btn, 0, Qt.AlignmentFlag.AlignVCenter)
-
         lut_body = QWidget(parent)
         lut_body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         lut_body_lay = QVBoxLayout(lut_body)
@@ -2059,12 +1495,13 @@ class PostProcessingTab(QWidget):
         lut_body_lay.addLayout(controls_row)
 
         class _LutCanvasResizeFilter(QObject):
+
             def __init__(self, canvas: QWidget, fig: Any) -> None:
                 super().__init__(canvas)
                 self._canvas = canvas
                 self._fig = fig
 
-            def eventFilter(self, obj, event) -> bool:  # noqa: N802
+            def eventFilter(self, obj, event) -> bool:
                 if obj is self._canvas and event.type() == QEvent.Type.Resize:
                     w = max(int(self._canvas.width()), 1)
                     h = max(int(self._canvas.height()), 1)
@@ -2072,22 +1509,21 @@ class PostProcessingTab(QWidget):
                     self._fig.set_size_inches(w / dpi, h / dpi, forward=True)
                     try:
                         if embedded:
-                            self._fig.subplots_adjust(left=0.10, right=0.985, top=0.88, bottom=0.22)
+                            self._fig.subplots_adjust(left=0.1, right=0.985, top=0.88, bottom=0.22)
                         else:
                             apply_lut_histogram_figure_margins(self._fig)
                     except Exception:
                         pass
                     self._canvas.draw_idle()
                 return False
-
-        lut_group = preview_settings_group("", object_name="MontageLutControls", parent=parent)
+        lut_group = preview_settings_group('', object_name='MontageLutControls', parent=parent)
         lut_outer = QVBoxLayout(lut_group)
         lut_outer.setContentsMargins(8, 2, 8, 4)
         lut_outer.setSpacing(4)
         lut_outer.addWidget(lut_body)
         lut_group.setMinimumHeight(0)
         lut_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        lut_group._lut_resize_filter = _LutCanvasResizeFilter(hist_canvas, hist_fig)  # type: ignore[attr-defined]
+        lut_group._lut_resize_filter = _LutCanvasResizeFilter(hist_canvas, hist_fig)
         hist_canvas.installEventFilter(lut_group._lut_resize_filter)
 
         def _sync_lut_canvas_width() -> None:
@@ -2097,149 +1533,83 @@ class PostProcessingTab(QWidget):
             hist_fig.set_size_inches(w / dpi, h / dpi, forward=True)
             try:
                 if embedded:
-                    hist_fig.subplots_adjust(left=0.10, right=0.985, top=0.88, bottom=0.22)
+                    hist_fig.subplots_adjust(left=0.1, right=0.985, top=0.88, bottom=0.22)
                 else:
                     apply_lut_histogram_figure_margins(hist_fig)
             except Exception:
                 pass
             hist_canvas.draw_idle()
-
         QTimer.singleShot(0, _sync_lut_canvas_width)
-        return lut_group, min_spin, max_spin, auto_selected_btn, auto_all_btn, hist_fig, hist_ax, hist_canvas
+        return (lut_group, min_spin, max_spin, auto_selected_btn, auto_all_btn, hist_fig, hist_ax, hist_canvas)
 
     def _build_montage_scalebar_controls(self, parent: QWidget) -> QGroupBox:
         """Scale bar options inside montage preview."""
-        self.montage_sb_enable = QCheckBox("Add scale bar to montage", parent)
+        self.montage_sb_enable = QCheckBox('Add scale bar to montage', parent)
         self.montage_sb_enable.setChecked(False)
-
         self.montage_sb_pixel_size = QDoubleSpinBox(parent)
         self.montage_sb_pixel_size.setRange(0.001, 100.0)
         self.montage_sb_pixel_size.setDecimals(3)
         self.montage_sb_pixel_size.setValue(0.108)
         flex_control(self.montage_sb_pixel_size, 72, combo_style=False, max_width=104)
-        self.montage_sb_pixel_size_source = QLabel("", parent)
-        self.montage_sb_pixel_size_source.setStyleSheet("color: #2ecc71; font-size: 9pt; padding-left: 2px;")
-
+        self.montage_sb_pixel_size_source = QLabel('', parent)
+        self.montage_sb_pixel_size_source.setStyleSheet('color: #2ecc71; font-size: 9pt; padding-left: 2px;')
         self.montage_sb_length_um = QDoubleSpinBox(parent)
         self.montage_sb_length_um.setRange(0.1, 1000.0)
         self.montage_sb_length_um.setDecimals(1)
         self.montage_sb_length_um.setValue(10.0)
-        auto_length_btn = QPushButton("Auto length", parent)
+        auto_length_btn = QPushButton('Auto length', parent)
         style_compact_action_button(auto_length_btn, horizontal_padding=12, dense=True)
-        auto_length_btn.setToolTip("Pick a visually nice scale-bar length from tile width and pixel size.")
-
+        auto_length_btn.setToolTip('Pick a visually nice scale-bar length from tile width and pixel size.')
         self.montage_sb_position = QComboBox(parent)
-        self.montage_sb_position.addItems(["Bottom-right", "Bottom-left", "Top-right", "Top-left"])
-
-        self.montage_sb_show_label = QCheckBox("Show label (e.g. 10 µm)", parent)
+        self.montage_sb_position.addItems(['Bottom-right', 'Bottom-left', 'Top-right', 'Top-left'])
+        self.montage_sb_show_label = QCheckBox('Show label (e.g. 10 µm)', parent)
         self.montage_sb_show_label.setChecked(True)
         self.montage_sb_color = QComboBox(parent)
-        self.montage_sb_color.addItems(["White", "Black"])
+        self.montage_sb_color.addItems(['White', 'Black'])
         self.montage_sb_thickness = QSpinBox(parent)
         self.montage_sb_thickness.setRange(1, 20)
         self.montage_sb_thickness.setValue(5)
         self.montage_sb_font_size = QSpinBox(parent)
         self.montage_sb_font_size.setRange(8, 72)
         self.montage_sb_font_size.setValue(20)
-
-        group = build_settings_card(
-            "",
-            object_name="MontageScaleBarControls",
-            parent=parent,
-            min_cell_width=170,
-            label_min_width=96,
-            control_max_width=112,
-            fields=[
-                setting_cell(self.montage_sb_enable),
-                setting_field("Pixel size", self.montage_sb_pixel_size, min_width=72, max_width=104),
-                setting_cell(auto_length_btn),
-                setting_cell(self.montage_sb_show_label),
-                setting_field("Length (µm)", self.montage_sb_length_um, min_width=72, max_width=104),
-                setting_field("Position", self.montage_sb_position, min_width=96, max_width=132),
-                setting_field("Color", self.montage_sb_color, min_width=72, max_width=104),
-                setting_field("Thickness", self.montage_sb_thickness, min_width=56, max_width=84),
-                setting_field("Font", self.montage_sb_font_size, min_width=56, max_width=84),
-            ],
-            footer_widgets=[self.montage_sb_pixel_size_source],
-        )
+        group = build_settings_card('', object_name='MontageScaleBarControls', parent=parent, min_cell_width=170, label_min_width=96, control_max_width=112, fields=[setting_cell(self.montage_sb_enable), setting_field('Pixel size', self.montage_sb_pixel_size, min_width=72, max_width=104), setting_cell(auto_length_btn), setting_cell(self.montage_sb_show_label), setting_field('Length (µm)', self.montage_sb_length_um, min_width=72, max_width=104), setting_field('Position', self.montage_sb_position, min_width=96, max_width=132), setting_field('Color', self.montage_sb_color, min_width=72, max_width=104), setting_field('Thickness', self.montage_sb_thickness, min_width=56, max_width=84), setting_field('Font', self.montage_sb_font_size, min_width=56, max_width=84)], footer_widgets=[self.montage_sb_pixel_size_source])
         self._try_update_montage_pixel_size_from_paths()
-        auto_length_btn.clicked.connect(lambda *_args: self._auto_montage_scalebar_length(getattr(self, "_last_montage_layout", None)))
+        auto_length_btn.clicked.connect(lambda *_args: self._auto_montage_scalebar_length(getattr(self, '_last_montage_layout', None)))
         return group
 
     def _montage_scalebar_params(self) -> dict[str, Any]:
-        return {
-            "pixel_size": self._safe_value(getattr(self, "montage_sb_pixel_size", None), default=0.108),
-            "length_um": self._safe_value(getattr(self, "montage_sb_length_um", None), default=10.0),
-            "thickness": self._safe_spin_value(getattr(self, "montage_sb_thickness", None), 5),
-            "position": self._safe_combo_text(getattr(self, "montage_sb_position", None), "Bottom-right"),
-            "color": self._safe_combo_text(getattr(self, "montage_sb_color", None), "White"),
-            "font_size": self._safe_spin_value(getattr(self, "montage_sb_font_size", None), 20),
-            "show_label": self._safe_checked(getattr(self, "montage_sb_show_label", None), default=True),
-        }
+        return {'pixel_size': self._safe_value(getattr(self, 'montage_sb_pixel_size', None), default=0.108), 'length_um': self._safe_value(getattr(self, 'montage_sb_length_um', None), default=10.0), 'thickness': self._safe_spin_value(getattr(self, 'montage_sb_thickness', None), 5), 'position': self._safe_combo_text(getattr(self, 'montage_sb_position', None), 'Bottom-right'), 'color': self._safe_combo_text(getattr(self, 'montage_sb_color', None), 'White'), 'font_size': self._safe_spin_value(getattr(self, 'montage_sb_font_size', None), 20), 'show_label': self._safe_checked(getattr(self, 'montage_sb_show_label', None), default=True)}
 
     def _build_montage_focus_controls(self, parent: QWidget) -> QGroupBox:
         """Focus inset options inside montage preview."""
-        self.montage_focus_enable = QCheckBox("Enable focus inset", parent)
-        self.montage_focus_enable.setToolTip(
-            "Right-drag on the preview to choose the source region. The selected region is magnified into the chosen corner and exported with the montage."
-        )
-
+        self.montage_focus_enable = QCheckBox('Enable focus inset', parent)
+        self.montage_focus_enable.setToolTip('Right-drag on the preview to choose the source region. The selected region is magnified into the chosen corner and exported with the montage.')
         self.montage_focus_zoom = QComboBox(parent)
-        self.montage_focus_zoom.addItems(["2x", "4x", "8x", "12x", "16x"])
-        self.montage_focus_zoom.setCurrentText("4x")
+        self.montage_focus_zoom.addItems(['2x', '4x', '8x', '12x', '16x'])
+        self.montage_focus_zoom.setCurrentText('4x')
         self.montage_focus_position = QComboBox(parent)
-        self.montage_focus_position.addItems(["Top-right", "Top-left", "Bottom-right", "Bottom-left"])
+        self.montage_focus_position.addItems(['Top-right', 'Top-left', 'Bottom-right', 'Bottom-left'])
         self.montage_focus_color = QComboBox(parent)
-        self.montage_focus_color.addItems(["Yellow", "White", "Black", "Cyan", "Magenta", "Green", "Red"])
-        self.montage_focus_color.setCurrentText("White")
+        self.montage_focus_color.addItems(['Yellow', 'White', 'Black', 'Cyan', 'Magenta', 'Green', 'Red'])
+        self.montage_focus_color.setCurrentText('White')
         self.montage_focus_line_width = QSpinBox(parent)
         self.montage_focus_line_width.setRange(1, 20)
         self.montage_focus_line_width.setValue(5)
-        self.montage_focus_clear_btn = QPushButton("Clear ROI", parent)
-        self.montage_focus_clear_btn.setToolTip("Remove the current focus inset selection.")
+        self.montage_focus_clear_btn = QPushButton('Clear ROI', parent)
+        self.montage_focus_clear_btn.setToolTip('Remove the current focus inset selection.')
         style_compact_action_button(self.montage_focus_clear_btn, horizontal_padding=16, dense=True)
-
-        return build_settings_card(
-            "",
-            object_name="MontageFocusControls",
-            parent=parent,
-            min_cell_width=160,
-            label_min_width=78,
-            control_max_width=120,
-            fields=[
-                setting_cell(self.montage_focus_enable),
-                setting_field("Zoom", self.montage_focus_zoom, min_width=64, max_width=88),
-                setting_field("Position", self.montage_focus_position, min_width=96, max_width=132),
-                setting_field("Box color", self.montage_focus_color, min_width=88, max_width=120),
-                setting_field("Line width", self.montage_focus_line_width, min_width=56, max_width=84),
-                setting_cell(self.montage_focus_clear_btn),
-            ],
-        )
+        return build_settings_card('', object_name='MontageFocusControls', parent=parent, min_cell_width=160, label_min_width=78, control_max_width=120, fields=[setting_cell(self.montage_focus_enable), setting_field('Zoom', self.montage_focus_zoom, min_width=64, max_width=88), setting_field('Position', self.montage_focus_position, min_width=96, max_width=132), setting_field('Box color', self.montage_focus_color, min_width=88, max_width=120), setting_field('Line width', self.montage_focus_line_width, min_width=56, max_width=84), setting_cell(self.montage_focus_clear_btn)])
 
     def _montage_focus_params(self) -> dict[str, Any]:
-        return {
-            "enabled": self._safe_checked(getattr(self, "montage_focus_enable", None), default=False),
-            "zoom": self._safe_combo_text(getattr(self, "montage_focus_zoom", None), "4x"),
-            "position": self._safe_combo_text(getattr(self, "montage_focus_position", None), "Top-right"),
-            "color": self._safe_combo_text(getattr(self, "montage_focus_color", None), "White"),
-            "line_width": self._safe_spin_value(getattr(self, "montage_focus_line_width", None), 5),
-        }
+        return {'enabled': self._safe_checked(getattr(self, 'montage_focus_enable', None), default=False), 'zoom': self._safe_combo_text(getattr(self, 'montage_focus_zoom', None), '4x'), 'position': self._safe_combo_text(getattr(self, 'montage_focus_position', None), 'Top-right'), 'color': self._safe_combo_text(getattr(self, 'montage_focus_color', None), 'White'), 'line_width': self._safe_spin_value(getattr(self, 'montage_focus_line_width', None), 5)}
 
     @staticmethod
     def _montage_focus_color_rgb(name: str) -> tuple[int, int, int]:
-        colors = {
-            "black": (0, 0, 0),
-            "cyan": (0, 255, 255),
-            "green": (0, 220, 80),
-            "magenta": (255, 0, 255),
-            "red": (255, 40, 40),
-            "white": (255, 255, 255),
-            "yellow": (255, 230, 0),
-        }
-        return colors.get(str(name or "").strip().lower(), (255, 230, 0))
+        colors = {'black': (0, 0, 0), 'cyan': (0, 255, 255), 'green': (0, 220, 80), 'magenta': (255, 0, 255), 'red': (255, 40, 40), 'white': (255, 255, 255), 'yellow': (255, 230, 0)}
+        return colors.get(str(name or '').strip().lower(), (255, 230, 0))
 
     @classmethod
-    def _safe_value(cls, widget: Any, *, default: float = 0.0) -> float:
+    def _safe_value(cls, widget: Any, *, default: float=0.0) -> float:
         if not cls._qt_widget_alive(widget):
             return default
         try:
@@ -2250,37 +1620,23 @@ class PostProcessingTab(QWidget):
     def _montage_scalebar_target_rect(self, layout: Optional[dict]) -> Optional[tuple[int, int, int, int]]:
         if not isinstance(layout, dict):
             return None
-        boxes = layout.get("tile_boxes") or []
+        boxes = layout.get('tile_boxes') or []
         if not boxes:
             return None
-        # Anchor in the bottom-right occupied tile, not in the gray montage background.
-        return max(
-            ((int(b[0]), int(b[1]), int(b[2]), int(b[3])) for b in boxes if len(b) >= 4),
-            key=lambda b: (b[1], b[0]),
-            default=None,
-        )
+        return max(((int(b[0]), int(b[1]), int(b[2]), int(b[3])) for b in boxes if len(b) >= 4), key=lambda b: (b[1], b[0]), default=None)
 
-    def _apply_montage_scalebar_if_enabled(self, img: np.ndarray, *, layout: Optional[dict] = None) -> np.ndarray:
-        if not self._safe_checked(getattr(self, "montage_sb_enable", None), default=False):
+    def _apply_montage_scalebar_if_enabled(self, img: np.ndarray, *, layout: Optional[dict]=None) -> np.ndarray:
+        if not self._safe_checked(getattr(self, 'montage_sb_enable', None), default=False):
             return img
         params = self._montage_scalebar_params()
         target_rect = self._montage_scalebar_target_rect(layout)
         if target_rect is not None:
-            params["target_rect"] = target_rect
+            params['target_rect'] = target_rect
         out = self._draw_scalebar_on_image(img, params=params)
         return out if out is not None else img
 
     @staticmethod
-    def _normalize_montage_roi(
-        x0: int,
-        y0: int,
-        x1: int,
-        y1: int,
-        width: int,
-        height: int,
-        *,
-        min_size: int = 8,
-    ) -> Optional[tuple[int, int, int, int]]:
+    def _normalize_montage_roi(x0: int, y0: int, x1: int, y1: int, width: int, height: int, *, min_size: int=8) -> Optional[tuple[int, int, int, int]]:
         left = max(0, min(int(x0), int(x1), max(0, width - 1)))
         right = min(width, max(int(x0), int(x1)))
         top = max(0, min(int(y0), int(y1), max(0, height - 1)))
@@ -2289,42 +1645,30 @@ class PostProcessingTab(QWidget):
             return None
         return (left, top, right, bottom)
 
-    def _apply_montage_focus_inset_if_enabled(
-        self,
-        img: np.ndarray,
-        *,
-        roi: Optional[tuple[int, int, int, int]] = None,
-    ) -> np.ndarray:
+    def _apply_montage_focus_inset_if_enabled(self, img: np.ndarray, *, roi: Optional[tuple[int, int, int, int]]=None) -> np.ndarray:
         params = self._montage_focus_params()
-        if not params.get("enabled") or roi is None:
+        if not params.get('enabled') or roi is None:
             return img
         out = self._draw_montage_focus_inset(img, roi=roi, params=params)
         return out if out is not None else img
 
-    def _draw_montage_focus_inset(
-        self,
-        img: np.ndarray,
-        *,
-        roi: tuple[int, int, int, int],
-        params: Optional[dict[str, Any]] = None,
-    ) -> Optional[np.ndarray]:
+    def _draw_montage_focus_inset(self, img: np.ndarray, *, roi: tuple[int, int, int, int], params: Optional[dict[str, Any]]=None) -> Optional[np.ndarray]:
         """Draw a source ROI, connector, and magnified inset on a copy of the montage."""
         try:
             from PIL import Image, ImageDraw
         except ImportError:
-            QMessageBox.warning(self, "Focus inset", "Pillow (PIL) is required for drawing the focus inset.")
+            show_message_dialog(self, 'Focus inset', 'Pillow (PIL) is required for drawing the focus inset.', kind='warning')
             return None
         if params is None:
             params = self._montage_focus_params()
-
-        h, w = img.shape[:2]
+        (h, w) = img.shape[:2]
         norm_roi = self._normalize_montage_roi(*roi, w, h)
         if norm_roi is None:
             return img
-        x0, y0, x1, y1 = norm_roi
+        (x0, y0, x1, y1) = norm_roi
         source_w = x1 - x0
         source_h = y1 - y0
-        zoom_text = str(params.get("zoom") or "4x").lower().replace("x", "").strip()
+        zoom_text = str(params.get('zoom') or '4x').lower().replace('x', '').strip()
         try:
             zoom = max(1.0, float(zoom_text))
         except ValueError:
@@ -2337,15 +1681,14 @@ class PostProcessingTab(QWidget):
         if fit_scale < 1.0:
             inset_w = max(20, int(round(inset_w * fit_scale)))
             inset_h = max(20, int(round(inset_h * fit_scale)))
-
-        line_width = max(1, int(params.get("line_width") or 3))
+        line_width = max(1, int(params.get('line_width') or 3))
         margin = max(12, line_width * 4)
-        position = str(params.get("position") or "Top-right").lower()
-        if "left" in position:
+        position = str(params.get('position') or 'Top-right').lower()
+        if 'left' in position:
             ix0 = margin
         else:
             ix0 = max(margin, w - margin - inset_w)
-        if "bottom" in position:
+        if 'bottom' in position:
             iy0 = max(margin, h - margin - inset_h)
         else:
             iy0 = margin
@@ -2353,21 +1696,17 @@ class PostProcessingTab(QWidget):
         iy1 = min(h - margin, iy0 + inset_h)
         ix0 = max(0, ix1 - inset_w)
         iy0 = max(0, iy1 - inset_h)
-
         pil_img = Image.fromarray(img)
         inset = pil_img.crop((x0, y0, x1, y1)).resize((max(1, ix1 - ix0), max(1, iy1 - iy0)), Image.Resampling.LANCZOS)
-        if pil_img.mode == "RGBA" and inset.mode != "RGBA":
-            inset = inset.convert("RGBA")
-        pil_img.paste(inset, (ix0, iy0), inset if inset.mode == "RGBA" else None)
-
+        if pil_img.mode == 'RGBA' and inset.mode != 'RGBA':
+            inset = inset.convert('RGBA')
+        pil_img.paste(inset, (ix0, iy0), inset if inset.mode == 'RGBA' else None)
         draw = ImageDraw.ImageDraw(pil_img)
-        color_rgb = self._montage_focus_color_rgb(str(params.get("color") or "Yellow"))
-        color = (*color_rgb, 255) if pil_img.mode == "RGBA" else color_rgb
+        color_rgb = self._montage_focus_color_rgb(str(params.get('color') or 'Yellow'))
+        color = (*color_rgb, 255) if pil_img.mode == 'RGBA' else color_rgb
         for offset in range(line_width):
             draw.rectangle([x0 - offset, y0 - offset, x1 + offset, y1 + offset], outline=color)
             draw.rectangle([ix0 - offset, iy0 - offset, ix1 + offset, iy1 + offset], outline=color)
-
-        # Connect nearest corners so the inset reads like a magnified callout.
         src_anchor = (x1, y0) if ix0 >= x0 else (x0, y0)
         if iy0 > y0:
             src_anchor = (src_anchor[0], y1)
@@ -2383,36 +1722,32 @@ class PostProcessingTab(QWidget):
         nd2_path = None
         channel_names: List[str] = []
         for p in paths:
-            if p.suffix.lower() == ".nd2":
+            if p.suffix.lower() == '.nd2':
                 meta = read_metadata_from_path(p)
-                nc = meta.get("channel_count") or 1
-                names = meta.get("channel_names") or [f"Ch{i+1}" for i in range(nc)]
+                nc = meta.get('channel_count') or 1
+                names = meta.get('channel_names') or [f'Ch{i + 1}' for i in range(nc)]
                 if nc >= 1:
                     nd2_path = p
                     channel_names = names[:nc]
                     break
         if not nd2_path or not channel_names:
-            QMessageBox.information(
-                self,
-                "Channel colors",
-                "No multi-channel ND2 in the current montage paths. Add an ND2 file and try again, or use \"Edit channel colors\" in the montage preview to set color per tile.",
-            )
+            show_message_dialog(self, 'Channel colors', 'No multi-channel ND2 in the current montage paths. Add an ND2 file and try again, or use "Edit channel colors" in the montage preview to set color per tile.', kind='info')
             return
         dlg = QDialog(self)
-        dlg.setWindowTitle("Channel display colors")
+        dlg.setWindowTitle('Channel display colors')
         layout = QVBoxLayout(dlg)
-        layout.addWidget(QLabel(f"File: {nd2_path.name}\nSet color per channel (Auto = from metadata):"))
+        layout.addWidget(QLabel(f'File: {nd2_path.name}\nSet color per channel (Auto = from metadata):'))
         form = QFormLayout()
         combos: List[tuple] = []
-        choices = ["Auto", "Grayscale", "Red", "Orange", "Green", "Blue", "Yellow", "Cyan", "Magenta"]
-        for i, name in enumerate(channel_names):
+        choices = ['Auto', 'Grayscale', 'Red', 'Orange', 'Green', 'Blue', 'Yellow', 'Cyan', 'Magenta']
+        for (i, name) in enumerate(channel_names):
             cb = QComboBox()
             cb.addItems(choices)
             key = (nd2_path.stem, i)
-            current = self.montage_channel_color_overrides.get(key, "auto")
-            idx = next((j for j, c in enumerate(choices) if c.lower() == current), 0)
+            current = self.montage_channel_color_overrides.get(key, 'auto')
+            idx = next((j for (j, c) in enumerate(choices) if c.lower() == current), 0)
             cb.setCurrentIndex(idx)
-            form.addRow(f"Ch{i+1} ({name}):", cb)
+            form.addRow(f'Ch{i + 1} ({name}):', cb)
             combos.append((key, cb))
         layout.addLayout(form)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -2420,49 +1755,33 @@ class PostProcessingTab(QWidget):
         bb.rejected.connect(dlg.reject)
         layout.addWidget(bb)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            for key, cb in combos:
+            for (key, cb) in combos:
                 val = cb.currentText().lower()
-                if val == "auto":
+                if val == 'auto':
                     self.montage_channel_color_overrides.pop(key, None)
                 else:
                     self.montage_channel_color_overrides[key] = val
 
-    def _edit_montage_tile_colors(
-        self, layout: dict, refresh_callback: Optional[Callable[[], None]] = None
-    ) -> None:
+    def _edit_montage_tile_colors(self, layout: dict, refresh_callback: Optional[Callable[[], None]]=None) -> None:
         """Open dialog to include/exclude tiles, z projection, color, and percentile per tile."""
-        tiles = layout.get("all_tiles") or layout.get("tiles", [])
-        labels = layout.get("all_tile_labels") or layout.get("tile_labels", []) or [t[1] for t in tiles]
-        z_choices = ["Use global", "First Z", "Max intensity"]
-        z_to_mode = {"Use global": "global", "First Z": "first", "Max intensity": "max"}
-        mode_to_z = {v: k for k, v in z_to_mode.items()}
-        preset_names = ["Default", "Grayscale", "Red", "Orange", "Green", "Blue", "Yellow", "Cyan", "Magenta", "Pick…"]
-        preset_to_rgb = {
-            "Default": None,
-            "Grayscale": (1.0, 1.0, 1.0),
-            "Red": (204 / 255.0, 0.0, 0.0),
-            "Orange": (242 / 255.0, 137 / 255.0, 26 / 255.0),
-            "Green": (86 / 255.0, 207 / 255.0, 33 / 255.0),
-            "Blue": (0 / 255.0, 0 / 255.0, 225 / 255.0),
-            "Yellow": (231 / 255.0, 213 / 255.0, 32 / 255.0),
-            "Cyan": (0.0, 1.0, 1.0),
-            "Magenta": (1.0, 0.0, 1.0),
-        }
-
+        tiles = layout.get('all_tiles') or layout.get('tiles', [])
+        labels = layout.get('all_tile_labels') or layout.get('tile_labels', []) or [t[1] for t in tiles]
+        z_choices = ['Use global', 'First Z', 'Max intensity']
+        z_to_mode = {'Use global': 'global', 'First Z': 'first', 'Max intensity': 'max'}
+        mode_to_z = {v: k for (k, v) in z_to_mode.items()}
+        preset_names = ['Default', 'Grayscale', 'Red', 'Orange', 'Green', 'Blue', 'Yellow', 'Cyan', 'Magenta', 'Pick…']
+        preset_to_rgb = {'Default': None, 'Grayscale': (1.0, 1.0, 1.0), 'Red': (204 / 255.0, 0.0, 0.0), 'Orange': (242 / 255.0, 137 / 255.0, 26 / 255.0), 'Green': (86 / 255.0, 207 / 255.0, 33 / 255.0), 'Blue': (0 / 255.0, 0 / 255.0, 225 / 255.0), 'Yellow': (231 / 255.0, 213 / 255.0, 32 / 255.0), 'Cyan': (0.0, 1.0, 1.0), 'Magenta': (1.0, 0.0, 1.0)}
         rows: List[dict] = []
-        saved_order = list(getattr(self, "montage_tile_order", []) or [])
-        order_rank = {key: i + 1 for i, key in enumerate(saved_order)}
+        saved_order = list(getattr(self, 'montage_tile_order', []) or [])
+        order_rank = {key: i + 1 for (i, key) in enumerate(saved_order)}
         for idx in range(len(tiles)):
-            label = labels[idx] if idx < len(labels) else (tiles[idx][1] if idx < len(tiles) else f"Tile {idx}")
+            label = labels[idx] if idx < len(labels) else tiles[idx][1] if idx < len(tiles) else f'Tile {idx}'
             tile_key = self._montage_tile_key(label)
-            is_merged = str(label).endswith(" Merged")
+            is_merged = str(label).endswith(' Merged')
             default_color = tiles[idx][2] if idx < len(tiles) else None
             color_override = self._montage_lookup_color_override(tile_key, idx, default_color)
             current_rgb = color_override if color_override is not None else default_color
-            pct = self._montage_lookup_percentile_override(tile_key, idx) or (
-                self.MONTAGE_AUTO_LUT_LOW,
-                self.MONTAGE_AUTO_LUT_HIGH,
-            )
+            pct = self._montage_lookup_percentile_override(tile_key, idx) or (self.MONTAGE_AUTO_LUT_LOW, self.MONTAGE_AUTO_LUT_HIGH)
             include_cb = QCheckBox()
             include_cb.setChecked(self._montage_tile_included(tile_key))
             order_spin = QSpinBox()
@@ -2472,8 +1791,8 @@ class PostProcessingTab(QWidget):
             style_preview_nav_spinbox(order_spin)
             z_combo = QComboBox()
             z_combo.addItems(z_choices)
-            z_mode = str(self.montage_tile_z_modes.get(tile_key, "global"))
-            z_combo.setCurrentText(mode_to_z.get(z_mode, "Use global"))
+            z_mode = str(self.montage_tile_z_modes.get(tile_key, 'global'))
+            z_combo.setCurrentText(mode_to_z.get(z_mode, 'Use global'))
             z_combo.setEnabled(not is_merged)
             color_combo = QComboBox()
             color_combo.addItems(preset_names)
@@ -2483,12 +1802,12 @@ class PostProcessingTab(QWidget):
             elif color_override is None:
                 color_combo.setCurrentIndex(0)
             else:
-                key = next((k for k, v in preset_to_rgb.items() if v == color_override), None)
-                if key and key != "Pick…":
+                key = next((k for (k, v) in preset_to_rgb.items() if v == color_override), None)
+                if key and key != 'Pick…':
                     color_combo.setCurrentIndex(preset_names.index(key))
                 else:
-                    color_combo.addItem("Custom")
-                    color_combo.setCurrentText("Custom")
+                    color_combo.addItem('Custom')
+                    color_combo.setCurrentText('Custom')
             p_low_spin = QDoubleSpinBox()
             p_low_spin.setRange(0.0, 99.9)
             p_low_spin.setDecimals(1)
@@ -2505,37 +1824,15 @@ class PostProcessingTab(QWidget):
             p_high_spin.setFixedWidth(72)
             style_preview_nav_spinbox(p_high_spin)
             p_high_spin.setEnabled(not is_merged)
-            rows.append(
-                {
-                    "tile_idx": idx,
-                    "tile_key": tile_key,
-                    "label": label,
-                    "is_merged": is_merged,
-                    "default_color": default_color,
-                    "include_cb": include_cb,
-                    "order_spin": order_spin,
-                    "z_combo": z_combo,
-                    "color_combo": color_combo,
-                    "current_rgb": current_rgb,
-                    "p_low_spin": p_low_spin,
-                    "p_high_spin": p_high_spin,
-                }
-            )
-
+            rows.append({'tile_idx': idx, 'tile_key': tile_key, 'label': label, 'is_merged': is_merged, 'default_color': default_color, 'include_cb': include_cb, 'order_spin': order_spin, 'z_combo': z_combo, 'color_combo': color_combo, 'current_rgb': current_rgb, 'p_low_spin': p_low_spin, 'p_high_spin': p_high_spin})
         if not rows:
-            QMessageBox.information(self, "Edit tiles", "No tiles in the current montage layout.")
+            show_message_dialog(self, 'Edit tiles', 'No tiles in the current montage layout.', kind='info')
             return
-
         dlg = QDialog(self)
-        dlg.setWindowTitle("Edit tiles")
+        dlg.setWindowTitle('Edit tiles')
         dlg.setMinimumWidth(720)
         vlayout = QVBoxLayout(dlg)
-        vlayout.addWidget(
-            QLabel(
-                "Include or exclude tiles, set z-stack handling per channel, and adjust color / percentile normalization. "
-                "Unchecked tiles stay in this list so you can bring them back. Use Order to rearrange the montage."
-            )
-        )
+        vlayout.addWidget(QLabel('Include or exclude tiles, set z-stack handling per channel, and adjust color / percentile normalization. Unchecked tiles stay in this list so you can bring them back. Use Order to rearrange the montage.'))
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll_body = QWidget()
@@ -2545,61 +1842,52 @@ class PostProcessingTab(QWidget):
             line_layout = QHBoxLayout(line)
             line_layout.setContentsMargins(0, 0, 0, 0)
             line_layout.setSpacing(6)
-            line_layout.addWidget(row["include_cb"])
-            line_layout.addWidget(QLabel("Order:"))
-            line_layout.addWidget(row["order_spin"])
-            line_layout.addWidget(QLabel("Z:"))
-            line_layout.addWidget(row["z_combo"])
-            line_layout.addWidget(row["color_combo"])
-            line_layout.addWidget(QLabel("P"))
-            line_layout.addWidget(row["p_low_spin"])
-            line_layout.addWidget(QLabel("–"))
-            line_layout.addWidget(row["p_high_spin"])
-            line_layout.addWidget(QLabel("%"))
+            line_layout.addWidget(row['include_cb'])
+            line_layout.addWidget(QLabel('Order:'))
+            line_layout.addWidget(row['order_spin'])
+            line_layout.addWidget(QLabel('Z:'))
+            line_layout.addWidget(row['z_combo'])
+            line_layout.addWidget(row['color_combo'])
+            line_layout.addWidget(QLabel('P'))
+            line_layout.addWidget(row['p_low_spin'])
+            line_layout.addWidget(QLabel('–'))
+            line_layout.addWidget(row['p_high_spin'])
+            line_layout.addWidget(QLabel('%'))
             line_layout.addStretch()
-            short = row["label"][:48] + ("…" if len(row["label"]) > 48 else "")
+            short = row['label'][:48] + ('…' if len(row['label']) > 48 else '')
             form.addRow(short, line)
         scroll.setWidget(scroll_body)
         vlayout.addWidget(scroll, 1)
 
         def on_combo_change(row_idx: int) -> None:
             r = rows[row_idx]
-            if r["is_merged"] or r["default_color"] is None:
+            if r['is_merged'] or r['default_color'] is None:
                 return
-            default_color = r["default_color"]
-            combo = r["color_combo"]
-            current_rgb = r["current_rgb"]
+            default_color = r['default_color']
+            combo = r['color_combo']
+            current_rgb = r['current_rgb']
             text = combo.currentText()
-            if text == "Default":
+            if text == 'Default':
                 new_rgb = default_color
-            elif text == "Pick…":
+            elif text == 'Pick…':
                 base = current_rgb or default_color or (1.0, 1.0, 1.0)
-                qc = QColorDialog.getColor(
-                    QColor(int(base[0] * 255), int(base[1] * 255), int(base[2] * 255)),
-                    self,
-                    "Pick color for tile",
-                )
+                qc = QColorDialog.getColor(QColor(int(base[0] * 255), int(base[1] * 255), int(base[2] * 255)), self, 'Pick color for tile')
                 if qc.isValid():
                     new_rgb = (qc.red() / 255.0, qc.green() / 255.0, qc.blue() / 255.0)
                 else:
                     new_rgb = current_rgb
-                if combo.findText("Custom") < 0:
-                    combo.addItem("Custom")
-                combo.setCurrentText("Custom")
-            elif text == "Custom":
+                if combo.findText('Custom') < 0:
+                    combo.addItem('Custom')
+                combo.setCurrentText('Custom')
+            elif text == 'Custom':
                 new_rgb = current_rgb
             else:
                 new_rgb = preset_to_rgb.get(text) or default_color
-            rows[row_idx]["current_rgb"] = new_rgb
-
-        for i, row in enumerate(rows):
-            row["color_combo"].currentIndexChanged.connect(lambda *_, ri=i: on_combo_change(ri))
-
+            rows[row_idx]['current_rgb'] = new_rgb
+        for (i, row) in enumerate(rows):
+            row['color_combo'].currentIndexChanged.connect(lambda *_, ri=i: on_combo_change(ri))
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        for std_btn, padding in (
-            (QDialogButtonBox.StandardButton.Cancel, 30),
-            (QDialogButtonBox.StandardButton.Ok, 30),
-        ):
+        for (std_btn, padding) in ((QDialogButtonBox.StandardButton.Cancel, 30), (QDialogButtonBox.StandardButton.Ok, 30)):
             btn = bb.button(std_btn)
             if btn is not None:
                 style_compact_action_button(btn, horizontal_padding=padding)
@@ -2608,33 +1896,29 @@ class PostProcessingTab(QWidget):
         bb.accepted.connect(dlg.accept)
         bb.rejected.connect(dlg.reject)
         vlayout.addWidget(bb)
-
         if dlg.exec() == QDialog.DialogCode.Accepted:
             excluded: set[str] = set()
-            ordered_rows = sorted(
-                enumerate(rows),
-                key=lambda item: (int(item[1]["order_spin"].value()), item[0]),
-            )
-            self.montage_tile_order = [row["tile_key"] for _i, row in ordered_rows]
+            ordered_rows = sorted(enumerate(rows), key=lambda item: (int(item[1]['order_spin'].value()), item[0]))
+            self.montage_tile_order = [row['tile_key'] for (_i, row) in ordered_rows]
             for row in rows:
-                tile_key = row["tile_key"]
-                if not row["include_cb"].isChecked():
+                tile_key = row['tile_key']
+                if not row['include_cb'].isChecked():
                     excluded.add(tile_key)
-                z_text = row["z_combo"].currentText()
-                self.montage_tile_z_modes[tile_key] = z_to_mode.get(z_text, "global")
-                if row["is_merged"] or row["default_color"] is None:
+                z_text = row['z_combo'].currentText()
+                self.montage_tile_z_modes[tile_key] = z_to_mode.get(z_text, 'global')
+                if row['is_merged'] or row['default_color'] is None:
                     continue
-                default_rgb = row["default_color"]
-                chosen_rgb = row["current_rgb"]
+                default_rgb = row['default_color']
+                chosen_rgb = row['current_rgb']
                 if chosen_rgb is not None and chosen_rgb != default_rgb:
                     self.montage_tile_color_overrides[tile_key] = chosen_rgb
                 else:
                     self.montage_tile_color_overrides.pop(tile_key, None)
-                p_low = float(row["p_low_spin"].value())
-                p_high = float(row["p_high_spin"].value())
+                p_low = float(row['p_low_spin'].value())
+                p_high = float(row['p_high_spin'].value())
                 if p_high <= p_low:
                     p_high = min(100.0, p_low + 0.1)
-                if abs(p_low - self.MONTAGE_AUTO_LUT_LOW) > 1e-9 or abs(p_high - self.MONTAGE_AUTO_LUT_HIGH) > 1e-9:
+                if abs(p_low - self.MONTAGE_AUTO_LUT_LOW) > 1e-09 or abs(p_high - self.MONTAGE_AUTO_LUT_HIGH) > 1e-09:
                     self.montage_tile_percentile_overrides[tile_key] = (p_low, p_high)
                 else:
                     self.montage_tile_percentile_overrides.pop(tile_key, None)
@@ -2643,59 +1927,52 @@ class PostProcessingTab(QWidget):
                 refresh_callback()
 
     def _select_montage_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select folder with images", get_default_browse_dir())
+        path = QFileDialog.getExistingDirectory(self, 'Select folder with images', get_default_browse_dir())
         if path:
             self.montage_path.setText(path)
 
     def _select_montage_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select images", get_default_browse_dir(),
-            "Images (*.tif *.tiff *.nd2 *.png *.jpg *.jpeg);;ND2 (*.nd2);;TIFF (*.tif *.tiff);;All (*)"
-        )
+        (paths, _) = QFileDialog.getOpenFileNames(self, 'Select images', get_default_browse_dir(), 'Images (*.tif *.tiff *.nd2 *.png *.jpg *.jpeg);;ND2 (*.nd2);;TIFF (*.tif *.tiff);;All (*)')
         if paths:
-            self.montage_path.setText("|".join(paths))
+            self.montage_path.setText('|'.join(paths))
 
-    def _draw_scalebar_on_image(self, img: np.ndarray, *, params: Optional[dict[str, Any]] = None) -> Optional[np.ndarray]:
+    def _draw_scalebar_on_image(self, img: np.ndarray, *, params: Optional[dict[str, Any]]=None) -> Optional[np.ndarray]:
         """Draw scale bar on a copy of img (H, W, 3) uint8. Position auto-adjusts so bar + label stay inside image."""
         try:
             from PIL import Image, ImageDraw, ImageFont
         except ImportError:
-            QMessageBox.warning(self, "Scale bar", "Pillow (PIL) is required for drawing the scale bar.")
+            show_message_dialog(self, 'Scale bar', 'Pillow (PIL) is required for drawing the scale bar.', kind='warning')
             return None
         if params is None:
             params = self._montage_scalebar_params()
-        h, w = img.shape[:2]
-        target_rect = params.get("target_rect")
+        (h, w) = img.shape[:2]
+        target_rect = params.get('target_rect')
         if target_rect is not None:
             try:
-                tx, ty, tw, th = [int(v) for v in target_rect]
+                (tx, ty, tw, th) = [int(v) for v in target_rect]
                 tx = max(0, min(tx, max(0, w - 1)))
                 ty = max(0, min(ty, max(0, h - 1)))
                 tw = max(1, min(tw, w - tx))
                 th = max(1, min(th, h - ty))
             except Exception:
-                tx, ty, tw, th = 0, 0, w, h
+                (tx, ty, tw, th) = (0, 0, w, h)
         else:
-            tx, ty, tw, th = 0, 0, w, h
-        pixel_size = float(params.get("pixel_size") or 0.108)
-        length_um = float(params.get("length_um") or 10.0)
-        length_px = max(1, int(round(length_um / max(pixel_size, 1e-9))))
-        thickness = int(params.get("thickness") or 5)
+            (tx, ty, tw, th) = (0, 0, w, h)
+        pixel_size = float(params.get('pixel_size') or 0.108)
+        length_um = float(params.get('length_um') or 10.0)
+        length_px = max(1, int(round(length_um / max(pixel_size, 1e-09))))
+        thickness = int(params.get('thickness') or 5)
         margin = max(12, thickness + 6)
         length_px = min(length_px, max(1, tw - 2 * margin))
         gap = 4
-        pos_name = str(params.get("position") or "Bottom-right").lower()
-        color_name = str(params.get("color") or "White").lower()
-        color = (255, 255, 255) if color_name == "white" else (0, 0, 0)
+        pos_name = str(params.get('position') or 'Bottom-right').lower()
+        color_name = str(params.get('color') or 'White').lower()
+        color = (255, 255, 255) if color_name == 'white' else (0, 0, 0)
         if img.ndim == 3 and img.shape[-1] == 4:
             color = (*color, 255)
         font = None
-        font_size = int(params.get("font_size") or 20)
-        for path in [
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "arial.ttf",
-        ]:
+        font_size = int(params.get('font_size') or 20)
+        for path in ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 'arial.ttf']:
             try:
                 font = ImageFont.truetype(path, font_size)
                 break
@@ -2703,13 +1980,12 @@ class PostProcessingTab(QWidget):
                 continue
         if font is None:
             font = ImageFont.load_default()
-
-        show_label = bool(params.get("show_label", True))
-        label = ""
-        label_w, label_h = 0, 0
+        show_label = bool(params.get('show_label', True))
+        label = ''
+        (label_w, label_h) = (0, 0)
         if show_label:
-            label = f"{length_um:.0f}" if length_um >= 1 else f"{length_um}"
-            label += " µm"
+            label = f'{length_um:.0f}' if length_um >= 1 else f'{length_um}'
+            label += ' µm'
             try:
                 bbox = font.getbbox(label)
                 label_w = bbox[2] - bbox[0]
@@ -2717,27 +1993,22 @@ class PostProcessingTab(QWidget):
             except AttributeError:
                 label_w = len(label) * (font_size // 2)
                 label_h = font_size
-
-        # Vertical position so bar + label fit (label above bar for bottom, below bar for top)
-        if "bottom" in pos_name:
+        if 'bottom' in pos_name:
             y0_max = ty + th - margin - thickness
-            y0 = (y0_max - (label_h + gap)) if show_label else y0_max
-            # Keep label inside image: label top at ly = y0 - gap - label_h must be >= margin
+            y0 = y0_max - (label_h + gap) if show_label else y0_max
             if show_label:
                 y0 = max(y0, ty + margin + gap + label_h)
             y0 = max(ty + margin, y0)
         else:
             y0 = ty + margin
-            if show_label and (y0 + thickness + gap + label_h > ty + th - margin):
+            if show_label and y0 + thickness + gap + label_h > ty + th - margin:
                 y0 = max(ty + margin, ty + th - margin - thickness - gap - label_h)
         y1 = y0 + thickness
-
-        # Horizontal: prefer bar at corner, clamp so label stays in [margin, w-margin]
         half_bar = length_px // 2
         half_label = (label_w + 1) // 2
         lx_min = tx + margin + half_label
-        lx_max = (tx + tw - margin - half_label) if tw > 2 * margin + label_w else lx_min
-        if "right" in pos_name:
+        lx_max = tx + tw - margin - half_label if tw > 2 * margin + label_w else lx_min
+        if 'right' in pos_name:
             lx = min(tx + tw - margin - half_bar, lx_max)
             lx = max(lx, lx_min)
         else:
@@ -2747,132 +2018,100 @@ class PostProcessingTab(QWidget):
         x0 = max(tx + margin, min(x0, tx + tw - margin - length_px))
         x1 = x0 + length_px
         lx = x0 + half_bar
-
         pil_img = Image.fromarray(img)
         draw = ImageDraw.ImageDraw(pil_img)
         draw.rectangle([x0, y0, x1, y1], fill=color, outline=color)
         if show_label:
-            if "top" in pos_name:
-                ly = y1 + gap  # label top just below bar
+            if 'top' in pos_name:
+                ly = y1 + gap
             else:
-                ly = y0 - gap - label_h  # label bottom just above bar (anchor "mt" = top of text at ly)
-            draw.text((lx, ly), label, fill=color, font=font, anchor="mt")
+                ly = y0 - gap - label_h
+            draw.text((lx, ly), label, fill=color, font=font, anchor='mt')
         return np.array(pil_img)
-
-    _MONTAGE_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".nd2")
-
-    # Channel name -> (R, G, B) in 0-1 for false color. Phase → gray; common fluorophores → semantic colors.
-    _CHANNEL_COLOR_MAP = {
-        "gray": (1.0, 1.0, 1.0),
-        "grayscale": (1.0, 1.0, 1.0),
-        "red": (1.0, 0.0, 0.0),
-        "orange": (1.0, 86 / 255.0, 0.0),  # RGB (255, 86, 0) — dsRED / mScarlet / 561 nm
-        "green": (0.0, 1.0, 0.0),
-        "blue": (0.0, 0.0, 1.0),
-        "yellow": (1.0, 1.0, 0.0),
-        "cyan": (0.0, 1.0, 1.0),
-        "magenta": (1.0, 0.0, 1.0),
-    }
+    _MONTAGE_EXTS = ('.tif', '.tiff', '.png', '.jpg', '.jpeg', '.nd2')
+    _CHANNEL_COLOR_MAP = {'gray': (1.0, 1.0, 1.0), 'grayscale': (1.0, 1.0, 1.0), 'red': (1.0, 0.0, 0.0), 'orange': (1.0, 86 / 255.0, 0.0), 'green': (0.0, 1.0, 0.0), 'blue': (0.0, 0.0, 1.0), 'yellow': (1.0, 1.0, 0.0), 'cyan': (0.0, 1.0, 1.0), 'magenta': (1.0, 0.0, 1.0)}
 
     @staticmethod
     def _channel_name_to_rgb(name: str) -> tuple[float, float, float]:
         """Map channel name (from metadata) to display color (R,G,B) 0-1. Phase→gray; mScarlet/RFP→red; GFP→green; YFP→yellow; etc."""
         if not name:
-            return (0.0, 1.0, 0.0)  # default green
-        n = name.strip().lower()
-        if "phase" in n or "bf" == n or "brightfield" in n or "trans" in n or "transmission" in n:
-            return (1.0, 1.0, 1.0)  # grayscale
-        if "mscarlet" in n or "dsred" in n or "561" in n or "orange" in n:
-            return (1.0, 86 / 255.0, 0.0)  # orange RGB (255, 86, 0) — dsRED / mScarlet / 561 nm
-        if "mcherry" in n or "rfp" in n or "red" in n or "cy3" in n or "texas" in n:
-            return (1.0, 0.0, 0.0)
-        if "gfp" in n or "egfp" in n or "fitc" in n or "green" in n:
             return (0.0, 1.0, 0.0)
-        if "yfp" in n or "mvenus" in n or "venus" in n or "yellow" in n:
+        n = name.strip().lower()
+        if 'phase' in n or 'bf' == n or 'brightfield' in n or ('trans' in n) or ('transmission' in n):
+            return (1.0, 1.0, 1.0)
+        if 'mscarlet' in n or 'dsred' in n or '561' in n or ('orange' in n):
+            return (1.0, 86 / 255.0, 0.0)
+        if 'mcherry' in n or 'rfp' in n or 'red' in n or ('cy3' in n) or ('texas' in n):
+            return (1.0, 0.0, 0.0)
+        if 'gfp' in n or 'egfp' in n or 'fitc' in n or ('green' in n):
+            return (0.0, 1.0, 0.0)
+        if 'yfp' in n or 'mvenus' in n or 'venus' in n or ('yellow' in n):
             return (1.0, 1.0, 0.0)
-        if "cfp" in n or "cerulean" in n or "cyan" in n:
+        if 'cfp' in n or 'cerulean' in n or 'cyan' in n:
             return (0.0, 1.0, 1.0)
-        if "cy5" in n or "magenta" in n:
+        if 'cy5' in n or 'magenta' in n:
             return (1.0, 0.0, 1.0)
-        return (0.0, 1.0, 0.0)  # default green
+        return (0.0, 1.0, 0.0)
+    _CYCLE_COLORS = ((1.0, 0.0, 0.0), (1.0, 86 / 255.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0))
 
-    # Default colors for multiple single-channel (non-ND2) images: cycle so each file gets a different color.
-    _CYCLE_COLORS = ((1.0, 0.0, 0.0), (1.0, 86 / 255.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0))  # R, orange (255,86,0), G, B, Y, C, M
-
-    def _get_channel_colors_for_path(
-        self, path: Path, n_channels: int, entry_index: Optional[int] = None
-    ) -> List[tuple]:
+    def _get_channel_colors_for_path(self, path: Path, n_channels: int, entry_index: Optional[int]=None) -> List[tuple]:
         """Return list of (r,g,b) 0-1 per channel. ND2: from metadata + overrides. Non-ND2 single-channel: cycle by entry_index."""
-        if path.suffix.lower() != ".nd2" and n_channels == 1 and entry_index is not None:
+        if path.suffix.lower() != '.nd2' and n_channels == 1 and (entry_index is not None):
             return [self._CYCLE_COLORS[entry_index % len(self._CYCLE_COLORS)]]
-        overrides = getattr(self, "montage_channel_color_overrides", None) or {}
-        meta = read_metadata_from_path(path) if path.suffix.lower() == ".nd2" else {}
-        names = meta.get("channel_names") or [f"Ch{i+1}" for i in range(n_channels)]
-        wavelengths = meta.get("channel_wavelengths") or []
+        overrides = getattr(self, 'montage_channel_color_overrides', None) or {}
+        meta = read_metadata_from_path(path) if path.suffix.lower() == '.nd2' else {}
+        names = meta.get('channel_names') or [f'Ch{i + 1}' for i in range(n_channels)]
+        wavelengths = meta.get('channel_wavelengths') or []
         result = []
         for i in range(n_channels):
             key = (path.stem, i)
             if key in overrides:
                 choice = overrides[key].lower()
-                if choice == "auto":
-                    pass  # fall through to name-based
+                if choice == 'auto':
+                    pass
                 else:
                     result.append(self._CHANNEL_COLOR_MAP.get(choice, (0.0, 1.0, 0.0)))
                     continue
-            # Auto: use phase flag or name
-            if i < len(wavelengths) and wavelengths[i].get("phase_contrast"):
+            if i < len(wavelengths) and wavelengths[i].get('phase_contrast'):
                 result.append((1.0, 1.0, 1.0))
             else:
-                result.append(self._channel_name_to_rgb(names[i] if i < len(names) else ""))
+                result.append(self._channel_name_to_rgb(names[i] if i < len(names) else ''))
         return result
-
-    # TIFF filename suffixes → channel name for grouping (stem must end with one of these).
-    _CHANNEL_SUFFIXES = [
-        ("_phase", "phase"), ("_Phase", "phase"),
-        ("_phase60x", "phase"), ("_Phase60X", "phase"), ("_phase40x", "phase"), ("_phase100x", "phase"),  # e.g. EM13748_AnTC_004_Phase60X
-        ("_fi", "FI"), ("_FI", "FI"),  # generic fluorescence (e.g. untitled_fi.tif + untitled_phase.tif → one merged tile)
-        ("_gfp", "GFP"), ("_GFP", "GFP"), ("_egfp", "GFP"),
-        ("_mscarlet", "mScarlet"), ("_mScarlet", "mScarlet"), ("_dsred", "dsRED"), ("_dsRed", "dsRED"),
-        ("_mcherry", "mCherry"), ("_rfp", "RFP"),
-        ("_561", "561nm"), ("_orange", "Orange"),
-        ("_yfp", "YFP"), ("_YFP", "YFP"), ("_venus", "Venus"),
-        ("_cfp", "CFP"), ("_cyan", "Cyan"),
-        ("_red", "red"), ("_green", "green"), ("_blue", "blue"),
-    ]
+    _CHANNEL_SUFFIXES = [('_phase', 'phase'), ('_Phase', 'phase'), ('_phase60x', 'phase'), ('_Phase60X', 'phase'), ('_phase40x', 'phase'), ('_phase100x', 'phase'), ('_fi', 'FI'), ('_FI', 'FI'), ('_gfp', 'GFP'), ('_GFP', 'GFP'), ('_egfp', 'GFP'), ('_mscarlet', 'mScarlet'), ('_mScarlet', 'mScarlet'), ('_dsred', 'dsRED'), ('_dsRed', 'dsRED'), ('_mcherry', 'mCherry'), ('_rfp', 'RFP'), ('_561', '561nm'), ('_orange', 'Orange'), ('_yfp', 'YFP'), ('_YFP', 'YFP'), ('_venus', 'Venus'), ('_cfp', 'CFP'), ('_cyan', 'Cyan'), ('_red', 'red'), ('_green', 'green'), ('_blue', 'blue')]
 
     @staticmethod
     def _looks_non_channel_token(token: str) -> bool:
-        t = (token or "").strip().lower()
+        t = (token or '').strip().lower()
         if not t:
             return True
-        if t in {"fi", "foci", "phase", "mask", "masks", "seg", "segmentation", "overlay", "bf", "dic"}:
+        if t in {'fi', 'foci', 'phase', 'mask', 'masks', 'seg', 'segmentation', 'overlay', 'bf', 'dic'}:
             return True
-        if t.endswith("x") and t[:-1].isdigit():
+        if t.endswith('x') and t[:-1].isdigit():
             return True
-        if t.startswith("t=") or t.startswith("z="):
+        if t.startswith('t=') or t.startswith('z='):
             return True
         return False
 
     @classmethod
     def _infer_channel_from_stem(cls, stem: str) -> Optional[tuple[str, str]]:
         """If stem looks like 'base_channel', return (base, channel_name). E.g. exp_phase -> (exp, phase); exp_fi_GFP -> (exp, GFP)."""
-        if "_fi_" in stem:
-            base, _, ch = stem.partition("_fi_")
-            return (base.strip("_"), ch.strip("_") or "FI")
-        if "_foci_" in stem:
-            base, _, ch = stem.partition("_foci_")
-            return (base.strip("_"), ch.strip("_") or "FI")
-        if stem.lower().endswith("_foci"):
-            prefix = stem[:-len("_foci")].strip("_")
-            if "_" in prefix:
-                base, token = prefix.rsplit("_", 1)
-                if token and not cls._looks_non_channel_token(token):
-                    return (base.strip("_"), token.strip("_"))
-            return (prefix.strip("_"), "FI")
+        if '_fi_' in stem:
+            (base, _, ch) = stem.partition('_fi_')
+            return (base.strip('_'), ch.strip('_') or 'FI')
+        if '_foci_' in stem:
+            (base, _, ch) = stem.partition('_foci_')
+            return (base.strip('_'), ch.strip('_') or 'FI')
+        if stem.lower().endswith('_foci'):
+            prefix = stem[:-len('_foci')].strip('_')
+            if '_' in prefix:
+                (base, token) = prefix.rsplit('_', 1)
+                if token and (not cls._looks_non_channel_token(token)):
+                    return (base.strip('_'), token.strip('_'))
+            return (prefix.strip('_'), 'FI')
         stem_lower = stem.lower()
-        for suffix, ch_name in cls._CHANNEL_SUFFIXES:
+        for (suffix, ch_name) in cls._CHANNEL_SUFFIXES:
             if stem_lower.endswith(suffix.lower()):
-                base = stem[: -len(suffix)].strip("_")
+                base = stem[:-len(suffix)].strip('_')
                 return (base, ch_name)
         return None
 
@@ -2880,101 +2119,70 @@ class PostProcessingTab(QWidget):
     def _channel_sort_key(channel_name: str) -> tuple:
         """Sort key: phase first (0), then red(1), orange(2), green(3), blue(4), yellow(5), cyan(6), magenta(7), else (8, name)."""
         n = channel_name.strip().lower()
-        if "phase" in n or n in ("bf", "brightfield", "trans"):
+        if 'phase' in n or n in ('bf', 'brightfield', 'trans'):
             return (0, n)
-        if "mcherry" in n or "rfp" in n or "red" in n or "cy3" in n:
+        if 'mcherry' in n or 'rfp' in n or 'red' in n or ('cy3' in n):
             return (1, n)
-        if "mscarlet" in n or "dsred" in n or "561" in n or "orange" in n:
+        if 'mscarlet' in n or 'dsred' in n or '561' in n or ('orange' in n):
             return (2, n)
-        if "green" in n or "gfp" in n or "fitc" in n:
+        if 'green' in n or 'gfp' in n or 'fitc' in n:
             return (3, n)
-        if "blue" in n:
+        if 'blue' in n:
             return (4, n)
-        if "yellow" in n or "yfp" in n or "venus" in n:
+        if 'yellow' in n or 'yfp' in n or 'venus' in n:
             return (5, n)
-        if "cyan" in n or "cfp" in n:
+        if 'cyan' in n or 'cfp' in n:
             return (6, n)
-        if "magenta" in n or "cy5" in n:
+        if 'magenta' in n or 'cy5' in n:
             return (7, n)
         return (8, n)
 
     @staticmethod
     def _normalize_channel_token(channel_name: str) -> str:
         """Normalize channel names for cross-source matching (Excel vs filename/metadata)."""
-        t = "".join(ch for ch in (channel_name or "").strip().lower() if ch.isalnum())
+        t = ''.join((ch for ch in (channel_name or '').strip().lower() if ch.isalnum()))
         if not t:
-            return ""
-        aliases = {
-            "egfp": "gfp",
-            "yfp": "venus",
-            "mvenus": "venus",
-            "rfp": "mcherry",
-            "dsred": "mscarlet",
-            "fluorescence": "fi",
-            "fluor": "fi",
-            "foci": "fi",
-            "brightfield": "phase",
-            "transmission": "phase",
-        }
+            return ''
+        aliases = {'egfp': 'gfp', 'yfp': 'venus', 'mvenus': 'venus', 'rfp': 'mcherry', 'dsred': 'mscarlet', 'fluorescence': 'fi', 'fluor': 'fi', 'foci': 'fi', 'brightfield': 'phase', 'transmission': 'phase'}
         return aliases.get(t, t)
 
     @classmethod
     def _is_phase_channel_token(cls, token: str) -> bool:
         t = cls._normalize_channel_token(token)
-        return t in {"phase", "bf", "trans", "brightfield"}
+        return t in {'phase', 'bf', 'trans', 'brightfield'}
 
-    def _prepare_montage_mask_overlay(
-        self,
-        base_name: str,
-        channel_paths: List[Path],
-        frame_index: int,
-        mask_override_path: Optional[Path],
-    ) -> dict:
+    def _prepare_montage_mask_overlay(self, base_name: str, channel_paths: List[Path], frame_index: int, mask_override_path: Optional[Path]) -> dict:
         """Build montage overlay context: labeled mask frame and shape (cell boundaries only)."""
         mask_path = self._resolve_montage_mask_path(base_name, channel_paths, mask_override_path)
         mask_frame = self._load_mask_frame(mask_path, frame_index) if mask_path is not None else None
         src_shape: Optional[tuple[int, int]] = None
         if mask_frame is not None and mask_frame.ndim == 2:
             src_shape = (int(mask_frame.shape[0]), int(mask_frame.shape[1]))
-        return {
-            "base_name": base_name,
-            "mask_frame": mask_frame,
-            "mask_path": mask_path,
-            "source_shape": src_shape,
-            "boundary_cache": {},
-        }
+        return {'base_name': base_name, 'mask_frame': mask_frame, 'mask_path': mask_path, 'source_shape': src_shape, 'boundary_cache': {}}
 
-    def _resolve_montage_mask_path(
-        self,
-        base_name: str,
-        channel_paths: List[Path],
-        mask_override: Optional[Path],
-    ) -> Optional[Path]:
+    def _resolve_montage_mask_path(self, base_name: str, channel_paths: List[Path], mask_override: Optional[Path]) -> Optional[Path]:
         """Resolve mask path for montage overlays, preferring manual override."""
         if mask_override is not None and mask_override.exists() and mask_override.is_file():
             return mask_override
-
-        base_candidates = {base_name.strip("_")}
-        if base_name.lower().endswith("_phase"):
-            base_candidates.add(base_name[:-6].strip("_"))
-        if base_name.lower().endswith("_fi"):
-            base_candidates.add(base_name[:-3].strip("_"))
+        base_candidates = {base_name.strip('_')}
+        if base_name.lower().endswith('_phase'):
+            base_candidates.add(base_name[:-6].strip('_'))
+        if base_name.lower().endswith('_fi'):
+            base_candidates.add(base_name[:-3].strip('_'))
         for p in channel_paths:
-            base_candidates.add(p.stem.strip("_"))
+            base_candidates.add(p.stem.strip('_'))
             inferred = self._infer_channel_from_stem(p.stem)
             if inferred and inferred[0]:
-                base_candidates.add(inferred[0].strip("_"))
-
+                base_candidates.add(inferred[0].strip('_'))
         search_dirs: List[Path] = []
         for p in channel_paths:
             for d in (p.parent, p.parent.parent):
-                if d.exists() and d.is_dir() and d not in search_dirs:
+                if d.exists() and d.is_dir() and (d not in search_dirs):
                     search_dirs.append(d)
-
         seg_dirs: List[Path] = []
         for d in list(search_dirs):
             try:
-                for sd in d.glob("_segmentation_*"):
+                for sd in d.glob('_segmentation_*'):
                     if sd.is_dir() and sd not in seg_dirs:
                         seg_dirs.append(sd)
             except Exception:
@@ -2982,11 +2190,10 @@ class PostProcessingTab(QWidget):
         for sd in seg_dirs:
             if sd not in search_dirs:
                 search_dirs.append(sd)
-
         for d in search_dirs:
-            for base in sorted(b for b in base_candidates if b):
-                for ext in (".tif", ".tiff", ".TIF", ".TIFF"):
-                    candidate = d / f"{base}_masks{ext}"
+            for base in sorted((b for b in base_candidates if b)):
+                for ext in ('.tif', '.tiff', '.TIF', '.TIFF'):
+                    candidate = d / f'{base}_masks{ext}'
                     if candidate.exists() and candidate.is_file():
                         return candidate
         return None
@@ -3002,8 +2209,7 @@ class PostProcessingTab(QWidget):
         if arr.ndim == 2:
             return arr.astype(np.int32, copy=False)
         if arr.ndim == 3:
-            # Prefer treating as T,Y,X for masks.
-            if arr.shape[-1] in (1, 2, 3, 4) and arr.shape[0] > 8 and arr.shape[1] > 8:
+            if arr.shape[-1] in (1, 2, 3, 4) and arr.shape[0] > 8 and (arr.shape[1] > 8):
                 arr = arr[..., 0]
             else:
                 idx = int(max(0, min(frame_index, arr.shape[0] - 1)))
@@ -3031,48 +2237,36 @@ class PostProcessingTab(QWidget):
             return np.zeros((1, 1), dtype=bool)
         try:
             from skimage.segmentation import find_boundaries
-
-            return find_boundaries(mask_labels, mode="inner") & (mask_labels > 0)
+            return find_boundaries(mask_labels, mode='inner') & (mask_labels > 0)
         except Exception:
             m = np.asarray(mask_labels)
             edges = np.zeros_like(m, dtype=bool)
-            edges[1:, :] |= (m[1:, :] != m[:-1, :])
-            edges[:-1, :] |= (m[:-1, :] != m[1:, :])
-            edges[:, 1:] |= (m[:, 1:] != m[:, :-1])
-            edges[:, :-1] |= (m[:, :-1] != m[:, 1:])
+            edges[1:, :] |= m[1:, :] != m[:-1, :]
+            edges[:-1, :] |= m[:-1, :] != m[1:, :]
+            edges[:, 1:] |= m[:, 1:] != m[:, :-1]
+            edges[:, :-1] |= m[:, :-1] != m[:, 1:]
             return edges & (m > 0)
 
-    def _apply_overlay_to_tile(
-        self,
-        tile_rgb: np.ndarray,
-        tile_meta: dict,
-        overlay_ctx: dict,
-        tile_index: int,
-        tiles: List[tuple],
-        per_tile_color_override: Optional[Dict[int, Tuple[float, float, float]]],
-    ) -> np.ndarray:
+    def _apply_overlay_to_tile(self, tile_rgb: np.ndarray, tile_meta: dict, overlay_ctx: dict, tile_index: int, tiles: List[tuple], per_tile_color_override: Optional[Dict[int, Tuple[float, float, float]]]) -> np.ndarray:
         """Apply cell boundary overlay from a labeled mask (yellow contours)."""
         if tile_rgb is None or tile_rgb.ndim != 3 or tile_rgb.shape[-1] != 3:
             return tile_rgb
         from PIL import Image
-
         arr = np.ascontiguousarray(tile_rgb.copy())
-        h, w = arr.shape[:2]
-
-        mask_frame = overlay_ctx.get("mask_frame")
+        (h, w) = arr.shape[:2]
+        mask_frame = overlay_ctx.get('mask_frame')
         if mask_frame is not None and mask_frame.ndim == 2:
-            cache = overlay_ctx.setdefault("boundary_cache", {})
+            cache = overlay_ctx.setdefault('boundary_cache', {})
             key = (h, w)
             edges = cache.get(key)
             if edges is None:
                 edges = self._mask_boundaries(mask_frame)
                 if edges.shape != (h, w):
-                    img = Image.fromarray((edges.astype(np.uint8) * 255))
+                    img = Image.fromarray(edges.astype(np.uint8) * 255)
                     img = img.resize((w, h), Image.Resampling.NEAREST)
                     edges = np.asarray(img) > 0
                 cache[key] = edges
             arr[edges] = np.array([255, 255, 0], dtype=np.uint8)
-
         return arr
 
     def _get_montage_datasets(self) -> List[dict]:
@@ -3085,68 +2279,59 @@ class PostProcessingTab(QWidget):
         paths = self._get_montage_image_paths()
         if not paths:
             return []
-        nd2_paths = [p for p in paths if p.suffix.lower() == ".nd2"]
-        tiff_paths = [p for p in paths if p.suffix.lower() in (".tif", ".tiff")]
+        nd2_paths = [p for p in paths if p.suffix.lower() == '.nd2']
+        tiff_paths = [p for p in paths if p.suffix.lower() in ('.tif', '.tiff')]
 
-        def _detect_tiff_channel_count(path: Path, meta: Optional[dict[str, Any]] = None) -> int:
+        def _detect_tiff_channel_count(path: Path, meta: Optional[dict[str, Any]]=None) -> int:
             """Detect channel count from TIFF axes first, then metadata, then common stack shapes."""
             meta = meta or read_metadata_from_path(path)
             try:
-                nc_meta = int(meta.get("channel_count") or 1)
+                nc_meta = int(meta.get('channel_count') or 1)
             except Exception:
                 nc_meta = 1
             best = max(1, nc_meta)
             try:
                 import tifffile
-
                 with tifffile.TiffFile(str(path)) as tif:
-                    if getattr(tif, "series", None) and len(tif.series) > 0:
+                    if getattr(tif, 'series', None) and len(tif.series) > 0:
                         s0 = tif.series[0]
-                        axes = str(getattr(s0, "axes", "") or "").upper()
-                        shape = tuple(int(x) for x in (getattr(s0, "shape", None) or ()))
-                        if axes and shape and len(axes) == len(shape):
-                            if "C" in axes:
-                                best = max(best, int(shape[axes.index("C")]))
-                            elif "S" in axes and axes.endswith("S"):
-                                # Samples axis is RGB/RGBA display data, not microscopy channels.
+                        axes = str(getattr(s0, 'axes', '') or '').upper()
+                        shape = tuple((int(x) for x in getattr(s0, 'shape', None) or ()))
+                        if axes and shape and (len(axes) == len(shape)):
+                            if 'C' in axes:
+                                best = max(best, int(shape[axes.index('C')]))
+                            elif 'S' in axes and axes.endswith('S'):
                                 pass
                             elif len(shape) >= 3:
                                 leading = int(shape[0])
                                 second = int(shape[1]) if len(shape) >= 4 else 1
-                                if 1 < leading <= 12 and axes[-2:] == "YX":
+                                if 1 < leading <= 12 and axes[-2:] == 'YX':
                                     best = max(best, leading)
-                                elif leading == 1 and 1 < second <= 12 and axes[-2:] == "YX":
+                                elif leading == 1 and 1 < second <= 12 and (axes[-2:] == 'YX'):
                                     best = max(best, second)
                         elif shape and len(shape) >= 3:
                             leading = int(shape[0])
                             second = int(shape[1]) if len(shape) >= 4 else 1
                             if 1 < leading <= 12 and shape[-1] not in (3, 4):
                                 best = max(best, leading)
-                            elif leading == 1 and 1 < second <= 12 and shape[-1] not in (3, 4):
+                            elif leading == 1 and 1 < second <= 12 and (shape[-1] not in (3, 4)):
                                 best = max(best, second)
             except Exception:
                 pass
             return max(1, best)
-
-        # Single file: one dataset
         if len(paths) == 1:
             p = paths[0]
-            if p.suffix.lower() == ".nd2":
-                return [{"type": "nd2", "path": p}]
-            # Single TIFF: treat as one channel unless multi-channel metadata
+            if p.suffix.lower() == '.nd2':
+                return [{'type': 'nd2', 'path': p}]
             meta = read_metadata_from_path(p)
             nc = _detect_tiff_channel_count(p, meta)
             if nc > 1:
-                return [{"type": "nd2_like", "path": p, "channel_count": nc}]  # same load path as ND2
-            return [{"type": "single_tiff", "path": p}]
-
-        # Multiple files: ND2s each one dataset; TIFFs grouped by base
+                return [{'type': 'nd2_like', 'path': p, 'channel_count': nc}]
+            return [{'type': 'single_tiff', 'path': p}]
         datasets: List[dict] = []
         for p in nd2_paths:
-            datasets.append({"type": "nd2", "path": p})
-
+            datasets.append({'type': 'nd2', 'path': p})
         if tiff_paths:
-            # Two or more TIFFs: one group → tile per file + one Merged tile (colors from filename when detected, else user can set in montage)
             if len(tiff_paths) >= 2:
                 channel_entries: List[tuple[Path, str, Optional[tuple[str, str]]]] = []
                 inferred_bases: List[str] = []
@@ -3156,37 +2341,27 @@ class PostProcessingTab(QWidget):
                     if inferred and inferred[0]:
                         inferred_bases.append(inferred[0])
                     channel_entries.append((p, ch_name, inferred))
-                # Drop generic helper files (_fi / _foci) when real channel-specific files are present.
-                has_specific = any(
-                    inf is not None
-                    and (inf[1] or "").strip().lower() not in {"fi"}
-                    for _p, _ch, inf in channel_entries
-                )
+                has_specific = any((inf is not None and (inf[1] or '').strip().lower() not in {'fi'} for (_p, _ch, inf) in channel_entries))
                 if has_specific:
                     filtered_entries = []
-                    for p, ch_name, inf in channel_entries:
+                    for (p, ch_name, inf) in channel_entries:
                         stem_low = p.stem.lower()
-                        is_generic = (
-                            (inf is not None and (inf[1] or "").strip().lower() == "fi")
-                            and (stem_low.endswith("_fi") or stem_low.endswith("_foci"))
-                        )
+                        is_generic = (inf is not None and (inf[1] or '').strip().lower() == 'fi') and (stem_low.endswith('_fi') or stem_low.endswith('_foci'))
                         if not is_generic:
                             filtered_entries.append((p, ch_name, inf))
                     if filtered_entries:
                         channel_entries = filtered_entries
-                channel_list: List[tuple[Path, str]] = [(p, ch_name) for p, ch_name, _inf in channel_entries]
+                channel_list: List[tuple[Path, str]] = [(p, ch_name) for (p, ch_name, _inf) in channel_entries]
                 channel_list.sort(key=lambda x: self._channel_sort_key(x[1]))
                 if inferred_bases and len(set(inferred_bases)) == 1:
                     base = inferred_bases[0]
                 elif inferred_bases:
                     base = inferred_bases[0]
                 else:
-                    base = channel_list[0][0].stem if channel_list else "montage"
-                datasets.append({"type": "tiff_group", "base": base, "channels": channel_list})
+                    base = channel_list[0][0].stem if channel_list else 'montage'
+                datasets.append({'type': 'tiff_group', 'base': base, 'channels': channel_list})
             else:
-                # Single TIFF: one tile only (no merge)
-                datasets.append({"type": "single_tiff", "path": tiff_paths[0]})
-
+                datasets.append({'type': 'single_tiff', 'path': tiff_paths[0]})
         return datasets
 
     def _get_montage_image_paths(self) -> List[Path]:
@@ -3194,18 +2369,17 @@ class PostProcessingTab(QWidget):
         raw = self.montage_path.text().strip()
         if not raw:
             return []
-        if "|" in raw:
-            return [Path(p.strip()) for p in raw.split("|") if Path(p.strip()).exists()]
+        if '|' in raw:
+            return [Path(p.strip()) for p in raw.split('|') if Path(p.strip()).exists()]
         p = Path(raw)
         if not p.exists():
             return []
         if p.is_file():
             return [p] if p.suffix.lower() in self._MONTAGE_EXTS else []
-        # Folder: include all ND2 and TIFF (deduplicate by resolved path so each file appears once)
         paths = []
         seen = set()
         for ext in self._MONTAGE_EXTS:
-            for x in p.glob(f"*{ext}"):
+            for x in p.glob(f'*{ext}'):
                 if x.is_file():
                     r = x.resolve()
                     if r not in seen:
@@ -3217,10 +2391,10 @@ class PostProcessingTab(QWidget):
         paths = self._get_montage_image_paths()
         if paths:
             return paths[0].parent
-        path_widget = getattr(self, "montage_path", None)
-        raw = path_widget.text().strip() if self._qt_widget_alive(path_widget) else ""
+        path_widget = getattr(self, 'montage_path', None)
+        raw = path_widget.text().strip() if self._qt_widget_alive(path_widget) else ''
         if raw:
-            p = Path(raw.split("|")[0].strip())
+            p = Path(raw.split('|')[0].strip())
             if p.is_dir():
                 return p
             if p.parent.exists():
@@ -3231,7 +2405,7 @@ class PostProcessingTab(QWidget):
         """ND2/TIFF files in a folder, sorted once by filename."""
         if not folder.exists() or not folder.is_dir():
             return []
-        exts = (".nd2", ".tif", ".tiff")
+        exts = ('.nd2', '.tif', '.tiff')
         seen = set()
         files: List[Path] = []
         for p in folder.iterdir():
@@ -3250,56 +2424,45 @@ class PostProcessingTab(QWidget):
     def _select_montage_batch_files(self, parent: QWidget) -> Optional[List[Path]]:
         """Pick ND2/TIFF files for applying the current montage preview settings."""
         dialog = QDialog(parent)
-        dialog.setWindowTitle("Use montage settings on files")
+        dialog.setWindowTitle('Use montage settings on files')
         dialog.setMinimumSize(620, 520)
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(14, 14, 14, 18)
         layout.setSpacing(10)
-
-        message = QLabel(
-            "Select ND2/TIFF files. Each selected file will be exported with the current montage preview settings."
-        )
+        message = QLabel('Select ND2/TIFF files. Each selected file will be exported with the current montage preview settings.')
         message.setWordWrap(True)
         layout.addWidget(message)
-
         current_dir = [self._montage_start_folder()]
         folder_row = QHBoxLayout()
         folder_label = QLabel(str(current_dir[0]))
         folder_label.setWordWrap(True)
-        browse_btn = QPushButton("Choose folder...")
+        browse_btn = QPushButton('Choose folder...')
         style_compact_action_button(browse_btn, horizontal_padding=18)
-        folder_row.addWidget(QLabel("Folder:"))
+        folder_row.addWidget(QLabel('Folder:'))
         folder_row.addWidget(folder_label, 1)
         folder_row.addWidget(browse_btn)
         layout.addLayout(folder_row)
-
         action_row = QHBoxLayout()
-        select_all_btn = QPushButton("Select all")
-        deselect_all_btn = QPushButton("Deselect all")
+        select_all_btn = QPushButton('Select all')
+        deselect_all_btn = QPushButton('Deselect all')
         style_compact_action_button(select_all_btn, horizontal_padding=18)
         style_compact_action_button(deselect_all_btn, horizontal_padding=18)
         action_row.addWidget(select_all_btn)
         action_row.addWidget(deselect_all_btn)
         action_row.addStretch(1)
         layout.addLayout(action_row)
-
         file_list = QListWidget()
         layout.addWidget(file_list, 1)
-        status_label = QLabel("")
-        status_label.setStyleSheet("color: #aaa; font-size: 10px;")
+        status_label = QLabel('')
+        status_label.setStyleSheet('color: #aaa; font-size: 10px;')
         layout.addWidget(status_label)
-
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        for std_btn in (
-            button_box.button(QDialogButtonBox.StandardButton.Ok),
-            button_box.button(QDialogButtonBox.StandardButton.Cancel),
-        ):
+        for std_btn in (button_box.button(QDialogButtonBox.StandardButton.Ok), button_box.button(QDialogButtonBox.StandardButton.Cancel)):
             if std_btn is not None:
                 style_compact_action_button(std_btn, horizontal_padding=20)
                 std_btn.setFixedHeight(36)
         button_box.setMinimumHeight(44)
-
         footer = QWidget(dialog)
         footer.setMinimumHeight(54)
         footer_layout = QVBoxLayout(footer)
@@ -3327,13 +2490,13 @@ class PostProcessingTab(QWidget):
                 item.setCheckState(Qt.CheckState.Checked if is_current or not current_paths else Qt.CheckState.Unchecked)
                 file_list.addItem(item)
             folder_label.setText(str(folder))
-            status_label.setText(f"{len(files)} ND2/TIFF file(s) found.")
+            status_label.setText(f'{len(files)} ND2/TIFF file(s) found.')
             ok_btn = button_box.button(QDialogButtonBox.StandardButton.Ok)
             if ok_btn is not None:
                 ok_btn.setEnabled(bool(files))
 
         def choose_folder() -> None:
-            selected = QFileDialog.getExistingDirectory(dialog, "Select folder with montage files", str(current_dir[0]))
+            selected = QFileDialog.getExistingDirectory(dialog, 'Select folder with montage files', str(current_dir[0]))
             if not selected:
                 return
             current_dir[0] = Path(selected)
@@ -3343,13 +2506,11 @@ class PostProcessingTab(QWidget):
             state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
             for i in range(file_list.count()):
                 file_list.item(i).setCheckState(state)
-
         browse_btn.clicked.connect(choose_folder)
-        select_all_btn.clicked.connect(lambda: set_all(True))
-        deselect_all_btn.clicked.connect(lambda: set_all(False))
+        select_all_btn.clicked.connect(lambda : set_all(True))
+        deselect_all_btn.clicked.connect(lambda : set_all(False))
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
-
         populate(current_dir[0])
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
@@ -3360,14 +2521,7 @@ class PostProcessingTab(QWidget):
                 selected_files.append(Path(item.data(Qt.ItemDataRole.UserRole)))
         return selected_files
 
-    def _build_montage_array(
-        self,
-        per_tile_lut: Optional[Dict[int, Tuple[float, float]]] = None,
-        per_tile_color_override: Optional[Dict[int, Tuple[float, float, float]]] = None,
-        per_tile_percentile_override: Optional[Dict[int, Tuple[float, float]]] = None,
-        return_layout: bool = False,
-        merged_only: bool = False,
-    ) -> Optional[np.ndarray]:
+    def _build_montage_array(self, per_tile_lut: Optional[Dict[int, Tuple[float, float]]]=None, per_tile_color_override: Optional[Dict[int, Tuple[float, float, float]]]=None, per_tile_percentile_override: Optional[Dict[int, Tuple[float, float]]]=None, return_layout: bool=False, merged_only: bool=False) -> Optional[np.ndarray]:
         """Build montage: Phase first, then FI channels (with colors), then merged. One frame only (first timepoint; z-stack projection optional).
         If per_tile_lut is set, use (vmin, vmax) per tile index; else use per-tile percentile.
         If per_tile_color_override is set, use (r,g,b) per tile index for colored tiles.
@@ -3379,38 +2533,31 @@ class PostProcessingTab(QWidget):
         try:
             from PIL import Image, ImageDraw, ImageFont
         except ImportError:
-            QMessageBox.warning(self, "Montage", "Pillow (PIL) is required for montage.")
+            show_message_dialog(self, 'Montage', 'Pillow (PIL) is required for montage.', kind='warning')
             return None
-        use_color_merge = True  # Always: phase + FI channels + merged
-        use_global_lut = False  # Per-tile LUT (or per_tile_lut from preview)
-        order_col_major = "Column" in self._safe_combo_text(
-            getattr(self, "montage_order", None),
-            "Row-major (left→right, top→bottom)",
-        )
-        rows = self._safe_spin_value(getattr(self, "montage_rows", None), 1)
-        cols = self._safe_spin_value(getattr(self, "montage_cols", None), 0)
-        spacing = self._safe_spin_value(getattr(self, "montage_spacing", None), 4)
-        border = self._safe_spin_value(getattr(self, "montage_border", None), 8)
+        use_color_merge = True
+        use_global_lut = False
+        order_col_major = 'Column' in self._safe_combo_text(getattr(self, 'montage_order', None), 'Row-major (left→right, top→bottom)')
+        rows = self._safe_spin_value(getattr(self, 'montage_rows', None), 1)
+        cols = self._safe_spin_value(getattr(self, 'montage_cols', None), 0)
+        spacing = self._safe_spin_value(getattr(self, 'montage_spacing', None), 4)
+        border = self._safe_spin_value(getattr(self, 'montage_border', None), 8)
         z_project_max = self._montage_use_z_max_projection()
         label_settings = self._montage_label_settings()
-        show_labels = bool(label_settings["show"])
-        font_size = int(label_settings["font_size"])
-        label_position = str(label_settings["position"])
-        label_color_name = str(label_settings["color_name"])
-        overlay_enabled = self._safe_checked(getattr(self, "montage_overlay_enable", None), default=False)
-        overlay_frame = self._safe_spin_value(getattr(self, "montage_overlay_frame", None), 0)
+        show_labels = bool(label_settings['show'])
+        font_size = int(label_settings['font_size'])
+        label_position = str(label_settings['position'])
+        label_color_name = str(label_settings['color_name'])
+        overlay_enabled = self._safe_checked(getattr(self, 'montage_overlay_enable', None), default=False)
+        overlay_frame = self._safe_spin_value(getattr(self, 'montage_overlay_frame', None), 0)
         overlay_mask_override = None
-        mask_edit = getattr(self, "montage_overlay_mask_path", None)
+        mask_edit = getattr(self, 'montage_overlay_mask_path', None)
         if self._qt_widget_alive(mask_edit):
             mask_text = mask_edit.text().strip()
             if mask_text:
                 overlay_mask_override = Path(mask_text)
 
-        def _normalize_plane(
-            plane: np.ndarray,
-            p_low: float = self.MONTAGE_AUTO_LUT_LOW,
-            p_high: float = self.MONTAGE_AUTO_LUT_HIGH,
-        ) -> np.ndarray:
+        def _normalize_plane(plane: np.ndarray, p_low: float=self.MONTAGE_AUTO_LUT_LOW, p_high: float=self.MONTAGE_AUTO_LUT_HIGH) -> np.ndarray:
             """Robust 0-1 normalization using percentiles so weak channels don't go black."""
             plane = np.asarray(plane, dtype=np.float64)
             valid = plane[np.isfinite(plane)]
@@ -3429,7 +2576,7 @@ class PostProcessingTab(QWidget):
             valid = plane[np.isfinite(plane)]
             if valid.size == 0:
                 return np.zeros_like(plane)
-            if vmin is not None and vmax is not None and vmax > vmin:
+            if vmin is not None and vmax is not None and (vmax > vmin):
                 out = (plane - vmin) / (vmax - vmin)
             else:
                 vmin = float(np.percentile(valid, self.MONTAGE_AUTO_LUT_LOW))
@@ -3445,13 +2592,13 @@ class PostProcessingTab(QWidget):
 
         def _compose_merged_with_lut(arr_hwc: np.ndarray, colors: List[tuple], per_ch_lut: dict) -> np.ndarray:
             """Merge: each channel contributes in its color (colors[0] for channel 0, etc.). Phase/first channel no longer forced to gray."""
-            h, w = arr_hwc.shape[0], arr_hwc.shape[1]
+            (h, w) = (arr_hwc.shape[0], arr_hwc.shape[1])
             C = arr_hwc.shape[-1]
             comp_rgb = np.zeros((h, w, 3), dtype=np.float64)
             for c in range(min(C, len(colors))):
-                vmin, vmax = per_ch_lut.get(c) or (None, None)
+                (vmin, vmax) = per_ch_lut.get(c) or (None, None)
                 plane = _normalize_plane_with_lut(arr_hwc[..., c], vmin, vmax)
-                r, g, b = colors[c]
+                (r, g, b) = colors[c]
                 comp_rgb[..., 0] += plane * r
                 comp_rgb[..., 1] += plane * g
                 comp_rgb[..., 2] += plane * b
@@ -3480,25 +2627,17 @@ class PostProcessingTab(QWidget):
                 return a[0]
             return a
 
-        def _hwc_from_channel_stack(
-            stack_czyx: np.ndarray, ch_names: List[str], label_prefix: str, path: Path
-        ) -> tuple[np.ndarray, List[str], List[tuple]]:
+        def _hwc_from_channel_stack(stack_czyx: np.ndarray, ch_names: List[str], label_prefix: str, path: Path) -> tuple[np.ndarray, List[str], List[tuple]]:
             """Project/sort channels from (C,Z,Y,X) or (C,Y,X) to (H,W,C)."""
             n_ch = int(stack_czyx.shape[0])
-            order = sorted(
-                range(n_ch),
-                key=lambda i: (
-                    0 if self._channel_sort_key(ch_names[i] if i < len(ch_names) else f"Ch{i+1}")[0] == 0 else 1,
-                    i,
-                ),
-            )
+            order = sorted(range(n_ch), key=lambda i: (0 if self._channel_sort_key(ch_names[i] if i < len(ch_names) else f'Ch{i + 1}')[0] == 0 else 1, i))
             planes: List[np.ndarray] = []
             sorted_names: List[str] = []
             for i in order:
                 ch = np.asarray(stack_czyx[i])
-                nm = ch_names[i] if i < len(ch_names) else f"Ch{i+1}"
+                nm = ch_names[i] if i < len(ch_names) else f'Ch{i + 1}'
                 sorted_names.append(nm)
-                tile_lbl = self._montage_tile_key(f"{label_prefix} {nm}")
+                tile_lbl = self._montage_tile_key(f'{label_prefix} {nm}')
                 zmax = self._montage_z_max_for_tile(tile_lbl)
                 if ch.ndim == 3 and ch.shape[0] > 1:
                     plane = np.nanmax(ch, axis=0) if zmax else ch[0]
@@ -3509,62 +2648,39 @@ class PostProcessingTab(QWidget):
                 planes.append(np.asarray(plane))
             arr_hwc = np.stack(planes, axis=-1)
             colors = [self._channel_name_to_rgb(name) for name in sorted_names]
-            return arr_hwc, sorted_names, colors
+            return (arr_hwc, sorted_names, colors)
 
-        def _nd2_axis_index(
-            axis_keys: tuple[str, ...],
-            *,
-            t: int = 0,
-            c: int = 0,
-            z: int = 0,
-            position: int = 0,
-        ) -> tuple:
+        def _nd2_axis_index(axis_keys: tuple[str, ...], *, t: int=0, c: int=0, z: int=0, position: int=0) -> tuple:
             idx: list[Any] = []
             for key in axis_keys:
-                if key == "T":
+                if key == 'T':
                     idx.append(int(t))
-                elif key == "C":
+                elif key == 'C':
                     idx.append(int(c))
-                elif key == "Z":
+                elif key == 'Z':
                     idx.append(int(z))
-                elif key == "P":
+                elif key == 'P':
                     idx.append(int(position))
-                elif key in {"Y", "X", "S"}:
+                elif key in {'Y', 'X', 'S'}:
                     idx.append(slice(None))
                 else:
                     idx.append(0)
             return tuple(idx)
 
-        def _nd2_to_czyx(
-            arr: np.ndarray,
-            axis_keys: tuple[str, ...],
-            *,
-            frame_index: int,
-            n_channels: int,
-            n_z: int,
-        ) -> np.ndarray:
+        def _nd2_to_czyx(arr: np.ndarray, axis_keys: tuple[str, ...], *, frame_index: int, n_channels: int, n_z: int) -> np.ndarray:
             """Convert arbitrary ND2 axis order to (C, Z, Y, X)."""
-            if not axis_keys or len(axis_keys) != arr.ndim or "Y" not in axis_keys or "X" not in axis_keys:
-                raise ValueError("ND2 axis keys do not match array shape")
-            t_idx = min(max(0, int(frame_index)), int(arr.shape[axis_keys.index("T")]) - 1) if "T" in axis_keys else 0
-            c_count = int(arr.shape[axis_keys.index("C")]) if "C" in axis_keys else max(1, int(n_channels))
-            z_count = int(arr.shape[axis_keys.index("Z")]) if "Z" in axis_keys else max(1, int(n_z))
+            if not axis_keys or len(axis_keys) != arr.ndim or 'Y' not in axis_keys or ('X' not in axis_keys):
+                raise ValueError('ND2 axis keys do not match array shape')
+            t_idx = min(max(0, int(frame_index)), int(arr.shape[axis_keys.index('T')]) - 1) if 'T' in axis_keys else 0
+            c_count = int(arr.shape[axis_keys.index('C')]) if 'C' in axis_keys else max(1, int(n_channels))
+            z_count = int(arr.shape[axis_keys.index('Z')]) if 'Z' in axis_keys else max(1, int(n_z))
             c_count = max(1, min(c_count, max(1, int(n_channels))))
             z_count = max(1, z_count)
             channel_stacks: list[np.ndarray] = []
             for c_idx in range(c_count):
                 z_planes: list[np.ndarray] = []
                 for z_idx in range(z_count):
-                    plane = np.asarray(
-                        arr[
-                            _nd2_axis_index(
-                                axis_keys,
-                                t=t_idx,
-                                c=c_idx,
-                                z=z_idx,
-                            )
-                        ]
-                    )
+                    plane = np.asarray(arr[_nd2_axis_index(axis_keys, t=t_idx, c=c_idx, z=z_idx)])
                     plane = np.squeeze(plane)
                     if plane.ndim > 2:
                         plane = plane.reshape(-1, plane.shape[-2], plane.shape[-1])[0]
@@ -3572,51 +2688,33 @@ class PostProcessingTab(QWidget):
                 channel_stacks.append(np.stack(z_planes, axis=0))
             return np.stack(channel_stacks, axis=0)
 
-        def load_nd2_or_multichannel_tiff(
-            path: Path,
-            frame_index: int = 0,
-            *,
-            label_prefix: str = "",
-            channel_count_hint: Optional[int] = None,
-        ) -> Optional[tuple[np.ndarray, List[str], List[tuple], int]]:
+        def load_nd2_or_multichannel_tiff(path: Path, frame_index: int=0, *, label_prefix: str='', channel_count_hint: Optional[int]=None) -> Optional[tuple[np.ndarray, List[str], List[tuple], int]]:
             """Load first frame from ND2 or multi-channel TIFF. Return (arr (H,W,C), channel_names, colors, n_timepoints) with channels sorted phase first. n_timepoints is 1 for TIFF; for ND2 it is sizes['T']."""
             try:
                 suf = path.suffix.lower()
                 meta = read_metadata_from_path(path)
-                nC = int(channel_count_hint or meta.get("channel_count") or 1)
-                names = meta.get("channel_names") or [f"Ch{i+1}" for i in range(nC)]
-                nT, nZ = 1, 1
+                nC = int(channel_count_hint or meta.get('channel_count') or 1)
+                names = meta.get('channel_names') or [f'Ch{i + 1}' for i in range(nC)]
+                (nT, nZ) = (1, 1)
                 nC_file = int(nC)
-                if suf == ".nd2":
+                if suf == '.nd2':
                     import nd2
                     with nd2.ND2File(path) as r:
                         arr = np.ascontiguousarray(r.asarray())
-                        sizes = getattr(r, "sizes", None) or {}
+                        sizes = getattr(r, 'sizes', None) or {}
                         axis_keys = tuple(sizes.keys()) if sizes else ()
-                    nT = int(sizes.get("T", 1))
-                    nZ = int(sizes.get("Z", 1))
-                    nC_file = int(sizes.get("C", 1))
+                    nT = int(sizes.get('T', 1))
+                    nZ = int(sizes.get('Z', 1))
+                    nC_file = int(sizes.get('C', 1))
                     prefix = label_prefix or path.stem
-                    if axis_keys and len(axis_keys) == arr.ndim and "C" in axis_keys:
-                        stack = _nd2_to_czyx(
-                            arr,
-                            axis_keys,
-                            frame_index=frame_index,
-                            n_channels=nC_file,
-                            n_z=nZ,
-                        )
-                        arr_hwc, names, colors = _hwc_from_channel_stack(
-                            stack, names[: int(stack.shape[0])], prefix, path
-                        )
-                        return np.asarray(arr_hwc), names, colors, nT
-
-                    # Legacy fallback for older nd2 builds without axis keys.
+                    if axis_keys and len(axis_keys) == arr.ndim and ('C' in axis_keys):
+                        stack = _nd2_to_czyx(arr, axis_keys, frame_index=frame_index, n_channels=nC_file, n_z=nZ)
+                        (arr_hwc, names, colors) = _hwc_from_channel_stack(stack, names[:int(stack.shape[0])], prefix, path)
+                        return (np.asarray(arr_hwc), names, colors, nT)
                     if arr.ndim == 5:
-                        stack = arr[frame_index] if nT > 1 else arr[0]  # (C, Z, Y, X)
-                        arr_hwc, names, colors = _hwc_from_channel_stack(
-                            stack, names[: int(stack.shape[0])], prefix, path
-                        )
-                        return np.asarray(arr_hwc), names, colors, nT
+                        stack = arr[frame_index] if nT > 1 else arr[0]
+                        (arr_hwc, names, colors) = _hwc_from_channel_stack(stack, names[:int(stack.shape[0])], prefix, path)
+                        return (np.asarray(arr_hwc), names, colors, nT)
                     elif arr.ndim == 4:
                         if nT > 1:
                             stack = arr[frame_index]
@@ -3627,27 +2725,23 @@ class PostProcessingTab(QWidget):
                                 zmax = self._montage_z_max_for_tile(tile_lbl)
                                 plane = _select_z_plane_or_project(stack, 0, z_max=zmax)
                                 stack = plane[np.newaxis, ...]
-                        elif nC_file > 1 and nZ > 1 and arr.shape[0] == nC_file:
-                            arr_hwc, names, colors = _hwc_from_channel_stack(
-                                arr, names[: nC_file], prefix, path
-                            )
-                            return np.asarray(arr_hwc), names, colors, nT
+                        elif nC_file > 1 and nZ > 1 and (arr.shape[0] == nC_file):
+                            (arr_hwc, names, colors) = _hwc_from_channel_stack(arr, names[:nC_file], prefix, path)
+                            return (np.asarray(arr_hwc), names, colors, nT)
                         elif nC_file <= 1 and nZ > 1:
                             tile_lbl = self._montage_tile_key(prefix)
                             zmax = self._montage_z_max_for_tile(tile_lbl)
                             plane = _select_z_plane_or_project(arr, 0, z_max=zmax)
                             arr = plane[..., np.newaxis]
                         elif nC_file > 1 and arr.shape[0] == nC_file:
-                            arr_hwc, names, colors = _hwc_from_channel_stack(
-                                arr, names[: nC_file], prefix, path
-                            )
-                            return np.asarray(arr_hwc), names, colors, nT
+                            (arr_hwc, names, colors) = _hwc_from_channel_stack(arr, names[:nC_file], prefix, path)
+                            return (np.asarray(arr_hwc), names, colors, nT)
                         else:
                             arr = arr[0] if arr.shape[0] == 1 else arr
                     elif arr.ndim == 3 and nT > 1:
                         arr = arr[frame_index]
                         arr = arr[..., np.newaxis]
-                    elif arr.ndim == 3 and nC_file <= 1 and nZ > 1:
+                    elif arr.ndim == 3 and nC_file <= 1 and (nZ > 1):
                         tile_lbl = self._montage_tile_key(prefix)
                         zmax = self._montage_z_max_for_tile(tile_lbl)
                         plane = _select_z_plane_or_project(arr, 0, z_max=zmax)
@@ -3660,35 +2754,25 @@ class PostProcessingTab(QWidget):
                     import tifffile
                     with tifffile.TiffFile(str(path)) as tif:
                         arr = tif.asarray()
-                        series_axes = ""
+                        series_axes = ''
                         try:
-                            if getattr(tif, "series", None) and len(tif.series) > 0:
-                                series_axes = str(getattr(tif.series[0], "axes", None) or "")
+                            if getattr(tif, 'series', None) and len(tif.series) > 0:
+                                series_axes = str(getattr(tif.series[0], 'axes', None) or '')
                         except Exception:
-                            series_axes = ""
-                    arr = normalize_tiff_array_to_tcyx(
-                        np.asarray(arr),
-                        num_time=int(meta.get("frame_count") or 1),
-                        num_channels=int(channel_count_hint or meta.get("channel_count") or nC),
-                        num_z=int(meta.get("z_count") or 1),
-                        series_axes=series_axes,
-                    )
+                            series_axes = ''
+                    arr = normalize_tiff_array_to_tcyx(np.asarray(arr), num_time=int(meta.get('frame_count') or 1), num_channels=int(channel_count_hint or meta.get('channel_count') or nC), num_z=int(meta.get('z_count') or 1), series_axes=series_axes)
                     prefix = label_prefix or path.stem
                     if arr.ndim == 5:
                         t_idx = min(max(0, int(frame_index)), arr.shape[0] - 1)
                         stack = arr[t_idx]
-                        arr_hwc, names, colors = _hwc_from_channel_stack(
-                            stack, names[: int(stack.shape[0])], prefix, path
-                        )
-                        return np.asarray(arr_hwc), names, colors, nT
+                        (arr_hwc, names, colors) = _hwc_from_channel_stack(stack, names[:int(stack.shape[0])], prefix, path)
+                        return (np.asarray(arr_hwc), names, colors, nT)
                     elif arr.ndim == 4:
                         t_idx = min(max(0, int(frame_index)), arr.shape[0] - 1)
                         stack = arr[t_idx]
                         if stack.ndim == 3 and stack.shape[0] in (1, 2, 3, 4, 5, 6):
-                            arr_hwc, names, colors = _hwc_from_channel_stack(
-                                stack, names[: int(stack.shape[0])], prefix, path
-                            )
-                            return np.asarray(arr_hwc), names, colors, nT
+                            (arr_hwc, names, colors) = _hwc_from_channel_stack(stack, names[:int(stack.shape[0])], prefix, path)
+                            return (np.asarray(arr_hwc), names, colors, nT)
                         arr = stack
                     elif arr.ndim == 2:
                         arr = arr[:, :, np.newaxis]
@@ -3697,47 +2781,40 @@ class PostProcessingTab(QWidget):
                 if arr.shape[-1] == 2:
                     arr = np.concatenate([arr, np.zeros((*arr.shape[:2], 1), dtype=arr.dtype)], axis=-1)
                 nCh = arr.shape[-1]
-                # Use file channel count when we have multi-channel ND2 so names/colors match
-                if suf == ".nd2" and nC_file > 1 and len(names) < nCh:
-                    names = (names + [f"Ch{i+1}" for i in range(len(names), nCh)])[:nCh]
-                order = sorted(range(nCh), key=lambda i: self._channel_sort_key(names[i] if i < len(names) else f"Ch{i+1}"))
+                if suf == '.nd2' and nC_file > 1 and (len(names) < nCh):
+                    names = (names + [f'Ch{i + 1}' for i in range(len(names), nCh)])[:nCh]
+                order = sorted(range(nCh), key=lambda i: self._channel_sort_key(names[i] if i < len(names) else f'Ch{i + 1}'))
                 arr = np.asarray(arr[..., order])
-                names = [names[i] if i < len(names) else f"Ch{i+1}" for i in order]
+                names = [names[i] if i < len(names) else f'Ch{i + 1}' for i in order]
                 colors = self._get_channel_colors_for_path(path, nCh)
                 colors = [colors[i] for i in order]
-                return np.asarray(arr), names, colors, nT
+                return (np.asarray(arr), names, colors, nT)
             except Exception:
                 return None
 
-        def load_single_plane(path: Path, frame_index: int = 0, *, z_max: Optional[bool] = None) -> Optional[np.ndarray]:
+        def load_single_plane(path: Path, frame_index: int=0, *, z_max: Optional[bool]=None) -> Optional[np.ndarray]:
             """Load one 2D image (first frame/page)."""
             if z_max is None:
                 z_max = z_project_max
             try:
-                if path.suffix.lower() in (".tif", ".tiff"):
+                if path.suffix.lower() in ('.tif', '.tiff'):
                     import tifffile
                     meta = read_metadata_from_path(path)
                     with tifffile.TiffFile(str(path)) as tif:
                         arr = tif.asarray()
-                        series_axes = ""
+                        series_axes = ''
                         try:
-                            if getattr(tif, "series", None) and len(tif.series) > 0:
-                                series_axes = str(getattr(tif.series[0], "axes", None) or "")
+                            if getattr(tif, 'series', None) and len(tif.series) > 0:
+                                series_axes = str(getattr(tif.series[0], 'axes', None) or '')
                         except Exception:
-                            series_axes = ""
+                            series_axes = ''
                     arr = np.asarray(arr)
                     if arr.ndim == 2:
                         pass
                     elif arr.ndim == 3 and arr.shape[-1] in (1, 2, 3, 4):
                         arr = arr[..., 0]
                     else:
-                        tcyx = normalize_tiff_array_to_tcyx(
-                            arr,
-                            num_time=int(meta.get("frame_count") or 1),
-                            num_channels=int(meta.get("channel_count") or 1),
-                            num_z=int(meta.get("z_count") or 1),
-                            series_axes=series_axes,
-                        )
+                        tcyx = normalize_tiff_array_to_tcyx(arr, num_time=int(meta.get('frame_count') or 1), num_channels=int(meta.get('channel_count') or 1), num_z=int(meta.get('z_count') or 1), series_axes=series_axes)
                         if tcyx.ndim == 5:
                             t_idx = min(max(0, int(frame_index)), tcyx.shape[0] - 1)
                             arr = _select_z_plane_or_project(tcyx[t_idx, 0], 0, z_max=bool(z_max))
@@ -3756,54 +2833,39 @@ class PostProcessingTab(QWidget):
                 return np.asarray(arr)
             except Exception:
                 return None
-
-        tiles: List[tuple] = []  # (arr or None, label, color_or_None)
+        tiles: List[tuple] = []
         tile_meta: List[dict] = []
         all_arrays_for_global: List[np.ndarray] = []
         overlay_groups: Dict[str, dict] = {}
-
         for ds in datasets:
-            ds_type = ds["type"]
-            base_label = ds.get("base", Path(ds["path"]).stem if "path" in ds else "?")
-
-            if ds_type in ("nd2", "nd2_like"):
-                path = ds["path"]
-                overlay_group_key = f"{path.stem}|{ds_type}"
+            ds_type = ds['type']
+            base_label = ds.get('base', Path(ds['path']).stem if 'path' in ds else '?')
+            if ds_type in ('nd2', 'nd2_like'):
+                path = ds['path']
+                overlay_group_key = f'{path.stem}|{ds_type}'
                 if overlay_enabled and overlay_group_key not in overlay_groups:
-                    overlay_groups[overlay_group_key] = self._prepare_montage_mask_overlay(
-                        base_name=path.stem,
-                        channel_paths=[path],
-                        frame_index=overlay_frame,
-                        mask_override_path=overlay_mask_override,
-                    )
-                result = load_nd2_or_multichannel_tiff(
-                    path,
-                    0,
-                    label_prefix=base_label,
-                    channel_count_hint=ds.get("channel_count"),
-                )
+                    overlay_groups[overlay_group_key] = self._prepare_montage_mask_overlay(base_name=path.stem, channel_paths=[path], frame_index=overlay_frame, mask_override_path=overlay_mask_override)
+                result = load_nd2_or_multichannel_tiff(path, 0, label_prefix=base_label, channel_count_hint=ds.get('channel_count'))
                 if result is None:
                     tiles.append((None, base_label, None))
                     tile_meta.append({})
                     continue
-                arr_hwc, ch_names, colors, n_timepoints = result
+                (arr_hwc, ch_names, colors, n_timepoints) = result
                 nCh = arr_hwc.shape[-1] if arr_hwc.ndim == 3 else 1
-                # Single channel but multiple timepoints → one tile per frame (real montage)
-                if nCh == 1 and n_timepoints > 1 and path.suffix.lower() == ".nd2":
+                if nCh == 1 and n_timepoints > 1 and (path.suffix.lower() == '.nd2'):
                     try:
                         import nd2
                         with nd2.ND2File(path) as r:
                             arr_full = np.ascontiguousarray(r.asarray())
-                        # arr_full is (T, Y, X) or (T, C, Y, X)
                         if arr_full.ndim == 3:
-                            frames = arr_full  # (T, Y, X)
+                            frames = arr_full
                         else:
-                            frames = arr_full[:, 0, :, :]  # (T, Y, X)
-                        n_show = min(frames.shape[0], 30)  # cap at 30 frames
+                            frames = arr_full[:, 0, :, :]
+                        n_show = min(frames.shape[0], 30)
                         gray = (1.0, 1.0, 1.0)
                         for t in range(n_show):
                             plane = np.asarray(frames[t])
-                            tiles.append((plane, f"{base_label} t{t}", gray))
+                            tiles.append((plane, f'{base_label} t{t}', gray))
                             tile_meta.append({})
                             if use_global_lut:
                                 all_arrays_for_global.append(np.asarray(plane, dtype=np.float64))
@@ -3811,17 +2873,11 @@ class PostProcessingTab(QWidget):
                         single = arr_hwc[..., 0] if arr_hwc.ndim == 3 else arr_hwc
                         col = self._get_channel_colors_for_path(path, 1, entry_index=0)[0]
                         tiles.append((single, base_label, col))
-                        ch_norm = self._normalize_channel_token(ch_names[0] if ch_names else "FI")
+                        ch_norm = self._normalize_channel_token(ch_names[0] if ch_names else 'FI')
                         if overlay_enabled:
-                            tile_meta.append(
-                                {
-                                    "kind": "channel",
-                                    "overlay_group": overlay_group_key,
-                                    "channel_norm": ch_norm,
-                                }
-                            )
+                            tile_meta.append({'kind': 'channel', 'overlay_group': overlay_group_key, 'channel_norm': ch_norm})
                         else:
-                            tile_meta.append({"kind": "channel", "channel_norm": ch_norm})
+                            tile_meta.append({'kind': 'channel', 'channel_norm': ch_norm})
                         if use_global_lut:
                             all_arrays_for_global.append(np.asarray(single, dtype=np.float64))
                     continue
@@ -3829,17 +2885,11 @@ class PostProcessingTab(QWidget):
                     single = arr_hwc[..., 0] if arr_hwc.ndim == 3 else arr_hwc
                     col = self._get_channel_colors_for_path(path, 1, entry_index=0)[0]
                     tiles.append((single, base_label, col))
-                    ch_norm = self._normalize_channel_token(ch_names[0] if ch_names else "FI")
+                    ch_norm = self._normalize_channel_token(ch_names[0] if ch_names else 'FI')
                     if overlay_enabled:
-                        tile_meta.append(
-                            {
-                                "kind": "channel",
-                                "overlay_group": overlay_group_key,
-                                "channel_norm": ch_norm,
-                            }
-                        )
+                        tile_meta.append({'kind': 'channel', 'overlay_group': overlay_group_key, 'channel_norm': ch_norm})
                     else:
-                        tile_meta.append({"kind": "channel", "channel_norm": ch_norm})
+                        tile_meta.append({'kind': 'channel', 'channel_norm': ch_norm})
                     if use_global_lut:
                         all_arrays_for_global.append(np.asarray(single, dtype=np.float64))
                     continue
@@ -3847,59 +2897,38 @@ class PostProcessingTab(QWidget):
                 group_channel_norms: List[str] = []
                 for c in range(arr_hwc.shape[-1]):
                     plane = np.asarray(arr_hwc[..., c])
-                    label = ch_names[c] if c < len(ch_names) else f"Ch{c+1}"
+                    label = ch_names[c] if c < len(ch_names) else f'Ch{c + 1}'
                     tile_idx = len(tiles)
-                    tiles.append((plane, f"{base_label} {label}", colors[c]))
+                    tiles.append((plane, f'{base_label} {label}', colors[c]))
                     ch_norm = self._normalize_channel_token(label)
                     if overlay_enabled:
                         group_channel_tile_indices.append(tile_idx)
                         group_channel_norms.append(ch_norm)
-                        tile_meta.append(
-                            {
-                                "kind": "channel",
-                                "overlay_group": overlay_group_key,
-                                "channel_norm": ch_norm,
-                            }
-                        )
+                        tile_meta.append({'kind': 'channel', 'overlay_group': overlay_group_key, 'channel_norm': ch_norm})
                     else:
                         group_channel_tile_indices.append(tile_idx)
                         group_channel_norms.append(ch_norm)
-                        tile_meta.append({"kind": "channel", "channel_norm": ch_norm})
+                        tile_meta.append({'kind': 'channel', 'channel_norm': ch_norm})
                     if use_global_lut:
                         all_arrays_for_global.append(np.asarray(plane, dtype=np.float64))
                 merged = _compose_merged(arr_hwc, colors)
-                tiles.append((merged, f"{base_label} Merged", None))
+                tiles.append((merged, f'{base_label} Merged', None))
                 if overlay_enabled:
-                    tile_meta.append(
-                        {
-                            "kind": "merged",
-                            "overlay_group": overlay_group_key,
-                            "channel_tile_indices": group_channel_tile_indices,
-                            "channel_norms": group_channel_norms,
-                        }
-                    )
+                    tile_meta.append({'kind': 'merged', 'overlay_group': overlay_group_key, 'channel_tile_indices': group_channel_tile_indices, 'channel_norms': group_channel_norms})
                 else:
                     tile_meta.append({})
                 continue
-
-            if ds_type == "tiff_group":
-                base = ds["base"]
-                channel_list: List[tuple[Path, str]] = ds["channels"]
-                overlay_group_key = f"{base}|tiff_group"
-                channel_paths_for_group = [p for p, _ in channel_list]
+            if ds_type == 'tiff_group':
+                base = ds['base']
+                channel_list: List[tuple[Path, str]] = ds['channels']
+                overlay_group_key = f'{base}|tiff_group'
+                channel_paths_for_group = [p for (p, _) in channel_list]
                 if overlay_enabled and overlay_group_key not in overlay_groups:
-                    overlay_groups[overlay_group_key] = self._prepare_montage_mask_overlay(
-                        base_name=base,
-                        channel_paths=channel_paths_for_group,
-                        frame_index=overlay_frame,
-                        mask_override_path=overlay_mask_override,
-                    )
+                    overlay_groups[overlay_group_key] = self._prepare_montage_mask_overlay(base_name=base, channel_paths=channel_paths_for_group, frame_index=overlay_frame, mask_override_path=overlay_mask_override)
                 loaded_channels: List[tuple[np.ndarray, str, tuple]] = []
-                for path, ch_name in channel_list:
-                    tile_lbl = self._montage_tile_key(f"{base} {ch_name}")
-                    plane = load_single_plane(
-                        path, 0, z_max=self._montage_z_max_for_tile(tile_lbl)
-                    )
+                for (path, ch_name) in channel_list:
+                    tile_lbl = self._montage_tile_key(f'{base} {ch_name}')
+                    plane = load_single_plane(path, 0, z_max=self._montage_z_max_for_tile(tile_lbl))
                     if plane is not None:
                         color = self._channel_name_to_rgb(ch_name)
                         loaded_channels.append((plane, ch_name, color))
@@ -3907,59 +2936,42 @@ class PostProcessingTab(QWidget):
                             all_arrays_for_global.append(np.asarray(plane, dtype=np.float64))
                 group_channel_tile_indices: List[int] = []
                 group_channel_norms: List[str] = []
-                for plane, ch_name, color in loaded_channels:
+                for (plane, ch_name, color) in loaded_channels:
                     tile_idx = len(tiles)
-                    tiles.append((plane, f"{base} {ch_name}", color))
+                    tiles.append((plane, f'{base} {ch_name}', color))
                     ch_norm = self._normalize_channel_token(ch_name)
                     if overlay_enabled:
                         group_channel_tile_indices.append(tile_idx)
                         group_channel_norms.append(ch_norm)
-                        tile_meta.append(
-                            {
-                                "kind": "channel",
-                                "overlay_group": overlay_group_key,
-                                "channel_norm": ch_norm,
-                            }
-                        )
+                        tile_meta.append({'kind': 'channel', 'overlay_group': overlay_group_key, 'channel_norm': ch_norm})
                     else:
                         group_channel_tile_indices.append(tile_idx)
                         group_channel_norms.append(ch_norm)
-                        tile_meta.append({"kind": "channel", "channel_norm": ch_norm})
+                        tile_meta.append({'kind': 'channel', 'channel_norm': ch_norm})
                 if len(loaded_channels) > 1:
-                    planes = [p for p, _ch, _c in loaded_channels]
-                    color_list = [c for _p, _ch, c in loaded_channels]
-                    h = max(p.shape[0] for p in planes)
-                    w = max(p.shape[1] for p in planes)
+                    planes = [p for (p, _ch, _c) in loaded_channels]
+                    color_list = [c for (_p, _ch, c) in loaded_channels]
+                    h = max((p.shape[0] for p in planes))
+                    w = max((p.shape[1] for p in planes))
                     resized = []
                     for p in planes:
                         if p.shape[0] == h and p.shape[1] == w:
                             resized.append(np.asarray(p, dtype=np.float64))
                         else:
-                            # Resize to common size
-                            p_u8 = ((p.astype(np.float64) - np.nanmin(p)) / max(np.nanmax(p) - np.nanmin(p), 1e-9) * 255).clip(0, 255).astype(np.uint8)
+                            p_u8 = ((p.astype(np.float64) - np.nanmin(p)) / max(np.nanmax(p) - np.nanmin(p), 1e-09) * 255).clip(0, 255).astype(np.uint8)
                             img = Image.fromarray(p_u8).resize((w, h), Image.Resampling.LANCZOS)
                             resized.append(np.array(img).astype(np.float64))
                     arr_hwc = np.stack(resized, axis=-1)
                     merged = _compose_merged(arr_hwc, color_list)
-                    tiles.append((merged, f"{base} Merged", None))
+                    tiles.append((merged, f'{base} Merged', None))
                     if overlay_enabled:
-                        tile_meta.append(
-                            {
-                                "kind": "merged",
-                                "overlay_group": overlay_group_key,
-                                "channel_tile_indices": group_channel_tile_indices,
-                                "channel_norms": group_channel_norms,
-                            }
-                        )
+                        tile_meta.append({'kind': 'merged', 'overlay_group': overlay_group_key, 'channel_tile_indices': group_channel_tile_indices, 'channel_norms': group_channel_norms})
                     else:
                         tile_meta.append({})
                 continue
-
-            if ds_type == "single_tiff":
-                path = ds["path"]
-                arr = load_single_plane(
-                    path, 0, z_max=self._montage_z_max_for_tile(self._montage_tile_key(base_label))
-                )
+            if ds_type == 'single_tiff':
+                path = ds['path']
+                arr = load_single_plane(path, 0, z_max=self._montage_z_max_for_tile(self._montage_tile_key(base_label)))
                 if arr is not None:
                     tiles.append((arr, base_label, (1.0, 1.0, 1.0)))
                     tile_meta.append({})
@@ -3971,48 +2983,38 @@ class PostProcessingTab(QWidget):
                 continue
 
         def _apply_tile_order(tile_list: List[tuple], meta_list: List[dict]) -> tuple[List[tuple], List[dict]]:
-            order = list(getattr(self, "montage_tile_order", []) or [])
+            order = list(getattr(self, 'montage_tile_order', []) or [])
             if not order:
-                return tile_list, meta_list
-            rank = {key: i for i, key in enumerate(order)}
+                return (tile_list, meta_list)
+            rank = {key: i for (i, key) in enumerate(order)}
             indexed = list(enumerate(zip(tile_list, meta_list)))
-            indexed.sort(
-                key=lambda item: (
-                    rank.get(self._montage_tile_key(item[1][0][1]), len(rank) + item[0]),
-                    item[0],
-                )
-            )
-            return [pair[0] for _i, pair in indexed], [pair[1] for _i, pair in indexed]
-
+            indexed.sort(key=lambda item: (rank.get(self._montage_tile_key(item[1][0][1]), len(rank) + item[0]), item[0]))
+            return ([pair[0] for (_i, pair) in indexed], [pair[1] for (_i, pair) in indexed])
         all_tiles = list(tiles)
         all_tile_meta = list(tile_meta)
-        all_tiles, all_tile_meta = _apply_tile_order(all_tiles, all_tile_meta)
-
-        excluded_keys = set(getattr(self, "montage_excluded_tile_keys", set()) or set())
+        (all_tiles, all_tile_meta) = _apply_tile_order(all_tiles, all_tile_meta)
+        excluded_keys = set(getattr(self, 'montage_excluded_tile_keys', set()) or set())
         render_tiles: List[tuple] = []
         render_meta: List[dict] = []
-        for i, tile in enumerate(all_tiles):
-            lbl = tile[1] if len(tile) > 1 else ""
+        for (i, tile) in enumerate(all_tiles):
+            lbl = tile[1] if len(tile) > 1 else ''
             if self._montage_tile_key(lbl) in excluded_keys:
                 continue
             render_tiles.append(tile)
             render_meta.append(all_tile_meta[i] if i < len(all_tile_meta) else {})
         tiles = render_tiles
         tile_meta = render_meta
-
-        # Global LUT (only when no per_tile_lut): use percentiles across all tiles
-        gmin, gmax = None, None
-        if use_global_lut and all_arrays_for_global and not per_tile_lut:
+        (gmin, gmax) = (None, None)
+        if use_global_lut and all_arrays_for_global and (not per_tile_lut):
             all_pixels = np.concatenate([a.ravel() for a in all_arrays_for_global])
             all_pixels = all_pixels[np.isfinite(all_pixels)]
             if all_pixels.size > 0:
                 gmin = float(np.percentile(all_pixels, self.MONTAGE_AUTO_LUT_LOW))
                 gmax = float(np.percentile(all_pixels, self.MONTAGE_AUTO_LUT_HIGH))
             if gmin is None:
-                gmin, gmax = 0.0, 255.0
+                (gmin, gmax) = (0.0, 255.0)
             if gmax <= gmin:
                 gmax = gmin + 1.0
-
         n_tiles = len(tiles)
         if n_tiles == 0:
             return None
@@ -4023,27 +3025,21 @@ class PostProcessingTab(QWidget):
             rows = max(1, (n_tiles + cols - 1) // cols)
         elif cols <= 0:
             cols = max(1, (n_tiles + rows - 1) // rows)
-
         pil_images = []
         rendered_tiles: List[tuple] = []
         rendered_meta: List[dict] = []
         rendered_raw_tiles: List[tuple] = []
-        max_w, max_h = 0, 0
+        (max_w, max_h) = (0, 0)
         placeholder_size = 100
 
         def _lut_from_percentile(tile_arr: np.ndarray, tile_key: str, tile_idx: int, tile_label: str) -> tuple[Optional[float], Optional[float]]:
-            if tile_label.endswith(" Merged"):
+            if tile_label.endswith(' Merged'):
                 return (None, None)
             meta = tile_meta[tile_idx] if tile_idx < len(tile_meta) else {}
-            pct = self._montage_lookup_percentile_override_for_meta(
-                tile_key,
-                tile_idx,
-                meta,
-                overrides=per_tile_percentile_override,
-            )
+            pct = self._montage_lookup_percentile_override_for_meta(tile_key, tile_idx, meta, overrides=per_tile_percentile_override)
             if pct is None:
                 return (None, None)
-            p_low, p_high = pct
+            (p_low, p_high) = pct
             p_low = float(max(0.0, min(99.9, p_low)))
             p_high = float(max(p_low + 0.1, min(100.0, p_high)))
             plane = np.asarray(tile_arr[..., 0] if tile_arr.ndim == 3 and tile_arr.shape[-1] == 1 else tile_arr, dtype=np.float64)
@@ -4055,84 +3051,45 @@ class PostProcessingTab(QWidget):
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
                 return (None, None)
             return (vmin, vmax)
-
-        for idx, (arr, label, color_or_none) in enumerate(tiles):
+        for (idx, (arr, label, color_or_none)) in enumerate(tiles):
             tile_key = self._montage_tile_key(label)
             meta = tile_meta[idx] if idx < len(tile_meta) else {}
             if arr is None:
                 placeholder = np.full((placeholder_size, placeholder_size, 3), 128, dtype=np.uint8)
-                pil_images.append((Image.fromarray(placeholder), label + "?"))
-                rendered_tiles.append((placeholder, label + "?", None))
-                rendered_raw_tiles.append((None, label + "?", None))
+                pil_images.append((Image.fromarray(placeholder), label + '?'))
+                rendered_tiles.append((placeholder, label + '?', None))
+                rendered_raw_tiles.append((None, label + '?', None))
                 rendered_meta.append(meta)
                 max_w = max(max_w, placeholder_size)
                 max_h = max(max_h, placeholder_size)
                 continue
             arr = _collapse_tile_axes(np.asarray(arr))
             raw_arr_for_lut = np.asarray(arr).copy()
-            color_ov = self._montage_lookup_color_override_for_meta(
-                tile_key,
-                idx,
-                meta,
-                None,
-                overrides=per_tile_color_override,
-            )
+            color_ov = self._montage_lookup_color_override_for_meta(tile_key, idx, meta, None, overrides=per_tile_color_override)
             if color_ov is not None and color_or_none is not None:
                 color_or_none = color_ov
-            # Rebuild merged tile from preceding channel tiles when user adjusted color and/or LUT on any of them
-            has_lut = bool(per_tile_lut) and any(
-                self._montage_lookup_lut_for_meta(
-                    per_tile_lut,
-                    self._montage_tile_key(tiles[i][1]),
-                    i,
-                    tile_meta[i] if i < len(tile_meta) else {},
-                ) is not None
-                for i in range(idx)
-            )
-            has_color_override = any(
-                self._montage_lookup_color_override_for_meta(
-                    self._montage_tile_key(tiles[i][1]),
-                    i,
-                    tile_meta[i] if i < len(tile_meta) else {},
-                    None,
-                    overrides=per_tile_color_override,
-                ) is not None
-                for i in range(idx)
-            )
-            has_pct_override = any(
-                self._montage_lookup_percentile_override_for_meta(
-                    self._montage_tile_key(tiles[i][1]),
-                    i,
-                    tile_meta[i] if i < len(tile_meta) else {},
-                    overrides=per_tile_percentile_override,
-                ) is not None
-                for i in range(idx)
-            )
-            if label.endswith(" Merged") and color_or_none is None and idx > 0 and (has_lut or has_color_override or has_pct_override):
+            has_lut = bool(per_tile_lut) and any((self._montage_lookup_lut_for_meta(per_tile_lut, self._montage_tile_key(tiles[i][1]), i, tile_meta[i] if i < len(tile_meta) else {}) is not None for i in range(idx)))
+            has_color_override = any((self._montage_lookup_color_override_for_meta(self._montage_tile_key(tiles[i][1]), i, tile_meta[i] if i < len(tile_meta) else {}, None, overrides=per_tile_color_override) is not None for i in range(idx)))
+            has_pct_override = any((self._montage_lookup_percentile_override_for_meta(self._montage_tile_key(tiles[i][1]), i, tile_meta[i] if i < len(tile_meta) else {}, overrides=per_tile_percentile_override) is not None for i in range(idx)))
+            if label.endswith(' Merged') and color_or_none is None and (idx > 0) and (has_lut or has_color_override or has_pct_override):
                 try:
                     ch_arrays = [np.asarray(tiles[i][0]).squeeze() for i in range(idx)]
-                    if all(a.ndim == 2 for a in ch_arrays) and len(ch_arrays) >= 1:
-                        h_max = max(a.shape[0] for a in ch_arrays)
-                        w_max = max(a.shape[1] for a in ch_arrays)
+                    if all((a.ndim == 2 for a in ch_arrays)) and len(ch_arrays) >= 1:
+                        h_max = max((a.shape[0] for a in ch_arrays))
+                        w_max = max((a.shape[1] for a in ch_arrays))
                         resized = []
                         for a in ch_arrays:
                             if a.shape[0] == h_max and a.shape[1] == w_max:
                                 resized.append(np.asarray(a, dtype=np.float64))
                             else:
-                                a_u8 = ((a.astype(np.float64) - np.nanmin(a)) / max(np.nanmax(a) - np.nanmin(a), 1e-9) * 255).clip(0, 255).astype(np.uint8)
+                                a_u8 = ((a.astype(np.float64) - np.nanmin(a)) / max(np.nanmax(a) - np.nanmin(a), 1e-09) * 255).clip(0, 255).astype(np.uint8)
                                 resized.append(np.array(Image.fromarray(a_u8).resize((w_max, h_max), Image.Resampling.LANCZOS)).astype(np.float64))
                         arr_hwc = np.stack(resized, axis=-1)
                         colors_ch = []
                         for i in range(idx):
                             ch_lbl = self._montage_tile_key(tiles[i][1])
                             ch_meta = tile_meta[i] if i < len(tile_meta) else {}
-                            ov = self._montage_lookup_color_override_for_meta(
-                                ch_lbl,
-                                i,
-                                ch_meta,
-                                tiles[i][2],
-                                overrides=per_tile_color_override,
-                            )
+                            ov = self._montage_lookup_color_override_for_meta(ch_lbl, i, ch_meta, tiles[i][2], overrides=per_tile_color_override)
                             colors_ch.append(ov if ov is not None else tiles[i][2])
                         per_ch_lut = {}
                         for i in range(idx):
@@ -4146,19 +3103,9 @@ class PostProcessingTab(QWidget):
                         for i in range(min(idx, arr_hwc.shape[-1])):
                             ch_lbl = self._montage_tile_key(tiles[i][1])
                             ch_meta = tile_meta[i] if i < len(tile_meta) else {}
-                            if i in per_ch_lut or self._montage_lookup_percentile_override_for_meta(
-                                ch_lbl,
-                                i,
-                                ch_meta,
-                                overrides=per_tile_percentile_override,
-                            ) is None:
+                            if i in per_ch_lut or self._montage_lookup_percentile_override_for_meta(ch_lbl, i, ch_meta, overrides=per_tile_percentile_override) is None:
                                 continue
-                            pp_low, pp_high = self._montage_lookup_percentile_override_for_meta(
-                                ch_lbl,
-                                i,
-                                ch_meta,
-                                overrides=per_tile_percentile_override,
-                            ) or (self.MONTAGE_AUTO_LUT_LOW, self.MONTAGE_AUTO_LUT_HIGH)
+                            (pp_low, pp_high) = self._montage_lookup_percentile_override_for_meta(ch_lbl, i, ch_meta, overrides=per_tile_percentile_override) or (self.MONTAGE_AUTO_LUT_LOW, self.MONTAGE_AUTO_LUT_HIGH)
                             plane = np.asarray(arr_hwc[..., i], dtype=np.float64)
                             valid = plane[np.isfinite(plane)]
                             if valid.size == 0:
@@ -4166,29 +3113,26 @@ class PostProcessingTab(QWidget):
                             vvmin = float(np.percentile(valid, max(0.0, min(99.9, float(pp_low)))))
                             vvhigh = max(float(pp_low) + 0.1, min(100.0, float(pp_high)))
                             vvmax = float(np.percentile(valid, vvhigh))
-                            if np.isfinite(vvmin) and np.isfinite(vvmax) and vvmax > vvmin:
+                            if np.isfinite(vvmin) and np.isfinite(vvmax) and (vvmax > vvmin):
                                 per_ch_lut[i] = (vvmin, vvmax)
                         arr = _compose_merged_with_lut(arr_hwc, colors_ch, per_ch_lut)
                 except Exception:
                     pass
-            # Resolve (vmin, vmax) for this tile: per_tile_lut override, else global, else percentile.
-            # Merged tile has no LUT: it is fully determined by the channel tiles' LUTs and colors.
-            vmin_override, vmax_override = None, None
+            (vmin_override, vmax_override) = (None, None)
             lut_pair = self._montage_lookup_lut_for_meta(per_tile_lut, tile_key, idx, meta)
-            if lut_pair is not None and not label.endswith(" Merged"):
+            if lut_pair is not None and (not label.endswith(' Merged')):
                 clamped_pair = self._montage_clamp_lut_pair(lut_pair, arr)
                 if clamped_pair is not None:
-                    vmin_override, vmax_override = clamped_pair
-            elif not label.endswith(" Merged"):
-                vmin_override, vmax_override = _lut_from_percentile(np.asarray(arr), tile_key, idx, label)
-            # Single-channel with semantic color (r,g,b)
+                    (vmin_override, vmax_override) = clamped_pair
+            elif not label.endswith(' Merged'):
+                (vmin_override, vmax_override) = _lut_from_percentile(np.asarray(arr), tile_key, idx, label)
             if color_or_none is not None and (arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)):
                 ch = arr[..., 0] if arr.ndim == 3 else arr
                 ch = ch.astype(np.float64)
                 if vmin_override is not None and vmax_override is not None:
-                    ch = (ch - vmin_override) / max(vmax_override - vmin_override, 1e-9)
-                elif use_global_lut and gmin is not None and gmax is not None:
-                    ch = (ch - gmin) / max(gmax - gmin, 1e-9)
+                    ch = (ch - vmin_override) / max(vmax_override - vmin_override, 1e-09)
+                elif use_global_lut and gmin is not None and (gmax is not None):
+                    ch = (ch - gmin) / max(gmax - gmin, 1e-09)
                 else:
                     valid = ch[np.isfinite(ch)]
                     if valid.size > 0:
@@ -4198,24 +3142,22 @@ class PostProcessingTab(QWidget):
                             vmax = vmin + 1.0
                         ch = (ch - vmin) / (vmax - vmin)
                     ch = np.clip(ch, 0.0, 1.0)
-                r, g, b = color_or_none
+                (r, g, b) = color_or_none
                 arr = np.stack([ch * r, ch * g, ch * b], axis=-1)
                 arr = (arr * 255).clip(0, 255).astype(np.uint8)
-            # Pre-composed merged RGB (from _compose_merged)
-            elif color_or_none is None and arr.ndim == 3 and arr.shape[-1] == 3 and arr.dtype == np.uint8:
+            elif color_or_none is None and arr.ndim == 3 and (arr.shape[-1] == 3) and (arr.dtype == np.uint8):
                 if vmin_override is not None and vmax_override is not None:
-                    arr = ((arr.astype(np.float64) - vmin_override) / max(vmax_override - vmin_override, 1e-9) * 255).clip(0, 255).astype(np.uint8)
-            # Multi-channel RGB from load_one (not expanded)
-            elif use_color_merge and arr.ndim == 3 and arr.shape[-1] >= 2:
+                    arr = ((arr.astype(np.float64) - vmin_override) / max(vmax_override - vmin_override, 1e-09) * 255).clip(0, 255).astype(np.uint8)
+            elif use_color_merge and arr.ndim == 3 and (arr.shape[-1] >= 2):
                 if arr.shape[-1] == 2:
                     arr = np.concatenate([arr, np.zeros((*arr.shape[:2], 1), dtype=arr.dtype)], axis=-1)
                 if arr.shape[-1] >= 3:
                     arr = arr[..., :3]
                 if arr.dtype != np.uint8:
                     if vmin_override is not None and vmax_override is not None:
-                        arr = ((arr.astype(np.float64) - vmin_override) / max(vmax_override - vmin_override, 1e-9) * 255).clip(0, 255).astype(np.uint8)
+                        arr = ((arr.astype(np.float64) - vmin_override) / max(vmax_override - vmin_override, 1e-09) * 255).clip(0, 255).astype(np.uint8)
                     else:
-                        per_ch = [(arr[..., c].astype(np.float64) - arr[..., c].min()) / max(arr[..., c].max() - arr[..., c].min(), 1e-9) for c in range(3)]
+                        per_ch = [(arr[..., c].astype(np.float64) - arr[..., c].min()) / max(arr[..., c].max() - arr[..., c].min(), 1e-09) for c in range(3)]
                         arr = (np.stack(per_ch, axis=-1) * 255).clip(0, 255).astype(np.uint8)
             else:
                 if arr.ndim == 3 and arr.shape[-1] >= 3:
@@ -4223,32 +3165,25 @@ class PostProcessingTab(QWidget):
                     arr = np.concatenate([arr, arr, arr], axis=-1)
                 if arr.dtype != np.uint8:
                     if vmin_override is not None and vmax_override is not None:
-                        arr = ((arr.astype(np.float64) - vmin_override) / max(vmax_override - vmin_override, 1e-9) * 255).clip(0, 255).astype(np.uint8)
-                    elif use_global_lut and gmin is not None and gmax is not None:
-                        arr = ((arr.astype(np.float64) - gmin) / max(gmax - gmin, 1e-9) * 255).clip(0, 255).astype(np.uint8)
+                        arr = ((arr.astype(np.float64) - vmin_override) / max(vmax_override - vmin_override, 1e-09) * 255).clip(0, 255).astype(np.uint8)
+                    elif use_global_lut and gmin is not None and (gmax is not None):
+                        arr = ((arr.astype(np.float64) - gmin) / max(gmax - gmin, 1e-09) * 255).clip(0, 255).astype(np.uint8)
                     else:
-                        arr = ((arr.astype(np.float64) - arr.min()) / max(arr.max() - arr.min(), 1e-9) * 255).clip(0, 255).astype(np.uint8)
-            if overlay_enabled and meta.get("overlay_group") in overlay_groups:
+                        arr = ((arr.astype(np.float64) - arr.min()) / max(arr.max() - arr.min(), 1e-09) * 255).clip(0, 255).astype(np.uint8)
+            if overlay_enabled and meta.get('overlay_group') in overlay_groups:
                 arr = _collapse_tile_axes(np.asarray(arr))
                 if arr.ndim == 2:
                     arr = np.stack([arr, arr, arr], axis=-1)
                 elif arr.ndim == 3 and arr.shape[-1] == 1:
                     arr = np.repeat(arr, 3, axis=-1)
-                arr = self._apply_overlay_to_tile(
-                    tile_rgb=np.asarray(arr, dtype=np.uint8),
-                    tile_meta=meta,
-                    overlay_ctx=overlay_groups[meta["overlay_group"]],
-                    tile_index=idx,
-                    tiles=tiles,
-                    per_tile_color_override=per_tile_color_override,
-                )
+                arr = self._apply_overlay_to_tile(tile_rgb=np.asarray(arr, dtype=np.uint8), tile_meta=meta, overlay_ctx=overlay_groups[meta['overlay_group']], tile_index=idx, tiles=tiles, per_tile_color_override=per_tile_color_override)
             arr = _collapse_tile_axes(np.asarray(arr))
             if arr.ndim == 3 and arr.shape[-1] == 1:
                 arr = arr[..., 0]
-            if arr.ndim != 2 and not (arr.ndim == 3 and arr.shape[-1] in (3, 4)):
+            if arr.ndim != 2 and (not (arr.ndim == 3 and arr.shape[-1] in (3, 4))):
                 arr = np.squeeze(arr)
                 arr = _collapse_tile_axes(np.asarray(arr))
-            if arr.ndim != 2 and not (arr.ndim == 3 and arr.shape[-1] in (3, 4)):
+            if arr.ndim != 2 and (not (arr.ndim == 3 and arr.shape[-1] in (3, 4))):
                 continue
             pil_images.append((Image.fromarray(arr), label))
             rendered_tiles.append((arr, label, color_or_none))
@@ -4257,21 +3192,17 @@ class PostProcessingTab(QWidget):
             max_w = max(max_w, arr.shape[1])
             max_h = max(max_h, arr.shape[0])
         if merged_only:
-            merged_items = [
-                (pil_item, tile, meta)
-                for pil_item, tile, meta in zip(pil_images, rendered_tiles, rendered_meta)
-                if str(pil_item[1]).endswith(" Merged")
-            ]
+            merged_items = [(pil_item, tile, meta) for (pil_item, tile, meta) in zip(pil_images, rendered_tiles, rendered_meta) if str(pil_item[1]).endswith(' Merged')]
             if not merged_items:
                 return None
             pil_images = [item[0] for item in merged_items]
             rendered_tiles = [item[1] for item in merged_items]
             rendered_raw_tiles = [item[1] for item in merged_items]
             rendered_meta = [item[2] for item in merged_items]
-            max_w = max(int(pil_img.size[0]) for pil_img, _label in pil_images)
-            max_h = max(int(pil_img.size[1]) for pil_img, _label in pil_images)
+            max_w = max((int(pil_img.size[0]) for (pil_img, _label) in pil_images))
+            max_h = max((int(pil_img.size[1]) for (pil_img, _label) in pil_images))
             n_tiles = len(pil_images)
-            if self._safe_spin_value(getattr(self, "montage_cols", None), 0) <= 0:
+            if self._safe_spin_value(getattr(self, 'montage_cols', None), 0) <= 0:
                 cols = n_tiles
             else:
                 cols = max(1, min(cols, n_tiles))
@@ -4279,12 +3210,12 @@ class PostProcessingTab(QWidget):
         if not pil_images:
             return None
         cell_w = max_w
-        labels_below = show_labels and "below" in label_position.lower()
+        labels_below = show_labels and 'below' in label_position.lower()
         cell_h = max_h + (font_size + 4) if labels_below else max_h
         out_w = border * 2 + cols * cell_w + (cols - 1) * spacing
         out_h = border * 2 + rows * cell_h + (rows - 1) * spacing
         font = None
-        for path in ["/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "arial.ttf"]:
+        for path in ['/System/Library/Fonts/Helvetica.ttc', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 'arial.ttf']:
             try:
                 font = ImageFont.truetype(path, font_size)
                 break
@@ -4292,132 +3223,76 @@ class PostProcessingTab(QWidget):
                 continue
         if font is None:
             font = ImageFont.load_default()
-        out_mode, out_fill = self._montage_border_fill()
+        (out_mode, out_fill) = self._montage_border_fill()
         out_pil = Image.new(out_mode, (out_w, out_h), out_fill)
         draw = ImageDraw.ImageDraw(out_pil)
         tile_boxes: list[tuple[int, int, int, int]] = []
-        for idx, (pil_img, stem) in enumerate(pil_images):
-            r, c = idx // cols, idx % cols
+        for (idx, (pil_img, stem)) in enumerate(pil_images):
+            (r, c) = (idx // cols, idx % cols)
             x0 = border + c * (cell_w + spacing)
             y0 = border + r * (cell_h + spacing)
-            # Resize to fit cell (max_w x max_h)
             pil_resized = pil_img.resize((max_w, max_h), Image.Resampling.LANCZOS)
-            if out_mode == "RGBA" and pil_resized.mode != "RGBA":
-                pil_resized = pil_resized.convert("RGBA")
+            if out_mode == 'RGBA' and pil_resized.mode != 'RGBA':
+                pil_resized = pil_resized.convert('RGBA')
             out_pil.paste(pil_resized, (x0, y0))
             tile_boxes.append((int(x0), int(y0), int(max_w), int(max_h)))
             if show_labels:
                 label_text = self._montage_short_label(stem)
-                label_fill = self._montage_label_fill(label_color_name, rgba=(out_mode == "RGBA"))
+                label_fill = self._montage_label_fill(label_color_name, rgba=out_mode == 'RGBA')
                 pos_lower = label_position.lower()
-                if "inside" in pos_lower:
+                if 'inside' in pos_lower:
                     pad = 4
-                    if "bottom" in pos_lower:
-                        draw.text(
-                            (x0 + pad, y0 + max_h - pad),
-                            label_text,
-                            fill=label_fill,
-                            font=font,
-                            anchor="lb",
-                        )
+                    if 'bottom' in pos_lower:
+                        draw.text((x0 + pad, y0 + max_h - pad), label_text, fill=label_fill, font=font, anchor='lb')
                     else:
-                        draw.text(
-                            (x0 + pad, y0 + pad),
-                            label_text,
-                            fill=label_fill,
-                            font=font,
-                            anchor="lt",
-                        )
+                        draw.text((x0 + pad, y0 + pad), label_text, fill=label_fill, font=font, anchor='lt')
                 else:
                     ly = y0 + max_h + 2
-                    draw.text((x0 + max_w // 2, ly), label_text, fill=label_fill, font=font, anchor="mt")
+                    draw.text((x0 + max_w // 2, ly), label_text, fill=label_fill, font=font, anchor='mt')
         out_arr = np.array(out_pil)
         if return_layout:
-            layout = {
-                "rows": rows,
-                "cols": cols,
-                "border": border,
-                "spacing": spacing,
-                "cell_w": cell_w,
-                "cell_h": cell_h,
-                "max_w": max_w,
-                "max_h": max_h,
-                "out_w": out_w,
-                "out_h": out_h,
-                "n_tiles": n_tiles,
-                "tiles": rendered_tiles,
-                "raw_tiles": rendered_raw_tiles,
-                "tile_meta": rendered_meta,
-                "tile_labels": [label for _, label, _ in rendered_tiles],
-                "tile_boxes": tile_boxes,
-                "all_tiles": all_tiles,
-                "all_tile_meta": all_tile_meta,
-                "all_tile_labels": [label for _, label, _ in all_tiles],
-            }
+            layout = {'rows': rows, 'cols': cols, 'border': border, 'spacing': spacing, 'cell_w': cell_w, 'cell_h': cell_h, 'max_w': max_w, 'max_h': max_h, 'out_w': out_w, 'out_h': out_h, 'n_tiles': n_tiles, 'tiles': rendered_tiles, 'raw_tiles': rendered_raw_tiles, 'tile_meta': rendered_meta, 'tile_labels': [label for (_, label, _) in rendered_tiles], 'tile_boxes': tile_boxes, 'all_tiles': all_tiles, 'all_tile_meta': all_tile_meta, 'all_tile_labels': [label for (_, label, _) in all_tiles]}
             return (out_arr, layout)
         return out_arr
 
     def _preview_montage(self) -> None:
         paths = self._get_montage_image_paths()
         if not paths:
-            QMessageBox.warning(
-                self, "Montage",
-                "No images found. Enter one ND2 or TIFF file, or a folder."
-            )
+            show_message_dialog(self, 'Montage', 'No images found. Enter one ND2 or TIFF file, or a folder.', kind='warning')
             return
         datasets = self._get_montage_datasets()
         if not datasets:
-            QMessageBox.warning(
-                self, "Montage",
-                "No datasets to show. For a folder of TIFFs, use names like sample_phase.tif and sample_GFP.tif so channels can be grouped."
-            )
+            show_message_dialog(self, 'Montage', 'No datasets to show. For a folder of TIFFs, use names like sample_phase.tif and sample_GFP.tif so channels can be grouped.', kind='warning')
             return
-        result = self._build_montage_array(
-            return_layout=True,
-            per_tile_color_override=getattr(self, "montage_tile_color_overrides", None) or {},
-            per_tile_percentile_override=getattr(self, "montage_tile_percentile_overrides", None) or {},
-        )
+        result = self._build_montage_array(return_layout=True, per_tile_color_override=getattr(self, 'montage_tile_color_overrides', None) or {}, per_tile_percentile_override=getattr(self, 'montage_tile_percentile_overrides', None) or {})
         if result is None:
-            QMessageBox.warning(self, "Montage", "Could not build montage (check image formats and that Pillow is installed).")
+            show_message_dialog(self, 'Montage', 'Could not build montage (check image formats and that Pillow is installed).', kind='warning')
             return
-        out, layout = result
+        (out, layout) = result
         self._last_montage_layout = layout
-        self._show_montage_preview_dialog(
-            out,
-            layout,
-            embedded=getattr(self, "_module_preview_mount", None) is not None,
-        )
+        self._show_montage_preview_dialog(out, layout, embedded=getattr(self, '_module_preview_mount', None) is not None)
 
     def _save_montage(self) -> None:
         paths = self._get_montage_image_paths()
         if not paths:
-            QMessageBox.warning(
-                self, "Montage",
-                "No images found. Enter one ND2 or TIFF file, or a folder."
-            )
+            show_message_dialog(self, 'Montage', 'No images found. Enter one ND2 or TIFF file, or a folder.', kind='warning')
             return
         if not self._get_montage_datasets():
-            QMessageBox.warning(
-                self, "Montage",
-                "No datasets to include. For a folder of TIFFs, use names like sample_phase.tif and sample_GFP.tif."
-            )
+            show_message_dialog(self, 'Montage', 'No datasets to include. For a folder of TIFFs, use names like sample_phase.tif and sample_GFP.tif.', kind='warning')
             return
         merged_only = self._montage_export_is_merged_only()
         result = self._compose_montage_for_export(merged_only=merged_only)
         if result is None:
             if merged_only:
-                QMessageBox.warning(self, "Montage", "No merged tile available to export.")
+                show_message_dialog(self, 'Montage', 'No merged tile available to export.', kind='warning')
             else:
-                QMessageBox.warning(self, "Montage", "Could not build montage (check formats and Pillow).")
+                show_message_dialog(self, 'Montage', 'Could not build montage (check formats and Pillow).', kind='warning')
             return
-        out, _layout = result
+        (out, _layout) = result
         default_dir = paths[0].parent
         fmt_text = self._montage_export_format()
         ext = self._montage_export_extension(fmt_text)
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save montage", str(default_dir / f"{self._default_montage_output_stem(paths, merged_only=merged_only)}{ext}"),
-            "PNG (*.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg);;All (*)"
-        )
+        (path, _) = QFileDialog.getSaveFileName(self, 'Save montage', str(default_dir / f'{self._default_montage_output_stem(paths, merged_only=merged_only)}{ext}'), 'PNG (*.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg);;All (*)')
         if not path:
             return
         try:
@@ -4425,32 +3300,21 @@ class PostProcessingTab(QWidget):
             if not out_path.suffix:
                 out_path = out_path.with_suffix(ext)
             self._save_montage_array_to_path(out, out_path, dpi=self._montage_export_dpi())
-            self.parent_window.log_output(f"Montage saved: {out_path}\n")
-            show_task_complete_dialog(
-                self,
-                title="Montage saved",
-                message="Montage image saved.",
-                output_dir=out_path.parent,
-            )
+            self.parent_window.log_output(f'Montage saved: {out_path}\n')
+            show_task_complete_dialog(self, title='Montage saved', message='Montage image saved.', output_dir=out_path.parent)
         except Exception as e:
-            QMessageBox.warning(self, "Montage", f"Save failed: {e}")
+            show_message_dialog(self, 'Montage', f'Save failed: {e}', kind='warning')
 
-    def _show_montage_preview_dialog(
-        self,
-        initial_montage: np.ndarray,
-        layout: dict,
-        *,
-        embedded: bool = False,
-    ) -> None:
+    def _show_montage_preview_dialog(self, initial_montage: np.ndarray, layout: dict, *, embedded: bool=False) -> None:
         """Non-modal montage preview: click a tile to select it, adjust LUT via histogram; Update, Edit colors, Save, Close."""
-        if embedded and getattr(self, "_module_preview_mount", None) is not None:
+        if embedded and getattr(self, '_module_preview_mount', None) is not None:
             self._close_embedded_post_preview()
             dlg = QWidget(self)
-            dlg.setObjectName("EmbeddedMontagePreview")
+            dlg.setObjectName('EmbeddedMontagePreview')
             dlg.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         else:
             dlg = QDialog(self)
-            dlg.setWindowTitle("Montage preview")
+            dlg.setWindowTitle('Montage preview')
             dlg.setModal(False)
             dlg.setMinimumSize(900, 800)
         main_layout = QVBoxLayout(dlg)
@@ -4460,51 +3324,32 @@ class PostProcessingTab(QWidget):
         dlg._focus_roi = None
         dlg._focus_drag_start = None
         dlg._current_displayed = self._apply_montage_scalebar_if_enabled(initial_montage.copy(), layout=layout)
-
-        selected_label = QLabel(
-            "Click a tile to adjust LUT. Double-click a tile to open Edit tiles. "
-            "Enable Focus inset, then right-drag a box to add a zoom callout. Middle-drag to pan, wheel to zoom."
-        )
+        selected_label = QLabel('Click a tile to adjust LUT. Double-click a tile to open Edit tiles. Enable Focus inset, then right-drag a box to add a zoom callout. Middle-drag to pan, wheel to zoom.')
         selected_label.setWordWrap(True)
-        selected_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        selected_label.setStyleSheet('color: #aaa; font-size: 11px;')
         main_layout.addWidget(selected_label)
-
         image_canvas = ImageCanvas()
-        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
+        image_canvas.setToolTip('Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).')
         image_canvas.setMinimumHeight(320)
-        image_canvas.setStyleSheet("background-color: #777777; border: 1px solid #555555;")
+        image_canvas.setStyleSheet('background-color: #777777; border: 1px solid #555555;')
         image_canvas.enable_drag_selection = True
         image_canvas.click_button = Qt.MouseButton.LeftButton
-        image_canvas.selection_button = Qt.MouseButton.RightButton  # so left-click selects tile, not drag
+        image_canvas.selection_button = Qt.MouseButton.RightButton
         image_canvas.pan_button = Qt.MouseButton.MiddleButton
         main_layout.addWidget(image_canvas, 1)
-
         layout_group = self._build_montage_layout_controls(dlg)
-        layout_section = CollapsibleSection("Layout", layout_group, parent=dlg, expanded=False, compact=True)
+        layout_section = CollapsibleSection('Layout', layout_group, parent=dlg, expanded=False, compact=True)
         scalebar_group = self._build_montage_scalebar_controls(dlg)
-        scalebar_section = CollapsibleSection("Scale bar", scalebar_group, parent=dlg, expanded=False, compact=True)
+        scalebar_section = CollapsibleSection('Scale bar', scalebar_group, parent=dlg, expanded=False, compact=True)
         focus_group = self._build_montage_focus_controls(dlg)
-        focus_section = CollapsibleSection("Focus inset", focus_group, parent=dlg, expanded=False, compact=True)
+        focus_section = CollapsibleSection('Focus inset', focus_group, parent=dlg, expanded=False, compact=True)
         labels_group = self._build_montage_label_controls(dlg)
-        labels_section = CollapsibleSection("Labels", labels_group, parent=dlg, expanded=False, compact=True)
-
-        (
-            lut_group,
-            min_spin,
-            max_spin,
-            auto_selected_btn,
-            auto_all_btn,
-            hist_fig,
-            hist_ax,
-            hist_canvas,
-        ) = self._build_montage_lut_controls(dlg, embedded=embedded)
-        lut_section = CollapsibleSection("LUTs", lut_group, parent=dlg, expanded=False, compact=True)
-        lut_note = QLabel(
-            "Merged tiles use the LUTs of the channels that compose them. "
-            "Select a single-channel tile to change the merged image."
-        )
+        labels_section = CollapsibleSection('Labels', labels_group, parent=dlg, expanded=False, compact=True)
+        (lut_group, min_spin, max_spin, auto_selected_btn, auto_all_btn, hist_fig, hist_ax, hist_canvas) = self._build_montage_lut_controls(dlg, embedded=embedded)
+        lut_section = CollapsibleSection('LUTs', lut_group, parent=dlg, expanded=False, compact=True)
+        lut_note = QLabel('Merged tiles use the LUTs of the channels that compose them. Select a single-channel tile to change the merged image.')
         lut_note.setWordWrap(True)
-        lut_note.setStyleSheet("color: #aeb6c2; font-size: 10pt; padding: 0px 4px 2px 4px;")
+        lut_note.setStyleSheet('color: #aeb6c2; font-size: 10pt; padding: 0px 4px 2px 4px;')
         lut_note.setVisible(False)
         lut_section.toggled.connect(lambda expanded: lut_note.setVisible(bool(expanded)))
         montage_chrome_host = QWidget(dlg)
@@ -4520,11 +3365,7 @@ class PostProcessingTab(QWidget):
         dlg._montage_chrome_host = montage_chrome_host
         dlg._montage_chrome_layout = montage_chrome_layout
         if embedded:
-            chrome_scroll = build_preview_settings_scroll(
-                montage_chrome_host,
-                embedded=True,
-                stretch=True,
-            )
+            chrome_scroll = build_preview_settings_scroll(montage_chrome_host, embedded=True, stretch=True)
             main_layout.addWidget(chrome_scroll, 1)
         else:
             main_layout.addWidget(layout_section)
@@ -4533,7 +3374,6 @@ class PostProcessingTab(QWidget):
             main_layout.addWidget(labels_section)
             main_layout.addWidget(lut_section)
             main_layout.addWidget(lut_note)
-
         selected_index: List[Optional[int]] = [None]
         current_vmin: List[Optional[float]] = [None]
         current_vmax: List[Optional[float]] = [None]
@@ -4545,36 +3385,36 @@ class PostProcessingTab(QWidget):
 
         def tile_at_xy(x: int, y: int) -> Optional[int]:
             layout = dlg._layout
-            rows, cols = layout["rows"], layout["cols"]
-            border = layout["border"]
-            spacing = layout["spacing"]
-            cell_w, cell_h = layout["cell_w"], layout["cell_h"]
+            (rows, cols) = (layout['rows'], layout['cols'])
+            border = layout['border']
+            spacing = layout['spacing']
+            (cell_w, cell_h) = (layout['cell_w'], layout['cell_h'])
             if x < border or y < border:
                 return None
             c = (x - border) // (cell_w + spacing)
             r = (y - border) // (cell_h + spacing)
-            if c < 0 or c >= cols or r < 0 or r >= rows:
+            if c < 0 or c >= cols or r < 0 or (r >= rows):
                 return None
             idx = r * cols + c
-            if idx >= layout["n_tiles"]:
+            if idx >= layout['n_tiles']:
                 return None
             return idx
 
         def get_tile_raw_for_hist(tile_idx: int) -> Optional[tuple[np.ndarray, np.dtype]]:
             """Return (flat float array, original dtype) for histogram. dtype used for full intensity range."""
             layout = dlg._layout
-            tiles_list = layout.get("raw_tiles") or layout.get("tiles") or []
+            tiles_list = layout.get('raw_tiles') or layout.get('tiles') or []
             if tile_idx < 0 or tile_idx >= len(tiles_list):
                 return None
-            arr, _label, _color = tiles_list[tile_idx]
+            (arr, _label, _color) = tiles_list[tile_idx]
             if arr is None:
                 return None
             if arr.ndim == 2:
-                return arr.astype(np.float64).ravel(), arr.dtype
+                return (arr.astype(np.float64).ravel(), arr.dtype)
             if arr.ndim == 3 and arr.shape[-1] in (1, 3):
                 if arr.shape[-1] == 1:
-                    return arr[..., 0].astype(np.float64).ravel(), arr.dtype
-                return arr.mean(axis=-1).astype(np.float64).ravel(), arr.dtype
+                    return (arr[..., 0].astype(np.float64).ravel(), arr.dtype)
+                return (arr.mean(axis=-1).astype(np.float64).ravel(), arr.dtype)
             return None
 
         def full_range_for_dtype(dtype: np.dtype, data_min: float, data_max: float) -> tuple[float, float]:
@@ -4586,7 +3426,6 @@ class PostProcessingTab(QWidget):
                 return (0.0, 255.0)
             if dtype == np.uint16:
                 return (0.0, 65535.0)
-            # Unknown or float: infer from data so we still get a stable range when data is really 8/16-bit
             if data_max <= 255 and data_min >= 0:
                 return (0.0, 255.0)
             if data_max <= 65535 and data_min >= 0:
@@ -4597,7 +3436,7 @@ class PostProcessingTab(QWidget):
             result = get_tile_raw_for_hist(tile_idx)
             if result is None:
                 return None
-            flat, _dtype = result
+            (flat, _dtype) = result
             flat = flat[np.isfinite(flat)]
             if flat.size == 0:
                 return None
@@ -4606,39 +3445,38 @@ class PostProcessingTab(QWidget):
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
                 return None
             return (vmin, vmax)
-
-        hist_range: List[tuple[float, float]] = [(0.0, 1.0)]  # (hmin, hmax) for current tile; used by spinboxes and drag
+        hist_range: List[tuple[float, float]] = [(0.0, 1.0)]
 
         def update_histogram_for_tile(tile_idx: Optional[int]) -> None:
             hist_ax.clear()
             if tile_idx is None:
-                lut_group.setTitle("")
-                hist_ax.text(0.5, 0.5, "Click a tile to select", ha="center", va="center", color="white", fontsize=13, transform=hist_ax.transAxes)
+                lut_group.setTitle('')
+                hist_ax.text(0.5, 0.5, 'Click a tile to select', ha='center', va='center', color='white', fontsize=13, transform=hist_ax.transAxes)
                 hist_ax.set_xlim(0, 1)
                 hist_ax.set_ylim(0, 1)
                 min_spin.setEnabled(False)
                 max_spin.setEnabled(False)
                 hist_canvas.draw()
                 return
-            labels = dlg._layout.get("tile_labels", [])
-            title = labels[tile_idx] if tile_idx < len(labels) else f"Tile {tile_idx}"
+            labels = dlg._layout.get('tile_labels', [])
+            title = labels[tile_idx] if tile_idx < len(labels) else f'Tile {tile_idx}'
             result = get_tile_raw_for_hist(tile_idx)
             if result is None:
-                hist_ax.text(0.5, 0.5, "No data", ha="center", va="center", color="white", transform=hist_ax.transAxes)
+                hist_ax.text(0.5, 0.5, 'No data', ha='center', va='center', color='white', transform=hist_ax.transAxes)
                 hist_canvas.draw()
                 return
-            flat, dtype = result
+            (flat, dtype) = result
             flat = flat[np.isfinite(flat)]
             if flat.size == 0:
                 hist_canvas.draw()
                 return
-            fmin, fmax = float(np.min(flat)), float(np.max(flat))
+            (fmin, fmax) = (float(np.min(flat)), float(np.max(flat)))
             if fmax <= fmin:
                 fmax = fmin + 1.0
-            hmin, hmax = full_range_for_dtype(dtype, fmin, fmax)
+            (hmin, hmax) = full_range_for_dtype(dtype, fmin, fmax)
             hist_range[0] = (hmin, hmax)
             n_bins = 256 if hmax - hmin <= 256 else min(1024, max(256, int(hmax - hmin + 1)))
-            hist, bin_edges = np.histogram(flat, bins=n_bins, range=(hmin, hmax))
+            (hist, bin_edges) = np.histogram(flat, bins=n_bins, range=(hmin, hmax))
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
             log_counts = np.log1p(hist)
             if current_vmin[0] is not None and current_vmax[0] is not None:
@@ -4646,31 +3484,27 @@ class PostProcessingTab(QWidget):
                 vmax = current_vmax[0]
             else:
                 auto_pair = auto_lut_for_tile(tile_idx)
-                vmin, vmax = auto_pair if auto_pair is not None else (
-                    float(np.percentile(flat, self.MONTAGE_AUTO_LUT_LOW)),
-                    float(np.percentile(flat, self.MONTAGE_AUTO_LUT_HIGH)),
-                )
-            vmin = max(hmin, min(vmin, hmax - 1e-9))
-            vmax = min(hmax, max(vmax, hmin + 1e-9))
+                (vmin, vmax) = auto_pair if auto_pair is not None else (float(np.percentile(flat, self.MONTAGE_AUTO_LUT_LOW)), float(np.percentile(flat, self.MONTAGE_AUTO_LUT_HIGH)))
+            vmin = max(hmin, min(vmin, hmax - 1e-09))
+            vmax = min(hmax, max(vmax, hmin + 1e-09))
             if vmax <= vmin:
                 vmax = vmin + 1.0
-            current_vmin[0], current_vmax[0] = vmin, vmax
-            hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.12, color="yellow", zorder=0)
-            hist_ax.bar(bin_centers, log_counts, width=bin_edges[1] - bin_edges[0], color="#4A90E2", alpha=0.85, edgecolor="none", zorder=1)
-            hist_vmin_line[0] = hist_ax.axvline(vmin, color="#FF6B6B", linewidth=2, linestyle="--", label=f"Min: {vmin:.1f}", zorder=2)
-            hist_vmax_line[0] = hist_ax.axvline(vmax, color="#4ECDC4", linewidth=2, linestyle="--", label=f"Max: {vmax:.1f}", zorder=2)
+            (current_vmin[0], current_vmax[0]) = (vmin, vmax)
+            hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.12, color='yellow', zorder=0)
+            hist_ax.bar(bin_centers, log_counts, width=bin_edges[1] - bin_edges[0], color='#4A90E2', alpha=0.85, edgecolor='none', zorder=1)
+            hist_vmin_line[0] = hist_ax.axvline(vmin, color='#FF6B6B', linewidth=2, linestyle='--', label=f'Min: {vmin:.1f}', zorder=2)
+            hist_vmax_line[0] = hist_ax.axvline(vmax, color='#4ECDC4', linewidth=2, linestyle='--', label=f'Max: {vmax:.1f}', zorder=2)
             hist_ax.set_xlim(hmin, hmax)
             y_max = float(np.max(log_counts)) if log_counts.size > 0 else 1.0
             hist_ax.set_ylim(0, y_max * 1.05 if y_max > 0 else 1.0)
-            hist_ax.set_xlabel("Intensity", color="white", fontsize=10)
-            hist_ax.set_ylabel("Log(Count+1)", color="white", fontsize=10)
-            hist_ax.set_title(f"Selected: tile {tile_idx} — {title}", color="white", fontsize=10, pad=4)
-            hist_ax.legend(loc="upper right", facecolor="#2b2b2b", edgecolor="white", labelcolor="white", fontsize=9, framealpha=0.9)
-            hist_ax.grid(True, alpha=0.25, color="white")
+            hist_ax.set_xlabel('Intensity', color='white', fontsize=10)
+            hist_ax.set_ylabel('Log(Count+1)', color='white', fontsize=10)
+            hist_ax.set_title(f'Selected: tile {tile_idx} — {title}', color='white', fontsize=10, pad=4)
+            hist_ax.legend(loc='upper right', facecolor='#2b2b2b', edgecolor='white', labelcolor='white', fontsize=9, framealpha=0.9)
+            hist_ax.grid(True, alpha=0.25, color='white')
             hist_ax.margins(x=0.02, y=0.08)
             apply_lut_histogram_figure_margins(hist_fig)
             hist_canvas.draw()
-            # Sync min/max spinboxes to current range and limits (block signals to avoid feedback)
             min_spin.blockSignals(True)
             max_spin.blockSignals(True)
             min_spin.setRange(hmin, hmax)
@@ -4684,27 +3518,21 @@ class PostProcessingTab(QWidget):
             min_spin.setEnabled(True)
             max_spin.setEnabled(True)
 
-        def refresh_preview(reset_view: bool = True) -> None:
-            result = self._build_montage_array(
-                per_tile_lut=dlg._per_tile_lut,
-                per_tile_color_override=getattr(self, "montage_tile_color_overrides", None) or {},
-                per_tile_percentile_override=getattr(self, "montage_tile_percentile_overrides", None) or {},
-                return_layout=True,
-                merged_only=False,
-            )
+        def refresh_preview(reset_view: bool=True) -> None:
+            result = self._build_montage_array(per_tile_lut=dlg._per_tile_lut, per_tile_color_override=getattr(self, 'montage_tile_color_overrides', None) or {}, per_tile_percentile_override=getattr(self, 'montage_tile_percentile_overrides', None) or {}, return_layout=True, merged_only=False)
             if result is None:
                 return
-            out, new_layout = result
+            (out, new_layout) = result
             dlg._layout = new_layout
             self._last_montage_layout = new_layout
             displayed = self._apply_montage_scalebar_if_enabled(out, layout=dlg._layout)
-            displayed = self._apply_montage_focus_inset_if_enabled(displayed, roi=getattr(dlg, "_focus_roi", None))
+            displayed = self._apply_montage_focus_inset_if_enabled(displayed, roi=getattr(dlg, '_focus_roi', None))
             dlg._current_displayed = displayed
             dummy_mask = np.zeros(out.shape[:2], dtype=np.int32)
-            img_scaled, _ = scale_for_preview(dlg._current_displayed, dummy_mask)
+            (img_scaled, _) = scale_for_preview(dlg._current_displayed, dummy_mask)
             pixmap = to_qpixmap(img_scaled)
-            w, h = img_scaled.shape[1], img_scaled.shape[0]
-            dlg._display_w, dlg._display_h = w, h
+            (w, h) = (img_scaled.shape[1], img_scaled.shape[0])
+            (dlg._display_w, dlg._display_h) = (w, h)
             image_canvas.set_pixmap(pixmap, (w, h), reset_view=reset_view)
             sync_focus_overlay()
             image_canvas.update()
@@ -4715,135 +3543,76 @@ class PostProcessingTab(QWidget):
 
         def compose_current_displayed() -> Optional[np.ndarray]:
             merged_only = self._montage_export_is_merged_only()
-            result = self._compose_montage_for_export(
-                per_tile_lut=dlg._per_tile_lut,
-                focus_roi=getattr(dlg, "_focus_roi", None),
-                merged_only=merged_only,
-                source_layout=dlg._layout,
-            )
+            result = self._compose_montage_for_export(per_tile_lut=dlg._per_tile_lut, focus_roi=getattr(dlg, '_focus_roi', None), merged_only=merged_only, source_layout=dlg._layout)
             if result is None:
                 return None
-            displayed, export_layout = result
+            (displayed, export_layout) = result
             if merged_only:
                 dlg._export_layout = export_layout
             return displayed
 
         def display_to_montage_xy(x: int, y: int) -> tuple[int, int]:
             layout = dlg._layout
-            ow, oh = layout.get("out_w"), layout.get("out_h")
-            dw, dh = getattr(dlg, "_display_w", None), getattr(dlg, "_display_h", None)
+            (ow, oh) = (layout.get('out_w'), layout.get('out_h'))
+            (dw, dh) = (getattr(dlg, '_display_w', None), getattr(dlg, '_display_h', None))
             if ow is not None and oh is not None and dw and dh:
                 x = int(round(x * ow / dw))
                 y = int(round(y * oh / dh))
-            return (
-                max(0, min(int(x), int((ow or x + 1) - 1))),
-                max(0, min(int(y), int((oh or y + 1) - 1))),
-            )
+            return (max(0, min(int(x), int((ow or x + 1) - 1))), max(0, min(int(y), int((oh or y + 1) - 1))))
 
         def display_to_montage_roi(x0: int, y0: int, x1: int, y1: int) -> Optional[tuple[int, int, int, int]]:
-            mx0, my0 = display_to_montage_xy(x0, y0)
-            mx1, my1 = display_to_montage_xy(x1, y1)
-            return self._normalize_montage_roi(
-                mx0,
-                my0,
-                mx1,
-                my1,
-                int(dlg._layout.get("out_w", 0)),
-                int(dlg._layout.get("out_h", 0)),
-            )
+            (mx0, my0) = display_to_montage_xy(x0, y0)
+            (mx1, my1) = display_to_montage_xy(x1, y1)
+            return self._normalize_montage_roi(mx0, my0, mx1, my1, int(dlg._layout.get('out_w', 0)), int(dlg._layout.get('out_h', 0)))
 
         def montage_to_display_roi(roi: tuple[int, int, int, int]) -> Optional[tuple[int, int, int, int]]:
-            ow, oh = dlg._layout.get("out_w"), dlg._layout.get("out_h")
-            dw, dh = getattr(dlg, "_display_w", None), getattr(dlg, "_display_h", None)
-            if not ow or not oh or not dw or not dh:
-                return tuple(int(v) for v in roi)
-            x0, y0, x1, y1 = roi
-            return self._normalize_montage_roi(
-                int(round(x0 * dw / ow)),
-                int(round(y0 * dh / oh)),
-                int(round(x1 * dw / ow)),
-                int(round(y1 * dh / oh)),
-                int(dw),
-                int(dh),
-                min_size=1,
-            )
+            (ow, oh) = (dlg._layout.get('out_w'), dlg._layout.get('out_h'))
+            (dw, dh) = (getattr(dlg, '_display_w', None), getattr(dlg, '_display_h', None))
+            if not ow or not oh or (not dw) or (not dh):
+                return tuple((int(v) for v in roi))
+            (x0, y0, x1, y1) = roi
+            return self._normalize_montage_roi(int(round(x0 * dw / ow)), int(round(y0 * dh / oh)), int(round(x1 * dw / ow)), int(round(y1 * dh / oh)), int(dw), int(dh), min_size=1)
 
         def sync_focus_overlay() -> None:
             if not focus_inset_enabled():
                 image_canvas.enable_roi_editing = False
                 image_canvas.clear_roi_overlays()
                 return
-            roi = getattr(dlg, "_focus_roi", None)
+            roi = getattr(dlg, '_focus_roi', None)
             if roi is None:
                 image_canvas.enable_roi_editing = False
                 image_canvas.clear_roi_overlays()
                 return
-            color_rgb = self._montage_focus_color_rgb(
-                self._safe_combo_text(getattr(self, "montage_focus_color", None), "White")
-            )
-            line_width = self._safe_spin_value(getattr(self, "montage_focus_line_width", None), 5)
-            display_roi = montage_to_display_roi(tuple(int(v) for v in roi))
+            color_rgb = self._montage_focus_color_rgb(self._safe_combo_text(getattr(self, 'montage_focus_color', None), 'White'))
+            line_width = self._safe_spin_value(getattr(self, 'montage_focus_line_width', None), 5)
+            display_roi = montage_to_display_roi(tuple((int(v) for v in roi)))
             if display_roi is None:
                 image_canvas.enable_roi_editing = False
                 image_canvas.clear_roi_overlays()
                 return
             image_canvas.enable_roi_editing = True
-            image_canvas.set_editable_roi(
-                display_roi,
-                color=QColor(*color_rgb),
-                line_width=line_width,
-                show_handles=True,
-            )
-
-        for widget in (
-            getattr(self, "montage_rows", None),
-            getattr(self, "montage_cols", None),
-            getattr(self, "montage_spacing", None),
-            getattr(self, "montage_border", None),
-            getattr(self, "montage_label_font_size", None),
-        ):
+            image_canvas.set_editable_roi(display_roi, color=QColor(*color_rgb), line_width=line_width, show_handles=True)
+        for widget in (getattr(self, 'montage_rows', None), getattr(self, 'montage_cols', None), getattr(self, 'montage_spacing', None), getattr(self, 'montage_border', None), getattr(self, 'montage_label_font_size', None)):
             if self._qt_widget_alive(widget):
                 widget.valueChanged.connect(refresh_preview_same_view)
-        show_labels_widget = getattr(self, "montage_show_labels", None)
+        show_labels_widget = getattr(self, 'montage_show_labels', None)
         if self._qt_widget_alive(show_labels_widget):
             show_labels_widget.toggled.connect(refresh_preview_same_view)
-        for widget in (
-            getattr(self, "montage_order", None),
-            getattr(self, "montage_z_projection", None),
-            getattr(self, "montage_label_position", None),
-            getattr(self, "montage_label_color", None),
-        ):
+        for widget in (getattr(self, 'montage_order', None), getattr(self, 'montage_z_projection', None), getattr(self, 'montage_label_position', None), getattr(self, 'montage_label_color', None)):
             if self._qt_widget_alive(widget):
                 widget.currentTextChanged.connect(refresh_preview_same_view)
-        for widget in (
-            getattr(self, "montage_sb_enable", None),
-            getattr(self, "montage_sb_show_label", None),
-            getattr(self, "montage_focus_enable", None),
-        ):
+        for widget in (getattr(self, 'montage_sb_enable', None), getattr(self, 'montage_sb_show_label', None), getattr(self, 'montage_focus_enable', None)):
             if self._qt_widget_alive(widget):
                 widget.toggled.connect(refresh_preview_same_view)
-        for widget in (
-            getattr(self, "montage_sb_pixel_size", None),
-            getattr(self, "montage_sb_length_um", None),
-            getattr(self, "montage_sb_thickness", None),
-            getattr(self, "montage_sb_font_size", None),
-            getattr(self, "montage_focus_line_width", None),
-        ):
+        for widget in (getattr(self, 'montage_sb_pixel_size', None), getattr(self, 'montage_sb_length_um', None), getattr(self, 'montage_sb_thickness', None), getattr(self, 'montage_sb_font_size', None), getattr(self, 'montage_focus_line_width', None)):
             if self._qt_widget_alive(widget):
                 widget.valueChanged.connect(refresh_preview_same_view)
-        for widget in (
-            getattr(self, "montage_border_color", None),
-            getattr(self, "montage_sb_position", None),
-            getattr(self, "montage_sb_color", None),
-            getattr(self, "montage_focus_zoom", None),
-            getattr(self, "montage_focus_position", None),
-            getattr(self, "montage_focus_color", None),
-        ):
+        for widget in (getattr(self, 'montage_border_color', None), getattr(self, 'montage_sb_position', None), getattr(self, 'montage_sb_color', None), getattr(self, 'montage_focus_zoom', None), getattr(self, 'montage_focus_position', None), getattr(self, 'montage_focus_color', None)):
             if self._qt_widget_alive(widget):
                 widget.currentTextChanged.connect(refresh_preview_same_view)
-        clear_focus_btn = getattr(self, "montage_focus_clear_btn", None)
+        clear_focus_btn = getattr(self, 'montage_focus_clear_btn', None)
         if self._qt_widget_alive(clear_focus_btn):
-            clear_focus_btn.clicked.connect(lambda *_args: (setattr(dlg, "_focus_roi", None), sync_focus_overlay(), refresh_preview_same_view()))
+            clear_focus_btn.clicked.connect(lambda *_args: (setattr(dlg, '_focus_roi', None), sync_focus_overlay(), refresh_preview_same_view()))
 
         def on_roi_changed(x0: int, y0: int, x1: int, y1: int) -> None:
             roi = display_to_montage_roi(x0, y0, x1, y1)
@@ -4856,52 +3625,51 @@ class PostProcessingTab(QWidget):
                 dlg._focus_roi = roi
             sync_focus_overlay()
             refresh_preview_same_view()
-
         image_canvas.roi_changed.connect(on_roi_changed)
         image_canvas.roi_edit_finished.connect(on_roi_edit_finished)
 
         def _store_manual_lut_for_tile(tile_idx: int, lut_pair: tuple[float, float]) -> None:
-            labels = dlg._layout.get("tile_labels", [])
+            labels = dlg._layout.get('tile_labels', [])
             if tile_idx < 0 or tile_idx >= len(labels):
                 return
             value = (float(lut_pair[0]), float(lut_pair[1]))
             tile_key = self._montage_tile_key(labels[tile_idx])
             dlg._per_tile_lut[tile_key] = value
             dlg._per_tile_lut[int(tile_idx)] = value
-            tile_meta = dlg._layout.get("tile_meta", [])
-            channel_norm = (tile_meta[tile_idx] if tile_idx < len(tile_meta) else {}).get("channel_norm")
+            tile_meta = dlg._layout.get('tile_meta', [])
+            channel_norm = (tile_meta[tile_idx] if tile_idx < len(tile_meta) else {}).get('channel_norm')
             if channel_norm:
                 dlg._per_tile_lut[channel_norm] = value
 
         def on_canvas_click(x: int, y: int) -> None:
             layout = dlg._layout
-            x, y = display_to_montage_xy(x, y)
+            (x, y) = display_to_montage_xy(x, y)
             idx = tile_at_xy(x, y)
             if idx is None:
                 return
             selected_index[0] = idx
-            labels = layout.get("tile_labels", [])
-            label = labels[idx] if idx < len(labels) else f"Tile {idx}"
-            is_merged_tile = label.endswith(" Merged")
+            labels = layout.get('tile_labels', [])
+            label = labels[idx] if idx < len(labels) else f'Tile {idx}'
+            is_merged_tile = label.endswith(' Merged')
             if is_merged_tile:
                 lut_group.setEnabled(False)
                 lut_note.setVisible(True)
-                selected_label.setText(f"Selected: tile {idx} — {label}. The merged image has no separate LUT; it is derived from the channel tiles above. Adjust those tiles to change the merge.")
-                current_vmin[0], current_vmax[0] = None, None
+                selected_label.setText(f'Selected: tile {idx} — {label}. The merged image has no separate LUT; it is derived from the channel tiles above. Adjust those tiles to change the merge.')
+                (current_vmin[0], current_vmax[0]) = (None, None)
             else:
                 lut_group.setEnabled(True)
                 lut_note.setVisible(bool(lut_section.is_expanded()))
                 tile_key = self._montage_tile_key(label)
                 lut_pair = dlg._per_tile_lut.get(tile_key)
                 if lut_pair is not None:
-                    current_vmin[0], current_vmax[0] = lut_pair
+                    (current_vmin[0], current_vmax[0]) = lut_pair
                 else:
-                    current_vmin[0], current_vmax[0] = None, None
-                selected_label.setText(f"Selected: tile {idx} — {label}. Drag the histogram lines to set display range.")
+                    (current_vmin[0], current_vmax[0]) = (None, None)
+                selected_label.setText(f'Selected: tile {idx} — {label}. Drag the histogram lines to set display range.')
             update_histogram_for_tile(idx)
 
         def focus_inset_enabled() -> bool:
-            return self._safe_checked(getattr(self, "montage_focus_enable", None), default=False)
+            return self._safe_checked(getattr(self, 'montage_focus_enable', None), default=False)
 
         def on_focus_drag_started(x: int, y: int) -> None:
             if not focus_inset_enabled():
@@ -4909,50 +3677,46 @@ class PostProcessingTab(QWidget):
             dlg._focus_drag_start = display_to_montage_xy(x, y)
 
         def on_focus_drag_updated(x: int, y: int) -> None:
-            if not focus_inset_enabled() or getattr(dlg, "_focus_drag_start", None) is None:
+            if not focus_inset_enabled() or getattr(dlg, '_focus_drag_start', None) is None:
                 return
-            x0, y0 = dlg._focus_drag_start
-            x1, y1 = display_to_montage_xy(x, y)
-            roi = self._normalize_montage_roi(
-                x0, y0, x1, y1, int(dlg._layout.get("out_w", 0)), int(dlg._layout.get("out_h", 0))
-            )
+            (x0, y0) = dlg._focus_drag_start
+            (x1, y1) = display_to_montage_xy(x, y)
+            roi = self._normalize_montage_roi(x0, y0, x1, y1, int(dlg._layout.get('out_w', 0)), int(dlg._layout.get('out_h', 0)))
             if roi is not None:
                 image_canvas.set_pending_roi(montage_to_display_roi(roi))
 
         def on_focus_drag_finished(x: int, y: int) -> None:
-            if not focus_inset_enabled() or getattr(dlg, "_focus_drag_start", None) is None:
+            if not focus_inset_enabled() or getattr(dlg, '_focus_drag_start', None) is None:
                 dlg._focus_drag_start = None
                 image_canvas.set_pending_roi(None)
                 return
-            x0, y0 = dlg._focus_drag_start
-            x1, y1 = display_to_montage_xy(x, y)
+            (x0, y0) = dlg._focus_drag_start
+            (x1, y1) = display_to_montage_xy(x, y)
             dlg._focus_drag_start = None
             image_canvas.set_pending_roi(None)
-            roi = self._normalize_montage_roi(
-                x0, y0, x1, y1, int(dlg._layout.get("out_w", 0)), int(dlg._layout.get("out_h", 0))
-            )
+            roi = self._normalize_montage_roi(x0, y0, x1, y1, int(dlg._layout.get('out_w', 0)), int(dlg._layout.get('out_h', 0)))
             if roi is None:
                 dlg._focus_roi = None
-                selected_label.setText("Focus inset selection was too small. Right-drag a larger box on the preview.")
+                selected_label.setText('Focus inset selection was too small. Right-drag a larger box on the preview.')
             else:
                 dlg._focus_roi = roi
-                selected_label.setText("Focus inset set. Drag handles to resize, drag inside to move, or right-drag to replace.")
+                selected_label.setText('Focus inset set. Drag handles to resize, drag inside to move, or right-drag to replace.')
             sync_focus_overlay()
             refresh_preview_same_view()
 
         def apply_min_max_from_spinboxes() -> None:
             if selected_index[0] is None:
                 return
-            hmin, hmax = hist_range[0]
+            (hmin, hmax) = hist_range[0]
             vmin = min_spin.value()
             vmax = max_spin.value()
-            vmin = max(hmin, min(vmin, hmax - 1e-9))
-            vmax = min(hmax, max(vmax, hmin + 1e-9))
+            vmin = max(hmin, min(vmin, hmax - 1e-09))
+            vmax = min(hmax, max(vmax, hmin + 1e-09))
             if vmax <= vmin:
-                vmax = vmin + 1e-9
-            current_vmin[0], current_vmax[0] = vmin, vmax
+                vmax = vmin + 1e-09
+            (current_vmin[0], current_vmax[0]) = (vmin, vmax)
             sel = selected_index[0]
-            if sel is not None and sel < len(dlg._layout.get("tile_labels", [])):
+            if sel is not None and sel < len(dlg._layout.get('tile_labels', [])):
                 _store_manual_lut_for_tile(sel, (vmin, vmax))
             min_spin.setValue(vmin)
             max_spin.setValue(vmax)
@@ -4962,16 +3726,16 @@ class PostProcessingTab(QWidget):
                 hist_vmax_line[0].set_xdata([vmax, vmax])
             if hist_vspan[0] is not None:
                 hist_vspan[0].remove()
-            hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.15, color="yellow")
+            hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
             hist_canvas.draw()
             refresh_preview(reset_view=False)
 
         def apply_auto_lut_to_tile(tile_idx: int) -> bool:
-            labels = dlg._layout.get("tile_labels", [])
+            labels = dlg._layout.get('tile_labels', [])
             if tile_idx < 0 or tile_idx >= len(labels):
                 return False
             label = labels[tile_idx]
-            if str(label).endswith(" Merged"):
+            if str(label).endswith(' Merged'):
                 return False
             lut_pair = auto_lut_for_tile(tile_idx)
             if lut_pair is None:
@@ -4983,23 +3747,23 @@ class PostProcessingTab(QWidget):
             sel = selected_index[0]
             if sel is None or not apply_auto_lut_to_tile(sel):
                 return
-            current_vmin[0], current_vmax[0] = dlg._per_tile_lut[self._montage_tile_key(dlg._layout["tile_labels"][sel])]
+            (current_vmin[0], current_vmax[0]) = dlg._per_tile_lut[self._montage_tile_key(dlg._layout['tile_labels'][sel])]
             update_histogram_for_tile(sel)
             refresh_preview(reset_view=False)
 
         def on_auto_all() -> None:
-            labels = dlg._layout.get("tile_labels", [])
+            labels = dlg._layout.get('tile_labels', [])
             changed = False
-            for i, label in enumerate(labels):
-                if str(label).endswith(" Merged"):
+            for (i, label) in enumerate(labels):
+                if str(label).endswith(' Merged'):
                     continue
                 changed = apply_auto_lut_to_tile(i) or changed
             if not changed:
                 return
             sel = selected_index[0]
             if sel is not None:
-                tile_key = self._montage_tile_key(labels[sel]) if sel < len(labels) else ""
-                current_vmin[0], current_vmax[0] = dlg._per_tile_lut.get(tile_key, (None, None))
+                tile_key = self._montage_tile_key(labels[sel]) if sel < len(labels) else ''
+                (current_vmin[0], current_vmax[0]) = dlg._per_tile_lut.get(tile_key, (None, None))
                 update_histogram_for_tile(sel)
             refresh_preview(reset_view=False)
 
@@ -5012,7 +3776,6 @@ class PostProcessingTab(QWidget):
                 apply_min_max_from_spinboxes()
             finally:
                 is_updating_lut[0] = False
-
         min_spin.editingFinished.connect(on_spin_editing_finished)
         max_spin.editingFinished.connect(on_spin_editing_finished)
         auto_selected_btn.clicked.connect(on_auto_selected)
@@ -5025,35 +3788,35 @@ class PostProcessingTab(QWidget):
             result = get_tile_raw_for_hist(selected_index[0])
             if result is None or result[0].size == 0:
                 return
-            hmin, hmax = hist_range[0]
-            rng = max(hmax - hmin, 1e-9)
-            thresh = max(rng * 0.02, 1e-6)
-            vmin, vmax = current_vmin[0] or hmin, current_vmax[0] or hmax
+            (hmin, hmax) = hist_range[0]
+            rng = max(hmax - hmin, 1e-09)
+            thresh = max(rng * 0.02, 1e-06)
+            (vmin, vmax) = (current_vmin[0] or hmin, current_vmax[0] or hmax)
             if abs(x - vmin) < thresh and abs(x - vmin) <= abs(x - vmax):
-                dragging_line[0] = "min"
+                dragging_line[0] = 'min'
             elif abs(x - vmax) < thresh:
-                dragging_line[0] = "max"
+                dragging_line[0] = 'max'
             else:
                 mid = (vmin + vmax) / 2
-                dragging_line[0] = "min" if x < mid else "max"
+                dragging_line[0] = 'min' if x < mid else 'max'
 
         def on_hist_motion(event):
-            if event.inaxes != hist_ax or event.xdata is None or dragging_line[0] is None or is_updating_lut[0] or selected_index[0] is None:
+            if event.inaxes != hist_ax or event.xdata is None or dragging_line[0] is None or is_updating_lut[0] or (selected_index[0] is None):
                 return
             x = event.xdata
-            hmin, hmax = hist_range[0]
+            (hmin, hmax) = hist_range[0]
             is_updating_lut[0] = True
             try:
-                vmin, vmax = current_vmin[0] or hmin, current_vmax[0] or hmax
-                if dragging_line[0] == "min":
-                    new_min = max(hmin, min(x, (current_vmax[0] or hmax) - 1e-9))
+                (vmin, vmax) = (current_vmin[0] or hmin, current_vmax[0] or hmax)
+                if dragging_line[0] == 'min':
+                    new_min = max(hmin, min(x, (current_vmax[0] or hmax) - 1e-09))
                     current_vmin[0] = new_min
                 else:
-                    new_max = min(hmax, max(x, (current_vmin[0] or hmin) + 1e-9))
+                    new_max = min(hmax, max(x, (current_vmin[0] or hmin) + 1e-09))
                     current_vmax[0] = new_max
-                vmin, vmax = current_vmin[0], current_vmax[0]
+                (vmin, vmax) = (current_vmin[0], current_vmax[0])
                 sel = selected_index[0]
-                if sel is not None and sel < len(dlg._layout.get("tile_labels", [])):
+                if sel is not None and sel < len(dlg._layout.get('tile_labels', [])):
                     _store_manual_lut_for_tile(sel, (vmin, vmax))
                 min_spin.blockSignals(True)
                 min_spin.setValue(vmin)
@@ -5070,76 +3833,68 @@ class PostProcessingTab(QWidget):
                     hist_vmax_line[0].set_xdata([vmax, vmax])
                 if hist_vspan[0] is not None:
                     hist_vspan[0].remove()
-                hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.15, color="yellow")
+                hist_vspan[0] = hist_ax.axvspan(vmin, vmax, alpha=0.15, color='yellow')
                 hist_canvas.draw()
             finally:
                 is_updating_lut[0] = False
 
         def on_hist_release(event):
             dragging_line[0] = None
-
         image_canvas.clicked_image.connect(on_canvas_click)
         image_canvas.drag_started.connect(on_focus_drag_started)
         image_canvas.drag_updated.connect(on_focus_drag_updated)
         image_canvas.drag_finished.connect(on_focus_drag_finished)
-        hist_canvas.mpl_connect("button_press_event", on_hist_press)
-        hist_canvas.mpl_connect("motion_notify_event", on_hist_motion)
-        hist_canvas.mpl_connect("button_release_event", on_hist_release)
-
+        hist_canvas.mpl_connect('button_press_event', on_hist_press)
+        hist_canvas.mpl_connect('motion_notify_event', on_hist_motion)
+        hist_canvas.mpl_connect('button_release_event', on_hist_release)
         update_histogram_for_tile(None)
 
         def on_update() -> None:
-            # Rebuild with current spacing/border/paths but keep existing per-tile LUT and color overrides
-            old_focus_roi = getattr(dlg, "_focus_roi", None)
-            old_w = int(dlg._layout.get("out_w", 0) or 0)
-            old_h = int(dlg._layout.get("out_h", 0) or 0)
-            old_labels = list(dlg._layout.get("tile_labels", []) or [])
-            old_meta = list(dlg._layout.get("tile_meta", []) or [])
-            for i, label in enumerate(old_labels):
+            old_focus_roi = getattr(dlg, '_focus_roi', None)
+            old_w = int(dlg._layout.get('out_w', 0) or 0)
+            old_h = int(dlg._layout.get('out_h', 0) or 0)
+            old_labels = list(dlg._layout.get('tile_labels', []) or [])
+            old_meta = list(dlg._layout.get('tile_meta', []) or [])
+            for (i, label) in enumerate(old_labels):
                 tile_key = self._montage_tile_key(label)
                 if tile_key not in dlg._per_tile_lut:
                     continue
                 value = dlg._per_tile_lut[tile_key]
                 dlg._per_tile_lut.setdefault(i, value)
-                channel_norm = (old_meta[i] if i < len(old_meta) else {}).get("channel_norm")
+                channel_norm = (old_meta[i] if i < len(old_meta) else {}).get('channel_norm')
                 if channel_norm:
                     dlg._per_tile_lut.setdefault(channel_norm, value)
-            result = self._build_montage_array(
-                return_layout=True,
-                per_tile_lut=dlg._per_tile_lut,
-                per_tile_color_override=getattr(self, "montage_tile_color_overrides", None) or {},
-                per_tile_percentile_override=getattr(self, "montage_tile_percentile_overrides", None) or {},
-            )
+            result = self._build_montage_array(return_layout=True, per_tile_lut=dlg._per_tile_lut, per_tile_color_override=getattr(self, 'montage_tile_color_overrides', None) or {}, per_tile_percentile_override=getattr(self, 'montage_tile_percentile_overrides', None) or {})
             if result is None:
                 return
-            out, new_layout = result
+            (out, new_layout) = result
             dlg._layout = new_layout
             dlg._current_displayed = out
-            new_labels = list(new_layout.get("tile_labels", []) or [])
-            new_meta = list(new_layout.get("tile_meta", []) or [])
-            for i, label in enumerate(new_labels):
+            new_labels = list(new_layout.get('tile_labels', []) or [])
+            new_meta = list(new_layout.get('tile_meta', []) or [])
+            for (i, label) in enumerate(new_labels):
                 tile_key = self._montage_tile_key(label)
                 if tile_key in dlg._per_tile_lut:
                     continue
-                channel_norm = (new_meta[i] if i < len(new_meta) else {}).get("channel_norm")
+                channel_norm = (new_meta[i] if i < len(new_meta) else {}).get('channel_norm')
                 if channel_norm and channel_norm in dlg._per_tile_lut:
                     dlg._per_tile_lut[tile_key] = dlg._per_tile_lut[channel_norm]
                 elif i in dlg._per_tile_lut:
                     dlg._per_tile_lut[tile_key] = dlg._per_tile_lut[i]
-            new_w = int(new_layout.get("out_w", 0) or 0)
-            new_h = int(new_layout.get("out_h", 0) or 0)
-            if old_focus_roi is not None and old_w > 0 and old_h > 0 and new_w > 0 and new_h > 0:
-                x0, y0, x1, y1 = old_focus_roi
+            new_w = int(new_layout.get('out_w', 0) or 0)
+            new_h = int(new_layout.get('out_h', 0) or 0)
+            if old_focus_roi is not None and old_w > 0 and (old_h > 0) and (new_w > 0) and (new_h > 0):
+                (x0, y0, x1, y1) = old_focus_roi
                 if old_w != new_w or old_h != new_h:
                     sx = new_w / old_w
                     sy = new_h / old_h
-                    x0, x1 = int(round(x0 * sx)), int(round(x1 * sx))
-                    y0, y1 = int(round(y0 * sy)), int(round(y1 * sy))
+                    (x0, x1) = (int(round(x0 * sx)), int(round(x1 * sx)))
+                    (y0, y1) = (int(round(y0 * sy)), int(round(y1 * sy)))
                 dlg._focus_roi = self._normalize_montage_roi(x0, y0, x1, y1, new_w, new_h)
             dlg._focus_drag_start = None
             selected_index[0] = None
-            current_vmin[0], current_vmax[0] = None, None
-            selected_label.setText("Click a tile to adjust LUT. Enable Focus inset, then right-drag a box to add a zoom callout. Middle-drag to pan, wheel to zoom.")
+            (current_vmin[0], current_vmax[0]) = (None, None)
+            selected_label.setText('Click a tile to adjust LUT. Enable Focus inset, then right-drag a box to add a zoom callout. Middle-drag to pan, wheel to zoom.')
             update_histogram_for_tile(None)
             sync_focus_overlay()
             refresh_preview(reset_view=True)
@@ -5148,13 +3903,12 @@ class PostProcessingTab(QWidget):
             self._edit_montage_tile_colors(dlg._layout, refresh_callback=on_update)
 
         def on_canvas_double_click(x: int, y: int) -> None:
-            x, y = display_to_montage_xy(x, y)
+            (x, y) = display_to_montage_xy(x, y)
             idx = tile_at_xy(x, y)
             if idx is not None:
                 selected_index[0] = idx
                 update_histogram_for_tile(idx)
             on_edit_colors()
-
         try:
             image_canvas.double_clicked_image.connect(on_canvas_double_click)
         except Exception:
@@ -5164,22 +3918,17 @@ class PostProcessingTab(QWidget):
             current_displayed = compose_current_displayed()
             if current_displayed is None:
                 if self._montage_export_is_merged_only():
-                    QMessageBox.warning(dlg, "Montage", "No merged tile available to export.")
+                    show_message_dialog(dlg, 'Montage', 'No merged tile available to export.', kind='warning')
                 else:
-                    QMessageBox.warning(dlg, "Montage", "Nothing to save. Update preview first.")
+                    show_message_dialog(dlg, 'Montage', 'Nothing to save. Update preview first.', kind='warning')
                 return
             dlg._current_displayed = current_displayed
             paths = self._get_montage_image_paths()
-            default_dir = paths[0].parent if paths else Path(".")
+            default_dir = paths[0].parent if paths else Path('.')
             merged_only = self._montage_export_is_merged_only()
             fmt_text = dlg._export_format_combo.currentText()
             ext = self._montage_export_extension(fmt_text)
-            path, _ = QFileDialog.getSaveFileName(
-                dlg,
-                "Save montage",
-                str(default_dir / f"{self._default_montage_output_stem(paths, merged_only=merged_only)}{ext}"),
-                "PNG (*.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg);;All (*)",
-            )
+            (path, _) = QFileDialog.getSaveFileName(dlg, 'Save montage', str(default_dir / f'{self._default_montage_output_stem(paths, merged_only=merged_only)}{ext}'), 'PNG (*.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg);;All (*)')
             if not path:
                 return
             try:
@@ -5188,207 +3937,141 @@ class PostProcessingTab(QWidget):
                     out_path = out_path.with_suffix(ext)
                 dpi = self._montage_export_dpi(dlg)
                 self._save_montage_array_to_path(current_displayed, out_path, dpi=dpi)
-                self.parent_window.log_output(f"Montage saved: {out_path}\n")
-                show_task_complete_dialog(
-                    self,
-                    title="Montage saved",
-                    message="Montage image saved.",
-                    output_dir=out_path.parent,
-                )
+                self.parent_window.log_output(f'Montage saved: {out_path}\n')
+                show_task_complete_dialog(self, title='Montage saved', message='Montage image saved.', output_dir=out_path.parent)
                 refresh_preview_same_view()
             except Exception as e:
-                QMessageBox.warning(dlg, "Montage", f"Save failed: {e}")
+                show_message_dialog(dlg, 'Montage', f'Save failed: {e}', kind='warning')
 
         def on_apply_settings_to_files() -> None:
             selected_files = self._select_montage_batch_files(dlg)
             if selected_files is None:
                 return
             if not selected_files:
-                QMessageBox.information(dlg, "Montage", "No files selected.")
+                show_message_dialog(dlg, 'Montage', 'No files selected.', kind='info')
                 return
             fmt_text = dlg._export_format_combo.currentText()
             ext = self._montage_export_extension(fmt_text)
             dpi = self._montage_export_dpi(dlg)
             export_mode = self._montage_export_mode()
             merged_only = self._montage_export_is_merged_only()
-            summary, warnings = self._summarize_montage_batch_export(
-                selected_files,
-                export_mode=export_mode,
-                export_format=fmt_text,
-                export_dpi=dpi,
-            )
-            confirm = QMessageBox.question(
-                dlg,
-                "Confirm batch export",
-                summary,
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Ok,
-            )
-            if confirm != QMessageBox.StandardButton.Ok:
+            (summary, warnings) = self._summarize_montage_batch_export(selected_files, export_mode=export_mode, export_format=fmt_text, export_dpi=dpi)
+            if not show_confirm_dialog(dlg, title='Confirm batch export', message=summary, confirm_label='OK', cancel_label='Cancel', default_confirm=True):
                 return
-
-            current_labels = list(dlg._layout.get("tile_labels", []) or [])
-            current_meta = list(dlg._layout.get("tile_meta", []) or [])
+            current_labels = list(dlg._layout.get('tile_labels', []) or [])
+            current_meta = list(dlg._layout.get('tile_meta', []) or [])
             batch_lut: Dict[Any, Tuple[float, float]] = {}
-            for i, label in enumerate(current_labels):
+            for (i, label) in enumerate(current_labels):
                 tile_key = self._montage_tile_key(label)
                 if tile_key in dlg._per_tile_lut:
                     batch_lut[i] = dlg._per_tile_lut[tile_key]
-                    channel_norm = (current_meta[i] if i < len(current_meta) else {}).get("channel_norm")
+                    channel_norm = (current_meta[i] if i < len(current_meta) else {}).get('channel_norm')
                     if channel_norm:
                         batch_lut[channel_norm] = dlg._per_tile_lut[tile_key]
-            for key, value in (dlg._per_tile_lut or {}).items():
+            for (key, value) in (dlg._per_tile_lut or {}).items():
                 if isinstance(key, int):
                     batch_lut[key] = value
-
             batch_colors: Dict[Any, Tuple[float, float, float]] = {}
-            for i, label in enumerate(current_labels):
+            for (i, label) in enumerate(current_labels):
                 tile_key = self._montage_tile_key(label)
                 meta = current_meta[i] if i < len(current_meta) else {}
                 value = self._montage_lookup_color_override_for_meta(tile_key, i, meta, None)
                 if value is not None:
                     batch_colors[i] = value
-                    channel_norm = meta.get("channel_norm")
+                    channel_norm = meta.get('channel_norm')
                     if channel_norm:
                         batch_colors[channel_norm] = value
-
             batch_percentiles: Dict[Any, Tuple[float, float]] = {}
-            for i, label in enumerate(current_labels):
+            for (i, label) in enumerate(current_labels):
                 tile_key = self._montage_tile_key(label)
                 meta = current_meta[i] if i < len(current_meta) else {}
                 value = self._montage_lookup_percentile_override_for_meta(tile_key, i, meta)
                 if value is not None:
                     batch_percentiles[i] = value
-                    channel_norm = meta.get("channel_norm")
+                    channel_norm = meta.get('channel_norm')
                     if channel_norm:
                         batch_percentiles[channel_norm] = value
-
-            original_path_text = self.montage_path.text() if self._qt_widget_alive(getattr(self, "montage_path", None)) else ""
+            original_path_text = self.montage_path.text() if self._qt_widget_alive(getattr(self, 'montage_path', None)) else ''
             saved_paths: List[Path] = []
             failures: List[str] = []
             try:
                 from PIL import Image
-
                 for src in selected_files:
-                    if self._qt_widget_alive(getattr(self, "montage_path", None)):
+                    if self._qt_widget_alive(getattr(self, 'montage_path', None)):
                         self.montage_path.blockSignals(True)
                         self.montage_path.setText(str(src))
                         self.montage_path.blockSignals(False)
-                    result = self._compose_montage_for_export(
-                        per_tile_lut=batch_lut,
-                        per_tile_color_override=batch_colors,
-                        per_tile_percentile_override=batch_percentiles,
-                        focus_roi=getattr(dlg, "_focus_roi", None),
-                        merged_only=merged_only,
-                        source_layout=dlg._layout,
-                    )
+                    result = self._compose_montage_for_export(per_tile_lut=batch_lut, per_tile_color_override=batch_colors, per_tile_percentile_override=batch_percentiles, focus_roi=getattr(dlg, '_focus_roi', None), merged_only=merged_only, source_layout=dlg._layout)
                     if result is None:
-                        failures.append(f"{src.name}: could not build montage")
+                        failures.append(f'{src.name}: could not build montage')
                         continue
-                    displayed, _batch_layout = result
-                    suffix_name = "_merged" if merged_only else "_montage"
-                    out_path = src.with_name(f"{src.stem}{suffix_name}{ext}")
+                    (displayed, _batch_layout) = result
+                    suffix_name = '_merged' if merged_only else '_montage'
+                    out_path = src.with_name(f'{src.stem}{suffix_name}{ext}')
                     self._save_montage_array_to_path(displayed, out_path, dpi=dpi)
                     saved_paths.append(out_path)
             except Exception as e:
                 failures.append(str(e))
             finally:
-                if self._qt_widget_alive(getattr(self, "montage_path", None)):
+                if self._qt_widget_alive(getattr(self, 'montage_path', None)):
                     self.montage_path.blockSignals(True)
                     self.montage_path.setText(original_path_text)
                     self.montage_path.blockSignals(False)
                 refresh_preview_same_view()
-
             if saved_paths:
-                self.parent_window.log_output(f"Batch montage export: {len(saved_paths)} file(s) saved.\n")
-                message = f"Saved {len(saved_paths)} montage file(s)."
+                self.parent_window.log_output(f'Batch montage export: {len(saved_paths)} file(s) saved.\n')
+                message = f'Saved {len(saved_paths)} montage file(s).'
                 if failures:
-                    message += f"\n\n{len(failures)} file(s) failed:\n" + "\n".join(failures[:6])
-                show_task_complete_dialog(
-                    self,
-                    title="Montages saved",
-                    message=message,
-                    output_dir=saved_paths[0].parent,
-                )
+                    message += f'\n\n{len(failures)} file(s) failed:\n' + '\n'.join(failures[:6])
+                show_task_complete_dialog(self, title='Montages saved', message=message, output_dir=saved_paths[0].parent)
             elif failures:
-                QMessageBox.warning(dlg, "Montage", "No montages were saved.\n\n" + "\n".join(failures[:8]))
-
+                show_message_dialog(dlg, 'Montage', 'No montages were saved.\n\n' + '\n'.join(failures[:8]), kind='warning')
         refresh_preview(reset_view=True)
-
         dlg._montage_preset_combo = QComboBox()
         dlg._montage_preset_combo.setEditable(False)
-        dlg._montage_preset_combo.addItem("(none)")
+        dlg._montage_preset_combo.addItem('(none)')
         for name in list_montage_preset_names():
             dlg._montage_preset_combo.addItem(name)
         compact_control(dlg._montage_preset_combo, 130)
-        save_preset_btn = QPushButton("Save preset")
+        save_preset_btn = QPushButton('Save preset')
         style_compact_action_button(save_preset_btn, horizontal_padding=10, dense=True)
-        load_preset_btn = QPushButton("Load")
+        load_preset_btn = QPushButton('Load')
         style_compact_action_button(load_preset_btn, horizontal_padding=10, dense=True)
-        delete_preset_btn = QPushButton("Delete")
+        delete_preset_btn = QPushButton('Delete')
         style_compact_action_button(delete_preset_btn, horizontal_padding=10, dense=True)
-
         self.montage_export_mode = QComboBox()
-        self.montage_export_mode.addItems(["Full montage", "Merged only"])
-        self.montage_export_mode.setToolTip("Save the full montage grid or only merged channel tiles.")
+        self.montage_export_mode.addItems(['Full montage', 'Merged only'])
+        self.montage_export_mode.setToolTip('Save the full montage grid or only merged channel tiles.')
         compact_control(self.montage_export_mode, 115)
         dlg._export_background_combo = QComboBox()
-        dlg._export_background_combo.addItems(["White", "Black", "Gray", "Transparent"])
+        dlg._export_background_combo.addItems(['White', 'Black', 'Gray', 'Transparent'])
         current_bg = self._montage_border_color_name()
         bg_idx = dlg._export_background_combo.findText(current_bg)
         if bg_idx >= 0:
             dlg._export_background_combo.setCurrentIndex(bg_idx)
-        dlg._export_background_combo.setToolTip("Montage background/border fill. Transparent is preserved in PNG/TIFF exports.")
+        dlg._export_background_combo.setToolTip('Montage background/border fill. Transparent is preserved in PNG/TIFF exports.')
         compact_control(dlg._export_background_combo, 105)
         dlg._export_format_combo = QComboBox()
-        dlg._export_format_combo.addItems(["PNG", "TIFF", "JPEG"])
-        dlg._export_format_combo.setToolTip("Default export format. You can still type a different extension in the save dialog.")
+        dlg._export_format_combo.addItems(['PNG', 'TIFF', 'JPEG'])
+        dlg._export_format_combo.setToolTip('Default export format. You can still type a different extension in the save dialog.')
         compact_control(dlg._export_format_combo, 80)
         dlg._export_dpi_combo = QComboBox()
-        dlg._export_dpi_combo.addItems(["300 DPI", "600 DPI", "900 DPI", "1200 DPI", "2400 DPI"])
-        dlg._export_dpi_combo.setToolTip("Resolution (DPI) for PNG/TIFF/JPEG export. Applied when you save from this preview.")
+        dlg._export_dpi_combo.addItems(['300 DPI', '600 DPI', '900 DPI', '1200 DPI', '2400 DPI'])
+        dlg._export_dpi_combo.setToolTip('Resolution (DPI) for PNG/TIFF/JPEG export. Applied when you save from this preview.')
         compact_control(dlg._export_dpi_combo, 100)
 
         def footer_cell(widget: QWidget):
             return setting_cell(inline_controls(widget, parent=dlg))
-
-        export_presets_panel = build_settings_card(
-            "",
-            object_name="MontageExportControls",
-            parent=dlg,
-            min_cell_width=158,
-            label_min_width=82,
-            control_max_width=132,
-            max_columns=4,
-            h_spacing=12,
-            v_spacing=6,
-            margins=(8, 4, 8, 6),
-            fields=[
-                setting_field("Preset", dlg._montage_preset_combo, min_width=110, max_width=150),
-                footer_cell(save_preset_btn),
-                footer_cell(load_preset_btn),
-                footer_cell(delete_preset_btn),
-                setting_field("Export", self.montage_export_mode, min_width=100, max_width=132),
-                setting_field("Background", dlg._export_background_combo, min_width=96, max_width=128),
-                setting_field("Format", dlg._export_format_combo, min_width=74, max_width=100),
-                setting_field("DPI", dlg._export_dpi_combo, min_width=90, max_width=116),
-            ],
-        )
-        presets_export_section = CollapsibleSection(
-            "Presets & export settings",
-            export_presets_panel,
-            parent=dlg,
-            expanded=False,
-            compact=True,
-        )
+        export_presets_panel = build_settings_card('', object_name='MontageExportControls', parent=dlg, min_cell_width=158, label_min_width=82, control_max_width=132, max_columns=4, h_spacing=12, v_spacing=6, margins=(8, 4, 8, 6), fields=[setting_field('Preset', dlg._montage_preset_combo, min_width=110, max_width=150), footer_cell(save_preset_btn), footer_cell(load_preset_btn), footer_cell(delete_preset_btn), setting_field('Export', self.montage_export_mode, min_width=100, max_width=132), setting_field('Background', dlg._export_background_combo, min_width=96, max_width=128), setting_field('Format', dlg._export_format_combo, min_width=74, max_width=100), setting_field('DPI', dlg._export_dpi_combo, min_width=90, max_width=116)])
+        presets_export_section = CollapsibleSection('Presets & export settings', export_presets_panel, parent=dlg, expanded=False, compact=True)
         footer_target = montage_chrome_layout if embedded else main_layout
         footer_target.addWidget(presets_export_section)
 
-        def refresh_preset_combo(selected: Optional[str] = None) -> None:
+        def refresh_preset_combo(selected: Optional[str]=None) -> None:
             current = selected or dlg._montage_preset_combo.currentText()
             dlg._montage_preset_combo.blockSignals(True)
             dlg._montage_preset_combo.clear()
-            dlg._montage_preset_combo.addItem("(none)")
+            dlg._montage_preset_combo.addItem('(none)')
             names = list_montage_preset_names()
             for name in names:
                 dlg._montage_preset_combo.addItem(name)
@@ -5397,7 +4080,7 @@ class PostProcessingTab(QWidget):
             dlg._montage_preset_combo.blockSignals(False)
 
         def on_save_preset() -> None:
-            name, ok = QInputDialog.getText(dlg, "Save montage preset", "Preset name:")
+            (name, ok) = QInputDialog.getText(dlg, 'Save montage preset', 'Preset name:')
             if not ok or not str(name).strip():
                 return
             save_montage_preset(str(name).strip(), self._capture_montage_preset_state(dlg))
@@ -5405,11 +4088,11 @@ class PostProcessingTab(QWidget):
 
         def on_load_preset() -> None:
             name = dlg._montage_preset_combo.currentText()
-            if not name or name == "(none)":
+            if not name or name == '(none)':
                 return
             payload = load_montage_preset(name)
             if not payload:
-                QMessageBox.warning(dlg, "Montage preset", f"Preset “{name}” was not found.")
+                show_message_dialog(dlg, 'Montage preset', f'Preset “{name}” was not found.', kind='warning')
                 return
             self._apply_montage_preset_state(payload, dlg)
             bg_idx_local = dlg._export_background_combo.findText(self._montage_border_color_name())
@@ -5419,51 +4102,47 @@ class PostProcessingTab(QWidget):
 
         def on_delete_preset() -> None:
             name = dlg._montage_preset_combo.currentText()
-            if not name or name == "(none)":
+            if not name or name == '(none)':
                 return
             if delete_montage_preset(name):
-                refresh_preset_combo("(none)")
+                refresh_preset_combo('(none)')
 
         def on_export_background_changed(text: str) -> None:
             self._sync_montage_border_color(text)
-            combo = getattr(self, "montage_border_color", None)
+            combo = getattr(self, 'montage_border_color', None)
             if self._qt_widget_alive(combo):
                 idx = combo.findText(text)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
             refresh_preview_same_view()
-
         save_preset_btn.clicked.connect(on_save_preset)
         load_preset_btn.clicked.connect(on_load_preset)
         delete_preset_btn.clicked.connect(on_delete_preset)
         dlg._export_background_combo.currentTextChanged.connect(on_export_background_changed)
-
-        update_btn = QPushButton("Update preview")
+        update_btn = QPushButton('Update preview')
         style_compact_action_button(update_btn, horizontal_padding=20, dense=True)
-        update_btn.setToolTip("Rebuild montage from the preview layout settings and current paths. Resets per-tile LUT.")
+        update_btn.setToolTip('Rebuild montage from the preview layout settings and current paths. Resets per-tile LUT.')
         update_btn.setAutoDefault(False)
         update_btn.setDefault(False)
         update_btn.clicked.connect(on_update)
-        edit_colors_btn = QPushButton("Edit tiles")
+        edit_colors_btn = QPushButton('Edit tiles')
         style_compact_action_button(edit_colors_btn, horizontal_padding=20, dense=True)
-        edit_colors_btn.setToolTip(
-            "Include/exclude tiles, per-tile z projection, color, and percentile normalization."
-        )
+        edit_colors_btn.setToolTip('Include/exclude tiles, per-tile z projection, color, and percentile normalization.')
         edit_colors_btn.setAutoDefault(False)
         edit_colors_btn.setDefault(False)
         edit_colors_btn.clicked.connect(on_edit_colors)
-        apply_settings_btn = QPushButton("Batch export...")
+        apply_settings_btn = QPushButton('Batch export...')
         style_compact_action_button(apply_settings_btn, horizontal_padding=20, dense=True)
-        apply_settings_btn.setToolTip("Batch export selected ND2/TIFF files with the current montage preview settings.")
+        apply_settings_btn.setToolTip('Batch export selected ND2/TIFF files with the current montage preview settings.')
         apply_settings_btn.setAutoDefault(False)
         apply_settings_btn.setDefault(False)
         apply_settings_btn.clicked.connect(on_apply_settings_to_files)
-        save_btn = QPushButton("Save image...")
+        save_btn = QPushButton('Save image...')
         style_compact_action_button(save_btn, horizontal_padding=20, dense=True)
         save_btn.setAutoDefault(False)
         save_btn.setDefault(False)
         save_btn.clicked.connect(on_save)
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton('Close')
         style_compact_action_button(close_btn, horizontal_padding=20, dense=True)
         close_btn.setAutoDefault(False)
         close_btn.setDefault(False)
@@ -5471,41 +4150,18 @@ class PostProcessingTab(QWidget):
             close_btn.clicked.connect(self._close_embedded_post_preview)
         else:
             close_btn.clicked.connect(dlg.close)
-        action_panel = build_settings_card(
-            "",
-            object_name="MontageActionControls",
-            parent=dlg,
-            min_cell_width=128,
-            label_min_width=0,
-            control_max_width=150,
-            max_columns=5,
-            h_spacing=10,
-            v_spacing=6,
-            margins=(8, 4, 8, 6),
-            fields=[
-                footer_cell(update_btn),
-                footer_cell(edit_colors_btn),
-                footer_cell(save_btn),
-                footer_cell(apply_settings_btn),
-                footer_cell(close_btn),
-            ],
-        )
+        action_panel = build_settings_card('', object_name='MontageActionControls', parent=dlg, min_cell_width=128, label_min_width=0, control_max_width=150, max_columns=5, h_spacing=10, v_spacing=6, margins=(8, 4, 8, 6), fields=[footer_cell(update_btn), footer_cell(edit_colors_btn), footer_cell(save_btn), footer_cell(apply_settings_btn), footer_cell(close_btn)])
         main_layout.insertWidget(1, action_panel, 0)
-
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, dlg)
         close_shortcut.activated.connect(self._close_embedded_post_preview if embedded else dlg.close)
         if not embedded:
-            minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), dlg)
+            minimize_shortcut = QShortcut(QKeySequence('Ctrl+M'), dlg)
             minimize_shortcut.activated.connect(dlg.showMinimized)
         dlg.setLayout(main_layout)
         self._active_montage_preview = dlg
-        if embedded and getattr(self, "_module_preview_mount", None) is not None:
+        if embedded and getattr(self, '_module_preview_mount', None) is not None:
             self._embedded_post_preview = dlg
-            mount_embedded_preview(
-                self._module_preview_mount,
-                dlg,
-                preview_surface=self._preview_surface,
-            )
+            mount_embedded_preview(self._module_preview_mount, dlg, preview_surface=self._preview_surface)
             self.refresh_post_candidate_list()
             if self._preview_surface is not None:
                 self._preview_surface.set_preview_chrome_visible(False)
@@ -5518,69 +4174,65 @@ class PostProcessingTab(QWidget):
     def _show_image_dialog(self, img: np.ndarray, title: str) -> None:
         """Show a non-modal preview dialog with ImageCanvas (zoom, pan), Reset view, Cmd+W, and Ctrl+M."""
         dummy_mask = np.zeros(img.shape[:2], dtype=np.int32)
-        img_scaled, _ = scale_for_preview(img, dummy_mask)
+        (img_scaled, _) = scale_for_preview(img, dummy_mask)
         pixmap = to_qpixmap(img_scaled)
-        w, h = img_scaled.shape[1], img_scaled.shape[0]
-
+        (w, h) = (img_scaled.shape[1], img_scaled.shape[0])
         dlg = QDialog(self)
         dlg.setWindowTitle(title)
         dlg.setModal(False)
         dlg.setMinimumSize(900, 700)
         layout = QVBoxLayout(dlg)
-
         image_canvas = ImageCanvas()
-        image_canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
+        image_canvas.setToolTip('Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).')
         image_canvas.set_pixmap(pixmap, (w, h), reset_view=True)
         layout.addWidget(image_canvas, 1)
-
         btn_row = QHBoxLayout()
-        reset_btn = QPushButton("Reset view")
-        reset_btn.setToolTip("Reset zoom and pan to fit image.")
+        reset_btn = QPushButton('Reset view')
+        reset_btn.setToolTip('Reset zoom and pan to fit image.')
+
         def on_reset_view():
             image_canvas.set_pixmap(pixmap, (w, h), reset_view=True)
         reset_btn.clicked.connect(on_reset_view)
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton('Close')
         close_btn.clicked.connect(dlg.close)
         btn_row.addWidget(reset_btn)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
-
         close_shortcut = QShortcut(QKeySequence.StandardKey.Close, dlg)
         close_shortcut.activated.connect(dlg.close)
-        minimize_shortcut = QShortcut(QKeySequence("Ctrl+M"), dlg)
+        minimize_shortcut = QShortcut(QKeySequence('Ctrl+M'), dlg)
         minimize_shortcut.activated.connect(dlg.showMinimized)
-
         dlg.setLayout(layout)
         dlg.show()
 
     def _get_video_yaxis_limits(self) -> tuple[Optional[float], Optional[float]]:
         y_min = self.yaxis_min.value() if self.yaxis_min.value() > 0 else None
         y_max = self.yaxis_max.value() if self.yaxis_max.value() > 0 else None
-        return y_min, y_max
+        return (y_min, y_max)
 
     def _get_graph_width_ratio(self) -> float:
-        spin = getattr(self, "graph_width_ratio_spin", None)
+        spin = getattr(self, 'graph_width_ratio_spin', None)
         if self._qt_widget_alive(spin):
             return max(0.2, min(float(spin.value()) / 100.0, 0.8))
         return self._graph_width_ratio
 
     def _get_growth_y_column(self) -> str:
-        combo = getattr(self, "excel_y_column", None)
+        combo = getattr(self, 'excel_y_column', None)
         if self._qt_widget_alive(combo) and combo.currentText().strip():
             return combo.currentText().strip()
         return self._growth_y_column or DEFAULT_GROWTH_Y_COLUMN
 
     def _use_excel_graph_enabled(self) -> bool:
-        cb = getattr(self, "use_excel_graph", None)
+        cb = getattr(self, 'use_excel_graph', None)
         return bool(cb.isChecked()) if self._qt_widget_alive(cb) else True
 
     def _video_fi_enabled(self) -> bool:
-        cb = getattr(self, "video_fi_channels", None)
+        cb = getattr(self, 'video_fi_channels', None)
         return bool(cb.isChecked()) if self._qt_widget_alive(cb) else True
 
     def _on_growth_y_column_changed(self, text: str) -> None:
-        col = str(text or "").strip()
+        col = str(text or '').strip()
         if not col:
             return
         self._growth_y_column = col
@@ -5592,8 +4244,8 @@ class PostProcessingTab(QWidget):
         self._schedule_video_preview_refresh()
 
     def _refresh_growth_y_column_combo(self) -> None:
-        combo = getattr(self, "excel_y_column", None)
-        excel_edit = getattr(self, "excel_path", None)
+        combo = getattr(self, 'excel_y_column', None)
+        excel_edit = getattr(self, 'excel_path', None)
         if not self._qt_widget_alive(combo) or not self._qt_widget_alive(excel_edit):
             return
         if not self._use_excel_graph_enabled():
@@ -5622,122 +4274,101 @@ class PostProcessingTab(QWidget):
         combo.blockSignals(False)
 
     def _render_current_video_frame_array(self) -> Optional[np.ndarray]:
-        dlg = getattr(self, "_embedded_post_preview", None)
+        dlg = getattr(self, '_embedded_post_preview', None)
         if dlg is None:
-            dlg = getattr(self, "_active_video_preview_dialog", None)
-        frame_slider = getattr(dlg, "_video_frame_slider", None) if dlg is not None else None
+            dlg = getattr(self, '_active_video_preview_dialog', None)
+        frame_slider = getattr(dlg, '_video_frame_slider', None) if dlg is not None else None
         cache = self._load_video_preview_cache()
         if cache is None:
             return None
         frame_idx = int(frame_slider.value()) if frame_slider is not None else 0
-        frame_idx = max(0, min(frame_idx, int(cache["num_frames"]) - 1))
+        frame_idx = max(0, min(frame_idx, int(cache['num_frames']) - 1))
         return self._compose_growth_frame_from_cache(cache, frame_idx)
 
     def _export_current_video_frame_png(self) -> None:
         try:
             frame = self._render_current_video_frame_array()
         except Exception as exc:
-            QMessageBox.warning(self, "Export frame", str(exc))
+            show_message_dialog(self, 'Export frame', str(exc), kind='warning')
             return
         if frame is None:
-            QMessageBox.information(self, "Export frame", "Open a video montage preview with loaded input first.")
+            show_message_dialog(self, 'Export frame', 'Open a video montage preview with loaded input first.', kind='info')
             return
-        default_name = "video_montage_frame.png"
+        default_name = 'video_montage_frame.png'
         video_paths = self._resolve_growth_curve_video_paths(self.video_path.text())
         if video_paths:
-            default_name = f"{video_paths[0].stem}_montage_frame.png"
-        out_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export current frame as PNG",
-            str(Path(get_default_browse_dir()) / default_name),
-            "PNG image (*.png)",
-        )
+            default_name = f'{video_paths[0].stem}_montage_frame.png'
+        (out_path, _) = QFileDialog.getSaveFileName(self, 'Export current frame as PNG', str(Path(get_default_browse_dir()) / default_name), 'PNG image (*.png)')
         if not out_path:
             return
         try:
             from PIL import Image
-
             Image.fromarray(np.asarray(frame)).save(out_path)
-            show_task_complete_dialog(
-                self,
-                title="Export frame",
-                message=f"Saved:\n{out_path}",
-                output_dir=Path(out_path),
-            )
+            show_task_complete_dialog(self, title='Export frame', message=f'Saved:\n{out_path}', output_dir=Path(out_path))
         except Exception as exc:
-            QMessageBox.warning(self, "Export frame", f"Could not save PNG:\n{exc}")
+            show_message_dialog(self, 'Export frame', f'Could not save PNG:\n{exc}', kind='warning')
 
     def _get_growth_graph_style(self) -> dict[str, Any]:
         return dict(self._growth_graph_style)
 
-    def _coerce_growth_graph_bool(self, value: Any, default: bool = True) -> bool:
+    def _coerce_growth_graph_bool(self, value: Any, default: bool=True) -> bool:
         if value is None:
             return default
         if isinstance(value, str):
-            return value.strip().lower() not in {"", "0", "false", "no", "off"}
+            return value.strip().lower() not in {'', '0', 'false', 'no', 'off'}
         return bool(value)
 
     def _set_growth_graph_style(self, data: dict[str, Any]) -> None:
         merged = dict(DEFAULT_GROWTH_GRAPH_STYLE)
         for key in DEFAULT_GROWTH_GRAPH_STYLE:
             if key in data and data[key] is not None:
-                merged[key] = self._coerce_growth_graph_bool(data[key]) if key == "show_grid" else data[key]
+                merged[key] = self._coerce_growth_graph_bool(data[key]) if key == 'show_grid' else data[key]
         self._growth_graph_style = merged
         self._schedule_video_preview_refresh()
 
     def _open_growth_graph_style_from_preview(self) -> None:
         cache = self._load_video_preview_cache()
-        if not cache or not cache.get("has_graph"):
-            QMessageBox.information(
-                self,
-                "Growth graph appearance",
-                "Add an Excel analysis file to show the growth graph before editing its appearance.",
-            )
+        if not cache or not cache.get('has_graph'):
+            show_message_dialog(self, 'Growth graph appearance', 'Add an Excel analysis file to show the growth graph before editing its appearance.', kind='info')
             return
         self._open_growth_graph_style_dialog()
 
     def _open_growth_graph_style_dialog(self) -> None:
         style = self._get_growth_graph_style()
         dlg = QDialog(self)
-        dlg.setWindowTitle("Growth graph appearance")
+        dlg.setWindowTitle('Growth graph appearance')
         dlg.setMinimumWidth(560)
         layout = QVBoxLayout(dlg)
-        layout.addWidget(
-            QLabel(
-                "Customize the Excel growth-curve panel. Double-click the left side of the preview "
-                "to reopen these settings."
-            )
-        )
-
+        layout.addWidget(QLabel('Customize the Excel growth-curve panel. Double-click the left side of the preview to reopen these settings.'))
         form = QFormLayout()
-        x_label = QLineEdit(str(style.get("x_label", "Time [min]")))
-        y_label = QLineEdit(str(style.get("y_label", "rel. cell area")))
+        x_label = QLineEdit(str(style.get('x_label', 'Time [min]')))
+        y_label = QLineEdit(str(style.get('y_label', 'rel. cell area')))
         y_min = QDoubleSpinBox()
         y_min.setMinimum(0.0)
-        y_min.setMaximum(1_000_000.0)
+        y_min.setMaximum(1000000.0)
         y_min.setValue(float(self.yaxis_min.value()))
         y_min.setDecimals(2)
-        y_min.setSpecialValueText("Auto")
+        y_min.setSpecialValueText('Auto')
         compact_control(y_min, 90)
         y_max = QDoubleSpinBox()
         y_max.setMinimum(0.0)
-        y_max.setMaximum(1_000_000.0)
+        y_max.setMaximum(1000000.0)
         y_max.setValue(float(self.yaxis_max.value()))
         y_max.setDecimals(2)
-        y_max.setSpecialValueText("Auto")
+        y_max.setSpecialValueText('Auto')
         compact_control(y_max, 90)
         y_range_row = QHBoxLayout()
         y_range_row.setSpacing(8)
-        y_range_row.addWidget(QLabel("min"))
+        y_range_row.addWidget(QLabel('min'))
         y_range_row.addWidget(y_min)
-        y_range_row.addWidget(QLabel("max"))
+        y_range_row.addWidget(QLabel('max'))
         y_range_row.addWidget(y_max)
-        auto_y_btn = QPushButton("Auto")
-        fit_y_btn = QPushButton("Fit data")
+        auto_y_btn = QPushButton('Auto')
+        fit_y_btn = QPushButton('Fit data')
         for btn in (auto_y_btn, fit_y_btn):
             style_compact_action_button(btn, horizontal_padding=12)
-        auto_y_btn.setToolTip("Let matplotlib choose Y min and max from the data.")
-        fit_y_btn.setToolTip("Set Y min/max from the loaded Excel column with a small margin.")
+        auto_y_btn.setToolTip('Let matplotlib choose Y min and max from the data.')
+        fit_y_btn.setToolTip('Set Y min/max from the loaded Excel column with a small margin.')
         y_range_row.addWidget(auto_y_btn)
         y_range_row.addWidget(fit_y_btn)
         y_range_row.addStretch(1)
@@ -5749,7 +4380,7 @@ class PostProcessingTab(QWidget):
         def _dialog_y_fit() -> None:
             try:
                 cache = self._load_video_preview_cache()
-                values = np.asarray((cache or {}).get("relative_areas"), dtype=float)
+                values = np.asarray((cache or {}).get('relative_areas'), dtype=float)
                 values = values[np.isfinite(values)]
                 if values.size == 0:
                     return
@@ -5760,184 +4391,125 @@ class PostProcessingTab(QWidget):
                 y_max.setValue(max(lo + margin, hi + margin))
             except Exception:
                 return
-
         auto_y_btn.clicked.connect(_dialog_y_auto)
         fit_y_btn.clicked.connect(_dialog_y_fit)
         axis_font = QSpinBox()
         axis_font.setRange(8, 96)
-        axis_font.setValue(int(style.get("axis_label_font_size", 36)))
+        axis_font.setValue(int(style.get('axis_label_font_size', 36)))
         tick_font = QSpinBox()
         tick_font.setRange(8, 72)
-        tick_font.setValue(int(style.get("tick_font_size", 24)))
+        tick_font.setValue(int(style.get('tick_font_size', 24)))
         font_weight = QComboBox()
-        font_weight.addItems(
-            [
-                "ultralight",
-                "light",
-                "normal",
-                "regular",
-                "book",
-                "medium",
-                "roman",
-                "semibold",
-                "demibold",
-                "demi",
-                "bold",
-                "heavy",
-                "extra bold",
-                "black",
-            ]
-        )
+        font_weight.addItems(['ultralight', 'light', 'normal', 'regular', 'book', 'medium', 'roman', 'semibold', 'demibold', 'demi', 'bold', 'heavy', 'extra bold', 'black'])
         font_weight.setMaxVisibleItems(font_weight.count())
         font_weight.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         font_weight.view().setMinimumWidth(160)
-        font_weight.setCurrentText(str(style.get("font_weight", "bold")))
+        font_weight.setCurrentText(str(style.get('font_weight', 'bold')))
         line_width = QDoubleSpinBox()
         line_width.setRange(0.5, 24.0)
         line_width.setDecimals(1)
         line_width.setSingleStep(0.5)
-        line_width.setValue(float(style.get("line_width", 8.0)))
+        line_width.setValue(float(style.get('line_width', 8.0)))
         marker_size = QDoubleSpinBox()
         marker_size.setRange(10.0, 800.0)
         marker_size.setDecimals(0)
         marker_size.setSingleStep(10.0)
-        marker_size.setValue(float(style.get("marker_size", 200.0)))
+        marker_size.setValue(float(style.get('marker_size', 200.0)))
         marker_edge = QDoubleSpinBox()
         marker_edge.setRange(0.0, 12.0)
         marker_edge.setDecimals(1)
         marker_edge.setSingleStep(0.5)
-        marker_edge.setValue(float(style.get("marker_edge_width", 2.0)))
+        marker_edge.setValue(float(style.get('marker_edge_width', 2.0)))
         axis_stroke = QDoubleSpinBox()
         axis_stroke.setRange(0.5, 12.0)
         axis_stroke.setDecimals(1)
         axis_stroke.setSingleStep(0.5)
-        axis_stroke.setValue(float(style.get("axis_stroke_width", 3.5)))
+        axis_stroke.setValue(float(style.get('axis_stroke_width', 3.5)))
         tick_stroke = QDoubleSpinBox()
         tick_stroke.setRange(0.5, 8.0)
         tick_stroke.setDecimals(1)
         tick_stroke.setSingleStep(0.5)
-        tick_stroke.setValue(float(style.get("tick_stroke_width", 2.0)))
-        show_grid = QCheckBox("Show grid")
-        show_grid.setChecked(self._coerce_growth_graph_bool(style.get("show_grid", True)))
+        tick_stroke.setValue(float(style.get('tick_stroke_width', 2.0)))
+        show_grid = QCheckBox('Show grid')
+        show_grid.setChecked(self._coerce_growth_graph_bool(style.get('show_grid', True)))
         grid_width = QDoubleSpinBox()
         grid_width.setRange(0.1, 8.0)
         grid_width.setDecimals(1)
         grid_width.setSingleStep(0.1)
-        grid_width.setValue(float(style.get("grid_line_width", 1.5)))
+        grid_width.setValue(float(style.get('grid_line_width', 1.5)))
         grid_alpha = QDoubleSpinBox()
         grid_alpha.setRange(0.0, 1.0)
         grid_alpha.setDecimals(2)
         grid_alpha.setSingleStep(0.05)
-        grid_alpha.setValue(float(style.get("grid_alpha", 0.4)))
+        grid_alpha.setValue(float(style.get('grid_alpha', 0.4)))
         grid_width.setEnabled(show_grid.isChecked())
         grid_alpha.setEnabled(show_grid.isChecked())
         show_grid.toggled.connect(grid_width.setEnabled)
         show_grid.toggled.connect(grid_alpha.setEnabled)
-
-        form.addRow("X-axis label", x_label)
-        form.addRow("Y-axis label", y_label)
-        form.addRow("Y-axis range", y_range_row)
-        form.addRow("Axis label font size", axis_font)
-        form.addRow("Tick font size", tick_font)
-        form.addRow("Font weight", font_weight)
-        form.addRow("Line width", line_width)
-        form.addRow("Marker size", marker_size)
-        form.addRow("Marker edge width", marker_edge)
-        form.addRow("Axis stroke width", axis_stroke)
-        form.addRow("Tick stroke width", tick_stroke)
-        form.addRow("Grid", show_grid)
-        form.addRow("Grid line width", grid_width)
-        form.addRow("Grid opacity", grid_alpha)
+        form.addRow('X-axis label', x_label)
+        form.addRow('Y-axis label', y_label)
+        form.addRow('Y-axis range', y_range_row)
+        form.addRow('Axis label font size', axis_font)
+        form.addRow('Tick font size', tick_font)
+        form.addRow('Font weight', font_weight)
+        form.addRow('Line width', line_width)
+        form.addRow('Marker size', marker_size)
+        form.addRow('Marker edge width', marker_edge)
+        form.addRow('Axis stroke width', axis_stroke)
+        form.addRow('Tick stroke width', tick_stroke)
+        form.addRow('Grid', show_grid)
+        form.addRow('Grid line width', grid_width)
+        form.addRow('Grid opacity', grid_alpha)
         layout.addLayout(form)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.RestoreDefaults
-        )
-        for std_btn, padding in (
-            (QDialogButtonBox.StandardButton.RestoreDefaults, 22),
-            (QDialogButtonBox.StandardButton.Cancel, 28),
-            (QDialogButtonBox.StandardButton.Ok, 28),
-        ):
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.RestoreDefaults)
+        for (std_btn, padding) in ((QDialogButtonBox.StandardButton.RestoreDefaults, 22), (QDialogButtonBox.StandardButton.Cancel, 28), (QDialogButtonBox.StandardButton.Ok, 28)):
             btn = buttons.button(std_btn)
             if btn is not None:
                 style_compact_action_button(btn, horizontal_padding=padding)
                 btn.setMinimumWidth(110)
         restore_btn = buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults)
         if restore_btn is not None:
-            restore_btn.setText("Restore")
+            restore_btn.setText('Restore')
             restore_btn.setMinimumWidth(120)
         buttons.setMinimumHeight(44)
         layout.addWidget(buttons)
 
         def _restore_defaults() -> None:
             defaults = dict(DEFAULT_GROWTH_GRAPH_STYLE)
-            x_label.setText(str(defaults["x_label"]))
-            y_label.setText(str(defaults["y_label"]))
-            axis_font.setValue(int(defaults["axis_label_font_size"]))
-            tick_font.setValue(int(defaults["tick_font_size"]))
+            x_label.setText(str(defaults['x_label']))
+            y_label.setText(str(defaults['y_label']))
+            axis_font.setValue(int(defaults['axis_label_font_size']))
+            tick_font.setValue(int(defaults['tick_font_size']))
             y_min.setValue(0.0)
             y_max.setValue(0.0)
-            font_weight.setCurrentText(str(defaults["font_weight"]))
-            line_width.setValue(float(defaults["line_width"]))
-            marker_size.setValue(float(defaults["marker_size"]))
-            marker_edge.setValue(float(defaults["marker_edge_width"]))
-            axis_stroke.setValue(float(defaults["axis_stroke_width"]))
-            tick_stroke.setValue(float(defaults["tick_stroke_width"]))
-            show_grid.setChecked(bool(defaults["show_grid"]))
-            grid_width.setValue(float(defaults["grid_line_width"]))
-            grid_alpha.setValue(float(defaults["grid_alpha"]))
-
+            font_weight.setCurrentText(str(defaults['font_weight']))
+            line_width.setValue(float(defaults['line_width']))
+            marker_size.setValue(float(defaults['marker_size']))
+            marker_edge.setValue(float(defaults['marker_edge_width']))
+            axis_stroke.setValue(float(defaults['axis_stroke_width']))
+            tick_stroke.setValue(float(defaults['tick_stroke_width']))
+            show_grid.setChecked(bool(defaults['show_grid']))
+            grid_width.setValue(float(defaults['grid_line_width']))
+            grid_alpha.setValue(float(defaults['grid_alpha']))
         buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(_restore_defaults)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
-
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self._set_growth_graph_style(
-            {
-                "x_label": x_label.text().strip() or DEFAULT_GROWTH_GRAPH_STYLE["x_label"],
-                "y_label": y_label.text().strip() or DEFAULT_GROWTH_GRAPH_STYLE["y_label"],
-                "axis_label_font_size": axis_font.value(),
-                "tick_font_size": tick_font.value(),
-                "font_weight": font_weight.currentText(),
-                "line_width": line_width.value(),
-                "marker_size": marker_size.value(),
-                "marker_edge_width": marker_edge.value(),
-                "axis_stroke_width": axis_stroke.value(),
-                "tick_stroke_width": tick_stroke.value(),
-                "show_grid": show_grid.isChecked(),
-                "grid_line_width": grid_width.value(),
-                "grid_alpha": grid_alpha.value(),
-            }
-        )
+        self._set_growth_graph_style({'x_label': x_label.text().strip() or DEFAULT_GROWTH_GRAPH_STYLE['x_label'], 'y_label': y_label.text().strip() or DEFAULT_GROWTH_GRAPH_STYLE['y_label'], 'axis_label_font_size': axis_font.value(), 'tick_font_size': tick_font.value(), 'font_weight': font_weight.currentText(), 'line_width': line_width.value(), 'marker_size': marker_size.value(), 'marker_edge_width': marker_edge.value(), 'axis_stroke_width': axis_stroke.value(), 'tick_stroke_width': tick_stroke.value(), 'show_grid': show_grid.isChecked(), 'grid_line_width': grid_width.value(), 'grid_alpha': grid_alpha.value()})
         self.yaxis_min.setValue(y_min.value())
         self.yaxis_max.setValue(y_max.value())
         self._schedule_video_preview_refresh()
 
     def _compose_growth_frame_from_cache(self, cache: dict[str, Any], frame_idx: int) -> np.ndarray:
-        y_min, y_max = self._get_video_yaxis_limits()
-        return compose_growth_curve_combined_frame(
-            frame_idx,
-            video_frames=cache.get("video_frames"),
-            frames=cache.get("frames"),
-            relative_areas=cache.get("relative_areas"),
-            time_minutes=cache.get("time_minutes"),
-            tiles=cache.get("tiles"),
-            fi_layout=str(cache.get("fi_layout") or self._get_video_fi_layout()),
-            reference_width=int(cache.get("reference_width") or 0) or None,
-            yaxis_min=y_min,
-            yaxis_max=y_max,
-            graph_style=self._get_growth_graph_style(),
-            graph_width_ratio=self._get_graph_width_ratio(),
-        )
+        (y_min, y_max) = self._get_video_yaxis_limits()
+        return compose_growth_curve_combined_frame(frame_idx, video_frames=cache.get('video_frames'), frames=cache.get('frames'), relative_areas=cache.get('relative_areas'), time_minutes=cache.get('time_minutes'), tiles=cache.get('tiles'), fi_layout=str(cache.get('fi_layout') or self._get_video_fi_layout()), reference_width=int(cache.get('reference_width') or 0) or None, yaxis_min=y_min, yaxis_max=y_max, graph_style=self._get_growth_graph_style(), graph_width_ratio=self._get_graph_width_ratio())
 
     def _schedule_video_preview_refresh(self, *_args: Any) -> None:
-        dlg = getattr(self, "_embedded_post_preview", None)
+        dlg = getattr(self, '_embedded_post_preview', None)
         if dlg is None:
-            dlg = getattr(self, "_active_video_preview_dialog", None)
-        if dlg is None or dlg.objectName() not in ("EmbeddedVideoMontagePreview", "VideoMontagePreviewDialog"):
+            dlg = getattr(self, '_active_video_preview_dialog', None)
+        if dlg is None or dlg.objectName() not in ('EmbeddedVideoMontagePreview', 'VideoMontagePreviewDialog'):
             return
         timer = self._video_preview_refresh_timer
         if timer is None:
@@ -5960,85 +4532,51 @@ class PostProcessingTab(QWidget):
         if self._video_preview_cache is not None:
             return self._video_preview_cache
         video_paths = self._resolve_growth_curve_video_paths(self.video_path.text())
-        excel_raw = self.excel_path.text().strip() if self._use_excel_graph_enabled() else ""
+        excel_raw = self.excel_path.text().strip() if self._use_excel_graph_enabled() else ''
         excel_path = Path(excel_raw) if excel_raw else None
         fi_layout = self._get_video_fi_layout()
         overlay_colors = self._get_video_overlay_colors()
         if not video_paths:
             return None
         try:
-            source = load_growth_curve_video_source(
-                video_paths,
-                fi_layout=fi_layout,
-                overlay_colors=overlay_colors,
-            )
+            source = load_growth_curve_video_source(video_paths, fi_layout=fi_layout, overlay_colors=overlay_colors)
             video_frames = None
             tiles = None
             all_tiles = None
             if source.fi_layout == VIDEO_FI_LAYOUT_SEPARATE and source.tiles:
-                all_tiles = apply_video_montage_overlays_to_tiles(
-                    source.tiles,
-                    mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None,
-                    foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None,
-                    show_mask_contours=self.video_mask_contours.isChecked(),
-                    show_foci=self.video_foci_overlay.isChecked(),
-                    overlay_colors=overlay_colors,
-                )
+                all_tiles = apply_video_montage_overlays_to_tiles(source.tiles, mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None, foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None, show_mask_contours=self.video_mask_contours.isChecked(), show_foci=self.video_foci_overlay.isChecked(), overlay_colors=overlay_colors)
                 tiles = self._filter_video_tiles_for_visibility(all_tiles)
             else:
-                video_frames = apply_video_montage_overlays(
-                    source.merged_frames,
-                    mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None,
-                    foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None,
-                    show_mask_contours=self.video_mask_contours.isChecked(),
-                    show_foci=self.video_foci_overlay.isChecked(),
-                    overlay_colors=overlay_colors,
-                )
+                video_frames = apply_video_montage_overlays(source.merged_frames, mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None, foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None, show_mask_contours=self.video_mask_contours.isChecked(), show_foci=self.video_foci_overlay.isChecked(), overlay_colors=overlay_colors)
             frames = relative_areas = time_minutes = None
-            graph_error = ""
+            graph_error = ''
             if excel_path is not None and excel_path.exists():
                 try:
-                    frames, relative_areas, time_minutes = load_growth_curve_summary_data(
-                        excel_path,
-                        self.time_interval.value(),
-                        y_column=self._get_growth_y_column(),
-                    )
+                    (frames, relative_areas, time_minutes) = load_growth_curve_summary_data(excel_path, self.time_interval.value(), y_column=self._get_growth_y_column())
                 except Exception as exc:
-                    graph_error = f"Growth graph skipped: {exc}"
+                    graph_error = f'Growth graph skipped: {exc}'
         except Exception as exc:
             raise ValueError(str(exc)) from exc
         num_frames = min(source.num_frames, len(frames)) if frames is not None else source.num_frames
         if num_frames <= 0:
-            raise ValueError("No frames available to preview.")
+            raise ValueError('No frames available to preview.')
         if video_frames is not None:
             video_frames = video_frames[:num_frames]
         if all_tiles is not None:
-            all_tiles = [(label, stack[:num_frames]) for label, stack in all_tiles]
+            all_tiles = [(label, stack[:num_frames]) for (label, stack) in all_tiles]
         if tiles is not None:
-            tiles = [(label, stack[:num_frames]) for label, stack in tiles]
-        cache = {
-            "video_frames": video_frames,
-            "tiles": tiles,
-            "all_tiles": all_tiles,
-            "fi_layout": source.fi_layout,
-            "reference_width": source.reference_width,
-            "frames": frames[:num_frames] if frames is not None else None,
-            "relative_areas": relative_areas[:num_frames] if relative_areas is not None else None,
-            "time_minutes": time_minutes[:num_frames] if time_minutes is not None else None,
-            "num_frames": num_frames,
-            "has_graph": frames is not None,
-            "graph_error": graph_error,
-        }
+            tiles = [(label, stack[:num_frames]) for (label, stack) in tiles]
+        cache = {'video_frames': video_frames, 'tiles': tiles, 'all_tiles': all_tiles, 'fi_layout': source.fi_layout, 'reference_width': source.reference_width, 'frames': frames[:num_frames] if frames is not None else None, 'relative_areas': relative_areas[:num_frames] if relative_areas is not None else None, 'time_minutes': time_minutes[:num_frames] if time_minutes is not None else None, 'num_frames': num_frames, 'has_graph': frames is not None, 'graph_error': graph_error}
         self._video_preview_cache = cache
         return cache
 
     def _refresh_video_montage_preview(self) -> None:
-        dlg = getattr(self, "_embedded_post_preview", None)
+        dlg = getattr(self, '_embedded_post_preview', None)
         if dlg is None:
             return
-        preview_label = getattr(dlg, "_video_preview_label", None)
-        frame_slider = getattr(dlg, "_video_frame_slider", None)
-        status_label = getattr(dlg, "_video_preview_status", None)
+        preview_label = getattr(dlg, '_video_preview_label', None)
+        frame_slider = getattr(dlg, '_video_frame_slider', None)
+        status_label = getattr(dlg, '_video_preview_status', None)
         if preview_label is None:
             return
         try:
@@ -6046,9 +4584,9 @@ class PostProcessingTab(QWidget):
             if cache is None:
                 preview_label.clear()
                 if status_label is not None:
-                    status_label.setText("Set video input on the left. Excel is optional for the growth graph.")
+                    status_label.setText('Set video input on the left. Excel is optional for the growth graph.')
                 return
-            num_frames = int(cache["num_frames"])
+            num_frames = int(cache['num_frames'])
             if frame_slider is not None:
                 frame_slider.blockSignals(True)
                 frame_slider.setMaximum(max(0, num_frames - 1))
@@ -6059,26 +4597,19 @@ class PostProcessingTab(QWidget):
             frame_idx = max(0, min(frame_idx, num_frames - 1))
             combined = self._compose_growth_frame_from_cache(cache, frame_idx)
             pix = to_qpixmap(combined)
-            if pix is not None and not pix.isNull():
+            if pix is not None and (not pix.isNull()):
                 target_w = max(320, int(preview_label.width() or 1200))
                 target_h = max(240, int(preview_label.height() or 480))
-                scaled = pix.scaled(
-                    target_w,
-                    target_h,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+                scaled = pix.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 preview_label.setPixmap(scaled)
             if status_label is not None:
-                mode = "growth graph + video" if cache.get("has_graph") else "video only (no growth graph)"
-                layout_hint = ""
-                if cache.get("fi_layout") == VIDEO_FI_LAYOUT_SEPARATE and cache.get("tiles"):
-                    tile_names = ", ".join(label for label, _ in cache["tiles"])
-                    layout_hint = f" Separate tiles: {tile_names}."
-                suffix = f" {cache.get('graph_error')}" if cache.get("graph_error") else ""
-                status_label.setText(
-                    f"Frame {frame_idx + 1} / {num_frames} — {mode}.{layout_hint}{suffix}"
-                )
+                mode = 'growth graph + video' if cache.get('has_graph') else 'video only (no growth graph)'
+                layout_hint = ''
+                if cache.get('fi_layout') == VIDEO_FI_LAYOUT_SEPARATE and cache.get('tiles'):
+                    tile_names = ', '.join((label for (label, _) in cache['tiles']))
+                    layout_hint = f' Separate tiles: {tile_names}.'
+                suffix = f" {cache.get('graph_error')}" if cache.get('graph_error') else ''
+                status_label.setText(f'Frame {frame_idx + 1} / {num_frames} — {mode}.{layout_hint}{suffix}')
             self._update_button_state()
         except Exception as exc:
             preview_label.clear()
@@ -6089,57 +4620,44 @@ class PostProcessingTab(QWidget):
 
     def _preview_video_montage(self) -> None:
         if not self.video_path.text():
-            QMessageBox.warning(
-                self,
-                "Video montage",
-                "Please select a video input first. Excel is optional for the growth graph.",
-            )
+            show_message_dialog(self, 'Video montage', 'Please select a video input first. Excel is optional for the growth graph.', kind='warning')
             return
-        self._set_post_preview_mode("video")
-        embedded = getattr(self, "_module_preview_mount", None) is not None
+        self._set_post_preview_mode('video')
+        embedded = getattr(self, '_module_preview_mount', None) is not None
         self._show_video_montage_preview(embedded=embedded)
 
-    def _show_video_montage_preview(self, *, embedded: bool = True) -> None:
+    def _show_video_montage_preview(self, *, embedded: bool=True) -> None:
         self._close_embedded_post_preview()
         self._invalidate_video_preview_cache()
-        if embedded and getattr(self, "_module_preview_mount", None) is not None:
+        if embedded and getattr(self, '_module_preview_mount', None) is not None:
             dlg = QWidget(self)
-            dlg.setObjectName("EmbeddedVideoMontagePreview")
+            dlg.setObjectName('EmbeddedVideoMontagePreview')
             dlg.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         else:
             dlg = QDialog(self)
-            dlg.setObjectName("VideoMontagePreviewDialog")
-            dlg.setWindowTitle("Video montage preview")
+            dlg.setObjectName('VideoMontagePreviewDialog')
+            dlg.setWindowTitle('Video montage preview')
             dlg.setModal(False)
             dlg.setMinimumSize(900, 700)
             self._active_video_preview_dialog = dlg
-
         main_layout = QVBoxLayout(dlg)
-        hint = QLabel(
-            "Growth curve (left) and microscopy frame (right). Double-click the growth graph to edit "
-            "axis labels, fonts, stroke, and grid. Scrub frames, tune settings, then create the montage below."
-        )
+        hint = QLabel('Growth curve (left) and microscopy frame (right). Double-click the growth graph to edit axis labels, fonts, stroke, and grid. Scrub frames, tune settings, then create the montage below.')
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #aaa; font-size: 11px;")
+        hint.setStyleSheet('color: #aaa; font-size: 11px;')
         main_layout.addWidget(hint)
-
         preview_label = _GrowthCurvePreviewLabel()
         preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_label.setMinimumHeight(150 if embedded else 280)
         if embedded:
             preview_label.setMaximumHeight(260)
-        preview_label.setStyleSheet("background-color: #1a1a1a; border-radius: 6px;")
-        preview_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred if embedded else QSizePolicy.Policy.Expanding,
-        )
-        preview_label.setToolTip("Double-click the left side of the preview to edit growth-graph appearance.")
+        preview_label.setStyleSheet('background-color: #1a1a1a; border-radius: 6px;')
+        preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred if embedded else QSizePolicy.Policy.Expanding)
+        preview_label.setToolTip('Double-click the left side of the preview to edit growth-graph appearance.')
         preview_label.graph_double_clicked.connect(self._open_growth_graph_style_from_preview)
         dlg._video_preview_label = preview_label
         main_layout.addWidget(preview_label, 0 if embedded else 1)
-
         slider_row = QHBoxLayout()
-        slider_row.addWidget(QLabel("Frame:"))
+        slider_row.addWidget(QLabel('Frame:'))
         frame_slider = QSlider(Qt.Orientation.Horizontal)
         frame_slider.setMinimum(0)
         frame_slider.setMaximum(0)
@@ -6147,27 +4665,19 @@ class PostProcessingTab(QWidget):
         frame_slider.valueChanged.connect(self._schedule_video_preview_refresh)
         dlg._video_frame_slider = frame_slider
         slider_row.addWidget(frame_slider, 1)
-        export_frame_btn = QPushButton("Export frame PNG")
+        export_frame_btn = QPushButton('Export frame PNG')
         style_compact_action_button(export_frame_btn, horizontal_padding=12)
-        export_frame_btn.setToolTip("Save the current preview frame at full resolution.")
+        export_frame_btn.setToolTip('Save the current preview frame at full resolution.')
         export_frame_btn.clicked.connect(self._export_current_video_frame_png)
         slider_row.addWidget(export_frame_btn)
         main_layout.addLayout(slider_row)
-
-        status_label = QLabel("")
+        status_label = QLabel('')
         status_label.setWordWrap(True)
-        status_label.setStyleSheet("color: #9a9a9a; font-size: 10pt;")
+        status_label.setStyleSheet('color: #9a9a9a; font-size: 10pt;')
         dlg._video_preview_status = status_label
         main_layout.addWidget(status_label)
-
         settings_panel = self._build_graph_and_video_settings()
-        settings_section = CollapsibleSection(
-            "Settings & export",
-            settings_panel,
-            parent=dlg,
-            expanded=True,
-            compact=True,
-        )
+        settings_section = CollapsibleSection('Settings & export', settings_panel, parent=dlg, expanded=True, compact=True)
         self.process_btn.setParent(dlg)
         if embedded:
             settings_scroll = QScrollArea()
@@ -6175,7 +4685,7 @@ class PostProcessingTab(QWidget):
             settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
             settings_scroll.setMinimumHeight(190)
-            settings_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+            settings_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
             settings_body = QWidget()
             settings_body_layout = QVBoxLayout(settings_body)
             settings_body_layout.setContentsMargins(0, 0, 0, 0)
@@ -6188,127 +4698,89 @@ class PostProcessingTab(QWidget):
         else:
             main_layout.addWidget(settings_section)
             main_layout.addWidget(self.process_btn)
-
         dlg.setLayout(main_layout)
-        if embedded and getattr(self, "_module_preview_mount", None) is not None:
+        if embedded and getattr(self, '_module_preview_mount', None) is not None:
             self._embedded_post_preview = dlg
-            mount_embedded_preview(
-                self._module_preview_mount,
-                dlg,
-                preview_surface=self._preview_surface,
-            )
+            mount_embedded_preview(self._module_preview_mount, dlg, preview_surface=self._preview_surface)
             self.refresh_post_candidate_list()
         else:
             dlg.show()
-
         QTimer.singleShot(0, self._refresh_video_montage_preview)
 
     def _update_button_state(self):
         """Update preview/create button state based on input fields."""
         has_video = bool(self.video_path.text())
-        if hasattr(self, "preview_video_btn"):
+        if hasattr(self, 'preview_video_btn'):
             self.preview_video_btn.setEnabled(has_video)
-        has_format = (
-            self.format_tif.isChecked()
-            or self.format_avi.isChecked()
-            or self.format_gif.isChecked()
-            or self.format_mp4.isChecked()
-        )
-        if hasattr(self, "process_btn"):
+        has_format = self.format_tif.isChecked() or self.format_avi.isChecked() or self.format_gif.isChecked() or self.format_mp4.isChecked()
+        if hasattr(self, 'process_btn'):
             self.process_btn.setEnabled(has_video and has_format)
-    
+
     def _on_select_all_changed(self, state):
         """Handle 'Select All' checkbox change"""
-        checked = state == 2  # Qt.Checked = 2
+        checked = state == 2
         self.format_tif.setChecked(checked)
         self.format_avi.setChecked(checked)
         self.format_gif.setChecked(checked)
         self.format_mp4.setChecked(checked)
-    
+
     def _on_format_changed(self):
         """Handle individual format checkbox change"""
-        all_checked = (self.format_tif.isChecked() and self.format_avi.isChecked() and 
-                      self.format_gif.isChecked() and self.format_mp4.isChecked())
+        all_checked = self.format_tif.isChecked() and self.format_avi.isChecked() and self.format_gif.isChecked() and self.format_mp4.isChecked()
         self.format_all.blockSignals(True)
         self.format_all.setChecked(all_checked)
         self.format_all.blockSignals(False)
         self._update_button_state()
-    
+
     def select_video_file(self):
         """Select TIFF file for video input"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select TIFF File",
-            get_default_browse_dir(),
-            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)"
-        )
+        (file_path, _) = QFileDialog.getOpenFileName(self, 'Select TIFF File', get_default_browse_dir(), 'TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)')
         if file_path:
             self.video_path.setText(file_path)
-    
+
     def select_video_folder(self):
         """Select folder containing TIFF sequence"""
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "Select Folder with TIFF Sequence",
-            get_default_browse_dir()
-        )
+        folder_path = QFileDialog.getExistingDirectory(self, 'Select Folder with TIFF Sequence', get_default_browse_dir())
         if folder_path:
             self.video_path.setText(folder_path)
             self._auto_fill_video_inputs()
 
     def select_video_multi_channel(self):
         """Select several single-channel TIFF stacks (one per channel); merged with LUTs in the worker."""
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select one TIFF per channel (same frame count and size)",
-            get_default_browse_dir(),
-            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
-        )
+        (paths, _) = QFileDialog.getOpenFileNames(self, 'Select one TIFF per channel (same frame count and size)', get_default_browse_dir(), 'TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)')
         if paths:
-            phase_paths, fi_paths = self._split_phase_and_fi_video_paths([Path(p) for p in paths])
+            (phase_paths, fi_paths) = self._split_phase_and_fi_video_paths([Path(p) for p in paths])
             if phase_paths:
                 self.video_path.setText(str(phase_paths[0]))
-                self.video_fi_path.setText("|".join(str(p) for p in [*phase_paths[1:], *fi_paths]))
+                self.video_fi_path.setText('|'.join((str(p) for p in [*phase_paths[1:], *fi_paths])))
                 self.video_fi_channels.setChecked(bool(phase_paths[1:] or fi_paths))
             else:
-                self.video_path.setText("|".join(paths))
+                self.video_path.setText('|'.join(paths))
 
     def _show_video_fi_browse_menu(self, anchor: QPushButton) -> None:
         """One FI browse button: pick stack file(s) or a folder from a small menu."""
         menu = QMenu(self)
-        menu.addAction("TIFF stack(s)…", self.select_video_fi_files)
-        menu.addAction("Folder…", self.select_video_fi_folder)
+        menu.addAction('TIFF stack(s)…', self.select_video_fi_files)
+        menu.addAction('Folder…', self.select_video_fi_folder)
         menu.popup(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def select_video_fi_files(self):
         """Select one or more FI TIFF stacks."""
-        paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Select FI TIFF stack(s)",
-            get_default_browse_dir(),
-            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
-        )
+        (paths, _) = QFileDialog.getOpenFileNames(self, 'Select FI TIFF stack(s)', get_default_browse_dir(), 'TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)')
         if paths:
-            self.video_fi_path.setText("|".join(paths))
+            self.video_fi_path.setText('|'.join(paths))
             self.video_fi_channels.setChecked(True)
 
     def select_video_fi_folder(self):
         """Select a folder containing an FI image series or FI stack files."""
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "Select FI image series folder",
-            get_default_browse_dir(),
-        )
+        folder_path = QFileDialog.getExistingDirectory(self, 'Select FI image series folder', get_default_browse_dir())
         if folder_path:
-            discovered = self._discover_growth_curve_video_inputs(
-                Path(folder_path),
-                include_sequence_folders=True,
-            )
+            discovered = self._discover_growth_curve_video_inputs(Path(folder_path), include_sequence_folders=True)
             if len(discovered) == 1 and discovered[0].is_dir():
                 self.video_fi_path.setText(str(discovered[0]))
             elif discovered:
-                _, fi_paths = self._split_phase_and_fi_video_paths(discovered)
-                self.video_fi_path.setText("|".join(str(p) for p in (fi_paths or discovered)))
+                (_, fi_paths) = self._split_phase_and_fi_video_paths(discovered)
+                self.video_fi_path.setText('|'.join((str(p) for p in fi_paths or discovered)))
             else:
                 self.video_fi_path.setText(folder_path)
             self.video_fi_channels.setChecked(True)
@@ -6316,39 +4788,22 @@ class PostProcessingTab(QWidget):
     def _video_autofill_root(self) -> Optional[Path]:
         """Infer dataset root from the current video/mask/foci/excel path fields."""
         candidates: list[Path] = []
-        for raw in (
-            self.video_path.text(),
-            self.excel_path.text(),
-            self.video_mask_path.text(),
-            self.video_foci_path.text(),
-        ):
-            text = (raw or "").strip()
+        for raw in (self.video_path.text(), self.excel_path.text(), self.video_mask_path.text(), self.video_foci_path.text()):
+            text = (raw or '').strip()
             if not text:
                 continue
-            first = self._parse_growth_curve_video_paths(text)[0] if ("|" in text or "\n" in text) else Path(text)
+            first = self._parse_growth_curve_video_paths(text)[0] if '|' in text or '\n' in text else Path(text)
             candidates.append(first)
-
         if not candidates:
-            picked = QFileDialog.getExistingDirectory(
-                self,
-                "Select dataset folder for video montage auto-fill",
-                get_default_browse_dir(),
-            )
+            picked = QFileDialog.getExistingDirectory(self, 'Select dataset folder for video montage auto-fill', get_default_browse_dir())
             if not picked:
                 return None
             candidates.append(Path(picked))
-
         start = candidates[0]
         root = start if start.is_dir() else start.parent
         for cur in (root, *root.parents):
             try:
-                direct_tifs = [
-                    p for p in cur.iterdir()
-                    if p.is_file()
-                    and p.suffix.lower() in (".tif", ".tiff")
-                    and "mask" not in p.name.lower()
-                    and "visualization" not in p.name.lower()
-                ]
+                direct_tifs = [p for p in cur.iterdir() if p.is_file() and p.suffix.lower() in ('.tif', '.tiff') and ('mask' not in p.name.lower()) and ('visualization' not in p.name.lower())]
                 if direct_tifs:
                     return cur
             except Exception:
@@ -6370,145 +4825,86 @@ class PostProcessingTab(QWidget):
     def _is_growth_curve_video_tiff(path: Path) -> bool:
         """Return True for TIFFs that look like microscopy video/channel inputs."""
         name = path.name.lower()
-        if path.suffix.lower() not in (".tif", ".tiff"):
+        if path.suffix.lower() not in ('.tif', '.tiff'):
             return False
-        if name.startswith("."):
+        if name.startswith('.'):
             return False
         parent_bits = {p.name.lower() for p in path.parents[:4]}
-        if parent_bits & {"filtered_masks", "overlays", "foci_filtered", "foci_detection"}:
+        if parent_bits & {'filtered_masks', 'overlays', 'foci_filtered', 'foci_detection'}:
             return False
-        excluded = (
-            "mask",
-            "visualization",
-            "overlay",
-            "filtered_overlay",
-            "montage",
-            "summary",
-        )
-        return not any(token in name for token in excluded)
+        excluded = ('mask', 'visualization', 'overlay', 'filtered_overlay', 'montage', 'summary')
+        return not any((token in name for token in excluded))
 
     @staticmethod
     def _looks_like_tiff_frame_sequence(paths: list[Path]) -> bool:
         """A folder with many TIFFs is probably a frame sequence, not channel stack files."""
         if len(paths) < 6:
             return False
-        channel_tokens = (
-            "_phase",
-            "phase",
-            "_bf",
-            "brightfield",
-            "_gfp",
-            "_dsred",
-            "_rfp",
-            "_mcherry",
-            "_fi",
-            "foci",
-        )
-        channel_named = sum(
-            1 for p in paths if any(token in p.stem.lower() for token in channel_tokens)
-        )
+        channel_tokens = ('_phase', 'phase', '_bf', 'brightfield', '_gfp', '_dsred', '_rfp', '_mcherry', '_fi', 'foci')
+        channel_named = sum((1 for p in paths if any((token in p.stem.lower() for token in channel_tokens))))
         return channel_named < max(2, len(paths) // 2)
 
     @staticmethod
     def _video_input_sort_key(path: Path) -> tuple[int, str]:
         """Phase/TL first, then FI channels, then other TIFFs."""
         stem = path.stem.lower()
-        if any(token in stem for token in ("phase", "brightfield", "_bf", "_tl", "timelapse")):
+        if any((token in stem for token in ('phase', 'brightfield', '_bf', '_tl', 'timelapse'))):
             role = 0
-        elif any(token in stem for token in ("_fi", "foci", "gfp", "rfp", "dsred", "mcherry", "yfp", "cfp")):
+        elif any((token in stem for token in ('_fi', 'foci', 'gfp', 'rfp', 'dsred', 'mcherry', 'yfp', 'cfp'))):
             role = 1
         else:
             role = 2
-        return role, path.name.lower()
+        return (role, path.name.lower())
 
     @staticmethod
     def _video_path_looks_like_fi(path: Path) -> bool:
         stem = path.stem.lower()
-        return any(
-            token in stem
-            for token in (
-                "_fi",
-                "foci",
-                "focus",
-                "gfp",
-                "egfp",
-                "rfp",
-                "dsred",
-                "mcherry",
-                "mscarlet",
-                "yfp",
-                "cfp",
-                "cy5",
-            )
-        )
+        return any((token in stem for token in ('_fi', 'foci', 'focus', 'gfp', 'egfp', 'rfp', 'dsred', 'mcherry', 'mscarlet', 'yfp', 'cfp', 'cy5')))
 
     @staticmethod
     def _video_path_looks_like_phase(path: Path) -> bool:
         stem = path.stem.lower()
-        return any(token in stem for token in ("phase", "brightfield", "_bf", "_tl", "timelapse", "dic"))
+        return any((token in stem for token in ('phase', 'brightfield', '_bf', '_tl', 'timelapse', 'dic')))
 
     def _split_phase_and_fi_video_paths(self, paths: list[Path]) -> tuple[list[Path], list[Path]]:
         """Split channel paths into phase/TL candidates and FI candidates by filename."""
         if not paths:
-            return [], []
+            return ([], [])
         phase = [p for p in paths if self._video_path_looks_like_phase(p)]
         fi = [p for p in paths if self._video_path_looks_like_fi(p) and p not in phase]
         unknown = [p for p in paths if p not in phase and p not in fi]
         if not phase and unknown:
             phase = [unknown.pop(0)]
         fi.extend(unknown)
-        return phase, fi
+        return (phase, fi)
 
-    def _discover_growth_curve_video_inputs(
-        self,
-        root: Path,
-        *,
-        include_sequence_folders: bool = False,
-        limit: int = 200,
-    ) -> list[Path]:
+    def _discover_growth_curve_video_inputs(self, root: Path, *, include_sequence_folders: bool=False, limit: int=200) -> list[Path]:
         """Discover likely TL/video TIFF inputs below a selected folder."""
         root = Path(root)
         if root.is_file():
             return [root] if self._is_growth_curve_video_tiff(root) else []
         if not root.is_dir():
             return []
-
         try:
-            direct_tifs = sorted(
-                [p for p in root.iterdir() if p.is_file() and self._is_growth_curve_video_tiff(p)],
-                key=lambda p: p.name.lower(),
-            )
+            direct_tifs = sorted([p for p in root.iterdir() if p.is_file() and self._is_growth_curve_video_tiff(p)], key=lambda p: p.name.lower())
         except Exception:
             direct_tifs = []
         if direct_tifs:
             if include_sequence_folders and self._looks_like_tiff_frame_sequence(direct_tifs):
                 return [root]
             return sorted(direct_tifs, key=self._video_input_sort_key)[:limit]
-
         found: list[Path] = []
         seen: set[Path] = set()
-        skip_dirs = {
-            "_analysis",
-            "analysis",
-            "filtered_masks",
-            "overlays",
-            "foci_filtered",
-            "foci_detection",
-        }
+        skip_dirs = {'_analysis', 'analysis', 'filtered_masks', 'overlays', 'foci_filtered', 'foci_detection'}
         try:
-            dirs = [root, *[p for p in root.rglob("*") if p.is_dir()]]
+            dirs = [root, *[p for p in root.rglob('*') if p.is_dir()]]
         except Exception:
             dirs = [root]
         for folder in dirs:
-            if folder != root and (
-                folder.name.lower() in skip_dirs or folder.name.lower().startswith("_segmentation")
-            ):
+            if folder != root and (folder.name.lower() in skip_dirs or folder.name.lower().startswith('_segmentation')):
                 continue
             try:
-                tifs = sorted(
-                    [p for p in folder.iterdir() if p.is_file() and self._is_growth_curve_video_tiff(p)],
-                    key=lambda p: p.name.lower(),
-                )
+                tifs = sorted([p for p in folder.iterdir() if p.is_file() and self._is_growth_curve_video_tiff(p)], key=lambda p: p.name.lower())
             except Exception:
                 continue
             if not tifs:
@@ -6530,10 +4926,7 @@ class PostProcessingTab(QWidget):
         """Paths shown in the module-side picker; folders expand to discovered TL candidates."""
         raw_paths = self._parse_growth_curve_video_paths(text)
         if len(raw_paths) == 1 and raw_paths[0].is_dir():
-            expanded = self._discover_growth_curve_video_inputs(
-                raw_paths[0],
-                include_sequence_folders=True,
-            )
+            expanded = self._discover_growth_curve_video_inputs(raw_paths[0], include_sequence_folders=True)
             return expanded or raw_paths
         return raw_paths
 
@@ -6541,10 +4934,7 @@ class PostProcessingTab(QWidget):
         """Actual preview/export input. Folder sequences stay folders; stack folders expand."""
         raw_paths = self._parse_growth_curve_video_paths(text)
         if len(raw_paths) == 1 and raw_paths[0].is_dir():
-            expanded = self._discover_growth_curve_video_inputs(
-                raw_paths[0],
-                include_sequence_folders=True,
-            )
+            expanded = self._discover_growth_curve_video_inputs(raw_paths[0], include_sequence_folders=True)
             if not expanded:
                 return raw_paths
             if len(expanded) == 1 and expanded[0].is_dir():
@@ -6553,22 +4943,17 @@ class PostProcessingTab(QWidget):
                 base_paths = [p for p in expanded if p.is_file()]
         else:
             base_paths = raw_paths
-
         fi_paths: list[Path] = []
         if self._video_fi_enabled():
-            fi_edit = getattr(self, "video_fi_path", None)
-            fi_raw = fi_edit.text().strip() if self._qt_widget_alive(fi_edit) else ""
+            fi_edit = getattr(self, 'video_fi_path', None)
+            fi_raw = fi_edit.text().strip() if self._qt_widget_alive(fi_edit) else ''
             for fp in self._parse_growth_curve_video_paths(fi_raw):
                 if fp.is_dir():
-                    discovered = self._discover_growth_curve_video_inputs(
-                        fp,
-                        include_sequence_folders=True,
-                    )
+                    discovered = self._discover_growth_curve_video_inputs(fp, include_sequence_folders=True)
                     fi_paths.extend(discovered or [fp])
                 elif str(fp).strip():
                     fi_paths.append(fp)
-
-        phase_base, fi_from_base = self._split_phase_and_fi_video_paths(base_paths)
+        (phase_base, fi_from_base) = self._split_phase_and_fi_video_paths(base_paths)
         if not self._video_fi_enabled():
             return phase_base or base_paths[:1]
         if fi_paths:
@@ -6580,85 +4965,43 @@ class PostProcessingTab(QWidget):
         root = self._video_autofill_root()
         if root is None or not root.exists():
             return False
-
-        discovered_video_inputs = self._discover_growth_curve_video_inputs(
-            root,
-            include_sequence_folders=True,
-        )
+        discovered_video_inputs = self._discover_growth_curve_video_inputs(root, include_sequence_folders=True)
         sequence_folders = [p for p in discovered_video_inputs if p.is_dir()]
         direct_tifs = [p for p in discovered_video_inputs if p.is_file()]
-        phase_candidates, fi_candidates = self._split_phase_and_fi_video_paths(direct_tifs)
-        phase = self._prefer_first(
-            phase_candidates,
-            [
-                lambda p: "phase" in p.name.lower(),
-                lambda p: "_tl" in p.name.lower() or "timelapse" in p.name.lower(),
-                lambda p: "_fi_" not in p.name.lower() and "foci" not in p.name.lower(),
-            ],
-        )
+        (phase_candidates, fi_candidates) = self._split_phase_and_fi_video_paths(direct_tifs)
+        phase = self._prefer_first(phase_candidates, [lambda p: 'phase' in p.name.lower(), lambda p: '_tl' in p.name.lower() or 'timelapse' in p.name.lower(), lambda p: '_fi_' not in p.name.lower() and 'foci' not in p.name.lower()])
         fi_channels = [p for p in fi_candidates if p != phase]
         video_inputs = [p for p in [phase] if p is not None]
         if video_inputs:
             self.video_path.setText(str(video_inputs[0]))
-            self.video_fi_path.setText("|".join(str(p) for p in fi_channels))
+            self.video_fi_path.setText('|'.join((str(p) for p in fi_channels)))
             self.video_fi_channels.setChecked(bool(fi_channels))
         elif len(sequence_folders) == 1:
             video_inputs = [sequence_folders[0]]
             self.video_path.setText(str(sequence_folders[0]))
             self.video_fi_path.clear()
-
-        analysis_files = sorted((root / "_analysis").glob("*.xlsx"), key=lambda p: p.name.lower())
-        analysis = self._prefer_first(
-            [
-                p for p in analysis_files
-                if "visualization" not in p.name.lower()
-                and not p.name.lower().startswith("@summary")
-            ],
-            [
-                lambda p: p.name.lower().endswith("_mask_filtered_analysis.xlsx"),
-                lambda p: p.name.lower().endswith("_masks_analysis.xlsx"),
-                lambda p: "_analysis" in p.name.lower() and "_gfp" not in p.name.lower() and "_dsred" not in p.name.lower(),
-            ],
-        )
+        analysis_files = sorted((root / '_analysis').glob('*.xlsx'), key=lambda p: p.name.lower())
+        analysis = self._prefer_first([p for p in analysis_files if 'visualization' not in p.name.lower() and (not p.name.lower().startswith('@summary'))], [lambda p: p.name.lower().endswith('_mask_filtered_analysis.xlsx'), lambda p: p.name.lower().endswith('_masks_analysis.xlsx'), lambda p: '_analysis' in p.name.lower() and '_gfp' not in p.name.lower() and ('_dsred' not in p.name.lower())])
         if analysis is not None:
             self.excel_path.setText(str(analysis))
-
         mask_candidates: list[Path] = []
-        for seg_dir in sorted(root.glob("_segmentation*"), key=lambda p: p.name.lower()):
-            mask_candidates.extend(sorted((seg_dir / "filtered_masks").glob("*_mask_filtered.tif*"), key=lambda p: p.name.lower()))
-            mask_candidates.extend(sorted(seg_dir.glob("*_masks.tif*"), key=lambda p: p.name.lower()))
-        mask = self._prefer_first(
-            mask_candidates,
-            [
-                lambda p: "filtered" in p.name.lower(),
-                lambda p: "masks" in p.name.lower(),
-            ],
-        )
+        for seg_dir in sorted(root.glob('_segmentation*'), key=lambda p: p.name.lower()):
+            mask_candidates.extend(sorted((seg_dir / 'filtered_masks').glob('*_mask_filtered.tif*'), key=lambda p: p.name.lower()))
+            mask_candidates.extend(sorted(seg_dir.glob('*_masks.tif*'), key=lambda p: p.name.lower()))
+        mask = self._prefer_first(mask_candidates, [lambda p: 'filtered' in p.name.lower(), lambda p: 'masks' in p.name.lower()])
         if mask is not None:
             self.video_mask_path.setText(str(mask))
             self.video_mask_contours.setChecked(True)
-
         foci_candidates: list[Path] = []
-        for seg_dir in sorted(root.glob("_segmentation*"), key=lambda p: p.name.lower()):
-            foci_candidates.extend(sorted((seg_dir / "foci_filtered").glob("*.csv"), key=lambda p: p.name.lower()))
-            foci_candidates.extend(sorted((seg_dir / "foci_detection").glob("*.csv"), key=lambda p: p.name.lower()))
-        foci = self._prefer_first(
-            foci_candidates,
-            [
-                lambda p: "filtered" in p.name.lower(),
-                lambda p: "foci" in p.name.lower(),
-            ],
-        )
+        for seg_dir in sorted(root.glob('_segmentation*'), key=lambda p: p.name.lower()):
+            foci_candidates.extend(sorted((seg_dir / 'foci_filtered').glob('*.csv'), key=lambda p: p.name.lower()))
+            foci_candidates.extend(sorted((seg_dir / 'foci_detection').glob('*.csv'), key=lambda p: p.name.lower()))
+        foci = self._prefer_first(foci_candidates, [lambda p: 'filtered' in p.name.lower(), lambda p: 'foci' in p.name.lower()])
         if foci is not None:
             self.video_foci_path.setText(str(foci))
             self.video_foci_overlay.setChecked(True)
-
         if not any((video_inputs, analysis, mask, foci)):
-            QMessageBox.information(
-                self,
-                "Video montage auto-fill",
-                f"No matching video montage inputs were found in:\n{root}",
-            )
+            show_message_dialog(self, 'Video montage auto-fill', f'No matching video montage inputs were found in:\n{root}', kind='info')
             return False
         else:
             self._invalidate_video_preview_cache()
@@ -6667,19 +5010,18 @@ class PostProcessingTab(QWidget):
 
     @staticmethod
     def _parse_growth_curve_video_paths(text: str) -> list[Path]:
-        raw = (text or "").strip()
+        raw = (text or '').strip()
         if not raw:
             return []
-        if "\n" in raw:
+        if '\n' in raw:
             return [Path(p.strip()) for p in raw.splitlines() if p.strip()]
-        if "|" in raw:
-            return [Path(p.strip()) for p in raw.split("|") if p.strip()]
+        if '|' in raw:
+            return [Path(p.strip()) for p in raw.split('|') if p.strip()]
         return [Path(raw)]
-    
+
     def handle_dropped_video_path(self, dropped_path):
         """Handle dropped file or folder path for growth curve video tab"""
         path_obj = Path(dropped_path)
-        # Update video path
         self.video_path.setText(dropped_path)
         if path_obj.is_dir():
             self._auto_fill_video_inputs()
@@ -6692,56 +5034,30 @@ class PostProcessingTab(QWidget):
         if path_obj.is_file():
             self.excel_path.setText(dropped_path)
         elif path_obj.is_dir():
-            xlsx_files = sorted(
-                list(path_obj.glob("*.xlsx")) + list(path_obj.glob("*.xls")),
-                key=lambda p: p.name.lower(),
-            )
+            xlsx_files = sorted(list(path_obj.glob('*.xlsx')) + list(path_obj.glob('*.xls')), key=lambda p: p.name.lower())
             if not xlsx_files:
                 return
-            preferred = [
-                p for p in xlsx_files
-                if p.suffix.lower() in (".xlsx", ".xls")
-                and (
-                    p.name.lower().endswith("_analysis.xlsx")
-                    or p.name.lower().endswith("_masks_analysis.xlsx")
-                )
-                and not p.name.lower().endswith("_foci_analysis.xlsx")
-            ]
+            preferred = [p for p in xlsx_files if p.suffix.lower() in ('.xlsx', '.xls') and (p.name.lower().endswith('_analysis.xlsx') or p.name.lower().endswith('_masks_analysis.xlsx')) and (not p.name.lower().endswith('_foci_analysis.xlsx'))]
             self.excel_path.setText(str(preferred[0] if preferred else xlsx_files[0]))
 
     def select_excel_file(self):
         """Select Excel file from Analyze Masks tab"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Excel Analysis File",
-            get_default_browse_dir(),
-            "Excel Files (*.xlsx *.xls);;All Files (*)"
-        )
+        (file_path, _) = QFileDialog.getOpenFileName(self, 'Select Excel Analysis File', get_default_browse_dir(), 'Excel Files (*.xlsx *.xls);;All Files (*)')
         if file_path:
             self.excel_path.setText(file_path)
 
     def _select_video_mask_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select mask TIFF for video contours",
-            get_default_browse_dir(),
-            "TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)",
-        )
+        (path, _) = QFileDialog.getOpenFileName(self, 'Select mask TIFF for video contours', get_default_browse_dir(), 'TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)')
         if path:
             self.video_mask_path.setText(path)
             self.video_mask_contours.setChecked(True)
 
     def _select_video_foci_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select foci CSV/XLSX for video markers",
-            get_default_browse_dir(),
-            "Foci files (*.csv *.xlsx *.xls);;All Files (*)",
-        )
+        (path, _) = QFileDialog.getOpenFileName(self, 'Select foci CSV/XLSX for video markers', get_default_browse_dir(), 'Foci files (*.csv *.xlsx *.xls);;All Files (*)')
         if path:
             self.video_foci_path.setText(path)
             self.video_foci_overlay.setChecked(True)
-    
+
     def _is_folder_mode(self):
         """Check if video input is a single folder path (not multi-file)."""
         paths = self._resolve_growth_curve_video_paths(self.video_path.text())
@@ -6749,55 +5065,44 @@ class PostProcessingTab(QWidget):
             return False
         p = paths[0]
         return p.exists() and p.is_dir()
-    
+
     def _get_available_models(self):
         """
         Return list of available Omnipose models only (no Cellpose-only models).
         """
-        return [
-            'bact_phase_omni',  # Recommended for bacteria
-            'bact_fluor_omni',
-            'bact_phase_affinity'
-        ]
-    
+        return ['bact_phase_omni', 'bact_fluor_omni', 'bact_phase_affinity']
+
     def create_video(self):
         """Create growth curve video with side-by-side graph and video"""
-        running = getattr(self, "worker", None)
-        if running is not None and hasattr(running, "isRunning") and running.isRunning():
-            if hasattr(running, "request_cancel"):
+        running = getattr(self, 'worker', None)
+        if running is not None and hasattr(running, 'isRunning') and running.isRunning():
+            if hasattr(running, 'request_cancel'):
                 running.request_cancel()
-            self.parent_window.log_output("Cancelling video montage export...\n")
+            self.parent_window.log_output('Cancelling video montage export...\n')
             return
-
         if not self.video_path.text():
-            QMessageBox.warning(self, "Missing Input", "Please select a video input.")
+            show_message_dialog(self, 'Missing Input', 'Please select a video input.', kind='warning')
             return
-        
         video_paths = self._resolve_growth_curve_video_paths(self.video_path.text())
-        excel_raw = self.excel_path.text().strip() if self._use_excel_graph_enabled() else ""
+        excel_raw = self.excel_path.text().strip() if self._use_excel_graph_enabled() else ''
         excel_path = Path(excel_raw) if excel_raw else None
-        
         if not video_paths:
-            QMessageBox.warning(self, "Missing Input", "Please set a TIFF file, folder, or channel paths.")
+            show_message_dialog(self, 'Missing Input', 'Please set a TIFF file, folder, or channel paths.', kind='warning')
             return
         if len(video_paths) > 1:
             for vp in video_paths:
                 if not vp.exists():
-                    QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{vp}")
+                    show_message_dialog(self, 'File Not Found', f'Video input not found:\n{vp}', kind='warning')
                     return
                 if not (vp.is_file() or vp.is_dir()):
-                    QMessageBox.warning(
-                        self,
-                        "Invalid path",
-                        f"Multi-channel mode expects each path to be a TIFF stack file or TIFF sequence folder:\n{vp}",
-                    )
+                    show_message_dialog(self, 'Invalid path', f'Multi-channel mode expects each path to be a TIFF stack file or TIFF sequence folder:\n{vp}', kind='warning')
                     return
             base_dir = video_paths[0].parent if video_paths[0].is_file() else video_paths[0]
-            input_stem = f"{video_paths[0].stem}_multi_{len(video_paths)}ch"
+            input_stem = f'{video_paths[0].stem}_multi_{len(video_paths)}ch'
         else:
             video_path = video_paths[0]
             if not video_path.exists():
-                QMessageBox.warning(self, "File Not Found", f"Video input not found:\n{video_path}")
+                show_message_dialog(self, 'File Not Found', f'Video input not found:\n{video_path}', kind='warning')
                 return
             if video_path.is_file():
                 base_dir = video_path.parent
@@ -6805,27 +5110,18 @@ class PostProcessingTab(QWidget):
             else:
                 base_dir = video_path
                 input_stem = video_path.name
-        
-        if excel_path is not None and not excel_path.exists():
-            QMessageBox.warning(self, "File Not Found", f"Excel file not found:\n{excel_path}")
+        if excel_path is not None and (not excel_path.exists()):
+            show_message_dialog(self, 'File Not Found', f'Excel file not found:\n{excel_path}', kind='warning')
             return
-        
-        # Go up one level if in segmentation or Tif_ folder (same logic as other tabs)
         if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name:
             base_dir = base_dir.parent
-        
-        # Create output directory at base level
-        output_dir = base_dir / f"{input_stem}_growth_curve_video"
+        output_dir = base_dir / f'{input_stem}_growth_curve_video'
         output_dir.mkdir(exist_ok=True)
-        
-        # Show progress
         self.process_btn.setEnabled(True)
-        self.process_btn.setText("Cancel video export")
+        self.process_btn.setText('Cancel video export')
         self.parent_window.progress_bar.setVisible(True)
         self.parent_window.progress_bar.setRange(0, 100)
         self.parent_window.progress_bar.setValue(0)
-        
-        # Get selected formats
         formats = []
         if self.format_tif.isChecked():
             formats.append('tif')
@@ -6835,249 +5131,165 @@ class PostProcessingTab(QWidget):
             formats.append('gif')
         if self.format_mp4.isChecked():
             formats.append('mp4')
-        
-        # For completion popup "Open output folder"
         self._last_video_output_dir = output_dir
-        # Run in worker thread
-        self.worker = GrowthCurveVideoWorker(
-            video_paths,
-            excel_path,
-            output_dir,
-            self.time_interval.value(),
-            *self._get_video_yaxis_limits(),
-            self.fps.value(),
-            formats,
-            parent=self,
-            mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None,
-            foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None,
-            show_mask_contours=self.video_mask_contours.isChecked(),
-            show_foci=self.video_foci_overlay.isChecked(),
-            graph_style=self._get_growth_graph_style(),
-            graph_width_ratio=self._get_graph_width_ratio(),
-            y_column=self._get_growth_y_column(),
-            fi_layout=self._get_video_fi_layout(),
-            overlay_colors=self._get_video_overlay_colors(),
-            tile_visibility=dict(self._video_tile_visibility),
-        )
+        self.worker = GrowthCurveVideoWorker(video_paths, excel_path, output_dir, self.time_interval.value(), *self._get_video_yaxis_limits(), self.fps.value(), formats, parent=self, mask_path=Path(self.video_mask_path.text().strip()) if self.video_mask_path.text().strip() else None, foci_path=Path(self.video_foci_path.text().strip()) if self.video_foci_path.text().strip() else None, show_mask_contours=self.video_mask_contours.isChecked(), show_foci=self.video_foci_overlay.isChecked(), graph_style=self._get_growth_graph_style(), graph_width_ratio=self._get_graph_width_ratio(), y_column=self._get_growth_y_column(), fi_layout=self._get_video_fi_layout(), overlay_colors=self._get_video_overlay_colors(), tile_visibility=dict(self._video_tile_visibility))
         self.worker.finished.connect(self.on_video_finished)
         self.worker.progress.connect(self.on_video_progress)
         self.worker.start()
-    
+
     def on_video_progress(self, value, message):
         """Handle progress updates"""
         self.parent_window.progress_bar.setValue(value)
         if message:
             self.parent_window.log_output(message)
-    
+
     def on_video_finished(self, success, message):
         """Handle video creation completion"""
         self.worker = None
-        if hasattr(self, "process_btn") and self._qt_widget_alive(self.process_btn):
-            self.process_btn.setText("Create video montage")
+        if hasattr(self, 'process_btn') and self._qt_widget_alive(self.process_btn):
+            self.process_btn.setText('Create video montage')
         self._update_button_state()
         self.parent_window.progress_bar.setVisible(False)
-
         if success:
-            self.parent_window.log_output(f"\n✓ {message}\n")
-            out_dir = getattr(self, "_last_video_output_dir", None)
-            show_task_complete_dialog(
-                self,
-                title="Video montage complete",
-                message=message if message else "Video montage output created successfully.",
-                output_dir=out_dir,
-            )
+            self.parent_window.log_output(f'\n✓ {message}\n')
+            out_dir = getattr(self, '_last_video_output_dir', None)
+            show_task_complete_dialog(self, title='Video montage complete', message=message if message else 'Video montage output created successfully.', output_dir=out_dir)
         else:
-            QMessageBox.warning(self, "Error", message)
-    
+            show_message_dialog(self, 'Error', message, kind='warning')
+
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (parameters only, no paths)."""
-        d = get_from_widgets([
-            ("time_interval", self.time_interval),
-            ("yaxis_min", self.yaxis_min),
-            ("yaxis_max", self.yaxis_max),
-            ("fps", self.fps),
-            ("use_excel_graph", self.use_excel_graph),
-            ("format_tif", self.format_tif),
-            ("format_avi", self.format_avi),
-            ("format_gif", self.format_gif),
-            ("format_mp4", self.format_mp4),
-            ("video_mask_contours", self.video_mask_contours),
-            ("video_foci_overlay", self.video_foci_overlay),
-            ("video_fi_channels", self.video_fi_channels),
-        ])
-        d["video_fi_layout"] = self._get_video_fi_layout()
+        d = get_from_widgets([('time_interval', self.time_interval), ('yaxis_min', self.yaxis_min), ('yaxis_max', self.yaxis_max), ('fps', self.fps), ('use_excel_graph', self.use_excel_graph), ('format_tif', self.format_tif), ('format_avi', self.format_avi), ('format_gif', self.format_gif), ('format_mp4', self.format_mp4), ('video_mask_contours', self.video_mask_contours), ('video_foci_overlay', self.video_foci_overlay), ('video_fi_channels', self.video_fi_channels)])
+        d['video_fi_layout'] = self._get_video_fi_layout()
         if self._video_tile_visibility:
-            d["video_tile_visibility"] = dict(self._video_tile_visibility)
-        d["video_overlay_colors"] = self._get_video_overlay_colors()
+            d['video_tile_visibility'] = dict(self._video_tile_visibility)
+        d['video_overlay_colors'] = self._get_video_overlay_colors()
         d.update(self._get_growth_graph_style())
-        d["growth_y_column"] = self._get_growth_y_column()
-        d["graph_width_ratio"] = self._get_graph_width_ratio()
-        for key, widget_name in (
-            ("video_mask_path", "video_mask_path"),
-            ("video_foci_path", "video_foci_path"),
-            ("video_fi_path", "video_fi_path"),
-        ):
+        d['growth_y_column'] = self._get_growth_y_column()
+        d['graph_width_ratio'] = self._get_graph_width_ratio()
+        for (key, widget_name) in (('video_mask_path', 'video_mask_path'), ('video_foci_path', 'video_foci_path'), ('video_fi_path', 'video_fi_path')):
             w = getattr(self, widget_name, None)
             if self._qt_widget_alive(w):
                 d[key] = w.text().strip()
-        d["montage_overlay_enable"] = self._safe_checked(getattr(self, "montage_overlay_enable", None), default=False)
-        mask_edit = getattr(self, "montage_overlay_mask_path", None)
+        d['montage_overlay_enable'] = self._safe_checked(getattr(self, 'montage_overlay_enable', None), default=False)
+        mask_edit = getattr(self, 'montage_overlay_mask_path', None)
         if self._qt_widget_alive(mask_edit):
-            d["montage_overlay_mask_path"] = mask_edit.text().strip()
-        d["montage_overlay_frame"] = self._safe_spin_value(getattr(self, "montage_overlay_frame", None), 0)
-        z_proj = getattr(self, "montage_z_projection", None)
+            d['montage_overlay_mask_path'] = mask_edit.text().strip()
+        d['montage_overlay_frame'] = self._safe_spin_value(getattr(self, 'montage_overlay_frame', None), 0)
+        z_proj = getattr(self, 'montage_z_projection', None)
         if self._qt_widget_alive(z_proj):
-            d["montage_z_projection"] = z_proj.currentText()
-        d["montage_border_color"] = self._montage_border_color_name()
-        if getattr(self, "montage_tile_percentile_overrides", None):
-            d["montage_tile_percentile_overrides"] = {
-                str(k): [float(v[0]), float(v[1])]
-                for k, v in self.montage_tile_percentile_overrides.items()
-            }
-        if getattr(self, "montage_excluded_tile_keys", None):
-            d["montage_excluded_tile_keys"] = sorted(self.montage_excluded_tile_keys)
-        if getattr(self, "montage_tile_order", None):
-            d["montage_tile_order"] = list(self.montage_tile_order)
-        if getattr(self, "montage_tile_z_modes", None):
-            d["montage_tile_z_modes"] = dict(self.montage_tile_z_modes)
-        if self._qt_widget_alive(getattr(self, "montage_sb_enable", None)):
-            d["montage_sb_enable"] = self.montage_sb_enable.isChecked()
-        if self._qt_widget_alive(getattr(self, "montage_focus_enable", None)):
-            d["montage_focus_enable"] = self.montage_focus_enable.isChecked()
-        for key, widget_name in (
-            ("montage_focus_zoom", "montage_focus_zoom"),
-            ("montage_focus_position", "montage_focus_position"),
-            ("montage_focus_color", "montage_focus_color"),
-        ):
+            d['montage_z_projection'] = z_proj.currentText()
+        d['montage_border_color'] = self._montage_border_color_name()
+        if getattr(self, 'montage_tile_percentile_overrides', None):
+            d['montage_tile_percentile_overrides'] = {str(k): [float(v[0]), float(v[1])] for (k, v) in self.montage_tile_percentile_overrides.items()}
+        if getattr(self, 'montage_excluded_tile_keys', None):
+            d['montage_excluded_tile_keys'] = sorted(self.montage_excluded_tile_keys)
+        if getattr(self, 'montage_tile_order', None):
+            d['montage_tile_order'] = list(self.montage_tile_order)
+        if getattr(self, 'montage_tile_z_modes', None):
+            d['montage_tile_z_modes'] = dict(self.montage_tile_z_modes)
+        if self._qt_widget_alive(getattr(self, 'montage_sb_enable', None)):
+            d['montage_sb_enable'] = self.montage_sb_enable.isChecked()
+        if self._qt_widget_alive(getattr(self, 'montage_focus_enable', None)):
+            d['montage_focus_enable'] = self.montage_focus_enable.isChecked()
+        for (key, widget_name) in (('montage_focus_zoom', 'montage_focus_zoom'), ('montage_focus_position', 'montage_focus_position'), ('montage_focus_color', 'montage_focus_color')):
             w = getattr(self, widget_name, None)
             if self._qt_widget_alive(w):
                 d[key] = w.currentText()
-        if self._qt_widget_alive(getattr(self, "montage_focus_line_width", None)):
-            d["montage_focus_line_width"] = self._safe_spin_value(self.montage_focus_line_width, 5)
+        if self._qt_widget_alive(getattr(self, 'montage_focus_line_width', None)):
+            d['montage_focus_line_width'] = self._safe_spin_value(self.montage_focus_line_width, 5)
         label_settings = self._montage_label_settings()
-        d["montage_show_labels"] = label_settings["show"]
-        d["montage_label_position"] = label_settings["position"]
-        d["montage_label_color"] = label_settings["color_name"]
-        d["montage_label_font_size"] = label_settings["font_size"]
-        d["montage_export_mode"] = self._montage_export_mode()
-        for key, widget_name, default in (
-            ("montage_rows", "montage_rows", 1),
-            ("montage_cols", "montage_cols", 0),
-            ("montage_spacing", "montage_spacing", 4),
-            ("montage_border", "montage_border", 0),
-            ("montage_sb_pixel_size", "montage_sb_pixel_size", 0.108),
-            ("montage_sb_length_um", "montage_sb_length_um", 10.0),
-            ("montage_sb_thickness", "montage_sb_thickness", 5),
-            ("montage_sb_font_size", "montage_sb_font_size", 20),
-        ):
+        d['montage_show_labels'] = label_settings['show']
+        d['montage_label_position'] = label_settings['position']
+        d['montage_label_color'] = label_settings['color_name']
+        d['montage_label_font_size'] = label_settings['font_size']
+        d['montage_export_mode'] = self._montage_export_mode()
+        for (key, widget_name, default) in (('montage_rows', 'montage_rows', 1), ('montage_cols', 'montage_cols', 0), ('montage_spacing', 'montage_spacing', 4), ('montage_border', 'montage_border', 0), ('montage_sb_pixel_size', 'montage_sb_pixel_size', 0.108), ('montage_sb_length_um', 'montage_sb_length_um', 10.0), ('montage_sb_thickness', 'montage_sb_thickness', 5), ('montage_sb_font_size', 'montage_sb_font_size', 20)):
             w = getattr(self, widget_name, None)
             if self._qt_widget_alive(w):
                 try:
                     d[key] = float(w.value())
                 except Exception:
                     d[key] = default
-        order = getattr(self, "montage_order", None)
+        order = getattr(self, 'montage_order', None)
         if self._qt_widget_alive(order):
-            d["montage_order"] = order.currentText()
-        for key, widget_name in (
-            ("montage_sb_position", "montage_sb_position"),
-            ("montage_sb_color", "montage_sb_color"),
-        ):
+            d['montage_order'] = order.currentText()
+        for (key, widget_name) in (('montage_sb_position', 'montage_sb_position'), ('montage_sb_color', 'montage_sb_color')):
             w = getattr(self, widget_name, None)
             if self._qt_widget_alive(w):
                 d[key] = w.currentText()
-        sb_show = getattr(self, "montage_sb_show_label", None)
+        sb_show = getattr(self, 'montage_sb_show_label', None)
         if self._qt_widget_alive(sb_show):
-            d["montage_sb_show_label"] = sb_show.isChecked()
+            d['montage_sb_show_label'] = sb_show.isChecked()
         return d
 
     def set_session_params(self, data: dict[str, Any]) -> None:
         """Apply saved parameter values (parameters only)."""
-        apply_to_widgets(data, [
-            ("time_interval", self.time_interval),
-            ("yaxis_min", self.yaxis_min),
-            ("yaxis_max", self.yaxis_max),
-            ("fps", self.fps),
-            ("use_excel_graph", self.use_excel_graph),
-            ("format_tif", self.format_tif),
-            ("format_avi", self.format_avi),
-            ("format_gif", self.format_gif),
-            ("format_mp4", self.format_mp4),
-            ("video_mask_contours", self.video_mask_contours),
-            ("video_foci_overlay", self.video_foci_overlay),
-            ("video_fi_channels", self.video_fi_channels),
-        ])
-        if "video_fi_layout" in data:
-            layout = str(data.get("video_fi_layout") or DEFAULT_VIDEO_FI_LAYOUT)
+        apply_to_widgets(data, [('time_interval', self.time_interval), ('yaxis_min', self.yaxis_min), ('yaxis_max', self.yaxis_max), ('fps', self.fps), ('use_excel_graph', self.use_excel_graph), ('format_tif', self.format_tif), ('format_avi', self.format_avi), ('format_gif', self.format_gif), ('format_mp4', self.format_mp4), ('video_mask_contours', self.video_mask_contours), ('video_foci_overlay', self.video_foci_overlay), ('video_fi_channels', self.video_fi_channels)])
+        if 'video_fi_layout' in data:
+            layout = str(data.get('video_fi_layout') or DEFAULT_VIDEO_FI_LAYOUT)
             self._video_fi_layout = layout if layout in (VIDEO_FI_LAYOUT_MERGED, VIDEO_FI_LAYOUT_SEPARATE) else DEFAULT_VIDEO_FI_LAYOUT
-            combo = getattr(self, "video_fi_layout_combo", None)
+            combo = getattr(self, 'video_fi_layout_combo', None)
             if self._qt_widget_alive(combo):
                 idx = combo.findData(self._video_fi_layout)
                 combo.setCurrentIndex(idx if idx >= 0 else 0)
-        if "video_overlay_colors" in data:
-            self._video_overlay_colors = normalize_video_overlay_colors(data.get("video_overlay_colors"))
-        if isinstance(data.get("video_tile_visibility"), dict):
-            self._video_tile_visibility = {
-                self._video_tile_key(str(k)): bool(v)
-                for k, v in data.get("video_tile_visibility", {}).items()
-            }
+        if 'video_overlay_colors' in data:
+            self._video_overlay_colors = normalize_video_overlay_colors(data.get('video_overlay_colors'))
+        if isinstance(data.get('video_tile_visibility'), dict):
+            self._video_tile_visibility = {self._video_tile_key(str(k)): bool(v) for (k, v) in data.get('video_tile_visibility', {}).items()}
         self._set_growth_graph_style(data)
-        if "growth_y_column" in data:
-            self._growth_y_column = str(data.get("growth_y_column") or DEFAULT_GROWTH_Y_COLUMN)
+        if 'growth_y_column' in data:
+            self._growth_y_column = str(data.get('growth_y_column') or DEFAULT_GROWTH_Y_COLUMN)
             self._refresh_growth_y_column_combo()
-        if "graph_width_ratio" in data:
-            self._graph_width_ratio = max(0.2, min(float(data["graph_width_ratio"]), 0.8))
-            spin = getattr(self, "graph_width_ratio_spin", None)
+        if 'graph_width_ratio' in data:
+            self._graph_width_ratio = max(0.2, min(float(data['graph_width_ratio']), 0.8))
+            spin = getattr(self, 'graph_width_ratio_spin', None)
             if self._qt_widget_alive(spin):
                 spin.setValue(int(round(self._graph_width_ratio * 100)))
-        for key, widget_name in (
-            ("video_mask_path", "video_mask_path"),
-            ("video_foci_path", "video_foci_path"),
-            ("video_fi_path", "video_fi_path"),
-        ):
+        for (key, widget_name) in (('video_mask_path', 'video_mask_path'), ('video_foci_path', 'video_foci_path'), ('video_fi_path', 'video_fi_path')):
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
-                    w.setText(str(data[key] or ""))
+                    w.setText(str(data[key] or ''))
         self._on_video_fi_channels_toggled(self._video_fi_enabled())
         self._on_use_excel_graph_toggled(self._use_excel_graph_enabled())
-        if "montage_overlay_enable" in data:
-            w = getattr(self, "montage_overlay_enable", None)
+        if 'montage_overlay_enable' in data:
+            w = getattr(self, 'montage_overlay_enable', None)
             if self._qt_widget_alive(w):
-                w.setChecked(bool(data["montage_overlay_enable"]))
-        if "montage_overlay_mask_path" in data:
-            w = getattr(self, "montage_overlay_mask_path", None)
+                w.setChecked(bool(data['montage_overlay_enable']))
+        if 'montage_overlay_mask_path' in data:
+            w = getattr(self, 'montage_overlay_mask_path', None)
             if self._qt_widget_alive(w):
-                w.setText(str(data["montage_overlay_mask_path"] or ""))
-        if "montage_overlay_frame" in data:
-            w = getattr(self, "montage_overlay_frame", None)
+                w.setText(str(data['montage_overlay_mask_path'] or ''))
+        if 'montage_overlay_frame' in data:
+            w = getattr(self, 'montage_overlay_frame', None)
             if self._qt_widget_alive(w):
                 try:
-                    w.setValue(int(data["montage_overlay_frame"]))
+                    w.setValue(int(data['montage_overlay_frame']))
                 except (TypeError, ValueError):
                     pass
-        if "montage_z_projection" in data:
-            text = str(data["montage_z_projection"] or "")
+        if 'montage_z_projection' in data:
+            text = str(data['montage_z_projection'] or '')
             self._sync_montage_z_projection_mode(text)
-            w = getattr(self, "montage_z_projection", None)
+            w = getattr(self, 'montage_z_projection', None)
             if self._qt_widget_alive(w):
                 if w.findText(text) < 0:
-                    text = "Max projection" if "Max" in text else "First Z"
+                    text = 'Max projection' if 'Max' in text else 'First Z'
                 idx = w.findText(text)
                 if idx >= 0:
                     w.setCurrentIndex(idx)
-        if "montage_border_color" in data:
-            text = str(data["montage_border_color"] or "Gray")
+        if 'montage_border_color' in data:
+            text = str(data['montage_border_color'] or 'Gray')
             self._sync_montage_border_color(text)
-            w = getattr(self, "montage_border_color", None)
+            w = getattr(self, 'montage_border_color', None)
             if self._qt_widget_alive(w):
                 idx = w.findText(text)
                 if idx >= 0:
                     w.setCurrentIndex(idx)
         self.montage_tile_percentile_overrides = {}
-        mtpo = data.get("montage_tile_percentile_overrides")
+        mtpo = data.get('montage_tile_percentile_overrides')
         if isinstance(mtpo, dict):
-            for k, v in mtpo.items():
+            for (k, v) in mtpo.items():
                 try:
                     if not isinstance(v, (list, tuple)) or len(v) != 2:
                         continue
@@ -7088,64 +5300,49 @@ class PostProcessingTab(QWidget):
                     self.montage_tile_percentile_overrides[str(k)] = (p_low, p_high)
                 except Exception:
                     continue
-        excluded = data.get("montage_excluded_tile_keys")
+        excluded = data.get('montage_excluded_tile_keys')
         if isinstance(excluded, (list, tuple, set)):
             self.montage_excluded_tile_keys = {str(x) for x in excluded}
-        tile_order = data.get("montage_tile_order")
+        tile_order = data.get('montage_tile_order')
         if isinstance(tile_order, (list, tuple)):
             self.montage_tile_order = [str(x) for x in tile_order]
-        z_modes = data.get("montage_tile_z_modes")
+        z_modes = data.get('montage_tile_z_modes')
         if isinstance(z_modes, dict):
-            self.montage_tile_z_modes = {str(k): str(v) for k, v in z_modes.items()}
-        if "montage_focus_enable" in data and self._qt_widget_alive(getattr(self, "montage_focus_enable", None)):
-            self.montage_focus_enable.setChecked(bool(data["montage_focus_enable"]))
-        for key, widget_name in (
-            ("montage_focus_zoom", "montage_focus_zoom"),
-            ("montage_focus_position", "montage_focus_position"),
-            ("montage_focus_color", "montage_focus_color"),
-        ):
+            self.montage_tile_z_modes = {str(k): str(v) for (k, v) in z_modes.items()}
+        if 'montage_focus_enable' in data and self._qt_widget_alive(getattr(self, 'montage_focus_enable', None)):
+            self.montage_focus_enable.setChecked(bool(data['montage_focus_enable']))
+        for (key, widget_name) in (('montage_focus_zoom', 'montage_focus_zoom'), ('montage_focus_position', 'montage_focus_position'), ('montage_focus_color', 'montage_focus_color')):
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
-                    idx = w.findText(str(data[key] or ""))
+                    idx = w.findText(str(data[key] or ''))
                     if idx >= 0:
                         w.setCurrentIndex(idx)
-        if "montage_focus_line_width" in data:
-            w = getattr(self, "montage_focus_line_width", None)
+        if 'montage_focus_line_width' in data:
+            w = getattr(self, 'montage_focus_line_width', None)
             if self._qt_widget_alive(w):
                 try:
-                    w.setValue(int(data["montage_focus_line_width"]))
+                    w.setValue(int(data['montage_focus_line_width']))
                 except (TypeError, ValueError):
                     pass
-        if "montage_show_labels" in data and self._qt_widget_alive(getattr(self, "montage_show_labels", None)):
-            self.montage_show_labels.setChecked(bool(data["montage_show_labels"]))
-        for key, widget_name in (
-            ("montage_label_position", "montage_label_position"),
-            ("montage_label_color", "montage_label_color"),
-            ("montage_export_mode", "montage_export_mode"),
-        ):
+        if 'montage_show_labels' in data and self._qt_widget_alive(getattr(self, 'montage_show_labels', None)):
+            self.montage_show_labels.setChecked(bool(data['montage_show_labels']))
+        for (key, widget_name) in (('montage_label_position', 'montage_label_position'), ('montage_label_color', 'montage_label_color'), ('montage_export_mode', 'montage_export_mode')):
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
-                    idx = w.findText(str(data[key] or ""))
+                    idx = w.findText(str(data[key] or ''))
                     if idx >= 0:
                         w.setCurrentIndex(idx)
-        if "montage_label_font_size" in data:
-            w = getattr(self, "montage_label_font_size", None)
+        if 'montage_label_font_size' in data:
+            w = getattr(self, 'montage_label_font_size', None)
             if self._qt_widget_alive(w):
                 try:
-                    w.setValue(int(data["montage_label_font_size"]))
+                    w.setValue(int(data['montage_label_font_size']))
                 except (TypeError, ValueError):
                     pass
-        int_widget_map = {
-            "montage_rows": "montage_rows",
-            "montage_cols": "montage_cols",
-            "montage_spacing": "montage_spacing",
-            "montage_border": "montage_border",
-            "montage_sb_thickness": "montage_sb_thickness",
-            "montage_sb_font_size": "montage_sb_font_size",
-        }
-        for key, widget_name in int_widget_map.items():
+        int_widget_map = {'montage_rows': 'montage_rows', 'montage_cols': 'montage_cols', 'montage_spacing': 'montage_spacing', 'montage_border': 'montage_border', 'montage_sb_thickness': 'montage_sb_thickness', 'montage_sb_font_size': 'montage_sb_font_size'}
+        for (key, widget_name) in int_widget_map.items():
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
@@ -7153,11 +5350,8 @@ class PostProcessingTab(QWidget):
                         w.setValue(int(data[key]))
                     except (TypeError, ValueError):
                         pass
-        float_widget_map = {
-            "montage_sb_pixel_size": "montage_sb_pixel_size",
-            "montage_sb_length_um": "montage_sb_length_um",
-        }
-        for key, widget_name in float_widget_map.items():
+        float_widget_map = {'montage_sb_pixel_size': 'montage_sb_pixel_size', 'montage_sb_length_um': 'montage_sb_length_um'}
+        for (key, widget_name) in float_widget_map.items():
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
@@ -7165,25 +5359,22 @@ class PostProcessingTab(QWidget):
                         w.setValue(float(data[key]))
                     except (TypeError, ValueError):
                         pass
-        if "montage_order" in data:
-            w = getattr(self, "montage_order", None)
+        if 'montage_order' in data:
+            w = getattr(self, 'montage_order', None)
             if self._qt_widget_alive(w):
-                idx = w.findText(str(data["montage_order"] or ""))
+                idx = w.findText(str(data['montage_order'] or ''))
                 if idx >= 0:
                     w.setCurrentIndex(idx)
-        for key, widget_name in (
-            ("montage_sb_position", "montage_sb_position"),
-            ("montage_sb_color", "montage_sb_color"),
-        ):
+        for (key, widget_name) in (('montage_sb_position', 'montage_sb_position'), ('montage_sb_color', 'montage_sb_color')):
             if key in data:
                 w = getattr(self, widget_name, None)
                 if self._qt_widget_alive(w):
-                    idx = w.findText(str(data[key] or ""))
+                    idx = w.findText(str(data[key] or ''))
                     if idx >= 0:
                         w.setCurrentIndex(idx)
-        if "montage_sb_show_label" in data and self._qt_widget_alive(getattr(self, "montage_sb_show_label", None)):
-            self.montage_sb_show_label.setChecked(bool(data["montage_sb_show_label"]))
-        if data.get("montage_sb_enable") and self._qt_widget_alive(getattr(self, "montage_sb_enable", None)):
+        if 'montage_sb_show_label' in data and self._qt_widget_alive(getattr(self, 'montage_sb_show_label', None)):
+            self.montage_sb_show_label.setChecked(bool(data['montage_sb_show_label']))
+        if data.get('montage_sb_enable') and self._qt_widget_alive(getattr(self, 'montage_sb_enable', None)):
             self.montage_sb_enable.setChecked(True)
-        elif "montage_sb_enable" in data and self._qt_widget_alive(getattr(self, "montage_sb_enable", None)):
-            self.montage_sb_enable.setChecked(bool(data["montage_sb_enable"]))
+        elif 'montage_sb_enable' in data and self._qt_widget_alive(getattr(self, 'montage_sb_enable', None)):
+            self.montage_sb_enable.setChecked(bool(data['montage_sb_enable']))

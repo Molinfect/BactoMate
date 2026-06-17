@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -106,6 +105,98 @@ def show_confirm_dialog(
         cancel_btn.setFocus()
 
     return dlg.exec() == int(QDialog.DialogCode.Accepted)
+
+
+def ask_choice_dialog(
+    parent: Optional[QWidget],
+    *,
+    title: str,
+    message: str,
+    accept_label: str = "Yes",
+    reject_label: str = "No",
+    default_accept: bool = True,
+) -> bool:
+    """Alias for :func:`show_confirm_dialog` with accept/reject naming."""
+    return show_confirm_dialog(
+        parent,
+        title=title,
+        message=message,
+        confirm_label=accept_label,
+        cancel_label=reject_label,
+        default_confirm=default_accept,
+    )
+
+
+_MESSAGE_DIALOG_KINDS = frozenset({"info", "warning", "error"})
+
+
+def show_message_dialog(
+    parent: Optional[QWidget],
+    title: str,
+    message: str,
+    kind: str = "info",
+) -> None:
+    """
+    Dark-themed informational popup (replaces native ``QMessageBox`` info/warning/error).
+    """
+    from bactomate.gui.layout_helpers import style_compact_action_button
+
+    normalized_kind = str(kind or "info").strip().lower()
+    if normalized_kind not in _MESSAGE_DIALOG_KINDS:
+        normalized_kind = "info"
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(str(title))
+    dlg.setStyleSheet(_dialog_stylesheet())
+    dlg.setWindowModality(Qt.WindowModality.WindowModal)
+    dlg.setMinimumWidth(420)
+
+    layout = QVBoxLayout(dlg)
+    layout.setContentsMargins(20, 18, 20, 16)
+    layout.setSpacing(12)
+
+    title_lbl = QLabel(str(title))
+    title_lbl.setObjectName("dialogTitle")
+    title_lbl.setWordWrap(True)
+    layout.addWidget(title_lbl)
+
+    body = QLabel(str(message))
+    body.setWordWrap(True)
+    if normalized_kind == "warning":
+        body.setStyleSheet("color: #f5c842;")
+    elif normalized_kind == "error":
+        body.setStyleSheet("color: #ff8a80;")
+    layout.addWidget(body)
+
+    btn_row = QHBoxLayout()
+    btn_row.setSpacing(10)
+    btn_row.addStretch(1)
+
+    ok_btn = QPushButton("OK")
+    style_compact_action_button(ok_btn, horizontal_padding=28)
+    ok_btn.setDefault(True)
+    ok_btn.clicked.connect(dlg.accept)
+    btn_row.addWidget(ok_btn)
+    layout.addLayout(btn_row)
+
+    ok_btn.setFocus()
+    dlg.exec()
+
+
+def style_dialog_button_box(
+    button_box: QDialogButtonBox,
+    *,
+    horizontal_padding: int = 20,
+    fixed_height: int = 36,
+    min_height: int = 44,
+) -> None:
+    """Apply BactoMate compact action styling to every button in a ``QDialogButtonBox``."""
+    from bactomate.gui.layout_helpers import style_compact_action_button
+
+    for std_btn in button_box.buttons():
+        style_compact_action_button(std_btn, horizontal_padding=horizontal_padding)
+        std_btn.setFixedHeight(fixed_height)
+    button_box.setMinimumHeight(min_height)
 
 
 def show_task_complete_dialog(
@@ -537,16 +628,9 @@ def show_list_pick_dialog(
     button_box = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
     )
-    for std_btn in (
-        button_box.button(QDialogButtonBox.StandardButton.Ok),
-        button_box.button(QDialogButtonBox.StandardButton.Cancel),
-    ):
-        if std_btn is not None:
-            style_compact_action_button(std_btn, horizontal_padding=20)
-            std_btn.setFixedHeight(36)
+    style_dialog_button_box(button_box)
     button_box.accepted.connect(dialog.accept)
     button_box.rejected.connect(dialog.reject)
-    button_box.setMinimumHeight(44)
 
     footer = QWidget()
     footer_layout = QVBoxLayout(footer)
@@ -681,17 +765,9 @@ def show_file_selection_dialog(
     button_box = QDialogButtonBox(
         QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
     )
-    for std_btn in (
-        button_box.button(QDialogButtonBox.StandardButton.Ok),
-        button_box.button(QDialogButtonBox.StandardButton.Cancel),
-    ):
-        if std_btn is not None:
-            style_compact_action_button(std_btn, horizontal_padding=20)
-            # Slightly taller than path-row buttons so borders are not clipped in QDialogButtonBox.
-            std_btn.setFixedHeight(36)
+    style_dialog_button_box(button_box)
     button_box.accepted.connect(dialog.accept)
     button_box.rejected.connect(dialog.reject)
-    button_box.setMinimumHeight(44)
 
     footer = QWidget()
     footer_layout = QVBoxLayout(footer)

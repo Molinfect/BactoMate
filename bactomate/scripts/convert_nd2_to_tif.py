@@ -16,12 +16,15 @@ from skimage.registration import phase_cross_correlation
 from skimage.exposure import match_histograms
 
 try:
+    from bactomate.modules.conversion_crop import apply_yx_crop, parse_crop_cli_args
     from bactomate.modules.tiff_metadata import (
         read_calibration_from_path,
         read_metadata_from_path,
         build_acquisition_info_string,
     )
 except ImportError:
+    apply_yx_crop = None
+    parse_crop_cli_args = None
     read_calibration_from_path = None
     read_metadata_from_path = None
     build_acquisition_info_string = None
@@ -263,10 +266,12 @@ def convert_nd2_to_tif(
     bleach_channel_indices: Optional[List[int]] = None,  # If set, only these channel indices get correction; else all
     pixel_size: Optional[float] = None,  # Pixel size in µm to save in metadata
     time_per_frame_min: Optional[float] = None,  # Time per frame in minutes (for speed calibration); saved as finterval
+    channel_names_override: Optional[List[str]] = None,  # Optional user-edited channel names for output TIFFs
     max_z_projection: bool = False,  # Max intensity projection across Z-slices
     z_slice: Optional[int] = None,  # If max_z_projection is False and Z>1, pick this 1-based slice; default is Z=1
     fi_channel_indices: Optional[List[int]] = None,  # Channel indices (0-based) to save with _fi in filename for Analyze FI batch
     foci_channel_indices: Optional[List[int]] = None,  # Channel indices to save with _foci in filename for Analyze Masks foci analysis
+    crop_roi: Optional[Tuple[int, int, int, int]] = None,  # Optional native Y/X crop (x0, y0, x1, y1)
 ) -> None:
     """
     Convert ND2 files to multi-page TIFF files.
@@ -354,6 +359,16 @@ def convert_nd2_to_tif(
                 # If channel names not found, create default names
                 if not channel_names or len(channel_names) != num_channels:
                     channel_names = [f'Channel_{i+1}' for i in range(num_channels)]
+                if channel_names_override:
+                    cleaned_names = [str(name).strip() for name in channel_names_override if str(name).strip()]
+                    if len(cleaned_names) == num_channels:
+                        channel_names = cleaned_names
+                        print(f"  Using edited channel names: {', '.join(channel_names)}")
+                    else:
+                        print(
+                            f"  Warning: Ignoring edited channel names "
+                            f"({len(cleaned_names)} names for {num_channels} channels)"
+                        )
                 
                 print(f"  Dimensions: T={num_time}, C={num_channels}, Z={num_z}")
                 if num_channels > 1:
@@ -633,12 +648,23 @@ def convert_nd2_to_tif(
                         else:
                             print(f"  Warning: Could not extract channel, unexpected shape: {shape}")
                 
-                # Now all_frames should be TYX or TCYX
                 # Apply corrections if requested
                 if drift_correct:
                     print(f"  Applying drift correction (frame-by-frame method)...")
                     all_frames = drift_correct_stack(all_frames, method='frame_by_frame')
                     print(f"  ✓ Drift correction complete")
+
+                # Crop after registration so the full image provides motion margin.
+                # Cropping first makes shifted pixels inside the crop fill with zeros.
+                if crop_roi is not None:
+                    if apply_yx_crop is None:
+                        raise RuntimeError("Crop requested but bactomate.modules.conversion_crop is unavailable")
+                    print(
+                        f"  Applying crop ROI: x={crop_roi[0]} y={crop_roi[1]} "
+                        f"w={crop_roi[2] - crop_roi[0]} h={crop_roi[3] - crop_roi[1]}"
+                    )
+                    all_frames = apply_yx_crop(all_frames, crop_roi)
+                    shape = all_frames.shape
                 
                 if bleach_correct:
                     ch_list = bleach_channel_indices
@@ -1080,6 +1106,13 @@ def main() -> None:
         help='Time per frame in minutes to save in TIFF metadata (finterval). If not provided, will try to extract from ND2 experiment loops.'
     )
     parser.add_argument(
+        '--channel-names',
+        nargs='+',
+        default=None,
+        metavar='NAME',
+        help='Optional edited channel names to use for output filenames and metadata. Count must match channel count.'
+    )
+    parser.add_argument(
         '--max-z-projection',
         action='store_true',
         help='Apply maximum intensity projection across Z-slices when Z > 1. If not set, only the first Z-slice (Z=1) is used.'
@@ -1091,11 +1124,25 @@ def main() -> None:
         metavar='N',
         help='When Z > 1 and --max-z-projection is not set, use this 1-based Z-slice index (e.g. 3). Default: 1.'
     )
+    parser.add_argument(
+        '--crop',
+        type=int,
+        nargs=4,
+        metavar=('X0', 'Y0', 'X1', 'Y1'),
+        default=None,
+        help='Optional native-image crop region (x0 y0 x1 y1) applied to every output frame/channel.',
+    )
     
     args = parser.parse_args()
     
     # Handle channel options
     separate_channels = args.separate_channels and not args.combine_channels
+    crop_roi = None
+    if args.crop is not None:
+        if parse_crop_cli_args is None:
+            print("Error: --crop requires bactomate.modules.conversion_crop")
+            return 1
+        crop_roi = parse_crop_cli_args(args.crop)
     
     try:
         convert_nd2_to_tif(
@@ -1111,10 +1158,12 @@ def main() -> None:
             bleach_channel_indices=args.bleach_channels,
             pixel_size=args.pixel_size,
             time_per_frame_min=args.time_per_frame,
+            channel_names_override=args.channel_names,
             max_z_projection=args.max_z_projection,
             z_slice=args.z_slice,
             fi_channel_indices=args.fi_channels,
             foci_channel_indices=args.foci_channels,
+            crop_roi=crop_roi,
         )
     except Exception as e:
         print(f"Error: {e}")

@@ -20,6 +20,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactomate.gui.log_config import get_logger, log_exception, write_crash_log
 from bactomate.gui.paths import (
+    configure_macos_bundle_subprocess_env,
     get_app_root,
     get_python_executable_for_subprocess,
     get_subprocess_pythonpath_root,
@@ -419,6 +420,7 @@ class WorkerThread(QThread):
                 return
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
+            configure_macos_bundle_subprocess_env(env)
             # Scripts import ``bactomate.*``; subprocess does not inherit sys.path from the GUI.
             pp_root = get_subprocess_pythonpath_root()
             if env.get("PYTHONPATH"):
@@ -520,6 +522,7 @@ class TrackingPreviewResult:
     n_tracks: int = 0
     # (T, Y, X) intensity stack used for Trackastra (may be downsampled in preview mode).
     stack_images: Any = None
+    masks_input: Any = None
     masks_tracked: Any = None
     edges_df: Any = None
     founder_by_track: Optional[dict[int, int]] = None
@@ -532,6 +535,21 @@ class TrackingWorker(QThread):
     finished = pyqtSignal(bool, str)
     progress = pyqtSignal(int, str)  # progress percentage, status message
     preview_ready = pyqtSignal(object)  # TrackingPreviewResult when write_outputs is False
+
+    @staticmethod
+    def _imagej_compatible_label_stack(mask_stack: Any) -> tuple[np.ndarray, bool]:
+        """Return a TIFF label stack compatible with ImageJ when label values allow it."""
+        arr = np.asarray(mask_stack)
+        if arr.size == 0:
+            return arr.astype(np.uint16, copy=False), True
+        max_label = int(np.nanmax(arr))
+        min_label = int(np.nanmin(arr))
+        if min_label < 0:
+            arr = np.clip(arr, 0, None)
+            min_label = 0
+        if max_label <= np.iinfo(np.uint16).max:
+            return arr.astype(np.uint16, copy=False), True
+        return arr.astype(np.uint32, copy=False), False
     
     def __init__(
         self,
@@ -551,6 +569,7 @@ class TrackingWorker(QThread):
         filter_params: Optional[dict] = None,
         write_visualization: bool = True,
         preview_lineage: bool = False,
+        lineage_curation_path: Optional[Path] = None,
     ):
         super().__init__(parent)
         self.setObjectName(type(self).__name__)
@@ -568,6 +587,8 @@ class TrackingWorker(QThread):
         self.run_metadata = run_metadata or {}
         self.filter_params = filter_params or {}
         self.write_visualization = bool(write_visualization)
+        self.lineage_curation_path = Path(lineage_curation_path) if lineage_curation_path else None
+        self._lineage_curation_review_map: dict[tuple[int, int], str] = {}
         profile = os.getenv("BACTOMATE_TRACKING_OUTPUT_PROFILE", "minimal")
         profile = str(profile).strip().lower()
         if profile not in {"minimal", "legacy", "both"}:
@@ -1033,6 +1054,7 @@ class TrackingWorker(QThread):
                 self._emit_preview_result(
                     debug_output,
                     imgs,
+                    masks,
                     masks_tracked,
                     tracks_df,
                     napari_graph=napari_graph,
@@ -1066,6 +1088,18 @@ class TrackingWorker(QThread):
             else:
                 self._cal_ps, self._cal_tp = 0.0, 0.0
 
+            precuration_edges_df = None
+            if self.track_action == "lineage":
+                applied = self._maybe_apply_saved_lineage_curation(
+                    tracks_df=tracks_df,
+                    masks_tracked=masks_tracked,
+                    masks_input=masks,
+                    napari_graph=napari_graph,
+                    debug_output=debug_output,
+                )
+                if applied is not None:
+                    tracks_df, masks_tracked, precuration_edges_df = applied
+
             # Save tracks as CSV: track_id, frame, y, x (and Cell_ID if analysis Excel was used).
             # y,x come from Trackastra's track graph (centroid-like node positions; napari format or node centroid_y/x).
             self.progress.emit(80, "Saving tracks...")
@@ -1078,6 +1112,7 @@ class TrackingWorker(QThread):
             masks_tracked_file = output_dir / f"{stem}_masks_tracked.tif"
             debug_output.append(f"\nSaving tracked masks...")
             debug_output.append(f"  - Shape: {masks_tracked.shape}")
+            debug_output.append(f"  - Original dtype: {np.asarray(masks_tracked).dtype}")
             debug_output.append(f"  - Unique labels per frame: {[len(np.unique(masks_tracked[i])) for i in range(min(5, masks_tracked.shape[0]))]}")
             T = masks_tracked.shape[0]
             _meta = build_metadata_dict(
@@ -1085,7 +1120,15 @@ class TrackingWorker(QThread):
                 time_per_frame_min=self._cal_tp if self._cal_tp > 0 else None,
                 images=T, frames=T,
             )
-            tifffile.imwrite(str(masks_tracked_file), masks_tracked, metadata=_meta, imagej=True)
+            masks_to_write, imagej_ok = self._imagej_compatible_label_stack(masks_tracked)
+            debug_output.append(f"  - Saved dtype: {masks_to_write.dtype}")
+            if imagej_ok:
+                tifffile.imwrite(str(masks_tracked_file), masks_to_write, metadata=_meta, imagej=True)
+            else:
+                debug_output.append(
+                    "  - More than 65535 labels detected; saving uint32 TIFF without ImageJ wrapper."
+                )
+                tifffile.imwrite(str(masks_tracked_file), masks_to_write, metadata=_meta)
             debug_output.append(f"✓ Saved tracked masks to: {masks_tracked_file}")
             
             # Create overlay frames with track IDs in memory only (used as base for trajectories)
@@ -1136,11 +1179,14 @@ class TrackingWorker(QThread):
             edges_path = None
             lineage_summary_legacy = None
             if self.track_action == "lineage":
-                self.progress.emit(92, "Building lineage exports...")
+                self.progress.emit(92, "Building lineage tracking outputs...")
                 try:
                     from bactomate.modules.lineage_integration import lineage_edges_from_napari_graph
 
-                    edges_df = lineage_edges_from_napari_graph(napari_graph, tracks_df)
+                    if precuration_edges_df is not None:
+                        edges_df = precuration_edges_df
+                    else:
+                        edges_df = lineage_edges_from_napari_graph(napari_graph, tracks_df)
                     if write_legacy_outputs:
                         edges_path = output_dir / f"{stem}_lineage_edges.csv"
                         edges_df.to_csv(edges_path, index=False)
@@ -1166,6 +1212,7 @@ class TrackingWorker(QThread):
                                     min(99, max(92, int(pct))), msg
                                 ),
                                 overlay_frames=overlay_array,
+                                masks_input=masks,
                             )
                             debug_output.append(f"✓ Saved lineage visualization: {vis_lineage.name}")
                         except Exception as e:
@@ -1174,7 +1221,7 @@ class TrackingWorker(QThread):
                             debug_output.append(traceback.format_exc())
                 except Exception as e:
                     import traceback
-                    debug_output.append(f"⚠ Lineage export failed: {e}")
+                    debug_output.append(f"⚠ Lineage tracking output failed: {e}")
                     debug_output.append(traceback.format_exc())
             
             # Save in CTC format (Cell Tracking Challenge format)
@@ -1681,24 +1728,30 @@ class TrackingWorker(QThread):
                         except Exception as e:
                             debug_info.append(f"  Error matching by position: {str(e)}")
                 
-                if not matched:
-                    # No position match, use first cell in frame (or match by track_id if available)
-                    if cell_id_col and 'track_id' in frame_cells.columns:
-                        # Try to match by track_id
-                        matching = frame_cells[frame_cells[cell_id_col] == track_id]
+                if not matched and cell_id_col:
+                    # Fall back only to an explicit Cell_ID match. Using the first cell in the
+                    # frame fabricates repeated area values and makes lineage growth plots misleading.
+                    candidate_ids = [track_id]
+                    try:
+                        if "Cell_ID" in track_row.index and pd.notna(track_row["Cell_ID"]):
+                            candidate_ids.insert(0, int(track_row["Cell_ID"]))
+                    except Exception:
+                        pass
+                    matched_cell = None
+                    for candidate_id in candidate_ids:
+                        try:
+                            matching = frame_cells[pd.to_numeric(frame_cells[cell_id_col], errors="coerce") == int(candidate_id)]
+                        except Exception:
+                            matching = pd.DataFrame()
                         if len(matching) > 0:
                             matched_cell = matching.iloc[0]
-                        else:
-                            matched_cell = frame_cells.iloc[0]
-                    else:
-                        matched_cell = frame_cells.iloc[0]
-                    
-                    # Add all cell properties to merged row
-                    for col in matched_cell.index:
-                        if col not in merged_row or pd.isna(merged_row.get(col)):
-                            merged_row[col] = matched_cell[col]
-                    matches_by_first += 1
-                    matched = True
+                            break
+                    if matched_cell is not None:
+                        for col in matched_cell.index:
+                            if col not in merged_row or pd.isna(merged_row.get(col)):
+                                merged_row[col] = matched_cell[col]
+                        matches_by_first += 1
+                        matched = True
                 
                 if matched:
                     matches_found += 1
@@ -1791,11 +1844,13 @@ class TrackingWorker(QThread):
             "area_um2",
             "area_µm2",
             "area_um^2",
+            "Area (µm²)",
+            "Area (um²)",
+            "Area (um^2)",
             "area",
             "Area",
             "cell_area",
             "Cell_Area",
-            "Area (um^2)",
             "Area_um2",
             "size",
             "Size",
@@ -1949,10 +2004,21 @@ class TrackingWorker(QThread):
         cols = ["track_id", "frame", "area", "area_source"]
         if tracks_df is None or len(tracks_df) == 0 or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
             return pd.DataFrame(columns=cols)
-        points = tracks_df[["track_id", "frame"]].copy()
+        point_cols = ["track_id", "frame"]
+        for coord_col in ("y", "x"):
+            if coord_col in tracks_df.columns:
+                point_cols.append(coord_col)
+        if "Cell_ID" in tracks_df.columns:
+            point_cols.append("Cell_ID")
+        points = tracks_df[point_cols].copy()
         points["track_id"] = pd.to_numeric(points["track_id"], errors="coerce")
         points["frame"] = pd.to_numeric(points["frame"], errors="coerce")
-        points = points.dropna().astype({"track_id": int, "frame": int}).drop_duplicates()
+        for coord_col in ("y", "x"):
+            if coord_col in points.columns:
+                points[coord_col] = pd.to_numeric(points[coord_col], errors="coerce")
+        if "Cell_ID" in points.columns:
+            points["Cell_ID"] = pd.to_numeric(points["Cell_ID"], errors="coerce")
+        points = points.dropna(subset=["track_id", "frame"]).astype({"track_id": int, "frame": int}).drop_duplicates()
         if len(points) == 0:
             return pd.DataFrame(columns=cols)
 
@@ -2000,7 +2066,33 @@ class TrackingWorker(QThread):
             fr = int(r.frame)
             area, source = area_map.get((tid, fr), (None, None))
             if area is None:
-                area = float(frame_counts.get(fr, {}).get(tid, 0))
+                label_candidates: list[int] = []
+                try:
+                    y = getattr(r, "y", None)
+                    x = getattr(r, "x", None)
+                    if y is not None and x is not None and fr in frame_counts and 0 <= fr < int(masks_tracked.shape[0]):
+                        yy = int(round(float(y)))
+                        xx = int(round(float(x)))
+                        if 0 <= yy < int(masks_tracked.shape[1]) and 0 <= xx < int(masks_tracked.shape[2]):
+                            label_at_centroid = int(masks_tracked[fr, yy, xx])
+                            if label_at_centroid > 0:
+                                label_candidates.append(label_at_centroid)
+                except Exception:
+                    pass
+                if "Cell_ID" in points.columns:
+                    try:
+                        cell_id = getattr(r, "Cell_ID")
+                        if cell_id is not None and not pd.isna(cell_id):
+                            label_candidates.append(int(cell_id))
+                    except Exception:
+                        pass
+                label_candidates.append(tid)
+                counts = frame_counts.get(fr, {})
+                area = 0.0
+                for label_id in label_candidates:
+                    area = float(counts.get(int(label_id), 0))
+                    if area > 0:
+                        break
                 source = "mask_px"
             rows.append({"track_id": tid, "frame": fr, "area": float(area), "area_source": source})
         return pd.DataFrame(rows, columns=cols)
@@ -2157,6 +2249,13 @@ class TrackingWorker(QThread):
             time_per_frame_min=float(getattr(self, "_cal_tp", 0.0) or 0.0),
             pixel_size_um=float(getattr(self, "_cal_ps", 0.0) or 0.0),
         )
+        review_map = getattr(self, "_lineage_curation_review_map", None) or {}
+        if review_map:
+            from bactomate.modules.lineage_integration import apply_curation_review_map_to_events
+
+            events = full.get("lineage_events")
+            if events is not None:
+                full["lineage_events"] = apply_curation_review_map_to_events(events, review_map)
         try:
             pf = preflight_lineage_run(
                 Path(self.mask_file),
@@ -2906,6 +3005,7 @@ class TrackingWorker(QThread):
         self,
         debug_output: list[str],
         imgs: np.ndarray,
+        masks_input: np.ndarray,
         masks_tracked: np.ndarray,
         tracks_df: Any,
         *,
@@ -2980,6 +3080,7 @@ class TrackingWorker(QThread):
                     output_path=None,
                     progress_callback=vis_progress,
                     overlay_frames=None,
+                    masks_input=masks_input,
                 )
             else:
                 frames_rgb = self._create_trajectory_visualization(
@@ -3013,6 +3114,7 @@ class TrackingWorker(QThread):
             original_path=original_path if original_path and original_path.is_file() else None,
             n_tracks=n_tracks,
             stack_images=np.asarray(imgs),
+            masks_input=np.asarray(masks_input),
             masks_tracked=np.asarray(masks_tracked),
             edges_df=edges_df,
             founder_by_track=founder_by_track or None,
@@ -3199,6 +3301,58 @@ class TrackingWorker(QThread):
                 )
         return pd.DataFrame(rows, columns=cols) if rows else empty
 
+    def _maybe_apply_saved_lineage_curation(
+        self,
+        *,
+        tracks_df,
+        masks_tracked,
+        masks_input,
+        napari_graph,
+        debug_output,
+    ):
+        """Apply preview/saved lineage curation before writing outputs."""
+        import pandas as pd
+
+        from bactomate.modules.lineage_integration import (
+            apply_lineage_curation_to_run,
+            lineage_edges_from_napari_graph,
+            load_lineage_curation,
+            resolve_lineage_curation_path,
+        )
+
+        path = self.lineage_curation_path
+        if path is None or not Path(path).is_file():
+            path = resolve_lineage_curation_path(Path(self.mask_file))
+        if not Path(path).is_file():
+            return None
+        curation = load_lineage_curation(path)
+        if not curation:
+            return None
+        edges_df = pd.DataFrame(
+            columns=["parent_track_id", "daughter_track_id", "division_frame", "parent_last_frame"]
+        )
+        if napari_graph is not None:
+            try:
+                edges_df = lineage_edges_from_napari_graph(napari_graph, tracks_df)
+            except Exception:
+                pass
+        tracks_df, edges_df, masks_tracked, review_map, stats = apply_lineage_curation_to_run(
+            curation,
+            tracks_df=tracks_df,
+            edges_df=edges_df,
+            masks_tracked=masks_tracked,
+            masks_input=masks_input,
+        )
+        self._lineage_curation_review_map = review_map
+        debug_output.append(f"✓ Applied saved lineage curation ({Path(path).name})")
+        if stats.get("manual_edits_applied"):
+            debug_output.append(f"  - Manual orange-cell links: {stats['manual_edits_applied']}")
+        if stats.get("division_reviews_applied"):
+            debug_output.append(f"  - Division review decisions: {stats['division_reviews_applied']}")
+        if stats.get("divisions_dropped"):
+            debug_output.append(f"  - Rejected divisions removed: {stats['divisions_dropped']}")
+        return tracks_df, masks_tracked, edges_df
+
     @staticmethod
     def _lineage_founder_map(edges_df, tracks_df) -> dict[int, int]:
         parent_of: dict[int, int] = {}
@@ -3281,6 +3435,7 @@ class TrackingWorker(QThread):
         output_path: Optional[Path],
         progress_callback=None,
         overlay_frames=None,
+        masks_input=None,
     ) -> Optional[np.ndarray]:
         """RGB stack: founder-family colors, trajectories, division markers, track IDs (same style as trajectories)."""
         import numpy as np
@@ -3312,6 +3467,17 @@ class TrackingWorker(QThread):
         track_colors = {}
         for tid, f in founder_by_track.items():
             track_colors[int(tid)] = founder_rgb.get(int(f), (180, 180, 180))
+
+        def _region_at_centroid(mask_frame: np.ndarray, y: float, x: float) -> Optional[np.ndarray]:
+            yy = int(round(float(y)))
+            xx = int(round(float(x)))
+            if yy < 0 or yy >= mask_frame.shape[0] or xx < 0 or xx >= mask_frame.shape[1]:
+                return None
+            label = int(mask_frame[yy, xx])
+            if label <= 0:
+                return None
+            region = mask_frame == label
+            return region if np.any(region) else None
 
         div_marks: list[tuple[int, int, int]] = []
         if edges_df is not None and len(edges_df) > 0 and "y" in tracks_df.columns and "x" in tracks_df.columns:
@@ -3346,15 +3512,41 @@ class TrackingWorker(QThread):
                 img = images_norm[frame_idx]
                 vis_frame = np.stack([img, img, img], axis=-1)
                 mask_frame = masks_tracked[frame_idx]
-                for track_id in unique_tracks:
-                    tid = int(track_id)
-                    if tid not in track_colors:
+                tracked_region_frame = np.zeros((height, width), dtype=bool)
+                current_rows = tracks_df[tracks_df["frame"] == frame_idx] if "y" in tracks_df.columns and "x" in tracks_df.columns else []
+                for _, tr in current_rows.iterrows() if hasattr(current_rows, "iterrows") else []:
+                    tid = int(tr["track_id"])
+                    color = track_colors.get(tid)
+                    if color is None:
                         continue
-                    color = track_colors[tid]
-                    region = mask_frame == tid
+                    region = _region_at_centroid(mask_frame, float(tr["y"]), float(tr["x"]))
+                    if region is None:
+                        region = mask_frame == tid
+                    if not np.any(region):
+                        continue
+                    tracked_region_frame |= region
                     vis_frame[region, 0] = np.clip(vis_frame[region, 0] * 0.5 + color[0] * 0.5, 0, 255).astype(np.uint8)
                     vis_frame[region, 1] = np.clip(vis_frame[region, 1] * 0.5 + color[1] * 0.5, 0, 255).astype(np.uint8)
                     vis_frame[region, 2] = np.clip(vis_frame[region, 2] * 0.5 + color[2] * 0.5, 0, 255).astype(np.uint8)
+                if (
+                    masks_input is not None
+                    and getattr(masks_input, "ndim", 0) == 3
+                    and frame_idx < int(masks_input.shape[0])
+                    and masks_input.shape[1] == height
+                    and masks_input.shape[2] == width
+                ):
+                    input_frame = masks_input[frame_idx]
+                    for raw_label in np.unique(input_frame):
+                        raw_label = int(raw_label)
+                        if raw_label <= 0:
+                            continue
+                        raw_region = input_frame == raw_label
+                        if np.any(raw_region & tracked_region_frame):
+                            continue
+                        # Orange means: present in the filtered segmentation, but not linked by Trackastra.
+                        vis_frame[raw_region, 0] = np.clip(vis_frame[raw_region, 0] * 0.25 + 255 * 0.75, 0, 255).astype(np.uint8)
+                        vis_frame[raw_region, 1] = np.clip(vis_frame[raw_region, 1] * 0.25 + 150 * 0.75, 0, 255).astype(np.uint8)
+                        vis_frame[raw_region, 2] = np.clip(vis_frame[raw_region, 2] * 0.25, 0, 255).astype(np.uint8)
 
             if "y" in tracks_df.columns and "x" in tracks_df.columns:
                 tracks_in_frame = tracks_df[
@@ -3407,14 +3599,22 @@ class TrackingWorker(QThread):
                         y = int(current_track.iloc[0]["y"])
                         x = int(current_track.iloc[0]["x"])
                         if 0 <= y < height and 0 <= x < width:
-                            dot_size = 5
+                            dot_size = 2
                             color = track_colors[track_id_int]
                             y0 = max(0, y - dot_size)
                             y1_ = min(height, y + dot_size + 1)
                             x0 = max(0, x - dot_size)
                             x1_ = min(width, x + dot_size + 1)
-                            vis_frame[y0:y1_, x0:x1_, :] = color
-                            labels_to_draw.append((str(track_id_int), x + dot_size + 2, y - 6))
+                            vis_frame[y0:y1_, x0:x1_, 0] = (
+                                vis_frame[y0:y1_, x0:x1_, 0] * 0.35 + color[0] * 0.65
+                            ).astype(np.uint8)
+                            vis_frame[y0:y1_, x0:x1_, 1] = (
+                                vis_frame[y0:y1_, x0:x1_, 1] * 0.35 + color[1] * 0.65
+                            ).astype(np.uint8)
+                            vis_frame[y0:y1_, x0:x1_, 2] = (
+                                vis_frame[y0:y1_, x0:x1_, 2] * 0.35 + color[2] * 0.65
+                            ).astype(np.uint8)
+                            labels_to_draw.append((str(track_id_int), x + dot_size + 3, y - 5))
 
                 if labels_to_draw:
                     try:

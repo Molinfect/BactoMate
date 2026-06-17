@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -39,6 +40,7 @@ class PreviewNavSpec:
     show_channel: bool = False
     show_z: bool = False
     show_frame_of_total: bool = True
+    show_frame_slider: bool = False
     show_cell_overlay_toggle: bool = False
     show_foci_overlay_toggle: bool = False
     cell_overlay_default: bool = True
@@ -132,6 +134,10 @@ class PreviewNavigationControls(QWidget):
             self._frame_spin.setKeyboardTracking(False)
         except Exception:
             pass
+        self._frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self._frame_slider.setMinimumWidth(160)
+        self._frame_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._frame_slider.setToolTip("Drag to scan through time frames.")
         self._frame_of_label = QLabel("")
         self._show_cells_cb = QCheckBox("Show cell overlay")
         self._show_cells_cb.setToolTip("Show or hide the segmentation/filter mask overlay.")
@@ -245,6 +251,20 @@ class PreviewNavigationControls(QWidget):
             return [bool(cb.isChecked()) for cb in self._foci_channel_cbs]
         return []
 
+    def cell_overlay_visible(self) -> bool:
+        """Whether the segmentation / filter mask overlay is shown."""
+        if not self._spec.show_cell_overlay_toggle:
+            return True
+        return bool(self._show_cells_cb.isChecked())
+
+    def foci_overlay_visible(self) -> bool:
+        """Whether any foci overlay is shown (single toggle or per-channel)."""
+        if self._foci_channel_cbs:
+            return any(cb.isChecked() for cb in self._foci_channel_cbs)
+        if self._spec.show_foci_overlay_toggle:
+            return bool(self._show_foci_cb.isChecked())
+        return False
+
     def set_foci_channel_overlay_visible(self, states: list[bool]) -> None:
         if not self._foci_channel_cbs:
             return
@@ -266,6 +286,8 @@ class PreviewNavigationControls(QWidget):
 
         self._frame_spin.valueChanged.connect(self._on_frame_spin_value_changed)
         self._frame_spin.editingFinished.connect(self._commit_frame_spin_immediate)
+        self._frame_slider.valueChanged.connect(self._on_frame_slider_value_changed)
+        self._frame_slider.sliderReleased.connect(self._commit_frame_spin_immediate)
 
         self._channel_spin.valueChanged.connect(self._on_channel_spin_value_changed)
         self._channel_spin.editingFinished.connect(self._commit_channel_spin_immediate)
@@ -301,6 +323,20 @@ class PreviewNavigationControls(QWidget):
         self._emit_overlay("show_foci", bool(checked))
 
     def _on_frame_spin_value_changed(self, *_args) -> None:
+        if bool(getattr(self._spec, "show_frame_slider", False)):
+            self._frame_slider.blockSignals(True)
+            try:
+                self._frame_slider.setValue(max(0, int(self._frame_spin.value()) - 1))
+            finally:
+                self._frame_slider.blockSignals(False)
+        self._debounce(self._frame_timer)
+
+    def _on_frame_slider_value_changed(self, value: int) -> None:
+        self._frame_spin.blockSignals(True)
+        try:
+            self._frame_spin.setValue(int(value) + 1)
+        finally:
+            self._frame_spin.blockSignals(False)
         self._debounce(self._frame_timer)
 
     def _on_channel_spin_value_changed(self, *_args) -> None:
@@ -431,9 +467,10 @@ class PreviewNavigationControls(QWidget):
             )
             self._populate_sources()
 
-        self._source_widgets.extend(
-            [self._frame_label, self._frame_spin, self._frame_of_label]
-        )
+        self._source_widgets.extend([self._frame_label, self._frame_spin])
+        if bool(getattr(self._spec, "show_frame_slider", False)):
+            self._source_widgets.append(self._frame_slider)
+        self._source_widgets.append(self._frame_of_label)
 
         if self._spec.show_channel:
             self._source_widgets.extend([self._channel_label, self._channel_spin])
@@ -496,6 +533,8 @@ class PreviewNavigationControls(QWidget):
     def _apply_spec_ranges(self) -> None:
         fc = max(1, int(self._spec.frame_count))
         self._frame_spin.setRange(1, fc)
+        self._frame_slider.setRange(0, max(0, fc - 1))
+        self._frame_slider.setVisible(bool(getattr(self._spec, "show_frame_slider", False)) and fc > 1)
         if bool(getattr(self._spec, "show_frame_of_total", True)):
             self._frame_of_label.setText(f"of {fc}")
             self._frame_of_label.show()
@@ -563,14 +602,17 @@ class PreviewNavigationControls(QWidget):
 
         # Spins
         self._frame_spin.blockSignals(True)
+        self._frame_slider.blockSignals(True)
         self._channel_spin.blockSignals(True)
         self._z_spin.blockSignals(True)
         try:
             self._frame_spin.setValue(fi + 1)
+            self._frame_slider.setValue(fi)
             self._channel_spin.setValue(ci + 1)
             self._z_spin.setValue(zi + 1)
         finally:
             self._frame_spin.blockSignals(False)
+            self._frame_slider.blockSignals(False)
             self._channel_spin.blockSignals(False)
             self._z_spin.blockSignals(False)
 
@@ -596,7 +638,10 @@ class PreviewNavigationControls(QWidget):
         # Stop debounce timers so we don't double-emit.
         if which == "frame":
             self._frame_timer.stop()
-            val = int(self._frame_spin.value()) - 1
+            if bool(getattr(self._spec, "show_frame_slider", False)):
+                val = int(self._frame_slider.value())
+            else:
+                val = int(self._frame_spin.value()) - 1
             val = max(0, min(val, max(0, int(self._spec.frame_count) - 1)))
             self._state = PreviewNavState(
                 source_key=self._state.source_key,

@@ -29,7 +29,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -664,12 +663,12 @@ class AnalyzeMasksBase(QWidget):
         title: str,
         message: str,
         output_folder: Path | str | None = None,
-        icon: QMessageBox.Icon = QMessageBox.Icon.Information,
+        icon: str | None = None,
         on_ok=None,
     ) -> None:
         from bactomate.gui.widgets import show_task_complete_dialog
 
-        _ = icon  # native QMessageBox icon not used; message text carries status
+        _ = icon  # legacy icon hint; message text carries status
         show_task_complete_dialog(
             self,
             title=title,
