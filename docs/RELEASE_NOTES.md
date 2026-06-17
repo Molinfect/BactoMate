@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.3 (2026-06-17)
+
+### Track Windows bundle build scripts in git
+
+- **`.gitignore`:** whitelist `build/*.bat` and `build/build_windows_bundle.py` so Windows portable bundle scripts are versioned (they were previously ignored while docs referenced them).
+- **Added to repo:** `build/build_windows_bundle.bat`, `build/build_windows_bundle.py`, `build/create_windows_zip.bat`.
+
+---
+
 ## v2.7.2 (2026-06-17)
 
 ### Windows install hardening and CI
