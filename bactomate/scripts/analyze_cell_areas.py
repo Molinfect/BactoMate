@@ -69,6 +69,7 @@ def _setup_script_logging(log_to_file: bool = True) -> None:
     if log.handlers:
         return
     log.setLevel(logging.INFO)
+    log.propagate = False
     fmt = logging.Formatter("%(message)s")
     out = logging.StreamHandler(sys.stdout)
     out.setFormatter(fmt)

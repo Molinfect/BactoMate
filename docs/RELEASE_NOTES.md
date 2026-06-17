@@ -4,6 +4,17 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.10 (2026-06-17)
+
+### I/O performance, integration test, and tooling
+
+- **TIFF stack I/O:** `tiff_stack_io.py` uses memmap for large stacks and smarter frame counting for ImageJ-style volumes.
+- **Tracking:** `tracking_io.py` extracts stack helpers; disk visualization auto-skips when mask stacks exceed 150 frames (checkbox still on for shorter movies).
+- **Tests:** slow pipeline integration test (masks → Cell IDs → analyze → lineage preflight → join); `test_tiff_stack_io.py`.
+- **Tooling:** `pytest-cov` dev extra and coverage config in `pyproject.toml`.
+
+---
+
 ## v2.7.9 (2026-06-17)
 
 ### Plan execution: U-Net Cell IDs, CI, docs, cleanup

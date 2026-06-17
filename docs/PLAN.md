@@ -1,38 +1,29 @@
 # BactoMate — remaining work plan
 
-Last updated: 2026-06-17 (after v2.7.9)
+Last updated: 2026-06-17 (after v2.7.10)
 
 ---
 
 ## Completed
 
-### Release hygiene (v2.7.8 → v2.7.9)
-- [x] Version strings synced through docs and package metadata
-- [x] `RELEASE_NOTES.md` for v2.7.7, v2.7.8, and v2.7.9
-- [x] Removed `scripts/repair_analysis_foci_workbook.py` and `workers/__main__.py`
+### v2.7.8–v2.7.9
+- Release hygiene, U-Net persistent Cell IDs, workers import tests, CI on `dev`, docs, slimming
 
-### Priority 1 — U-Net persistent Cell IDs
-- [x] Shared `write_persistent_cellid_mask_file()` in `cell_id_linking.py`
-- [x] Omnipose refactored to use shared helper
-- [x] U-Net checkbox + post-batch `_maybe_write_persistent_cellid_masks_for_output()`
-- [x] Session param `assign_persistent_cellids` on U-Net tab
-- [x] Tests in `test_gui_lineage_and_cellids.py`
+### v2.7.10 (optional items + Priority 5 start)
+- [x] `pytest-cov` dev extra + `[tool.coverage.*]` in `pyproject.toml`
+- [x] Workspace folder renamed `BactoMate_v1.9` → `BactoMate`
+- [x] `bactomate/modules/tiff_stack_io.py` — memmap for large stacks, preview page reads
+- [x] `bactomate/gui/workers/tracking_io.py` — stack helpers, auto-skip viz when frames > 150
+- [x] Tracking worker uses shared I/O; visualization split started (I/O module extracted)
+- [x] `tests/test_pipeline_integration.py` — masks → Cell IDs → analyze → preflight → join
+- [x] `tests/test_tiff_stack_io.py`
 
-### Priority 2 — test & CI
-- [x] `tests/test_workers_imports.py`
-- [x] CI on `dev` branch (`.github/workflows/build.yml`)
-- [ ] Optional: `pytest-cov` baseline (deferred)
+**Coverage baseline** (run locally):
 
-### Priority 3 — documentation
-- [x] `docs/README.md` — Segmentation module (not standalone Omnipose tab)
-- [x] `BACTOMATE_USER_MANUAL.md` — persistent Cell IDs on all three backends
-- [x] Lineage preflight frame-index / filtered-mask reminder in Tracking tab
-
-### Priority 4 — code slimming
-- [x] Deleted `docs/archive/v1.6/`
-- [x] `get_scripts_dir()` now prefers `bactomate/scripts/`
-- [x] Removed deprecated `coloc_one_to_one` / `coloc_mutual_nearest` from `ColocSettings`
-- [ ] Rename workspace folder `BactoMate_v1.9` (cosmetic, manual)
+```bash
+pip install -e ".[dev]"
+pytest tests/ --cov=bactomate --cov-report=term-missing
+```
 
 ---
 
@@ -46,25 +37,16 @@ Last updated: 2026-06-17 (after v2.7.9)
 | `post_processing.py` | ~5,400 | growth-curve video vs montage vs scale bar |
 | `file_conversion.py` | ~4,100 | preview/crop vs I/O vs metadata |
 | `tracking.py` (tab) | ~3,300 | preview vs batch vs lineage inspector |
-| `workers/tracking.py` | ~3,200 | run loop vs visualization vs Excel join |
+| `workers/tracking.py` | ~3,200 | **next:** move `_create_*_visualization` → `tracking_viz.py` |
 
-### 5.2 Large-stack I/O
+### 5.2 Large-stack I/O (partial)
+- [x] memmap read path in `tiff_stack_io.py`
+- [x] auto-skip disk visualization for stacks > 150 frames
+- [ ] frame-at-a-time processing inside Trackastra loop (if memory still an issue)
 
-- `tifffile.memmap` or page-at-a-time reads in `workers/tracking.py`
-- Default batch tracking visualization off when frame count > N
-
-### 5.3 End-to-end integration test
-
-One `@pytest.mark.slow` test: tiny synthetic TIFF through analyze → track → lineage export.
-
-### 5.4 Coverage baseline
-
-```bash
-pip install pytest-cov
-pytest tests/ --cov=bactomate --cov-report=term-missing
-```
-
-Target blind spots: `file_conversion.py`, `omnipose_seg.py`, `workers/tracking.py`.
+### 5.3 End-to-end integration test (partial)
+- [x] analyze + preflight + lineage join (no Trackastra GPU run)
+- [ ] optional slow test with mocked/minimal Trackastra when feasible
 
 ---
 
@@ -74,7 +56,7 @@ Target blind spots: `file_conversion.py`, `omnipose_seg.py`, `workers/tracking.p
 2. Update README, user manual, Windows install doc
 3. Append `docs/RELEASE_NOTES.md`
 4. `pytest tests/` (macOS + Windows)
-5. Tag `vX.Y.Z` on `dev`, merge to `main`, push tag
+5. Tag on `dev`, merge to `main`, push tag
 
 ---
 

@@ -16,26 +16,16 @@ import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactomate.gui.log_config import get_logger, log_exception
+from bactomate.gui.workers.tracking_io import (
+    TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
+    build_track_points_by_id,
+    downsample_stacks_for_preview,
+)
 from bactomate.modules.label_render import draw_hq_labels
+from bactomate.modules.tiff_stack_io import read_tiff_stack
 
-def _build_track_points_by_id(tracks_df) -> dict[int, list[tuple[int, float, float]]]:
-    """Index track points as ``track_id -> [(frame, y, x), ...]`` sorted by frame."""
-    required = ("frame", "track_id", "y", "x")
-    if tracks_df is None or not all(col in tracks_df.columns for col in required):
-        return {}
-    out: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
-    frames = tracks_df["frame"].to_numpy(dtype=int, copy=False)
-    track_ids = tracks_df["track_id"].to_numpy(dtype=int, copy=False)
-    ys = tracks_df["y"].to_numpy(dtype=float, copy=False)
-    xs = tracks_df["x"].to_numpy(dtype=float, copy=False)
-    for frame, track_id, y, x in zip(frames, track_ids, ys, xs):
-        out[int(track_id)].append((int(frame), float(y), float(x)))
-    for points in out.values():
-        points.sort(key=lambda item: item[0])
-    return dict(out)
 _TRACKASTRA_MODEL_CACHE: dict[tuple[str, str], Any] = {}
 _TRACKASTRA_MODEL_CACHE_LOCK = threading.Lock()
-_TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE = 384
 
 class _TrackingLogHandler(logging.Handler):
     """Forwards log records to a TrackingWorker's progress signal so the GUI log shows trackastra status."""
@@ -169,29 +159,13 @@ class TrackingWorker(QThread):
             import networkx as nx
 
             def _read_tiff_stack(path: str | Path, label: str) -> tuple[np.ndarray, int | None, bool]:
-                """Preview optimization: read only the requested leading frames when possible."""
-                p = str(path)
-                limit = int(self.frame_limit or 0)
-                if not self.write_outputs and limit > 0:
-                    try:
-                        with tifffile.TiffFile(p) as tif:
-                            n_pages = len(tif.pages)
-                        if n_pages > 0:
-                            n_use = min(limit, n_pages)
-                            arr = tifffile.imread(p, key=range(n_use))
-                            if getattr(arr, "ndim", 0) == 2:
-                                arr = arr[np.newaxis, ...]
-                            debug_output.append(
-                                f"✓ {label}: preview-read first {arr.shape[0]} of {n_pages} frame(s)"
-                            )
-                            return arr, n_pages, True
-                    except Exception as exc:
-                        debug_output.append(
-                            f"  {label}: partial preview read failed ({exc}); falling back to full read"
-                        )
-                arr = tifffile.imread(p)
-                n_total = int(arr.shape[0]) if getattr(arr, "ndim", 0) >= 3 else None
-                return arr, n_total, False
+                return read_tiff_stack(
+                    path,
+                    label=label,
+                    frame_limit=int(self.frame_limit or 0),
+                    preview_mode=not self.write_outputs,
+                    log=debug_output.append,
+                )
             
             debug_output.append("✓ All imports successful")
             self.progress.emit(5, "Loading masks...")
@@ -254,10 +228,10 @@ class TrackingWorker(QThread):
                     )
 
             if not self.write_outputs:
-                masks, imgs = self._downsample_stacks_for_preview(
+                masks, imgs = downsample_stacks_for_preview(
                     masks,
                     imgs,
-                    max_size=_TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
+                    max_size=TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
                 )
                 debug_output.append(
                     f"Preview mode: spatial downsample for speed (shape {masks.shape})"
@@ -2269,7 +2243,7 @@ class TrackingWorker(QThread):
             track_colors[int(track_id)] = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
         
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
-        track_points_by_id = _build_track_points_by_id(tracks_df)
+        track_points_by_id = build_track_points_by_id(tracks_df)
         unique_track_set = {int(t) for t in unique_tracks}
         
         for frame_idx in range(num_frames):
@@ -2479,26 +2453,6 @@ class TrackingWorker(QThread):
                 tifffile.imwrite(str(output_path), visualization, metadata=meta if meta else {})
                 debug_output.append(f"✓ Visualization saved with {num_tracks} tracks (uncompressed)")
         return visualization
-
-    @staticmethod
-    def _downsample_stacks_for_preview(
-        masks: np.ndarray,
-        imgs: np.ndarray,
-        *,
-        max_size: int = 512,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Downsample (T,Y,X) stacks for fast in-memory preview tracking."""
-        if masks.ndim != 3 or imgs.ndim != 3:
-            return masks, imgs
-        _t, h, w = masks.shape
-        if max(h, w) <= max_size:
-            return masks, imgs
-        scale = max_size / max(h, w)
-        new_h = max(1, int(round(h * scale)))
-        new_w = max(1, int(round(w * scale)))
-        sy = max(1, h // new_h)
-        sx = max(1, w // new_w)
-        return masks[:, ::sy, ::sx], imgs[:, ::sy, ::sx]
 
     def _emit_preview_result(
         self,
