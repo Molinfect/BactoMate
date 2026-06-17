@@ -42,6 +42,8 @@ class LineagePreflightResult:
     analysis_workbook: Optional[Path] = None
     original_image: Optional[Path] = None
     n_frames: Optional[int] = None
+    workbook_frames: Optional[int] = None
+    frame_count_mismatch: bool = False
     mask_is_filtered: bool = False
     linker_mode: str = ""
     model_name: str = ""
@@ -123,6 +125,40 @@ def discover_lineage_input_channels(mask_path: Path) -> tuple[list[str], list[st
     return fi_channels, foci_channels
 
 
+def _workbook_summary_frame_count(workbook_path: Path) -> tuple[int | None, bool]:
+    """Return (expected mask frame count, is_1_indexed) from Summary or Per-Cell Data."""
+    import pandas as pd
+
+    path = Path(workbook_path)
+    df = None
+    for sheet in ("Summary", "Per-Cell Data"):
+        try:
+            df = pd.read_excel(path, sheet_name=sheet)
+            break
+        except Exception:
+            continue
+    if df is None:
+        try:
+            xl = pd.ExcelFile(path)
+            if not xl.sheet_names:
+                return None, True
+            df = pd.read_excel(path, sheet_name=xl.sheet_names[0])
+        except Exception:
+            return None, True
+    frame_col = next((c for c in ("Frame", "frame", "t") if c in df.columns), None)
+    if frame_col is None:
+        return None, True
+    vals = pd.to_numeric(df[frame_col], errors="coerce").dropna().astype(int)
+    if len(vals) == 0:
+        return None, True
+    unique = sorted(vals.unique().tolist())
+    is_1_indexed = (0 not in unique) and min(unique) >= 1
+    max_frame = int(max(unique))
+    if is_1_indexed:
+        return max_frame, True
+    return max_frame + 1, False
+
+
 def preflight_lineage_run(
     mask_path: Path,
     *,
@@ -130,6 +166,7 @@ def preflight_lineage_run(
     model_name: str,
     prefer_filtered_mask: bool = True,
     require_analysis_workbook: bool = False,
+    strict_lineage: bool = False,
 ) -> LineagePreflightResult:
     """Validate mask, analysis workbook, linker, and model before a lineage job."""
     from bactomate.gui.analysis_paths import resolve_analysis_workbook_for_mask
@@ -154,11 +191,18 @@ def preflight_lineage_run(
 
     if prefer_filtered_mask and not out.mask_is_filtered and "_masks" in raw.name.lower():
         filt = resolve_lineage_mask_path(raw, prefer_filtered=True)
-        if filt != raw and filt.is_file():
-            out.warnings.append(
+        if filt == raw:
+            msg = (
                 f"No filtered mask found; using raw mask {raw.name}. "
                 "Run Filtering first and analyze the filtered mask for consistent joins."
             )
+            if strict_lineage:
+                out.ok = False
+                out.errors.append(
+                    "Filtered mask required for lineage tracking. Run Filtering on this mask stack first."
+                )
+            else:
+                out.warnings.append(msg)
 
     wb = resolve_analysis_workbook_for_mask(resolved)
     out.analysis_workbook = wb
@@ -176,6 +220,31 @@ def preflight_lineage_run(
             f"Analyze workbook matches filtered mask ({resolved.name}); "
             f"selected path was {raw.name}."
         )
+
+    if wb is not None:
+        try:
+            from bactomate.gui.analysis_paths import stem_from_mask_path
+
+            expected_stem = stem_from_mask_path(resolved)
+            wb_stem = wb.stem
+            for suffix in ("_masks_analysis", "_analysis"):
+                if wb_stem.endswith(suffix):
+                    wb_mask_stem = wb_stem[: -len(suffix)]
+                    break
+            else:
+                wb_mask_stem = None
+            if wb_mask_stem and wb_mask_stem != expected_stem:
+                msg = (
+                    f"Analysis workbook ({wb.name}) may not match mask stem ({expected_stem}). "
+                    "Re-run Analyze on the mask you plan to track."
+                )
+                if strict_lineage:
+                    out.ok = False
+                    out.errors.append(msg)
+                else:
+                    out.warnings.append(msg)
+        except Exception:
+            pass
 
     mode = (linker_mode or "").strip().lower()
     if mode == "greedy_nodiv":
@@ -218,6 +287,22 @@ def preflight_lineage_run(
     except Exception:
         out.warnings.append("Could not read mask frame count from TIFF header.")
 
+    if wb is not None and out.n_frames is not None:
+        wb_frames, _ = _workbook_summary_frame_count(wb)
+        if wb_frames is not None:
+            out.workbook_frames = wb_frames
+            if int(wb_frames) != int(out.n_frames):
+                out.frame_count_mismatch = True
+                msg = (
+                    f"Mask has {out.n_frames} frame(s) but analysis Summary suggests {wb_frames}. "
+                    "Re-analyze the mask or pick the matching mask file."
+                )
+                if strict_lineage:
+                    out.ok = False
+                    out.errors.append(msg)
+                else:
+                    out.warnings.append(msg)
+
     try:
         from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
 
@@ -247,6 +332,10 @@ def preflight_summary_lines(pf: LineagePreflightResult) -> list[str]:
         lines.append(f"Filtered mask: {'Yes' if pf.mask_is_filtered else 'No'}")
     if pf.n_frames is not None:
         lines.append(f"Frames: {pf.n_frames}")
+    if pf.workbook_frames is not None:
+        lines.append(f"Analysis frames: {pf.workbook_frames}")
+    if pf.frame_count_mismatch:
+        lines.append("Frame count mismatch: Yes")
     if pf.analysis_workbook:
         lines.append(f"Analysis workbook: {pf.analysis_workbook.name}")
     else:

@@ -314,17 +314,16 @@ class MainWindow(QMainWindow):
         title_bar_layout.addStretch()
         title_bar.setLayout(title_bar_layout)
         main_layout.addWidget(title_bar)
-        (ND2ConversionTab, SegmentationTab, TrackingTab, PostProcessingTab, TrainingTab, AnalyzeTab, FilteringTab, OmniposeSegTab, UNetSegmentTab, SessionLogsPanel) = _import_tab_shell_classes()
+        (ND2ConversionTab, SegmentationTab, TrackingTab, PostProcessingTab, TrainingTab, AnalyzeTab, FilteringTab, _OmniposeSegTab, UNetSegmentTab, SessionLogsPanel) = _import_tab_shell_classes()
         _startup_import_log('after tabs import')
         self.nd2_tab = ND2ConversionTab(self)
-        self.omnipose_seg_tab = OmniposeSegTab(self)
         self.unet_segment_tab = UNetSegmentTab(self)
         self.filtering_tab = FilteringTab(self, embedded=True)
         self.analyze_tab = AnalyzeTab(self, embedded=True)
-        self.segmentation_tab = SegmentationTab(self, omnipose_tab=self.omnipose_seg_tab, unet_tab=self.unet_segment_tab, filtering_tab=self.filtering_tab, analyze_tab=self.analyze_tab)
+        self.segmentation_tab = SegmentationTab(self, unet_tab=self.unet_segment_tab, filtering_tab=self.filtering_tab, analyze_tab=self.analyze_tab)
         self.tracking_tab = TrackingTab(self)
         self.post_processing_tab = PostProcessingTab(self)
-        self.training_tab = TrainingTab(self, omnipose_tab=self.omnipose_seg_tab, unet_tab=self.unet_segment_tab)
+        self.training_tab = TrainingTab(self, omnipose_tab=self.segmentation_tab.omnipose_tab, unet_tab=self.unet_segment_tab)
         self.dashboard_widget = DashboardWidget(self, on_open_workspace=self._open_workspace_dialog, on_drop_workspace=self._open_workspace_from_drop, on_clear_workspace=self._clear_workspace, on_go_module=self._go_module_from_dashboard)
         self._shell_file = ModuleShellWidget(self, module_id=MODULE_FILE_CONVERSION, content=self.nd2_tab, on_back=self._show_dashboard, pipeline_navigation=_PIPELINE_NAV_BAR, on_open_module=self._go_module_from_dashboard)
         self._shell_segmentation = ModuleShellWidget(self, module_id=MODULE_SEGMENTATION, content=self.segmentation_tab, on_back=self._show_dashboard, pipeline_navigation=_PIPELINE_NAV_BAR, on_open_module=self._go_module_from_dashboard)
@@ -565,7 +564,7 @@ class MainWindow(QMainWindow):
             if not ok:
                 show_message_dialog(self, 'Please wait', warning_text, kind='warning')
             return ok
-        worker_wait_specs = [(getattr(self, 'tracking_tab', None), 'worker', 'Waiting for tracking to finish…', 300000, 'Tracking is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'analyze_tab', None), 'worker', 'Waiting for Analyze Masks to finish…', 300000, 'Analyze Masks is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'omnipose_seg_tab', None), 'worker', 'Waiting for Omnipose processing to finish…', 300000, 'Omnipose processing is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self.segmentation_tab, '_cellpose_owner', None), 'worker', 'Waiting for Cellpose processing to finish…', 300000, 'Cellpose processing is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'unet_segment_tab', None), 'worker', 'Waiting for U-Net processing to finish…', 300000, 'U-Net processing is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'omnipose_seg_tab', None), '_omnipose_train_worker', 'Waiting for Omnipose training to finish…', 300000, 'Omnipose training is still running. Wait for it to finish, then close the application.'), (getattr(self, 'nd2_tab', None), 'worker', 'Waiting for file conversion to finish…', 300000, 'File conversion is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'post_processing_tab', None), 'worker', 'Waiting for post-processing to finish…', 300000, 'Post-processing is still running. Wait for it to finish, then close the application.'), (getattr(self, 'unet_segment_tab', None), '_unet_train_worker', 'Waiting for U-Net training to finish…', 300000, 'U-Net training is still running. Wait for it to finish, then close the application.')]
+        worker_wait_specs = [(getattr(self, 'tracking_tab', None), 'worker', 'Waiting for tracking to finish…', 300000, 'Tracking is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'analyze_tab', None), 'worker', 'Waiting for Analyze Masks to finish…', 300000, 'Analyze Masks is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(getattr(self, 'segmentation_tab', None), 'omnipose_tab', None), 'worker', 'Waiting for Omnipose processing to finish…', 300000, 'Omnipose processing is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self.segmentation_tab, '_cellpose_owner', None), 'worker', 'Waiting for Cellpose processing to finish…', 300000, 'Cellpose processing is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'unet_segment_tab', None), 'worker', 'Waiting for U-Net processing to finish…', 300000, 'U-Net processing is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(getattr(self, 'segmentation_tab', None), 'omnipose_tab', None), '_omnipose_train_worker', 'Waiting for Omnipose training to finish…', 300000, 'Omnipose training is still running. Wait for it to finish, then close the application.'), (getattr(self, 'nd2_tab', None), 'worker', 'Waiting for file conversion to finish…', 300000, 'File conversion is still running. Wait for it to finish or cancel it, then close the application.'), (getattr(self, 'post_processing_tab', None), 'worker', 'Waiting for post-processing to finish…', 300000, 'Post-processing is still running. Wait for it to finish, then close the application.'), (getattr(self, 'unet_segment_tab', None), '_unet_train_worker', 'Waiting for U-Net training to finish…', 300000, 'U-Net training is still running. Wait for it to finish, then close the application.')]
         for (tab, worker_attr, waiting_title, timeout_ms, warning_text) in worker_wait_specs:
             if tab is None:
                 continue
@@ -714,10 +713,11 @@ class MainWindow(QMainWindow):
                 self.nd2_tab.refresh_conversion_candidate_list()
             QTimer.singleShot(150, lambda : getattr(self.nd2_tab, '_refresh_embedded_conversion_preview', lambda : None)())
         elif module_id == MODULE_SEGMENTATION:
-            if hasattr(self.omnipose_seg_tab, 'file_path') and self._should_apply_workspace_hint_to_path_widget(self.omnipose_seg_tab.file_path):
+            seg_path = getattr(self.segmentation_tab, 'file_path', None)
+            if seg_path is not None and self._should_apply_workspace_hint_to_path_widget(seg_path):
                 p = hints.get('segmentation')
                 if p and Path(p).exists():
-                    self.omnipose_seg_tab.file_path.setText(p)
+                    seg_path.setText(p)
             md = getattr(scan, 'mask_or_project_dir', None)
             if md is not None and md.exists():
                 ms = str(md)
@@ -878,7 +878,7 @@ class MainWindow(QMainWindow):
         self._clear_line_edit(getattr(self.nd2_tab, 'file_path', None))
         if hasattr(self.nd2_tab, 'file_info'):
             self.nd2_tab.file_info = None
-        for tab in (self.omnipose_seg_tab, getattr(self.segmentation_tab, '_cellpose_owner', None), self.unet_segment_tab):
+        for tab in getattr(self.segmentation_tab, '_segmentation_path_tabs', lambda: ())():
             if tab is not None:
                 self._clear_line_edit(getattr(tab, 'file_path', None))
         self._clear_line_edit(getattr(self.filtering_tab, 'file_path', None))
@@ -1157,7 +1157,7 @@ class MainWindow(QMainWindow):
             if seg_tab is not None and hasattr(seg_tab, 'infer_segment_output_path'):
                 return seg_tab.infer_segment_output_path(segment_input_path)
             folder = Path(segment_input_path)
-            omnipose_tab = getattr(self, 'omnipose_seg_tab', None)
+            omnipose_tab = getattr(getattr(self, 'segmentation_tab', None), 'omnipose_tab', None)
             folder_name = omnipose_tab.get_segmentation_output_folder_name() if omnipose_tab and hasattr(omnipose_tab, 'get_segmentation_output_folder_name') else '_segmentation_omni'
             return folder / folder_name
 
@@ -1421,8 +1421,9 @@ class MainWindow(QMainWindow):
         if pixel_size is None and time_per_frame_min is None:
             return
         if pixel_size is not None:
-            if hasattr(self, 'omnipose_seg_tab') and hasattr(self.omnipose_seg_tab, 'pixel_size_um'):
-                self.omnipose_seg_tab.pixel_size_um.setValue(pixel_size)
+            omnipose_tab = getattr(getattr(self, 'segmentation_tab', None), 'omnipose_tab', None)
+            if omnipose_tab is not None and hasattr(omnipose_tab, 'pixel_size_um'):
+                omnipose_tab.pixel_size_um.setValue(pixel_size)
                 self.log_output(f'✓ Updated pixel size in Omnipose Segment tab: {pixel_size:.4f} µm\n')
             for (tab_name, tab) in (('Analyze', getattr(self, 'analyze_tab', None)), ('Filtering', getattr(self, 'filtering_tab', None))):
                 if tab is None or not hasattr(tab, 'pixel_size'):

@@ -51,6 +51,7 @@ class AnalyzeTab(AnalyzeMasksBase):
             self.preview_action_btn.setVisible(False)
         except Exception:
             pass
+        self._analyze_script_module = 'bactomate.scripts.analyze_cell_areas'
         self._analysis_in_progress = False
         self._cancel_analysis_requested = False
         self._analysis_worker: WorkerThread | None = None
@@ -720,7 +721,6 @@ class AnalyzeTab(AnalyzeMasksBase):
         if not Path(self.file_path.text()).exists():
             show_message_dialog(self, 'Not Found', 'The selected file or folder does not exist.', kind='warning')
             return
-        self._analyze_script_module = 'bactomate.scripts.analyze_cell_areas'
         self._post_analysis_coloc_masks: list[Path] | None = None
         is_folder = self._is_folder_mode()
         if is_folder:

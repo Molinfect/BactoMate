@@ -97,6 +97,7 @@ build\create_windows_zip.bat
 | Document | Description |
 |----------|-------------|
 | [docs/README.md](docs/README.md) | Full user guide, CLI, and workflows |
+| [bactomate/scripts/README.md](bactomate/scripts/README.md) | Script reference (GUI subprocesses, CLI tools, diagnostics) |
 | [docs/BACTOMATE_USER_MANUAL.md](docs/BACTOMATE_USER_MANUAL.md) | Tab-by-tab reference |
 | [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | Version history |
 | [docs/INSTALL_AND_LAUNCH_windows.md](docs/INSTALL_AND_LAUNCH_windows.md) | Windows install details |
