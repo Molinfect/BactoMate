@@ -434,7 +434,19 @@ class AnalyzeMasksBase(QWidget):
                 "Cells (phase + Cell_ID labels) | each foci channel (peaks + foci_id labels)."
             )
         self.export_csv = QCheckBox("Also save CSV")
-        self.export_csv.setChecked(False)
+        self.export_csv.setChecked(True)
+        self.export_csv.setToolTip(
+            "Also write Summary, Per-Cell Data, and Foci (if present) as CSV files "
+            "next to each *_analysis.xlsx."
+        )
+        self.create_combined_summary: QCheckBox | None = None
+        if is_analyze:
+            self.create_combined_summary = QCheckBox("Create combined summary")
+            self.create_combined_summary.setChecked(True)
+            self.create_combined_summary.setToolTip(
+                "After analyzing a folder, combine all Summary sheets into one workbook "
+                "({folder}_combined_summary.xlsx in _analysis/)."
+            )
         self.exclude_border_cb = QCheckBox("Exclude masks at borders")
         self.exclude_border_cb.setChecked(False)
         self._filtering_preview_noop_controls = [self.detailed, self.create_vis, self.export_csv]
@@ -469,6 +481,26 @@ class AnalyzeMasksBase(QWidget):
             pixel_grid.setColumnStretch(3, 1)
             analysis_section_layout.addLayout(pixel_grid)
 
+            outputs_row = QHBoxLayout()
+            outputs_row.setSpacing(12)
+            outputs_row.setContentsMargins(0, 0, 0, 0)
+            outputs_row.addWidget(self.export_csv)
+            if self.create_combined_summary is not None:
+                outputs_row.addWidget(self.create_combined_summary)
+            outputs_row.addWidget(
+                create_info_icon(
+                    "Also save CSV — writes *_summary.csv, *_per_cell.csv, and *_foci.csv "
+                    "beside each analysis Excel.\n\n"
+                    "Create combined summary — after a folder batch, writes "
+                    "{folder}_combined_summary.xlsx in _analysis/ with a wide Summary sheet "
+                    "(one row per frame, columns per sample) plus Per-Cell sheets.",
+                    self,
+                ),
+                0,
+            )
+            outputs_row.addStretch(1)
+            analysis_section_layout.addLayout(outputs_row)
+
             # Park hidden widgets in a hidden holder so they remain alive but never paint.
             hidden_holder = QWidget()
             hidden_holder.setVisible(False)
@@ -476,7 +508,6 @@ class AnalyzeMasksBase(QWidget):
             hh.setContentsMargins(0, 0, 0, 0)
             hh.addWidget(morph_group)
             hh.addWidget(size_group)
-            hh.addWidget(self.export_csv)
             hh.addWidget(self.exclude_border_cb)
             analysis_section_layout.addWidget(hidden_holder)
             self._analyze_hidden_settings_holder = hidden_holder
@@ -696,7 +727,9 @@ class AnalyzeMasksBase(QWidget):
         self.min_length.setValue(0)
         self.detailed.setChecked(True)
         self.create_vis.setChecked(True)
-        self.export_csv.setChecked(False)
+        self.export_csv.setChecked(True)
+        if getattr(self, 'create_combined_summary', None) is not None:
+            self.create_combined_summary.setChecked(True)
         self.exclude_border_cb.setChecked(False)
 
     # ---- File/folder selection ---------------------------------------
@@ -1066,6 +1099,11 @@ class AnalyzeMasksBase(QWidget):
                 ("detailed", self.detailed),
                 ("create_vis", self.create_vis),
                 ("export_csv", self.export_csv),
+                *(
+                    [("create_combined_summary", self.create_combined_summary)]
+                    if getattr(self, "create_combined_summary", None) is not None
+                    else []
+                ),
                 ("exclude_border", self.exclude_border_cb),
             ]
         )
@@ -1098,6 +1136,11 @@ class AnalyzeMasksBase(QWidget):
                 ("detailed", self.detailed),
                 ("create_vis", self.create_vis),
                 ("export_csv", self.export_csv),
+                *(
+                    [("create_combined_summary", self.create_combined_summary)]
+                    if getattr(self, "create_combined_summary", None) is not None
+                    else []
+                ),
                 ("exclude_border", self.exclude_border_cb),
             ],
         )

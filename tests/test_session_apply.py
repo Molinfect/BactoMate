@@ -21,6 +21,22 @@ except Exception:
     QT_AVAILABLE = False
 
 
+def test_build_analyze_cell_areas_args_includes_export_csv_when_checked():
+    if not QT_AVAILABLE:
+        if pytest:
+            pytest.skip("PyQt6 or AnalyzeMasksTab not available")
+        return
+    app = QApplication.instance() or QApplication(sys.argv)
+    tab = AnalyzeTab()
+    tab.export_csv.setChecked(True)
+    args = tab._build_analyze_cell_areas_args(
+        mask_path=Path("/tmp/sample_masks.tif"),
+        out_path=Path("/tmp/_analysis/sample_analysis.xlsx"),
+        fi_path=None,
+    )
+    assert "--export-csv" in args
+
+
 def test_analyze_masks_set_then_get_session_params_round_trip():
     """set_session_params then get_session_params returns equivalent values for the keys we set."""
     if not QT_AVAILABLE:

@@ -4,6 +4,17 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.6 (2026-06-17)
+
+### Analyze masks: CSV export and combined folder summary
+
+- **Also save CSV:** enabled by default; passes `--export-csv` to the analysis script so Summary, Per-Cell, and Foci tables are written beside each `*_analysis.xlsx`.
+- **Create combined summary:** new Analyze-tab option (on by default) that, after a folder batch, writes `{folder}_combined_summary.xlsx` in `_analysis/` with a wide Summary sheet plus Per-Cell sheets.
+- **Session defaults:** `export_csv` and `create_combined_summary` default to on for new sessions.
+- **Tests:** verify `--export-csv` is included in analyze CLI args when the checkbox is checked.
+
+---
+
 ## v2.7.5 (2026-06-17)
 
 ### Windows launcher fix

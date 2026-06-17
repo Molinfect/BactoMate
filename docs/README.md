@@ -45,7 +45,7 @@ setup\install_windows.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.7.5`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.7.6`) and `python main.py --smoke-test`.
 
 macOS app/DMG packaging is restored for local builds:
 

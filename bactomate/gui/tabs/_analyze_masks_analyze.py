@@ -1121,6 +1121,10 @@ class AnalyzeTab(AnalyzeMasksBase):
                     self._run_post_analysis_workbook_steps(mask_path=mp, fi_path=fi_paths_for_mask[0] if len(fi_paths_for_mask) == 1 else None, fi_paths=fi_paths_for_mask if len(fi_paths_for_mask) > 1 else None, out_path=out_p, task_notes=tasks_by_mask.get(mp))
             except Exception:
                 get_logger().debug('Folder post-analysis steps failed', exc_info=True)
+            try:
+                self._maybe_write_combined_summary()
+            except Exception:
+                get_logger().debug('Combined summary write failed', exc_info=True)
             failures = []
             try:
                 failures = getattr(self, '_folder_failures', []) or []
@@ -1214,6 +1218,8 @@ class AnalyzeTab(AnalyzeMasksBase):
             detailed_on = True
         if detailed_on:
             args += ['--detailed']
+        if getattr(self, 'export_csv', None) is not None and self.export_csv.isChecked():
+            args += ['--export-csv']
         if getattr(self, 'analyze_fi', None) is not None and self.analyze_fi.isChecked() and (fi_path is not None):
             args += ['--fi-image', str(fi_path)]
             if getattr(self, 'analyze_fi_contour', None) is not None and self.analyze_fi_contour.isChecked():
@@ -1261,6 +1267,61 @@ class AnalyzeTab(AnalyzeMasksBase):
             else:
                 lines.append(f'{stem}_masks with {tif_name}')
         return (len(mask_stems), n_tif, lines)
+
+    def _folder_merged_analysis_paths(self) -> list[Path]:
+        """Merged ``*_analysis.xlsx`` paths for successfully completed folder masks."""
+        tasks = getattr(self, 'folder_fi_tasks', []) or []
+        results = getattr(self, 'folder_results', []) or []
+        if len(results) != len(tasks):
+            return []
+        ok_masks: list[Path] = []
+        by_mask: dict[Path, list[bool]] = {}
+        for (m, _fi_p, _out_p), ok in zip(tasks, results, strict=False):
+            by_mask.setdefault(Path(m), []).append(bool(ok))
+        for m, oks in by_mask.items():
+            if oks and all(oks):
+                ok_masks.append(Path(m))
+        paths: list[Path] = []
+        seen: set[str] = set()
+        for mp in ok_masks:
+            stem = stem_from_mask_path(mp)
+            out_p = analysis_dir_from_base(base_dir_for_mask(mp)) / f'{stem}_analysis.xlsx'
+            key = str(out_p.resolve())
+            if out_p.is_file() and key not in seen:
+                seen.add(key)
+                paths.append(out_p)
+        return paths
+
+    def _maybe_write_combined_summary(self) -> None:
+        if not getattr(self, 'create_combined_summary', None) or not self.create_combined_summary.isChecked():
+            return
+        excel_paths = self._folder_merged_analysis_paths()
+        if not excel_paths:
+            return
+        folder_files = getattr(self, 'folder_files', []) or []
+        if not folder_files:
+            return
+        first_mask = Path(folder_files[0])
+        folder_base = base_dir_for_mask(first_mask)
+        selected = Path(self.file_path.text().strip()) if self.file_path.text().strip() else folder_base
+        folder_label = selected.name if selected.is_dir() else folder_base.name
+        analysis_dir = analysis_dir_from_base(folder_base)
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        out_path = analysis_dir / f'{folder_label}_combined_summary.xlsx'
+
+        def _log(msg: str) -> None:
+            if hasattr(self.parent_window, 'log_output'):
+                self.parent_window.log_output(msg if msg.endswith('\n') else msg + '\n')
+
+        self._set_post_analysis_progress('Writing combined summary…', percent=99)
+        ok = self._build_combined_summary_excel(
+            excel_paths,
+            out_path,
+            match_log=self._match_log_from_folder_tasks(),
+            log_callback=_log,
+        )
+        if ok:
+            _log(f'Combined summary saved: {out_path}')
 
     def _build_combined_summary_excel(self, excel_paths, output_path, match_log=None, log_callback=None):
 
