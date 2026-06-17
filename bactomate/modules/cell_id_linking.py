@@ -7,11 +7,14 @@ between consecutive frames or between mask stacks.
 
 from __future__ import annotations
 
-from typing import Iterable
+from pathlib import Path
+from typing import Callable, Iterable
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
+
+LogFn = Callable[[str], None] | None
 
 
 def centroids_from_mask(
@@ -93,3 +96,63 @@ def hungarian_link_centroids(
 
     unlinked = [int(l) for l in curr_labels if int(l) not in used_curr]
     return linked, unlinked
+
+
+def resolve_pixel_size_for_mask(
+    mask_path: Path,
+    *,
+    shared_metadata: dict | None = None,
+    default: float = 0.108,
+) -> float:
+    """Best-effort pixel size (µm/px) for linking from session metadata or TIFF calibration."""
+    pixel_size = float(default)
+    try:
+        if shared_metadata:
+            ps = shared_metadata.get("pixel_size")
+            if ps is not None and float(ps) > 0:
+                return float(ps)
+        from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
+
+        cal_ps, _, _, _ = resolve_calibration_for_mask(mask_path)
+        if cal_ps and float(cal_ps) > 0:
+            return float(cal_ps)
+    except Exception:
+        pass
+    return pixel_size
+
+
+def write_persistent_cellid_mask_file(
+    mask_path: Path | str,
+    *,
+    pixel_size: float | None = None,
+    shared_metadata: dict | None = None,
+    log: LogFn = None,
+) -> Path | None:
+    """
+    Link cells across frames and write ``{stem}_cellids{suffix}`` beside the mask stack.
+
+    Returns the output path on success, or ``None`` if skipped or failed.
+    """
+    mask_path = Path(mask_path)
+    if not mask_path.is_file():
+        return None
+    try:
+        import tifffile
+        from bactomate.scripts.analyze_cell_areas import link_persistent_cell_ids_raw
+
+        ps = float(pixel_size) if pixel_size is not None and float(pixel_size) > 0 else resolve_pixel_size_for_mask(
+            mask_path, shared_metadata=shared_metadata
+        )
+        masks = tifffile.imread(str(mask_path))
+        if masks.ndim == 2:
+            masks = masks[np.newaxis, ...]
+        masks_with_cellids = link_persistent_cell_ids_raw(masks, pixel_size=ps)
+        out_path = mask_path.parent / f"{mask_path.stem}_cellids{mask_path.suffix}"
+        tifffile.imwrite(str(out_path), masks_with_cellids)
+        if log is not None:
+            log(f"Persistent Cell IDs: {mask_path.name} → {out_path.name}\n")
+        return out_path
+    except Exception as exc:
+        if log is not None:
+            log(f"[Cell IDs] Failed for {mask_path.name}: {exc}\n")
+        return None

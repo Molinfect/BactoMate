@@ -4,6 +4,53 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.10 (2026-06-17)
+
+### I/O performance, integration test, and tooling
+
+- **TIFF stack I/O:** `tiff_stack_io.py` uses memmap for large stacks and smarter frame counting for ImageJ-style volumes.
+- **Tracking:** `tracking_io.py` extracts stack helpers; disk visualization auto-skips when mask stacks exceed 150 frames (checkbox still on for shorter movies).
+- **Tests:** slow pipeline integration test (masks → Cell IDs → analyze → lineage preflight → join); `test_tiff_stack_io.py`.
+- **Tooling:** `pytest-cov` dev extra and coverage config in `pyproject.toml`.
+
+---
+
+## v2.7.9 (2026-06-17)
+
+### Plan execution: U-Net Cell IDs, CI, docs, cleanup
+
+- **U-Net persistent Cell IDs:** checkbox on U-Net inference panel; writes `{stem}_cellids.tif` after batch segmentation (parity with Omnipose/Cellpose).
+- **Shared helper:** `write_persistent_cellid_mask_file()` in `cell_id_linking.py` (used by Omnipose and U-Net).
+- **Tracking UX:** lineage preflight dialog reminds users about 1-based analysis vs 0-based tracking frames and filtered-mask workflow.
+- **CI:** GitHub Actions runs on `dev` branch pushes and PRs (in addition to `main`).
+- **Tests:** `test_workers_imports.py`; U-Net Cell ID smoke tests in `test_gui_lineage_and_cellids.py`.
+- **Cleanup:** removed deprecated coloc matching flags; fixed `get_scripts_dir()` to prefer `bactomate/scripts/`; deleted `docs/archive/v1.6/`.
+
+---
+
+## v2.7.8 (2026-06-17)
+
+### Session schema and workers package split
+
+- **Session schema:** new `session_schema.py` migrates legacy tab keys (e.g. `unet_segment`) to the composed Segmentation module layout; session logs panel aligned with current tab structure.
+- **Workers split:** monolithic `gui/workers.py` replaced by `gui/workers/base.py`, `tracking.py`, and `growth_curve.py`; public imports unchanged via `gui/workers/__init__.py`.
+- **Tests:** smoke tests for session schema migration and persistent Cell ID mask writing from the Omnipose panel.
+
+---
+
+## v2.7.7 (2026-06-17)
+
+### Lineage preflight, persistent Cell IDs, and tracking performance
+
+- **Lineage preflight:** tracking tab warns when analyze used filtered masks but lineage would use raw masks (breaks Cell_ID mapping); see `LINEAGE_ANALYSIS_JOIN_CONTRACT.md`.
+- **Persistent Cell IDs:** Omnipose/Cellpose panel checkbox writes `{stem}_masks_cellids.tif` after segmentation; shared `cell_id_linking.py` module with Hungarian centroid assignment.
+- **Tracking worker:** model caching, preview frame limiting, overlay-base trajectory visualization, and faster preview mode (`preview_fast`).
+- **Analyze script:** refactored to use shared cell-ID linking; lineage integration strengthened.
+- **Cleanup:** removed dead `processing.py` tab and `migrate_message_boxes.py`; archived v1.6 refactor notes under `docs/archive/v1.6/`; added `bactomate/scripts/README.md`.
+- **Tests:** `test_lineage_preflight.py`, `test_cell_id_linking.py`.
+
+---
+
 ## v2.7.6 (2026-06-17)
 
 ### Analyze masks: CSV export and combined folder summary

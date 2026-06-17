@@ -34,8 +34,6 @@ These are launched by the GUI; you normally do not run them by hand.
 | `generate_bactomate_pdf.py` | Build user-manual PDF from markdown | `python -m bactomate.scripts.generate_bactomate_pdf` |
 | `check_environment.py` | Dependency / GPU smoke report | `python -m bactomate.scripts.check_environment` |
 
-**Legacy location:** `scripts/repair_analysis_foci_workbook.py` (repo root) — one-off repair for foci columns in an analysis workbook.
-
 ---
 
 ## Omnipose / model diagnostics

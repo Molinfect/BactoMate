@@ -94,3 +94,38 @@ def test_maybe_write_persistent_cellid_masks_skipped_when_unchecked(omnipose_tab
     omnipose_tab.assign_persistent_cellids.setChecked(False)
     omnipose_tab._maybe_write_persistent_cellid_masks(mask)
     assert not (tmp_path / "sample_masks_cellids.tif").exists()
+
+
+@pytest.fixture
+def unet_tab(qapp):
+    from bactomate.gui.tabs.unet_seg import UNetSegmentTab
+
+    tab = UNetSegmentTab(None)
+    tab.parent_window = MagicMock()
+    tab.parent_window.log_output = MagicMock()
+    tab.parent_window.shared_metadata = {"pixel_size": 1.0}
+    return tab
+
+
+def test_unet_maybe_write_persistent_cellid_masks_creates_output(unet_tab, tmp_path: Path) -> None:
+    mask = tmp_path / "sample_unet_masks.tif"
+    stack = np.zeros((2, 16, 16), dtype=np.uint16)
+    stack[0, 4:8, 4:8] = 1
+    stack[1, 4:8, 4:8] = 1
+    tifffile.imwrite(mask, stack)
+    unet_tab.assign_persistent_cellids.setChecked(True)
+    unet_tab._maybe_write_persistent_cellid_masks(mask)
+    out = tmp_path / "sample_unet_masks_cellids.tif"
+    assert out.is_file()
+    written = tifffile.imread(str(out))
+    assert written.shape == stack.shape
+    assert int(written.max()) >= 1
+    unet_tab.parent_window.log_output.assert_called()
+
+
+def test_unet_maybe_write_persistent_cellid_masks_skipped_when_unchecked(unet_tab, tmp_path: Path) -> None:
+    mask = tmp_path / "sample_unet_masks.tif"
+    tifffile.imwrite(mask, np.zeros((2, 8, 8), dtype=np.uint16))
+    unet_tab.assign_persistent_cellids.setChecked(False)
+    unet_tab._maybe_write_persistent_cellid_masks(mask)
+    assert not (tmp_path / "sample_unet_masks_cellids.tif").exists()

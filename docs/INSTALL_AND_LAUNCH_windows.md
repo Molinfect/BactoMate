@@ -57,7 +57,7 @@ venv\Scripts\python.exe main.py --version
 venv\Scripts\python.exe main.py --smoke-test
 ```
 
-You should see `BactoMate 2.7.6` and `Smoke test OK`.
+You should see `BactoMate 2.7.10` and `Smoke test OK`.
 
 ## Windows bundle (portable folder)
 
