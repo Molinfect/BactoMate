@@ -21,6 +21,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from bactomate.gui.log_config import get_logger, log_exception, write_crash_log
 from bactomate.gui.paths import (
     configure_macos_bundle_subprocess_env,
+    configure_windows_subprocess_env,
     get_app_root,
     get_python_executable_for_subprocess,
     get_subprocess_pythonpath_root,
@@ -421,6 +422,7 @@ class WorkerThread(QThread):
             cmd = [python_exe, self.script_path] + self.cmd_args
             env = os.environ.copy()
             configure_macos_bundle_subprocess_env(env)
+            configure_windows_subprocess_env(env)
             # Scripts import ``bactomate.*``; subprocess does not inherit sys.path from the GUI.
             pp_root = get_subprocess_pythonpath_root()
             if env.get("PYTHONPATH"):

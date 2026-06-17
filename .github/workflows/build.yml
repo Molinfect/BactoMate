@@ -59,24 +59,23 @@ jobs:
       - name: Install dependencies
         shell: cmd
         run: |
+          python setup\verify_python_windows.py
           python -m venv venv
-          call venv\Scripts\activate.bat
-          python -m pip install --upgrade pip
-          pip install --use-deprecated=legacy-resolver -r requirements.txt
-          pip install -e .
-          python setup\apply_all_patches.py
+          venv\Scripts\python.exe -m pip install "pip>=24.2,<26"
+          venv\Scripts\python.exe -m pip install "dbscan==0.0.10" --only-binary dbscan
+          venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\constraints_windows.txt
+          venv\Scripts\python.exe -m pip install -e .
+          venv\Scripts\python.exe setup\apply_all_patches.py
 
       - name: Smoke test
         shell: cmd
         run: |
-          call venv\Scripts\activate.bat
-          python main.py --version
-          python main.py --smoke-test
+          venv\Scripts\python.exe main.py --version
+          venv\Scripts\python.exe main.py --smoke-test
 
       - name: Full pytest (headless Qt)
         shell: cmd
         run: |
-          call venv\Scripts\activate.bat
-          pip install pytest
+          venv\Scripts\python.exe -m pip install pytest
           set QT_QPA_PLATFORM=offscreen
-          pytest tests/ -q --tb=short
+          venv\Scripts\python.exe -m pytest tests/ -q --tb=short

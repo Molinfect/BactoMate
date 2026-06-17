@@ -114,6 +114,20 @@ def configure_macos_bundle_subprocess_env(env: dict[str, str]) -> None:
         pass
 
 
+def configure_windows_subprocess_env(env: dict[str, str]) -> None:
+    """Keep child processes on the BactoMate venv; ignore stray PYTHONHOME / user site."""
+    if sys.platform != "win32":
+        return
+    try:
+        env.pop("PYTHONHOME", None)
+        env["PYTHONNOUSERSITE"] = "1"
+        venv = get_app_root() / "venv"
+        if venv.is_dir():
+            env["VIRTUAL_ENV"] = str(venv.resolve())
+    except Exception:
+        pass
+
+
 def get_python_executable_for_subprocess() -> str:
     """
     Python executable to use when running scripts in a subprocess (e.g. batch_process_tiff_sequence.py).
@@ -129,6 +143,12 @@ def get_python_executable_for_subprocess() -> str:
         for name in ("python3", "BactoMate", "python3.11", "python3.12"):
             exe = root / "venv" / "bin" / name
             if exe.exists() and os.access(exe, os.X_OK):
+                return str(exe.resolve())
+    if sys.platform == "win32":
+        root = get_app_root()
+        for name in ("python.exe", "python3.exe", "python3.11.exe"):
+            exe = root / "venv" / "Scripts" / name
+            if exe.is_file():
                 return str(exe.resolve())
     return sys.executable
 

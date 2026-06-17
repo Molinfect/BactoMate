@@ -14,6 +14,8 @@
 # - Mixing conda base Python with a venv can confuse native builds (wrong headers); prefer a plain venv + `which pip`.
 #
 # Core Omnipose dependencies (pinned for reproducible builds)
+# Windows: dbscan 1.0.0 is sdist-only (needs MSVC Build Tools). 0.0.10 has prebuilt win_amd64 wheels.
+dbscan==0.0.10; sys_platform == "win32"
 omnipose>=1.0.6,<3.0.0
 cellpose-omni>=0.6.0,<1.0.0
 

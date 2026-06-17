@@ -4,6 +4,16 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.7.2 (2026-06-17)
+
+### Windows install hardening and CI
+
+- **Installer:** verify Python 3.11 (64-bit, non-Conda) before venv creation; install only via `venv\Scripts\python.exe`; pre-install `dbscan==0.0.10` wheel; apply `setup\constraints_windows.txt` so Omnipose does not compile native code.
+- **Launchers:** strict `launch_windows.bat` clears `PYTHONHOME`/`PYTHONPATH`, sets `PYTHONNOUSERSITE=1`, and runs the venv interpreter directly (no `activate`).
+- **Subprocess workers:** Windows child processes use the project venv Python and ignore stray user-site packages.
+- **CI:** Windows workflow matches the new install path (verify script, constraints, explicit venv Python for smoke test and pytest).
+- **Docs:** updated Windows install guide and portable bundle build instructions.
+
 ---
 
 ## v2.7.1 (2026-06-17)

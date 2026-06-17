@@ -1,21 +1,30 @@
 @echo off
-:: BactoMate launcher for Windows. Prefer BactoMate.lnk (logo icon) in the project root.
+setlocal EnableExtensions
+:: Strict launcher when invoked from setup\ (project root is parent).
 set "SETUP_DIR=%~dp0"
 set "ROOT=%SETUP_DIR%.."
 cd /d "%ROOT%"
-if not exist "venv\Scripts\activate.bat" (
-    echo [ERROR] venv not found.
-    echo Run setup\install_windows.bat first to install BactoMate.
+
+set "PYEXE=%ROOT%\venv\Scripts\python.exe"
+if not exist "%PYEXE%" (
+    echo [ERROR] BactoMate venv not found.
+    echo Run setup\install_windows.bat first.
     echo See docs/INSTALL_AND_LAUNCH_windows.md for manual steps.
     pause
     exit /b 1
 )
-call venv\Scripts\activate.bat
+
+set "PYTHONHOME="
+set "PYTHONPATH="
+set "PYTHONNOUSERSITE=1"
+set "VIRTUAL_ENV=%ROOT%\venv"
+
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\setup\minimize_console.ps1" >nul 2>&1
-bactomate
-if errorlevel 1 (
+"%PYEXE%" -m bactomate %*
+set "EC=%ERRORLEVEL%"
+if %EC% neq 0 (
     echo.
-    echo BactoMate exited with an error. Check the message above.
+    echo BactoMate exited with error code %EC%.
     pause
 )
-exit /b 0
+exit /b %EC%

@@ -45,7 +45,7 @@ setup\install_windows.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.7.1`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.7.2`) and `python main.py --smoke-test`.
 
 macOS app/DMG packaging is restored for local builds:
 
@@ -139,7 +139,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### macOS: DMG install
 
-> **v2.5 note:** macOS DMGs can be built locally with `./build/build_app_bundle.sh` followed by `./build/create_dmg.sh`. Windows standalone packaging is still deferred.
+> **v2.5 note:** macOS DMGs can be built locally with `./build/build_app_bundle.sh` followed by `./build/create_dmg.sh`. Windows portable folders: `build\build_windows_bundle.bat` then `build\create_windows_zip.bat` (see [INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)).
 
 Use this section when a **`BactoMate.dmg`** binary is available (no project folder, no Terminal, no Python install).
 
@@ -236,12 +236,18 @@ When analyzing a **folder** with multiple FI channels, the merged Excel includes
 
 ## Building App Bundles
 
-BactoMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka) and a distributable DMG.
+BactoMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka) and a distributable DMG, or a Windows portable folder with embedded Python 3.11.
 
 1. **Setup:** `./setup/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
 2. **Icon:** Optionally provide `img/logo2.png`, then run `./build/create_icons.sh`. If no logo is present, the script generates a simple fallback icon.
 3. **Build:** `./build/build_app_bundle.sh` → `BactoMate.app` (copies source + `venv`, bundles Python.framework when available, verifies `--version` and `--smoke-test`)
 4. **DMG:** `./build/create_dmg.sh` → `dist/BactoMate.dmg` (app + Applications symlink + **00 - READ THIS FIRST (macOS install).txt** + **Open BactoMate.command** for first-time open on new Macs)
+
+**Windows bundle** (after `setup\install_windows.bat` on a build PC):
+
+1. **Build:** `build\build_windows_bundle.bat` → `dist\BactoMate\` (source + `venv` + `runtime\Python311\`)
+2. **Zip:** `build\create_windows_zip.bat` → `dist\BactoMate-win64.zip`
+3. Recipients launch **`BactoMate.bat`** — no separate Python install required.
 
 **Distribution checklist** (before shipping the DMG):
 

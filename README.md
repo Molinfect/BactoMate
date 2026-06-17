@@ -2,7 +2,7 @@
 
 Integrated microscopy analysis platform: file conversion, segmentation (Omnipose, U-Net, Cellpose-SAM), mask analysis, tracking, **lineage QC & export**, training, and reporting.
 
-**v2.5 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG packaging can also be built locally from the installed `venv`; Windows standalone packaging is still deferred.
+**v2.5 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG packaging can be built locally from the installed `venv`; Windows portable folder + zip via `build\build_windows_bundle.bat`.
 
 ## Quick Install
 
@@ -49,7 +49,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.7.1
+python main.py --version    # BactoMate 2.7.2
 python main.py --smoke-test # Smoke test OK
 ```
 
@@ -84,6 +84,13 @@ bactomate
 ```
 
 Full Windows troubleshooting: **[docs/INSTALL_AND_LAUNCH_windows.md](docs/INSTALL_AND_LAUNCH_windows.md)**
+
+Build a portable Windows folder (includes Python runtime, no install on target PCs):
+
+```bat
+build\build_windows_bundle.bat
+build\create_windows_zip.bat
+```
 
 ## Documentation
 
