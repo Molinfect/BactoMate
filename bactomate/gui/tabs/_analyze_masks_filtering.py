@@ -594,6 +594,20 @@ class FilteringTab(AnalyzeMasksBase):
                     tifffile.imwrite(str(out_path), out.astype(np.int32))
                     if hasattr(self.parent_window, 'log_output'):
                         self.parent_window.log_output(f'[Filtering] Wrote filtered mask: {out_path}\n')
+                    try:
+                        from bactomate.modules.pipeline_outputs import write_filter_stage_visualization
+
+                        write_filter_stage_visualization(
+                            mask_path=mask_path,
+                            original_masks=masks,
+                            filtered_masks=out,
+                            pixel_size=float(fs.get('pixel_size', 0.108) or 0.108),
+                            exclude_border=bool(fs.get('exclude_border', False)),
+                            log=self.parent_window.log_output if hasattr(self.parent_window, 'log_output') else None,
+                        )
+                    except Exception as exc:
+                        if hasattr(self.parent_window, 'log_output'):
+                            self.parent_window.log_output(f'[Filtering] Filter visualization failed: {exc}\n')
                 except Exception as e:
                     if hasattr(self.parent_window, 'log_output'):
                         self.parent_window.log_output(f'[Filtering] Failed to write filtered mask {out_path.name}: {e}\n')

@@ -4,6 +4,19 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.0 (2026-07-05)
+
+### Spatial metrics, pipeline QC outputs, and combined summary workbooks
+
+- **Spatial metrics:** new `spatial_metrics.py` module adds cell geometry (centroid, orientation, circularity), fluorescence distribution stats (interior FI, CV, top-10% mean), foci-to-contour/axis/pole distances, multi-foci spread, membrane-proximal fraction, and per-Cell_ID temporal deltas in Analyze Masks.
+- **Pipeline QC artifacts:** new `pipeline_outputs.py` writes standard overlays, filter visualizations, and PNG previews from TIFF stacks (always on, not gated by optional UI checkboxes).
+- **Analysis workbooks:** combined Summary (long + wide), Per-Cell, and Foci sheets across folder batches; global foci IDs across frames; improved filter visualization labels.
+- **GUI:** Analyze Masks refactored to use shared workbook helpers; tracking and segmentation tabs aligned with pipeline output paths.
+- **Docs:** pipeline flow and folder-structure diagrams (`docs/bactomate_full_pipeline.*`, `docs/pipeline_folder_structure.*`).
+- **Tests:** `test_spatial_metrics.py`; expanded combined-summary and GUI lineage tests.
+
+---
+
 ## v2.7.10 (2026-06-17)
 
 ### I/O performance, integration test, and tooling

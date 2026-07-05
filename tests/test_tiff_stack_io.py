@@ -28,10 +28,10 @@ def test_read_tiff_stack_preview_limits_frames(tmp_path: Path) -> None:
     assert arr.shape[0] == 2
 
 
-def test_should_skip_visualization_for_long_stack(tmp_path: Path) -> None:
+def test_should_write_tracking_visualization_for_long_stack(tmp_path: Path) -> None:
     path = tmp_path / "long_masks.tif"
     stack = np.zeros((200, 4, 4), dtype=np.uint16)
     tifffile.imwrite(path, stack)
-    assert should_write_tracking_visualization(path, user_enabled=True, track_action="movement") is False
-    assert should_write_tracking_visualization(path, user_enabled=False, track_action="movement") is False
+    assert should_write_tracking_visualization(path, user_enabled=True, track_action="movement") is True
+    assert should_write_tracking_visualization(path, user_enabled=False, track_action="movement") is True
     assert should_write_tracking_visualization(path, user_enabled=True, track_action="preview") is False

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BactoMate — Pipeline folder structure</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 1.5rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0 0 0.25rem; font-size: 1.5rem; }
+    header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    main { max-width: 1200px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1.25rem;
+    }
+    section h2 {
+      margin: 0 0 0.75rem;
+      font-size: 1.1rem;
+      color: var(--accent);
+    }
+    ul { margin: 0.5rem 0 0; padding-left: 1.25rem; }
+    li { margin: 0.35rem 0; }
+    code {
+      background: #21262d;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .diagram-wrap {
+      overflow-x: auto;
+      background: #fff;
+      border-radius: 6px;
+      padding: 1rem;
+      margin-top: 0.75rem;
+    }
+    .mermaid { min-width: 900px; }
+    .actions {
+      margin-top: 1rem;
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    button {
+      background: #238636;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.5rem 1rem;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button.secondary { background: #21262d; border: 1px solid var(--border); }
+    button:hover { filter: brightness(1.08); }
+    .tree {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 0.82rem;
+      white-space: pre;
+      overflow-x: auto;
+      background: #0d1117;
+      padding: 1rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      line-height: 1.45;
+    }
+    @media print {
+      body { background: #fff; color: #000; }
+      header, .actions, section:not(.print-diagram) { display: none; }
+      .diagram-wrap { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BactoMate pipeline folder structure</h1>
+    <p>Canonical layout · sample root → Tif_files → _segmentation_* → _analysis → _tracking</p>
+  </header>
+
+  <main>
+    <section class="print-diagram">
+      <h2>Flow diagram</h2>
+      <p style="color: var(--muted); margin: 0 0 0.5rem;">
+        Use <strong>Print / Save as PDF</strong> (browser) or export from
+        <a href="https://mermaid.live" style="color: var(--accent);">mermaid.live</a>
+        after pasting <code>pipeline_folder_structure.mmd</code>.
+      </p>
+      <div class="diagram-wrap">
+        <pre class="mermaid">
+flowchart TB
+    RAW["Raw input: ND2, LIF, CZI, TIFF"]
+
+    subgraph SAMPLE["Sample root e.g. MyExperiment"]
+        direction TB
+
+        subgraph TIF["Tif_files - File Conversion"]
+            PHASE["Phase input TIFFs"]
+            FI["FI channels *_fi_*"]
+            FOCI["Foci stacks *_foci_*"]
+
+            subgraph SEG["_segmentation_MODEL - Segmentation"]
+                MASKS["masks, cellids, overlay tif and png"]
+                FOCI_OV["foci overlay tif and png"]
+
+                subgraph FD["foci_detection"]
+                    FCSV["raw foci CSV"]
+                end
+
+                subgraph FF["foci_filtered - Filtering"]
+                    FCSV2["filtered foci CSV"]
+                end
+
+                subgraph FM["filtered_masks - Filtering"]
+                    FMASK["mask_filtered tif"]
+                end
+            end
+        end
+
+        subgraph ANA["_analysis - Analyze"]
+            XLSX["analysis xlsx"]
+            FVIZ["filter_visualization tif and png"]
+            AVIZ["analysis_visualization tif and png"]
+            COMB["combined_summary xlsx"]
+        end
+
+        subgraph TRK_ROOT["_tracking - Tracking"]
+            subgraph TRK["STEM_tracking folder"]
+                TCSV["tracks csv and report xlsx"]
+                TMASK["masks_tracked, overlay_tracked, trajectories"]
+                subgraph TBL["tables"]
+                    PQ["parquet or csv.gz and metadata.json"]
+                end
+                CTC["ctc_format optional"]
+            end
+        end
+    end
+
+    ALT["Alternate: standalone TIFF uses STEM_omnipose_segmentation"]
+
+    RAW -->|"Convert to TIFF"| PHASE
+    PHASE --> MASKS
+    FOCI --> FOCI_OV
+    FOCI --> FCSV
+    FCSV --> FCSV2
+    MASKS --> FMASK
+    FMASK --> XLSX
+    FCSV2 --> XLSX
+    FMASK --> TCSV
+    XLSX --> TCSV
+    ALT -.-> SEG
+        </pre>
+      </div>
+      <div class="actions">
+        <button type="button" onclick="window.print()">Print / Save as PDF</button>
+        <button type="button" class="secondary" onclick="location.href='pipeline_folder_structure.mmd'">Download .mmd source</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Folder tree (canonical)</h2>
+      <div class="tree">MyExperiment/                          ← sample root
+├── raw_movie.nd2
+├── Tif_files/                         ← File Conversion (fixed name)
+│   ├── 2_Phase60x.tif
+│   ├── 2_fi_GFP.tif
+│   ├── 2_foci_GFP.tif
+│   └── _segmentation_bact_phase_omni/ ← Segmentation (model slug)
+│       ├── 2_Phase60x_masks.tif
+│       ├── 2_Phase60x_cellids.tif
+│       ├── 2_Phase60x_overlay.tif (+ .png)
+│       ├── foci_detection/
+│       │   └── 2_foci_GFP.csv
+│       ├── foci_filtered/             ← after Filtering
+│       │   └── 2_foci_GFP_filtered.csv
+│       └── filtered_masks/
+│           └── 2_Phase60x_mask_filtered.tif
+├── _analysis/                         ← Analyze (sibling of Tif_files)
+│   ├── 2_Phase60x_analysis.xlsx
+│   ├── 2_Phase60x_filter_visualization.tif (+ .png)
+│   ├── 2_Phase60x_analysis_visualization.tif (+ .png)
+│   └── MyExperiment_combined_summary.xlsx
+└── _tracking/
+    └── 2_Phase60x_masks_tracking/
+        ├── *_tracks.csv · *_report.xlsx
+        ├── *_masks_tracked.tif · *_overlay_tracked.tif
+        └── tables/</div>
+    </section>
+
+    <section>
+      <h2>Key rules</h2>
+      <ul>
+        <li><code>_analysis/</code> and <code>_tracking/</code> live at the <strong>sample root</strong> (parent of <code>Tif_files/</code>).</li>
+        <li><code>_segmentation_*</code> usually lives <strong>inside</strong> <code>Tif_files/</code>, not at sample root.</li>
+        <li>Filtering writes into <code>filtered_masks/</code> and <code>foci_filtered/</code> under the same segmentation folder.</li>
+        <li>Standalone TIFF input (not in <code>Tif_files/</code>) uses <code>{stem}_omnipose_segmentation/</code> instead — same inner layout, different parent path.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "default",
+      flowchart: { htmlLabels: true, curve: "basis" },
+      securityLevel: "loose",
+    });
+  </script>
+</body>
+</html>

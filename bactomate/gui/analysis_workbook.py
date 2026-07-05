@@ -28,6 +28,21 @@ MASTER_PER_CELL_SUMMARY_SHEET = MASTER_PER_CELL_SUMMARY_BASENAME
 MASTER_PER_CELL_SOURCE_COLUMN = "Analysis workbook"
 MASTER_PER_CELL_SAMPLE_COLUMN = "Sample"
 PER_CELL_DATA_SHEET = "Per-Cell Data"
+SUMMARY_SHEET = "Summary"
+FOCI_SHEET = "Foci"
+COMBINED_SUMMARY_SHEET_LONG = "Combined Summary (long)"
+COMBINED_SUMMARY_SHEET_WIDE = "Combined Summary (wide)"
+COMBINED_PER_CELL_SHEET = "Combined Per-Cell Data"
+COMBINED_FOCI_SHEET = "Combined Foci"
+_COMBINED_WIDE_EXCLUDE_COLUMNS = frozenset(
+    {
+        "File",
+        "Frame",
+        "Logs",
+        MASTER_PER_CELL_SOURCE_COLUMN,
+        MASTER_PER_CELL_SAMPLE_COLUMN,
+    }
+)
 
 # Summary columns managed by post-analysis foci / coloc updates (see apply_foci_summary_columns).
 SUMMARY_FOCI_COL_PREFIXES = (
@@ -328,7 +343,7 @@ def collect_channel_rows_for_mask(
             )
             peaks = filter_foci_rows_by_min_area_px(peaks, ch_settings)
             n_after_filter += len(peaks)
-            foci_rows, _cell_map = assign_peaks_to_cells(
+            foci_rows, _cell_map, _ = assign_peaks_to_cells(
                 peaks, label_plane, dilation_px=1, frame_index=int(fr)
             )
             for r in foci_rows:
@@ -1059,4 +1074,281 @@ def write_master_per_cell_summary(
         preview = ", ".join(warnings[:3])
         tail = f" (+{len(warnings) - 3} more)" if len(warnings) > 3 else ""
         _log(f"[Analyze] Master per-cell summary skipped: {preview}{tail}\n")
+    return True
+
+
+def _workbook_paths_for_combined_summary(excel_paths: Iterable[Path | str]) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for raw in excel_paths:
+        p = Path(raw)
+        if not p.is_file() or _is_aggregate_analysis_workbook(p):
+            continue
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(p)
+    return paths
+
+
+def build_combined_summary_long_dataframe(
+    excel_paths: Iterable[Path | str],
+) -> tuple[pd.DataFrame | None, list[str]]:
+    """Stack **Summary** sheets from multiple analysis workbooks (one row block per file)."""
+    frames: list[pd.DataFrame] = []
+    warnings: list[str] = []
+    for p in _workbook_paths_for_combined_summary(excel_paths):
+        try:
+            with pd.ExcelFile(p) as xl:
+                if SUMMARY_SHEET not in xl.sheet_names:
+                    warnings.append(f"{p.name}: no '{SUMMARY_SHEET}' sheet")
+                    continue
+                summary = pd.read_excel(xl, sheet_name=SUMMARY_SHEET)
+        except Exception as exc:
+            warnings.append(f"{p.name}: {exc}")
+            continue
+        if summary is None or summary.empty:
+            warnings.append(f"{p.name}: empty '{SUMMARY_SHEET}' sheet")
+            continue
+        block = summary.copy()
+        block.insert(0, MASTER_PER_CELL_SAMPLE_COLUMN, _sample_label_from_workbook_path(p))
+        block.insert(0, MASTER_PER_CELL_SOURCE_COLUMN, p.name)
+        frames.append(block)
+    if not frames:
+        return None, warnings
+    long_df = pd.concat(frames, ignore_index=True, sort=False)
+    lead = [MASTER_PER_CELL_SOURCE_COLUMN, MASTER_PER_CELL_SAMPLE_COLUMN]
+    other = [c for c in long_df.columns if c not in lead]
+    long_df = long_df[lead + other]
+    return long_df, warnings
+
+
+def build_combined_summary_wide_dataframe(long_df: pd.DataFrame) -> pd.DataFrame | None:
+    """
+    Pivot stacked Summary rows into one row per frame with ``{Sample}_{metric}`` columns.
+
+    Includes every numeric/summary metric present in ``long_df`` (area, cell count, foci, FI, etc.).
+    """
+    if long_df is None or long_df.empty or "Frame" not in long_df.columns:
+        return None
+    if MASTER_PER_CELL_SAMPLE_COLUMN not in long_df.columns:
+        return None
+    try:
+        frames = sorted(long_df["Frame"].dropna().unique().astype(int).tolist())
+    except Exception:
+        return None
+    if not frames:
+        return None
+    value_cols = [
+        c
+        for c in long_df.columns
+        if c not in _COMBINED_WIDE_EXCLUDE_COLUMNS and not str(c).startswith("Unnamed")
+    ]
+    if not value_cols:
+        return None
+    wide_data: dict[str, object] = {"Frame": frames}
+    for sample in long_df[MASTER_PER_CELL_SAMPLE_COLUMN].unique().tolist():
+        sub = (
+            long_df[long_df[MASTER_PER_CELL_SAMPLE_COLUMN] == sample]
+            .drop_duplicates(subset=["Frame"], keep="first")
+            .set_index("Frame")
+        )
+        for col in value_cols:
+            if col not in sub.columns:
+                continue
+            wide_data[f"{sample}_{col}"] = sub.reindex(frames)[col].values
+    wide_df = pd.DataFrame(wide_data)
+    return wide_df if not wide_df.empty else None
+
+
+def build_combined_foci_dataframe(
+    excel_paths: Iterable[Path | str],
+) -> tuple[pd.DataFrame | None, list[str]]:
+    """Stack **Foci** sheets from multiple analysis workbooks (one row block per file)."""
+    frames: list[pd.DataFrame] = []
+    warnings: list[str] = []
+    for p in _workbook_paths_for_combined_summary(excel_paths):
+        try:
+            with pd.ExcelFile(p) as xl:
+                if FOCI_SHEET not in xl.sheet_names:
+                    continue
+                foci = pd.read_excel(xl, sheet_name=FOCI_SHEET)
+        except Exception as exc:
+            warnings.append(f"{p.name}: {exc}")
+            continue
+        if foci is None or foci.empty:
+            continue
+        block = foci.copy()
+        block.insert(0, MASTER_PER_CELL_SAMPLE_COLUMN, _sample_label_from_workbook_path(p))
+        block.insert(0, MASTER_PER_CELL_SOURCE_COLUMN, p.name)
+        frames.append(block)
+    if not frames:
+        return None, warnings
+    long_df = pd.concat(frames, ignore_index=True, sort=False)
+    lead = [MASTER_PER_CELL_SOURCE_COLUMN, MASTER_PER_CELL_SAMPLE_COLUMN]
+    other = [c for c in long_df.columns if c not in lead]
+    long_df = long_df[lead + other]
+    return long_df, warnings
+
+
+def _append_match_log_to_wide_sheet(
+    ws,
+    *,
+    match_log: tuple[int, int, list[str]] | None,
+    existing_log_lines: list[str],
+) -> None:
+    if match_log is None:
+        return
+    n_masks, n_tif, lines = match_log
+    ws["G1"] = "Logs"
+    ws["G2"] = f"{n_masks} mask(s) and {n_tif} tif file(s) matched"
+    rowi = 3
+    for line in existing_log_lines:
+        ws.cell(row=rowi, column=7, value=line)
+        rowi += 1
+    for line in lines:
+        ws.cell(row=rowi, column=7, value=line)
+        rowi += 1
+
+
+def _load_existing_wide_match_log_lines(output_path: Path) -> list[str]:
+    if not output_path.is_file():
+        return []
+    try:
+        from openpyxl import load_workbook
+
+        wb_existing = load_workbook(output_path, data_only=True)
+        if COMBINED_SUMMARY_SHEET_WIDE not in wb_existing.sheetnames:
+            wb_existing.close()
+            return []
+        ws_existing = wb_existing[COMBINED_SUMMARY_SHEET_WIDE]
+        existing_log_lines: list[str] = []
+        for r in range(2, min(ws_existing.max_row + 1, 5000)):
+            val = ws_existing.cell(row=r, column=7).value
+            if val is None or not str(val).strip():
+                continue
+            s = str(val).strip()
+            if " -> " in s or " with " in s:
+                existing_log_lines.append(s)
+        wb_existing.close()
+        return existing_log_lines
+    except Exception:
+        return []
+
+
+def write_combined_analysis_summary(
+    excel_paths: Iterable[Path | str],
+    output_path: Path | str,
+    *,
+    match_log: tuple[int, int, list[str]] | None = None,
+    log_callback: Callable[[str], None] | None = None,
+) -> bool:
+    """
+    Write ``{folder}_combined_summary.xlsx`` with stacked sheets for every analysis export:
+
+    - **Combined Summary (long)** — all Summary rows stacked (primary stats table)
+    - **Combined Summary (wide)** — one row per frame, all metrics as ``{Sample}_{column}``
+    - **Combined Per-Cell Data** — all Per-Cell rows stacked
+    - **Combined Foci** — all Foci rows stacked (when present)
+    """
+    paths = _workbook_paths_for_combined_summary(excel_paths)
+
+    def _log(msg: str) -> None:
+        if log_callback is not None:
+            log_callback(msg if msg.endswith("\n") else msg + "\n")
+
+    if not paths:
+        _log("Combined summary: no paths provided.\n")
+        return False
+
+    long_df, summary_warnings = build_combined_summary_long_dataframe(paths)
+    if long_df is None or long_df.empty:
+        if summary_warnings:
+            _log(
+                "Combined summary: no Summary sheet could be read. "
+                f"First failure: {summary_warnings[0]}\n"
+            )
+        else:
+            _log("Combined summary: no Summary rows found.\n")
+        return False
+
+    wide_df = build_combined_summary_wide_dataframe(long_df)
+    if wide_df is None or wide_df.empty:
+        _log("Combined summary: wide table build failed.\n")
+        return False
+
+    per_cell_df, per_cell_warnings = build_master_per_cell_dataframe(paths)
+    foci_df, foci_warnings = build_combined_foci_dataframe(paths)
+
+    out_path = Path(output_path)
+    existing_log_lines = _load_existing_wide_match_log_lines(out_path) if match_log is not None else []
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.utils.dataframe import dataframe_to_rows
+
+        wb = Workbook()
+
+        ws_long = wb.active
+        ws_long.title = COMBINED_SUMMARY_SHEET_LONG
+        for row in dataframe_to_rows(long_df, index=False, header=True):
+            ws_long.append(row)
+
+        ws_wide = wb.create_sheet(title=COMBINED_SUMMARY_SHEET_WIDE)
+        for row in dataframe_to_rows(wide_df, index=False, header=True):
+            ws_wide.append(row)
+        _append_match_log_to_wide_sheet(
+            ws_wide,
+            match_log=match_log,
+            existing_log_lines=existing_log_lines,
+        )
+
+        if per_cell_df is not None and not per_cell_df.empty:
+            ws_pc = wb.create_sheet(title=COMBINED_PER_CELL_SHEET)
+            for row in dataframe_to_rows(per_cell_df, index=False, header=True):
+                ws_pc.append(row)
+
+        if foci_df is not None and not foci_df.empty:
+            ws_foci = wb.create_sheet(title=COMBINED_FOCI_SHEET)
+            for row in dataframe_to_rows(foci_df, index=False, header=True):
+                ws_foci.append(row)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(out_path)
+        wb.close()
+    except Exception as exc:
+        _log(f"Combined summary: write failed — {exc}\n")
+        return False
+
+    try:
+        from bactomate.modules.excel_autofit import autofit_openpyxl_workbook
+        from openpyxl import load_workbook
+
+        wb_fit = load_workbook(out_path)
+        autofit_openpyxl_workbook(wb_fit)
+        wb_fit.save(out_path)
+        wb_fit.close()
+    except Exception:
+        pass
+
+    n_files = int(long_df[MASTER_PER_CELL_SAMPLE_COLUMN].nunique())
+    sheet_bits = [COMBINED_SUMMARY_SHEET_LONG, COMBINED_SUMMARY_SHEET_WIDE]
+    if per_cell_df is not None and not per_cell_df.empty:
+        sheet_bits.append(COMBINED_PER_CELL_SHEET)
+    if foci_df is not None and not foci_df.empty:
+        sheet_bits.append(COMBINED_FOCI_SHEET)
+    _log(
+        f"Combined summary saved: {out_path.name} "
+        f"({len(long_df)} summary row(s) from {n_files} workbook(s); "
+        f"sheets: {', '.join(sheet_bits)}).\n"
+    )
+    for group in (summary_warnings, per_cell_warnings, foci_warnings):
+        if group:
+            preview = ", ".join(group[:3])
+            tail = f" (+{len(group) - 3} more)" if len(group) > 3 else ""
+            _log(f"Combined summary notes: {preview}{tail}\n")
     return True

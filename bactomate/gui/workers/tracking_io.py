@@ -63,17 +63,11 @@ def downsample_stacks_for_preview(
 def should_write_tracking_visualization(
     mask_file,
     *,
-    user_enabled: bool,
+    user_enabled: bool = True,
     track_action: str,
 ) -> bool:
-    """Skip disk visualization on very long stacks unless the user opted in."""
-    if not user_enabled:
-        return False
+    """Disk tracking visualizations are always written (except preview runs)."""
+    del mask_file, user_enabled
     if track_action in ("preview", "preview_lineage"):
-        return False
-    from bactomate.modules.tiff_stack_io import count_tiff_pages
-
-    n_pages = count_tiff_pages(mask_file)
-    if n_pages is not None and n_pages > LARGE_STACK_VIS_FRAME_THRESHOLD:
         return False
     return True

@@ -373,6 +373,12 @@ def write_foci_overlay_tif(
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tifffile.imwrite(str(output_path), out, photometric="rgb")
+        try:
+            from bactomate.modules.pipeline_outputs import write_png_preview_from_tiff
+
+            write_png_preview_from_tiff(output_path)
+        except Exception:
+            pass
         return True
     except Exception:
         return False

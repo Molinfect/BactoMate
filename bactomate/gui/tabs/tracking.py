@@ -483,6 +483,7 @@ class TrackingTab(QWidget):
         flex_control(self.filter_time_per_frame_unit, 76)
         self.create_vis_cb = QCheckBox('Create visualization')
         self.create_vis_cb.setChecked(True)
+        self.create_vis_cb.setVisible(False)
         self.create_vis_cb.setToolTip(f'Full Run tracking only: build *_overlay_tracked.tif and *_trajectories.tif when a phase stack is found (per-frame overlay with labels — slow on long movies).\n\nUncheck to skip visualization and save only tracks CSV, tracked masks, and the report workbook.\n\nPreview tracking never writes files and uses a separate light in-memory overlay (first {TRACKING_PREVIEW_FRAME_LIMIT} frames only).')
         self.overlay_track_data_cb = QCheckBox('Metrics table')
         self.overlay_track_data_cb.setChecked(False)
@@ -1939,27 +1940,14 @@ class TrackingTab(QWidget):
         return
 
     def _write_visualization_for_mask(self, mask_file: Path, track_action: str) -> bool:
-        """Honor Create visualization unless the stack is very long (auto-skip disk viz)."""
-        from bactomate.gui.workers.tracking_io import (
-            LARGE_STACK_VIS_FRAME_THRESHOLD,
-            should_write_tracking_visualization,
-        )
-        from bactomate.modules.tiff_stack_io import count_tiff_pages
+        """Always write tracking disk visualizations (except preview runs)."""
+        from bactomate.gui.workers.tracking_io import should_write_tracking_visualization
 
-        user_enabled = bool(getattr(self, 'create_vis_cb', None) and self.create_vis_cb.isChecked())
-        write_vis = should_write_tracking_visualization(
+        return should_write_tracking_visualization(
             mask_file,
-            user_enabled=user_enabled,
+            user_enabled=True,
             track_action=track_action,
         )
-        if user_enabled and not write_vis and track_action not in ('preview', 'preview_lineage'):
-            n_pages = count_tiff_pages(mask_file)
-            if n_pages is not None and n_pages > LARGE_STACK_VIS_FRAME_THRESHOLD:
-                self.parent_window.log_output(
-                    f'[Tracking] Skipping visualization ({n_pages} frames > '
-                    f'{LARGE_STACK_VIS_FRAME_THRESHOLD}); enable Create visualization only for shorter stacks.\n'
-                )
-        return write_vis
 
     def _run_single_tracking(self, mask_file: Path, output_dir: Path, original_file: Optional[str], excel_file: Optional[str], model_name: str, mode: str, device: str, track_action: str='movement', frame_limit: Optional[int]=None) -> None:
         """Run device check and start tracking worker for a single mask file."""

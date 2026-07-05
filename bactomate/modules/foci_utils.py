@@ -411,7 +411,8 @@ def assign_peaks_to_cells(
     frame_index: int = 0,
     *,
     touch_radius: int = 2,
-) -> Tuple[List[Dict[str, Any]], Dict[Tuple[int, int], List[int]]]:
+    start_foci_id: int = 1,
+) -> Tuple[List[Dict[str, Any]], Dict[Tuple[int, int], List[int]], int]:
     """
     Assign each peak to a cell (label) using the mask. Optionally dilate labels.
 
@@ -421,9 +422,10 @@ def assign_peaks_to_cells(
     Returns:
         foci_rows: list of dicts with keys foci_id, cell_id, frame, y, x, intensity, size_px, mean_intensity, rel_intensity, in_cell.
         cell_foci_ids: (cell_id, frame) -> list of foci_id (for building foci_ids column).
+        next_foci_id: next unused global foci_id after this frame.
     """
     if not peaks:
-        return [], {}
+        return [], {}, int(start_foci_id)
     h, w = labeled_mask.shape[:2]
     label_plane = np.asarray(labeled_mask, dtype=np.int32)
     if dilation_px > 0:
@@ -432,7 +434,7 @@ def assign_peaks_to_cells(
         mask = label_plane
     foci_rows: List[Dict[str, Any]] = []
     cell_foci_ids: Dict[Tuple[int, int], List[int]] = {}
-    foci_id = 1
+    foci_id = int(start_foci_id)
     for p in peaks:
         yi = int(p["y"])
         xi = int(p["x"])
@@ -471,7 +473,7 @@ def assign_peaks_to_cells(
             key = (cell_id, frame_index)
             cell_foci_ids.setdefault(key, []).append(foci_id)
         foci_id += 1
-    return foci_rows, cell_foci_ids
+    return foci_rows, cell_foci_ids, foci_id
 
 
 def _cell_cov_map(image: np.ndarray, labeled_mask: np.ndarray) -> Dict[int, float]:

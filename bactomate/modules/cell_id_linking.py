@@ -126,12 +126,19 @@ def write_persistent_cellid_mask_file(
     *,
     pixel_size: float | None = None,
     shared_metadata: dict | None = None,
+    phase_path: Path | str | None = None,
+    replace_primary_mask: bool = True,
+    regenerate_overlay: bool = True,
     log: LogFn = None,
 ) -> Path | None:
     """
     Link cells across frames and write ``{stem}_cellids{suffix}`` beside the mask stack.
 
-    Returns the output path on success, or ``None`` if skipped or failed.
+    When ``replace_primary_mask`` is True (default), the input mask TIFF is overwritten
+    with persistent Cell IDs so downstream Filtering / Analyze always see linked IDs.
+    Optionally regenerates the segmentation overlay with Cell ID labels.
+
+    Returns the cellids output path on success, or ``None`` if skipped or failed.
     """
     mask_path = Path(mask_path)
     if not mask_path.is_file():
@@ -149,6 +156,16 @@ def write_persistent_cellid_mask_file(
         masks_with_cellids = link_persistent_cell_ids_raw(masks, pixel_size=ps)
         out_path = mask_path.parent / f"{mask_path.stem}_cellids{mask_path.suffix}"
         tifffile.imwrite(str(out_path), masks_with_cellids)
+        if replace_primary_mask:
+            tifffile.imwrite(str(mask_path), masks_with_cellids)
+        if regenerate_overlay:
+            from bactomate.modules.pipeline_outputs import regenerate_segmentation_overlay
+
+            regenerate_segmentation_overlay(
+                mask_path,
+                phase_path=phase_path,
+                log=log,
+            )
         if log is not None:
             log(f"Persistent Cell IDs: {mask_path.name} → {out_path.name}\n")
         return out_path

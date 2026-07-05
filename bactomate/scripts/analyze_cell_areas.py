@@ -30,6 +30,13 @@ warnings.filterwarnings('ignore')
 
 from bactomate.modules.label_render import draw_hq_labels
 from bactomate.modules.image_stack_utils import coerce_plane_to_2d, coerce_stack_to_tyx
+from bactomate.modules.spatial_metrics import (
+    apply_foci_spatial_to_frame,
+    apply_temporal_metrics,
+    compute_fi_distribution_metrics,
+    enrich_cell_geometry,
+    frame_summary_spatial_metrics,
+)
 
 SCRIPT_LOG = logging.getLogger(__name__)
 
@@ -161,6 +168,7 @@ def calculate_cell_properties(mask, pixel_size=0.108, exclude_border=False, prog
             'bbox_width_um': bbox_width,
             'bbox_height_um': bbox_height,
         })
+        enrich_cell_geometry(props[-1], region, pixel_size)
     
     return props
 
@@ -514,6 +522,7 @@ def analyze_masks(masks_path, pixel_size=0.108,
     results = []
     all_frame_data = []  # Store detailed data for each frame
     foci_table = []  # Foci rows (cell_id updated to persistent ID after assignment)
+    next_foci_id = 1
     
     SCRIPT_LOG.info("Analyzing frames...")
     SCRIPT_LOG.info("[ANALYZE_PROGRESS] phase=frames current=0 total=%s", num_frames)
@@ -571,6 +580,17 @@ def analyze_masks(masks_path, pixel_size=0.108,
                         do_contour=False,
                     )
                     cell['mean_fi'] = mean_fi
+                fi_extra = compute_fi_distribution_metrics(
+                    mask_cleaned,
+                    fi_image,
+                    cell_label,
+                    contour_thickness=fi_contour_thickness,
+                    do_contour=fi_do_contour,
+                )
+                cell['interior_fi'] = fi_extra.get('interior_fi', np.nan)
+                cell['fi_std'] = fi_extra.get('fi_std', np.nan)
+                cell['fi_cv'] = fi_extra.get('fi_cv', np.nan)
+                cell['fi_top10_mean'] = fi_extra.get('fi_top10_mean', np.nan)
         
         # Foci analysis (per-frame detection and assignment to cells)
         if run_foci and foci_images is not None:
@@ -717,8 +737,8 @@ def analyze_masks(masks_path, pixel_size=0.108,
                             q["mean_intensity"] = float(mean_int)
                             peaks_refined.append(q)
                         peaks = peaks_refined
-                    foci_rows, cell_foci_ids = assign_peaks_to_cells(
-                        peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx
+                    foci_rows, cell_foci_ids, next_foci_id = assign_peaks_to_cells(
+                        peaks, mask_cleaned, dilation_px=1, frame_index=frame_idx, start_foci_id=next_foci_id
                     )
                     if foci_detection_mode == 0 and use_per_cell and cell_factor is not None and cell_factor > 0 and filtered and get_focus_blob_mask is not None:
                         # Per-cell filter: keep only foci where (focus blob mean) / (mean of cell excluding focus) >= cell_factor.
@@ -760,6 +780,13 @@ def analyze_masks(masks_path, pixel_size=0.108,
                         ids = cell_foci_ids.get(key, [])
                         cell['foci_count'] = len(ids)
                         cell['foci_ids'] = ids
+                    apply_foci_spatial_to_frame(
+                        filtered,
+                        foci_rows,
+                        mask_cleaned,
+                        pixel_size,
+                        contour_thickness=fi_contour_thickness if fi_do_contour else 1,
+                    )
                     for row in foci_rows:
                         if foci_exclude_outside_cells:
                             if not row.get('in_cell', False) or row.get('cell_id') not in accepted_labels:
@@ -849,8 +876,14 @@ def analyze_masks(masks_path, pixel_size=0.108,
                     label_to_cellid[(frame_idx, cell['label'])] = cid
         for row in foci_table:
             if row.get('in_cell') and row.get('cell_id') is not None:
-                key = (row['frame'] - 1, row['cell_id'])
+                frame_idx = row['frame']
+                if isinstance(frame_idx, int) and frame_idx >= 1 and frame_idx <= len(all_frame_data):
+                    # Legacy rows may store 1-based frame numbers.
+                    frame_idx = frame_idx - 1
+                key = (int(frame_idx), row['cell_id'])
                 row['cell_id'] = label_to_cellid.get(key, row['cell_id'])
+    
+    apply_temporal_metrics(all_frame_data)
     
     # Return both masks_with_cellids (for tracking/analysis) and original masks (for visualization)
     return results, all_frame_data, masks_with_cellids, masks, foci_table
@@ -1185,49 +1218,64 @@ def create_filter_visualization(
 
         visualization[frame_idx] = frame_rgb
         
+        foci_in_frame = [r for r in foci_table if r.get('frame') == frame_idx] if foci_table else []
         # Overlay detected foci as yellow dots when Run foci was used
-        if foci_table:
-            foci_in_frame = [r for r in foci_table if r.get('frame') == frame_idx]
-            if foci_in_frame:
-                _draw_foci_on_frame(visualization[frame_idx], foci_in_frame, (255, 255, 0), radius=2)
+        if foci_in_frame:
+            _draw_foci_on_frame(visualization[frame_idx], foci_in_frame, (255, 255, 0), radius=2)
         
-        # Add CellID labels if PIL is available
-        if PIL_AVAILABLE and mask.max() > 0:
+        # Add CellID and foci_id labels if PIL is available
+        if PIL_AVAILABLE and (mask.max() > 0 or foci_in_frame):
             try:
                 # Convert to PIL Image
                 pil_img = Image.fromarray(visualization[frame_idx])
                 
-                # Get cell centroids and CellIDs (masks now have persistent CellIDs)
-                from skimage.measure import regionprops
-                regions = regionprops(mask)
                 labels_to_draw = []
-                for region in regions:
-                    if region.label == 0:
-                        continue
-                    
-                    # Get centroid
-                    centroid_y, centroid_x = region.centroid
-                    x, y = int(centroid_x), int(centroid_y)
-                    
-                    cell_id_str = str(region.label)
-                    text_x, text_y = x + 2, y - 5
-                    labels_to_draw.append((cell_id_str, text_x, text_y))
+                if mask.max() > 0:
+                    # Get cell centroids and CellIDs (masks now have persistent CellIDs)
+                    from skimage.measure import regionprops
+                    regions = regionprops(mask)
+                    for region in regions:
+                        if region.label == 0:
+                            continue
+                        
+                        # Get centroid
+                        centroid_y, centroid_x = region.centroid
+                        x, y = int(centroid_x), int(centroid_y)
+                        
+                        cell_id_str = str(region.label)
+                        text_x, text_y = x + 2, y - 5
+                        labels_to_draw.append((cell_id_str, text_x, text_y))
 
-                pil_img = draw_hq_labels(
-                    pil_img,
-                    labels_to_draw,
-                    font_size=12,
-                    scale=2,
-                    stroke_width=2,
-                )
-                visualization[frame_idx] = np.array(pil_img)
-            except Exception as e:
+                if foci_in_frame:
+                    for row in foci_in_frame:
+                        fid = row.get('foci_id')
+                        if fid is None:
+                            continue
+                        x, y = int(row.get('x', 0)), int(row.get('y', 0))
+                        labels_to_draw.append((f"F{fid}", x + 3, y - 3))
+
+                if labels_to_draw:
+                    pil_img = draw_hq_labels(
+                        pil_img,
+                        labels_to_draw,
+                        font_size=12,
+                        scale=2,
+                        stroke_width=2,
+                    )
+                    visualization[frame_idx] = np.array(pil_img)
+            except Exception:
                 # If text rendering fails, continue without labels
                 pass
     
     # Save visualization
     SCRIPT_LOG.info("Saving visualization to: %s", output_path)
     tifffile.imwrite(output_path, visualization)
+    try:
+        from bactomate.modules.pipeline_outputs import write_png_preview_from_tiff
+
+        write_png_preview_from_tiff(output_path)
+    except Exception:
+        pass
     SCRIPT_LOG.info("Visualization saved")
     total_accepted = sum(len(fd['accepted_labels']) for fd in all_frame_data)
     total_rejected = sum(len(fd['rejected_labels']) for fd in all_frame_data)
@@ -1319,6 +1367,12 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
     # Save visualization
     SCRIPT_LOG.info("Saving FI contour visualization to: %s", output_path)
     tifffile.imwrite(output_path, visualization)
+    try:
+        from bactomate.modules.pipeline_outputs import write_png_preview_from_tiff
+
+        write_png_preview_from_tiff(output_path)
+    except Exception:
+        pass
     SCRIPT_LOG.info("FI contour visualization saved")
 
 
@@ -1469,6 +1523,18 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                     totals_by_frame=totals_by_frame,
                     within_by_frame=within_by_frame,
                 )
+
+    if detailed_data is not None:
+        by_frame = {int(fd['frame']): fd for fd in detailed_data}
+        pop_rows = []
+        for _, row in df_main.iterrows():
+            fd = by_frame.get(int(row['Frame']))
+            cells = fd.get('cells') if fd else []
+            pop_rows.append(frame_summary_spatial_metrics(cells or []))
+        if pop_rows:
+            pop_df = pd.DataFrame(pop_rows)
+            for col in pop_df.columns:
+                df_main[col] = pop_df[col].values
     
     # Create Excel writer
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -1503,7 +1569,12 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                         'Width (µm)': cell['width_um'],
                         'Aspect Ratio': cell['aspect_ratio'],
                         'Eccentricity': cell['eccentricity'],
-                        'Solidity': cell['solidity']
+                        'Solidity': cell['solidity'],
+                        'Centroid Y': cell.get('centroid_y'),
+                        'Centroid X': cell.get('centroid_x'),
+                        'Orientation (deg)': cell.get('orientation_deg'),
+                        'Perimeter (µm)': cell.get('perimeter_um'),
+                        'Circularity': cell.get('circularity'),
                     }
                     # Add FI columns if available (contour metrics may be disabled)
                     if 'mean_fi' in cell:
@@ -1511,6 +1582,14 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                             row[_s('Mean FI Intensity (whole cell)')] = cell['mean_fi']
                         else:
                             row['Mean FI Intensity'] = cell['mean_fi']
+                    if 'interior_fi' in cell:
+                        row[_s('Interior FI Mean')] = cell.get('interior_fi')
+                    if 'fi_std' in cell:
+                        row[_s('FI Std')] = cell.get('fi_std')
+                    if 'fi_cv' in cell:
+                        row[_s('FI CV')] = cell.get('fi_cv')
+                    if 'fi_top10_mean' in cell:
+                        row[_s('FI Top 10% Mean')] = cell.get('fi_top10_mean')
                     if 'contour_fi' in cell:
                         row[_s('Contour FI Intensity')] = cell['contour_fi']
                     if 'fi_ratio' in cell:
@@ -1581,6 +1660,31 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                             row[_s('Foci areas (µm²)')] = ", ".join(area_um2_vals) if area_um2_vals else ""
                             row[_s('Foci rel intensities')] = ", ".join(rel_vals) if rel_vals else ""
                             row[_s('Foci mean intensity ratios')] = ", ".join(ratio_vals) if ratio_vals else ""
+                    for src_key, col_name in (
+                        ('foci_min_dist_contour_um', 'Min Foci-Contour Distance (µm)'),
+                        ('foci_mean_dist_contour_um', 'Mean Foci-Contour Distance (µm)'),
+                        ('foci_mean_longitudinal_position', 'Mean Foci Longitudinal Position'),
+                        ('foci_longitudinal_spread', 'Foci Longitudinal Spread'),
+                        ('foci_mean_radial_offset_um', 'Mean Foci Radial Offset (µm)'),
+                        ('foci_min_dist_nearest_pole_um', 'Min Foci-Pole Distance (µm)'),
+                        ('foci_nearest_neighbor_um', 'Foci Nearest-Neighbor Distance (µm)'),
+                        ('foci_membrane_proximal_fraction', 'Membrane-Proximal Foci Fraction'),
+                    ):
+                        if src_key in cell:
+                            row[_s(col_name)] = cell.get(src_key)
+                    for src_key, col_name in (
+                        ('delta_area_um2', 'Delta Area (µm²)'),
+                        ('delta_area_um2_per_frame', 'Delta Area per Frame (µm²)'),
+                        ('delta_mean_fi', 'Delta Mean FI'),
+                        ('delta_foci_count', 'Delta Foci Count'),
+                        ('delta_foci_min_dist_contour_um', 'Delta Min Foci-Contour Distance (µm)'),
+                        ('delta_foci_mean_dist_contour_um', 'Delta Mean Foci-Contour Distance (µm)'),
+                        ('delta_contour_fi', 'Delta Contour FI'),
+                        ('delta_interior_fi', 'Delta Interior FI'),
+                        ('time_of_first_focus', 'Time of First Focus (frame)'),
+                    ):
+                        if src_key in cell:
+                            row[col_name] = cell.get(src_key)
                     detailed_rows.append(row)
             
             if detailed_rows:
@@ -1612,8 +1716,23 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                 df_foci['area_um2'] = df_foci['size_px'].astype(float).mul(ps ** 2)
                 # Reorder and rename columns for clarity
                 col_map = {'size_px': 'Area (px)', 'area_um2': 'Area (µm²)', 'mean_intensity': 'Mean intensity (focus blob)', 'rel_intensity': 'Rel intensity (peak/frame median)'}
+                spatial_rename = {
+                    'distance_to_contour_um': 'Distance to contour (µm)',
+                    'longitudinal_position': 'Longitudinal position',
+                    'radial_offset_um': 'Radial offset (µm)',
+                    'distance_to_nearest_pole_um': 'Distance to nearest pole (µm)',
+                    'membrane_proximal': 'Membrane proximal',
+                    'cell_orientation_deg': 'Cell orientation (deg)',
+                }
+                col_map.update(spatial_rename)
                 df_foci = df_foci.rename(columns={k: v for k, v in col_map.items() if k in df_foci.columns})
-                cols = ['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell']
+                cols = [
+                    'foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity',
+                    'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)',
+                    'Distance to contour (µm)', 'Longitudinal position', 'Radial offset (µm)',
+                    'Distance to nearest pole (µm)', 'Membrane proximal', 'Cell orientation (deg)',
+                    'in_cell',
+                ]
                 df_foci = df_foci[[c for c in cols if c in df_foci.columns]]
             else:
                 df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell'])
@@ -1694,8 +1813,10 @@ Examples:
     # Detailed output
     parser.add_argument('--detailed', action='store_true',
                        help='Include detailed per-cell data in Excel output')
-    parser.add_argument('--visualization', action='store_true',
-                       help='Create visualization TIFF showing accepted (green) and rejected (red) cells')
+    parser.add_argument('--visualization', action='store_true', default=True,
+                       help='Create visualization TIFF showing accepted (green) and rejected (red) cells (default: on)')
+    parser.add_argument('--no-visualization', dest='visualization', action='store_false',
+                       help='Skip filter/FI contour visualization TIFFs')
     
     # FI analysis
     parser.add_argument('--fi-image', type=str, default=None,

@@ -72,28 +72,29 @@ def test_lineage_preflight_uses_strict_flags_for_full_run(tracking_tab_minimal, 
     assert preflight.call_args_list[1].kwargs["strict_lineage"] is False
 
 
-def test_maybe_write_persistent_cellid_masks_creates_output(omnipose_tab, tmp_path: Path) -> None:
+def test_write_persistent_cellid_masks_creates_output(omnipose_tab, tmp_path: Path) -> None:
     mask = tmp_path / "sample_masks.tif"
     stack = np.zeros((2, 16, 16), dtype=np.uint16)
     stack[0, 4:8, 4:8] = 1
     stack[1, 4:8, 4:8] = 1
     tifffile.imwrite(mask, stack)
-    omnipose_tab.assign_persistent_cellids.setChecked(True)
-    omnipose_tab._maybe_write_persistent_cellid_masks(mask)
+    omnipose_tab._write_persistent_cellid_masks(mask)
     out = tmp_path / "sample_masks_cellids.tif"
     assert out.is_file()
     written = tifffile.imread(str(out))
     assert written.shape == stack.shape
     assert int(written.max()) >= 1
+    primary = tifffile.imread(str(mask))
+    assert int(primary.max()) >= 1
     omnipose_tab.parent_window.log_output.assert_called()
 
 
-def test_maybe_write_persistent_cellid_masks_skipped_when_unchecked(omnipose_tab, tmp_path: Path) -> None:
+def test_write_persistent_cellid_masks_always_runs(omnipose_tab, tmp_path: Path) -> None:
     mask = tmp_path / "sample_masks.tif"
     tifffile.imwrite(mask, np.zeros((2, 8, 8), dtype=np.uint16))
     omnipose_tab.assign_persistent_cellids.setChecked(False)
-    omnipose_tab._maybe_write_persistent_cellid_masks(mask)
-    assert not (tmp_path / "sample_masks_cellids.tif").exists()
+    omnipose_tab._write_persistent_cellid_masks(mask)
+    assert (tmp_path / "sample_masks_cellids.tif").is_file()
 
 
 @pytest.fixture
@@ -107,14 +108,13 @@ def unet_tab(qapp):
     return tab
 
 
-def test_unet_maybe_write_persistent_cellid_masks_creates_output(unet_tab, tmp_path: Path) -> None:
+def test_unet_write_persistent_cellid_masks_creates_output(unet_tab, tmp_path: Path) -> None:
     mask = tmp_path / "sample_unet_masks.tif"
     stack = np.zeros((2, 16, 16), dtype=np.uint16)
     stack[0, 4:8, 4:8] = 1
     stack[1, 4:8, 4:8] = 1
     tifffile.imwrite(mask, stack)
-    unet_tab.assign_persistent_cellids.setChecked(True)
-    unet_tab._maybe_write_persistent_cellid_masks(mask)
+    unet_tab._write_persistent_cellid_masks(mask)
     out = tmp_path / "sample_unet_masks_cellids.tif"
     assert out.is_file()
     written = tifffile.imread(str(out))
@@ -123,9 +123,9 @@ def test_unet_maybe_write_persistent_cellid_masks_creates_output(unet_tab, tmp_p
     unet_tab.parent_window.log_output.assert_called()
 
 
-def test_unet_maybe_write_persistent_cellid_masks_skipped_when_unchecked(unet_tab, tmp_path: Path) -> None:
+def test_unet_write_persistent_cellid_masks_always_runs(unet_tab, tmp_path: Path) -> None:
     mask = tmp_path / "sample_unet_masks.tif"
     tifffile.imwrite(mask, np.zeros((2, 8, 8), dtype=np.uint16))
     unet_tab.assign_persistent_cellids.setChecked(False)
-    unet_tab._maybe_write_persistent_cellid_masks(mask)
-    assert not (tmp_path / "sample_unet_masks_cellids.tif").exists()
+    unet_tab._write_persistent_cellid_masks(mask)
+    assert (tmp_path / "sample_unet_masks_cellids.tif").is_file()
