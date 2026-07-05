@@ -3175,6 +3175,7 @@ class OmniposeSegTab(QWidget):
 
             def get_current_parameters():
                 """Get current parameters from main window (works because dialog is non-modal)."""
+                self._commit_segmentation_parameter_spins()
                 import sys
                 is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
                 diameter_value = self._get_effective_diameter_pixels()
@@ -3862,6 +3863,7 @@ class OmniposeSegTab(QWidget):
                 style_compact_action_button(redetect_btn, horizontal_padding=28)
 
             def on_redetect():
+                self._commit_segmentation_parameter_spins()
                 params = get_current_parameters()
                 source_key = image_combo.currentData() if image_combo is not None else ('input', 0)
                 cache_key = get_cache_key(preview_dialog.current_frame, params, source_key=source_key)
@@ -3875,6 +3877,28 @@ class OmniposeSegTab(QWidget):
             redetect_btn.clicked.connect(on_redetect)
             try:
                 preview_dialog._on_redetect = on_redetect
+            except Exception:
+                pass
+
+            def _on_preview_cell_params_changed(*_args) -> None:
+                """Keep Pending parameters in sync when diameter/flow/mask change."""
+                if getattr(self, '_embedded_segmentation_preview', None) is not preview_dialog:
+                    return
+                if getattr(preview_dialog, '_dialog_closed', False):
+                    return
+                try:
+                    self._commit_segmentation_parameter_spins()
+                    show_current_cache_or_unsegmented(preview_dialog.current_frame)
+                except Exception:
+                    get_logger().debug('Preview param refresh failed', exc_info=True)
+
+            for _spin in (self.diameter, self.flow_threshold, self.mask_threshold):
+                try:
+                    _spin.valueChanged.connect(_on_preview_cell_params_changed)
+                except Exception:
+                    pass
+            try:
+                self.cluster.toggled.connect(_on_preview_cell_params_changed)
             except Exception:
                 pass
             nav_layout = QVBoxLayout()
@@ -5022,6 +5046,15 @@ class OmniposeSegTab(QWidget):
         layout.addWidget(run_btn)
         d.setLayout(layout)
         d.exec()
+
+    def _commit_segmentation_parameter_spins(self) -> None:
+        """Apply any in-progress QDoubleSpinBox line-edit text before reading values."""
+        for w in (self.diameter, self.flow_threshold, self.mask_threshold):
+            try:
+                if w is not None:
+                    w.interpretText()
+            except RuntimeError:
+                pass
 
     def _get_effective_diameter_pixels(self) -> float:
         """Return diameter in pixels (the single Diameter field)."""

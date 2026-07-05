@@ -1310,7 +1310,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = '2.8.1'
+            version = '2.8.2'
         show_message_dialog(self, 'About BactoMate', f'BactoMate – bacteria time-lapse batch processing and analysis.\n\nVersion {version}\n\nDocumentation: Help → User manual.', kind='info')
 
     def _check_environment(self) -> None:

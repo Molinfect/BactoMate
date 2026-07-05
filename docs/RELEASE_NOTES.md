@@ -4,6 +4,15 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.2 (2026-07-05)
+
+### Segmentation preview: Windows locale spinbox fix
+
+- **Re-detect:** commit in-progress Diameter/Flow/Mask spinbox text (`interpretText`) before reading parameters — fixes European Windows locales where typed `10,0` was ignored until Enter/Tab.
+- **Preview header:** refresh “Pending parameters” when cell-segmentation controls change, so the title line stays in sync with the spinboxes.
+
+---
+
 ## v2.8.1 (2026-07-05)
 
 ### Windows logs, setup/build layout, and install docs
