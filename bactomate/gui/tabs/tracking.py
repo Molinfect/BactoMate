@@ -483,6 +483,7 @@ class TrackingTab(QWidget):
         flex_control(self.filter_time_per_frame_unit, 76)
         self.create_vis_cb = QCheckBox('Create visualization')
         self.create_vis_cb.setChecked(True)
+        self.create_vis_cb.setVisible(False)
         self.create_vis_cb.setToolTip(f'Full Run tracking only: build *_overlay_tracked.tif and *_trajectories.tif when a phase stack is found (per-frame overlay with labels — slow on long movies).\n\nUncheck to skip visualization and save only tracks CSV, tracked masks, and the report workbook.\n\nPreview tracking never writes files and uses a separate light in-memory overlay (first {TRACKING_PREVIEW_FRAME_LIMIT} frames only).')
         self.overlay_track_data_cb = QCheckBox('Metrics table')
         self.overlay_track_data_cb.setChecked(False)
@@ -1778,6 +1779,12 @@ class TrackingTab(QWidget):
         resolved = pf.resolved_mask_path or resolve_lineage_mask_path(mask_file)
         if resolved != Path(mask_file):
             msg += f'\n\nWill use mask:\n{resolved}'
+        excel_hint = (
+            '\n\nReminder: analysis Excel frames are 1-based; tracking frames are 0-based. '
+            'Use the same mask file as Analyze Masks (filtered if you analyzed filtered).'
+        )
+        if is_full_lineage or pf.analysis_workbook is not None:
+            msg += excel_hint
         if not show_confirm_dialog(self._main_window(), title=title, message=msg + '\n\nContinue?', confirm_label='Yes', cancel_label='No', default_confirm=True):
             return False
         return True
@@ -1931,6 +1938,16 @@ class TrackingTab(QWidget):
         self.parent_window.log_output(f'Starting batch tracking for {len(tasks)} file(s).\n')
         self._process_next_tracking_task()
         return
+
+    def _write_visualization_for_mask(self, mask_file: Path, track_action: str) -> bool:
+        """Always write tracking disk visualizations (except preview runs)."""
+        from bactomate.gui.workers.tracking_io import should_write_tracking_visualization
+
+        return should_write_tracking_visualization(
+            mask_file,
+            user_enabled=True,
+            track_action=track_action,
+        )
 
     def _run_single_tracking(self, mask_file: Path, output_dir: Path, original_file: Optional[str], excel_file: Optional[str], model_name: str, mode: str, device: str, track_action: str='movement', frame_limit: Optional[int]=None) -> None:
         """Run device check and start tracking worker for a single mask file."""
@@ -2121,7 +2138,7 @@ class TrackingTab(QWidget):
                 self.parent_window.log_output(
                     f'Found saved lineage curation — will apply after tracking: {lineage_curation_path}\n'
                 )
-        self.worker = TrackingWorker(mask_file, original_file, excel_file, model_name, mode, device, self, output_dir=output_dir, track_action=track_action, frame_limit=frame_limit, run_metadata=self._build_tracking_run_metadata(mask_file, model_name=model_name, mode=mode, device=device, track_action=track_action, original_file=original_file, excel_file=excel_file, frame_limit=frame_limit), filter_params=self._get_filter_params(), write_visualization=bool(getattr(self, 'create_vis_cb', None) and self.create_vis_cb.isChecked()), lineage_curation_path=lineage_curation_path)
+        self.worker = TrackingWorker(mask_file, original_file, excel_file, model_name, mode, device, self, output_dir=output_dir, track_action=track_action, frame_limit=frame_limit, run_metadata=self._build_tracking_run_metadata(mask_file, model_name=model_name, mode=mode, device=device, track_action=track_action, original_file=original_file, excel_file=excel_file, frame_limit=frame_limit), filter_params=self._get_filter_params(), write_visualization=self._write_visualization_for_mask(mask_file, track_action), lineage_curation_path=lineage_curation_path)
         self.worker.finished.connect(self.on_tracking_finished)
         self.worker.start()
         self.parent_window.progress_bar.setVisible(True)
@@ -2245,7 +2262,7 @@ class TrackingTab(QWidget):
             from bactomate.modules.lineage_integration import resolve_lineage_curation_path
 
             lineage_curation_path = resolve_lineage_curation_path(Path(mask_path))
-        self.worker = TrackingWorker(mask_path, original_file, excel_file, model_name, mode, device, self, output_dir=output_dir, track_action=batch_action, frame_limit=getattr(self, '_batch_frame_limit', None), run_metadata=self._build_tracking_run_metadata(mask_path, model_name=model_name, mode=mode, device=device, track_action=batch_action, original_file=original_file, excel_file=excel_file, frame_limit=getattr(self, '_batch_frame_limit', None)), filter_params=self._get_filter_params(), write_visualization=bool(getattr(self, 'create_vis_cb', None) and self.create_vis_cb.isChecked()), lineage_curation_path=lineage_curation_path)
+        self.worker = TrackingWorker(mask_path, original_file, excel_file, model_name, mode, device, self, output_dir=output_dir, track_action=batch_action, frame_limit=getattr(self, '_batch_frame_limit', None), run_metadata=self._build_tracking_run_metadata(mask_path, model_name=model_name, mode=mode, device=device, track_action=batch_action, original_file=original_file, excel_file=excel_file, frame_limit=getattr(self, '_batch_frame_limit', None)), filter_params=self._get_filter_params(), write_visualization=self._write_visualization_for_mask(mask_path, batch_action), lineage_curation_path=lineage_curation_path)
         self.worker.finished.connect(self.on_tracking_task_finished)
         self.worker.progress.connect(self._on_batch_tracking_progress)
         self.worker.start()

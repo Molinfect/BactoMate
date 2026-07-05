@@ -1,0 +1,64 @@
+%% BactoMate pipeline folder layout (canonical workflow)
+%% Open in https://mermaid.live or VS Code Mermaid preview to export PNG/SVG/PDF.
+
+flowchart TB
+    RAW["Raw input: ND2, LIF, CZI, TIFF"]
+
+    subgraph SAMPLE["Sample root e.g. MyExperiment"]
+        direction TB
+
+        subgraph TIF["Tif_files - File Conversion"]
+            PHASE["Phase input TIFFs"]
+            FI["FI channels *_fi_*"]
+            FOCI["Foci stacks *_foci_*"]
+
+            subgraph SEG["_segmentation_MODEL - Segmentation"]
+                MASKS["masks, cellids, overlay tif and png"]
+                FOCI_OV["foci overlay tif and png"]
+
+                subgraph FD["foci_detection"]
+                    FCSV["raw foci CSV"]
+                end
+
+                subgraph FF["foci_filtered - Filtering"]
+                    FCSV2["filtered foci CSV"]
+                end
+
+                subgraph FM["filtered_masks - Filtering"]
+                    FMASK["mask_filtered tif"]
+                end
+            end
+        end
+
+        subgraph ANA["_analysis - Analyze"]
+            XLSX["analysis xlsx"]
+            FVIZ["filter_visualization tif and png"]
+            AVIZ["analysis_visualization tif and png"]
+            COMB["combined_summary xlsx"]
+        end
+
+        subgraph TRK_ROOT["_tracking - Tracking"]
+            subgraph TRK["STEM_tracking folder"]
+                TCSV["tracks csv and report xlsx"]
+                TMASK["masks_tracked, overlay_tracked, trajectories"]
+                subgraph TBL["tables"]
+                    PQ["parquet or csv.gz and metadata.json"]
+                end
+                CTC["ctc_format optional"]
+            end
+        end
+    end
+
+    ALT["Alternate: standalone TIFF uses STEM_omnipose_segmentation"]
+
+    RAW -->|"Convert to TIFF"| PHASE
+    PHASE --> MASKS
+    FOCI --> FOCI_OV
+    FOCI --> FCSV
+    FCSV --> FCSV2
+    MASKS --> FMASK
+    FMASK --> XLSX
+    FCSV2 --> XLSX
+    FMASK --> TCSV
+    XLSX --> TCSV
+    ALT -.-> SEG

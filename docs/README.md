@@ -45,7 +45,7 @@ setup\install_windows.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.7.6`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.8.0`) and `python main.py --smoke-test`.
 
 macOS app/DMG packaging is restored for local builds:
 
@@ -167,7 +167,7 @@ The same content as step 1’s text file ships **inside** the DMG so recipients 
 Launch with `./launch_gui.sh` (or `source venv/bin/activate && python main.py`). The GUI provides:
 
 - **TIFF Conversion** — Convert ND2, LIF, CZI (and optionally TIFF) to TIFF; channel handling, metadata, optional corrections.
-- **Omnipose Segment** — Segment cells (single file or folder), preview, batch process; train custom Omnipose models; diameter, flow/mask threshold, GPU, overlay.
+- **Segmentation** — Unified module with three backends: **Omnipose**, **Cellpose-SAM**, and **U-Net**. Segment cells (single file or folder), preview, batch process; optional **Assign persistent Cell IDs** after segmentation; train custom models in the Training module.
 - **Analyze Masks** — Analyze mask TIFFs with morphological and size filters; Excel output; optional fluorescence intensity (one FI file or match FI by name; feedback list); optional **Run foci analysis** (detect bright spots in FI channel, Foci sheet in Excel); combined summary, session parameters.
 - **Tracking** — Run Trackastra on mask time series; optional link to original TIFF and Excel. Preserves persistent CellIDs when the input masks already have them (e.g. from Analyze Masks or from the assign_persistent_ids script).
 - **Post-processing** — Add scale bar to image; build montage from folder/files; growth curve video from TIFF sequence + Excel analysis.
@@ -261,7 +261,7 @@ For structure and cross-machine notes, see the **[User Manual](BACTOMATE_USER_MA
 
 ## Troubleshooting
 
-- **User-trained models (0 cells, different behaviour):** Use negative mask threshold (e.g. -2) for user models if needed; prefer fewer epochs (e.g. 50) and lower learning rate when fine-tuning. Run **Check pipeline** in the GUI (Omnipose Segment) or `python -m bactomate.scripts.check_omnipose_pipeline compare a.pth b.pth`. **Full details:** User Manual **Appendix B** (training troubleshooting: head drift, background as cells) and **Section 4.8** (user-trained vs built-in models).
+- **User-trained models (0 cells, different behaviour):** Use negative mask threshold (e.g. -2) for user models if needed; prefer fewer epochs (e.g. 50) and lower learning rate when fine-tuning. Run **Check pipeline** in the GUI (Segmentation → Omnipose/Cellpose) or `python -m bactomate.scripts.check_omnipose_pipeline compare a.pth b.pth`. **Full details:** User Manual **Appendix B** (training troubleshooting: head drift, background as cells) and **Section 4.8** (user-trained vs built-in models).
 - **Checkpoint format:** BactoMate saves checkpoints with `state_dict` + `nchan`/`nclasses`. The loader is patched via `setup/apply_all_patches.py` (run by `launch_gui.sh`). If segmentation fails, run **Check pipeline** and ensure "Loader unwraps checkpoint dict" is Yes.
 - **App bundle won't launch / no logs / won't reopen:** BactoMate uses **one GUI log** plus **session logs** (under a **Logs** folder). **To see whether the launcher ran:** on macOS open **`~/Library/Application Support/BactoMate/Logs/launch.log`** — the launcher appends one line per launch with the path to the full GUI log. **Go → Go to Folder** → paste `~/Library/Application Support/BactoMate/Logs`. If the app **doesn't open again** after you quit: (1) Check that file — each launch adds a line like `2026-03-02T12:00:00 [from /path] full log: …/Logs/bactomate_gui_2026-03-02_12-00-00.log`. If there is **no new line** when you try to reopen, the launcher did not run (remove the Dock icon and always start by double‑clicking BactoMate.app). (2) **Full logs:** everything (launch, crash, Qt messages, worker/script failures, Omnipose/debug, Analyze Masks script output) goes into one **bactomate_gui_*.log** per run. Only the last **20** GUI logs are kept (capped in `log_config`); session JSONs **\*_session.json** are capped at **100**. When running from the .app these are in Application Support or inside the app’s Logs; from the project they are in `BactoMate-main-V1.0/Logs/`. (3) To see errors in the terminal when reopening, run: `"/path/to/BactoMate.app/Contents/MacOS/BactoMate"` then quit and run the same command again. **launch_chain.log** in `~/Library/Logs/BactoMate/` is a separate diagnostic (one line per start: pid, executable) used by follow_build.py; you can ignore or delete it — the main log is **bactomate_gui_*.log**.
 - **App icon shows grey frame or wrong icon:** The app icon is built from **only** `img/logo2.png` (no extra background is added). Any grey or black in the icon is in that file. For an icon that is 100% your graphic (e.g. only the blue bacterium): use a `logo2.png` that contains only that graphic (e.g. on transparency, no grey or black frame). Then run `./build/create_icons.sh` and `./build/build_app_bundle.sh` again. Rebuild the DMG if needed.
@@ -305,7 +305,7 @@ Quick list:
 - `setup/repair_pyqt6.sh`, `setup/setup_fresh_env.sh`, `setup/install_cuda_pytorch.sh`, `setup/clear_models.sh`
 - `build/build_app_bundle.sh`, `build/create_dmg.sh`, `build/create_icons.sh`
 
-**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Historical v1.6 refactor notes: **[docs/archive/v1.6/](archive/v1.6/)**.
+**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Remaining engineering tasks: **[PLAN.md](PLAN.md)**.
 
 ## Release Notes
 

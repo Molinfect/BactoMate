@@ -627,7 +627,7 @@ def _assigned_foci_rows_for_channel(
     from bactomate.modules.foci_utils import assign_peaks_to_cells
 
     peaks = [r for r in csv_rows if int(r.get("frame", 0) or 0) == int(frame)]
-    assigned, _ = assign_peaks_to_cells(peaks, mask_labels, dilation_px=1, frame_index=int(frame))
+    assigned, _, _ = assign_peaks_to_cells(peaks, mask_labels, dilation_px=1, frame_index=int(frame))
     out: list[dict[str, Any]] = []
     for r in assigned:
         q = dict(r)

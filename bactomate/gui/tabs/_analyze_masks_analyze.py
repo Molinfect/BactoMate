@@ -857,7 +857,7 @@ class AnalyzeTab(AnalyzeMasksBase):
 
     def _build_analysis_run_manifest(self, *, mask_path: Path, fi_path: Path | None, fi_paths: list[Path] | None=None, out_path: Path, task_notes: list[str] | None=None, foci_outcome: Any | None=None, foci_available_not_imported: list[Any] | None=None) -> dict[str, Any]:
         from bactomate.gui.analysis_workbook import default_manifest_timestamp
-        manifest: dict[str, Any] = {'Analysis date': default_manifest_timestamp(), 'Filtered mask file used': str(Path(mask_path).resolve()), 'Output workbook': str(Path(out_path).resolve()), 'Use filtered masks': 'Yes' if bool(getattr(self, 'use_filtered_masks_cb', None) and self.use_filtered_masks_cb.isChecked()) else 'No', 'Analyze FI': 'Yes' if bool(getattr(self, 'analyze_fi', None) and self.analyze_fi.isChecked()) else 'No', 'Include foci from detection CSV': 'Yes' if bool(getattr(self, 'include_foci_from_detection', None) and self.include_foci_from_detection.isChecked()) else 'No', 'Colocalization sheets': 'Yes' if bool(getattr(self, 'coloc_calc_all_pairs', None) and self.coloc_calc_all_pairs.isChecked()) else 'No', 'Per-cell detail sheet (--detailed)': 'Yes' if bool(getattr(self, 'detailed', None) and self.detailed.isChecked()) else 'No (may still be forced on for foci/coloc)', 'Analysis visualization': 'Yes (multi-panel TIFF)' if bool(getattr(self, 'create_vis', None) and self.create_vis.isChecked()) else 'No', 'Pixel size (µm)': str(float(self.pixel_size.value())) if hasattr(self, 'pixel_size') else ''}
+        manifest: dict[str, Any] = {'Analysis date': default_manifest_timestamp(), 'Filtered mask file used': str(Path(mask_path).resolve()), 'Output workbook': str(Path(out_path).resolve()), 'Use filtered masks': 'Yes' if bool(getattr(self, 'use_filtered_masks_cb', None) and self.use_filtered_masks_cb.isChecked()) else 'No', 'Analyze FI': 'Yes' if bool(getattr(self, 'analyze_fi', None) and self.analyze_fi.isChecked()) else 'No', 'Include foci from detection CSV': 'Yes' if bool(getattr(self, 'include_foci_from_detection', None) and self.include_foci_from_detection.isChecked()) else 'No', 'Colocalization sheets': 'Yes' if bool(getattr(self, 'coloc_calc_all_pairs', None) and self.coloc_calc_all_pairs.isChecked()) else 'No', 'Per-cell detail sheet (--detailed)': 'Yes' if bool(getattr(self, 'detailed', None) and self.detailed.isChecked()) else 'No (may still be forced on for foci/coloc)', 'Analysis visualization': 'Yes (multi-panel TIFF + PNG)', 'Pixel size (µm)': str(float(self.pixel_size.value())) if hasattr(self, 'pixel_size') else ''}
         try:
             import bactomate
             manifest['BactoMate version'] = str(getattr(bactomate, '__version__', ''))
@@ -955,14 +955,13 @@ class AnalyzeTab(AnalyzeMasksBase):
                 run_post_analysis_colocalization_for_masks(self, [mask_path])
             except Exception:
                 get_logger().debug('Post-analysis colocalization failed', exc_info=True)
-        if bool(getattr(self, 'create_vis', None) and self.create_vis.isChecked()):
-            self._set_post_analysis_progress('Writing analysis visualization…', percent=95)
-            try:
-                self._write_combined_analysis_visualization(mask_path=mask_path, analysis_path=out_path, prefer_filtered=prefer_filtered)
-            except Exception as exc:
-                get_logger().warning('Combined analysis visualization failed', exc_info=True)
-                if hasattr(self.parent_window, 'log_output'):
-                    self.parent_window.log_output(f'[Analyze] Analysis visualization failed: {exc}\n')
+        self._set_post_analysis_progress('Writing analysis visualization…', percent=95)
+        try:
+            self._write_combined_analysis_visualization(mask_path=mask_path, analysis_path=out_path, prefer_filtered=prefer_filtered)
+        except Exception as exc:
+            get_logger().warning('Combined analysis visualization failed', exc_info=True)
+            if hasattr(self.parent_window, 'log_output'):
+                self.parent_window.log_output(f'[Analyze] Analysis visualization failed: {exc}\n')
         self._set_post_analysis_progress('Writing Run Info…', percent=98)
         try:
             from bactomate.gui.analysis_workbook import write_run_info_sheet
@@ -1220,6 +1219,7 @@ class AnalyzeTab(AnalyzeMasksBase):
             args += ['--detailed']
         if getattr(self, 'export_csv', None) is not None and self.export_csv.isChecked():
             args += ['--export-csv']
+        args += ['--visualization']
         if getattr(self, 'analyze_fi', None) is not None and self.analyze_fi.isChecked() and (fi_path is not None):
             args += ['--fi-image', str(fi_path)]
             if getattr(self, 'analyze_fi_contour', None) is not None and self.analyze_fi_contour.isChecked():
@@ -1324,143 +1324,13 @@ class AnalyzeTab(AnalyzeMasksBase):
             _log(f'Combined summary saved: {out_path}')
 
     def _build_combined_summary_excel(self, excel_paths, output_path, match_log=None, log_callback=None):
-
-        def _log(msg: str) -> None:
-            if log_callback:
-                log_callback(msg)
-        import re
-        import pandas as pd
-        from openpyxl import load_workbook
-        from openpyxl.utils.dataframe import dataframe_to_rows
-
-        def _sanitize_sheet_name(name: str, max_len: int=31) -> str:
-            s = re.sub('[\\\\/:*?\\[\\]]', '_', str(name))
-            return s[:max_len] if len(s) > max_len else s
-        if not excel_paths:
-            _log('Combined summary: no paths provided.\n')
-            return False
-        frames_long = []
-        missing = []
-        no_summary = []
-        per_cell_cache: dict[Path, pd.DataFrame | None] = {}
-        for p in excel_paths:
-            p = Path(p)
-            if not p.exists():
-                missing.append(p.name)
-                continue
-            try:
-                with pd.ExcelFile(p) as xl:
-                    df = pd.read_excel(xl, sheet_name='Summary')
-                    per_cell = None
-                    try:
-                        per_cell = pd.read_excel(xl, sheet_name='Per-Cell Data')
-                    except Exception:
-                        pass
-                    per_cell_cache[p] = per_cell
-            except Exception as e:
-                no_summary.append((p.name, str(e)))
-                continue
-            if df is None or df.empty:
-                no_summary.append((p.name, 'empty Summary sheet'))
-                continue
-            df = df.copy()
-            df['File'] = p.stem.replace('_analysis', '').replace('_masks_analysis', '')
-            frames_long.append(df)
-        if missing:
-            _log(f"Combined summary: {len(missing)} path(s) not found: {', '.join(missing[:5])}{(' ...' if len(missing) > 5 else '')}\n")
-        if no_summary and (not frames_long):
-            _log(f'Combined summary: no Summary sheet could be read. First failure: {no_summary[0][0]} — {no_summary[0][1]}\n')
-        if not frames_long:
-            return False
-        long_df = pd.concat(frames_long, ignore_index=True)
-        cols = [c for c in ['File', 'Frame'] if c in long_df.columns]
-        cols += [c for c in long_df.columns if c not in cols]
-        long_df = long_df[cols]
-        wide_df = None
-        wide_err = None
-        try:
-            if 'Frame' not in long_df.columns:
-                wide_err = "Summary sheets have no 'Frame' column"
-            else:
-                frames = sorted(long_df['Frame'].dropna().unique().astype(int).tolist())
-                if not frames:
-                    wide_err = 'Summary sheets have no Frame values'
-                else:
-                    wide_data = {'Frame': frames}
-                    for f in long_df['File'].unique().tolist():
-                        sub = long_df[long_df['File'] == f].drop_duplicates(subset=['Frame'], keep='first').set_index('Frame')
-                        for col in ['Total Cell Area (µm²)', 'Total Cell Area (Relative)', 'Number of Cells']:
-                            if col in sub.columns:
-                                wide_data[f'{f}_{col}'] = sub.reindex(frames)[col].values
-                    wide_df = pd.DataFrame(wide_data)
-        except Exception as e:
-            wide_err = str(e)
-            wide_df = None
-        if wide_df is None or wide_df.empty:
-            if wide_err:
-                _log(f'Combined summary: wide table build failed — {wide_err}\n')
-            return False
-        out_path = Path(output_path)
-        existing_log_lines: list[str] = []
-        if out_path.exists() and match_log is not None:
-            try:
-                wb_existing = load_workbook(output_path, data_only=True)
-                sheet_name_wide = 'Combined Summary (wide)'
-                if sheet_name_wide in wb_existing.sheetnames:
-                    ws_existing = wb_existing[sheet_name_wide]
-                    for r in range(2, min(ws_existing.max_row + 1, 5000)):
-                        val = ws_existing.cell(row=r, column=7).value
-                        if val is None or not str(val).strip():
-                            continue
-                        s = str(val).strip()
-                        if ' -> ' in s or ' with ' in s:
-                            existing_log_lines.append(s)
-                wb_existing.close()
-            except Exception:
-                pass
-        try:
-            from openpyxl import Workbook
-            wb = Workbook()
-            ws = wb.active
-            ws.title = 'Combined Summary (wide)'
-            for row in dataframe_to_rows(wide_df, index=False, header=True):
-                ws.append(row)
-            if match_log is not None:
-                (n_masks, n_tif, lines) = match_log
-                ws['G1'] = 'Logs'
-                ws['G2'] = f'{n_masks} mask(s) and {n_tif} tif file(s) matched'
-                rowi = 3
-                for line in existing_log_lines:
-                    ws.cell(row=rowi, column=7, value=line)
-                    rowi += 1
-                for line in lines:
-                    ws.cell(row=rowi, column=7, value=line)
-                    rowi += 1
-            seen_sheet_names = set(wb.sheetnames)
-            for p in excel_paths:
-                p = Path(p)
-                if not p.exists():
-                    continue
-                per_cell = per_cell_cache.get(p)
-                if per_cell is None or per_cell.empty:
-                    continue
-                base_name = p.stem.replace('_analysis', '').replace('_masks_analysis', '')
-                sheet_name = _sanitize_sheet_name(base_name)
-                if sheet_name in seen_sheet_names:
-                    stem2 = sheet_name[:28] if len(sheet_name) > 28 else sheet_name
-                    n = 1
-                    while f'{stem2}_{n}' in seen_sheet_names:
-                        n += 1
-                    sheet_name = f'{stem2}_{n}'
-                seen_sheet_names.add(sheet_name)
-                new_ws = wb.create_sheet(title=sheet_name)
-                for row in dataframe_to_rows(per_cell, index=False, header=True):
-                    new_ws.append(row)
-            wb.save(output_path)
-        except Exception as e:
-            _log(f'Combined summary: write failed — {e}\n')
-            return False
-        return True
+        from bactomate.gui.analysis_workbook import write_combined_analysis_summary
+        return write_combined_analysis_summary(
+            excel_paths,
+            output_path,
+            match_log=match_log,
+            log_callback=log_callback,
+        )
 
     def _merge_fi_channels_into_one_excel(self) -> None:
         import pandas as pd

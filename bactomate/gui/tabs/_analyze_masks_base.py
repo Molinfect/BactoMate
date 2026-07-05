@@ -428,6 +428,7 @@ class AnalyzeMasksBase(QWidget):
         # Analyze stage relabels this; filtering keeps the historical name.
         self.create_vis = QCheckBox("Create visualization" if is_analyze else "Create filter visualization")
         self.create_vis.setChecked(True)
+        self.create_vis.setVisible(False)
         if is_analyze:
             self.create_vis.setToolTip(
                 "After analysis, save one multi-panel TIFF in _analysis/:\n"
@@ -444,8 +445,9 @@ class AnalyzeMasksBase(QWidget):
             self.create_combined_summary = QCheckBox("Create combined summary")
             self.create_combined_summary.setChecked(True)
             self.create_combined_summary.setToolTip(
-                "After analyzing a folder, combine all Summary sheets into one workbook "
-                "({folder}_combined_summary.xlsx in _analysis/)."
+                "After analyzing a folder, combine all analysis exports into one workbook "
+                "({folder}_combined_summary.xlsx in _analysis/): stacked Summary, Per-Cell, "
+                "and Foci sheets plus a wide time-series pivot."
             )
         self.exclude_border_cb = QCheckBox("Exclude masks at borders")
         self.exclude_border_cb.setChecked(False)
@@ -492,8 +494,9 @@ class AnalyzeMasksBase(QWidget):
                     "Also save CSV — writes *_summary.csv, *_per_cell.csv, and *_foci.csv "
                     "beside each analysis Excel.\n\n"
                     "Create combined summary — after a folder batch, writes "
-                    "{folder}_combined_summary.xlsx in _analysis/ with a wide Summary sheet "
-                    "(one row per frame, columns per sample) plus Per-Cell sheets.",
+                    "{folder}_combined_summary.xlsx in _analysis/ with stacked sheets: "
+                    "Combined Summary (long), Combined Summary (wide), Combined Per-Cell Data, "
+                    "and Combined Foci (when foci analysis was run).",
                     self,
                 ),
                 0,

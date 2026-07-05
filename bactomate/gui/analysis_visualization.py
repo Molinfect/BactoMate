@@ -505,6 +505,12 @@ def write_combined_analysis_visualization(
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tifffile.imwrite(str(output_path), out, photometric="rgb")
+        try:
+            from bactomate.modules.pipeline_outputs import write_png_preview_from_tiff
+
+            write_png_preview_from_tiff(output_path)
+        except Exception:
+            pass
         return True
     except Exception:
         from bactomate.logging_config import get_logger

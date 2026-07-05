@@ -1364,9 +1364,11 @@ class OmniposeSegTab(QWidget):
         self.use_gpu.setChecked(True)
         self.create_overlay = QCheckBox('Create overlay visualization')
         self.create_overlay.setChecked(True)
+        self.create_overlay.setVisible(False)
         overlay_info = create_info_icon("Create overlay TIFF (masks over original). Saved in an 'overlays' subfolder so the main folder has only mask files for Analyze Masks. Disable to speed up when you only need masks.", self)
         self.assign_persistent_cellids = QCheckBox('Assign persistent Cell IDs')
-        self.assign_persistent_cellids.setChecked(False)
+        self.assign_persistent_cellids.setChecked(True)
+        self.assign_persistent_cellids.setVisible(False)
         cellids_info = create_info_icon(
             'Link cells across frames after segmentation and write {stem}_masks_cellids.tif beside the raw mask stack. '
             'Use that file in Analyze Masks and Tracking so the same cell keeps the same ID through the pipeline.',
@@ -2236,7 +2238,7 @@ class OmniposeSegTab(QWidget):
         self.use_gpu.setChecked(True)
         self.cluster.setChecked(False)
         self.create_overlay.setChecked(True)
-        self.assign_persistent_cellids.setChecked(False)
+        self.assign_persistent_cellids.setChecked(True)
         self.detect_foci.setChecked(False)
         self._spotiflow_detection_params = dict(SPOTIFLOW_DETECTION_DEFAULTS)
         self._spotiflow_channel_params = {}
@@ -5118,8 +5120,6 @@ class OmniposeSegTab(QWidget):
                 cmd_args.append('--no-gpu')
             if self.cluster.isChecked():
                 cmd_args.append('--cluster')
-            if not self.create_overlay.isChecked():
-                cmd_args.append('--no-overlay')
             self._last_output_dir = output_dir
             self.parent_window.log_output(f'Starting single file processing: {self.file_path.text()}\n')
             self.parent_window.log_output(f'Output directory: {output_dir}\n')
@@ -5221,8 +5221,6 @@ class OmniposeSegTab(QWidget):
             cmd_args.append('--no-gpu')
         if self.cluster.isChecked():
             cmd_args.append('--cluster')
-        if not self.create_overlay.isChecked():
-            cmd_args.append('--no-overlay')
         self.parent_window.log_output(f'Output directory: {output_dir}\n')
         try:
             self.parent_window.log_output(f'Omnipose params: batch_size={default_batch_size} use_gpu={self.use_gpu.isChecked()} cluster={self.cluster.isChecked()} overlay={self.create_overlay.isChecked()}\n')
@@ -5241,38 +5239,17 @@ class OmniposeSegTab(QWidget):
         self.worker.progress.connect(self._parse_segmentation_progress)
         self.worker.start()
 
-    def _maybe_write_persistent_cellid_masks(self, mask_path: Path) -> None:
-        if not getattr(self, 'assign_persistent_cellids', None) or not self.assign_persistent_cellids.isChecked():
-            return
-        mask_path = Path(mask_path)
-        if not mask_path.is_file():
-            return
-        try:
-            import tifffile
-            from bactomate.scripts.analyze_cell_areas import link_persistent_cell_ids_raw
-            from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
+    def _write_persistent_cellid_masks(self, mask_path: Path, *, phase_path: Path | None = None) -> None:
+        from bactomate.modules.cell_id_linking import write_persistent_cellid_mask_file
 
-            pixel_size = 0.108
-            try:
-                ps = getattr(self.parent_window, 'shared_metadata', {}).get('pixel_size')
-                if ps is not None and float(ps) > 0:
-                    pixel_size = float(ps)
-                else:
-                    cal_ps, _, _, _ = resolve_calibration_for_mask(mask_path)
-                    if cal_ps and float(cal_ps) > 0:
-                        pixel_size = float(cal_ps)
-            except Exception:
-                pass
-            masks = tifffile.imread(str(mask_path))
-            if masks.ndim == 2:
-                masks = masks[np.newaxis, ...]
-            masks_with_cellids = link_persistent_cell_ids_raw(masks, pixel_size=pixel_size)
-            out_path = mask_path.parent / f'{mask_path.stem}_cellids{mask_path.suffix}'
-            tifffile.imwrite(str(out_path), masks_with_cellids)
-            self.parent_window.log_output(f'Persistent Cell IDs: {mask_path.name} → {out_path.name}\n')
-        except Exception as exc:
+        shared = getattr(self.parent_window, 'shared_metadata', None)
+        if write_persistent_cellid_mask_file(
+            mask_path,
+            shared_metadata=shared,
+            phase_path=phase_path,
+            log=self.parent_window.log_output,
+        ) is None:
             get_logger().debug('Persistent Cell ID assignment failed', exc_info=True)
-            self.parent_window.log_output(f'[Cell IDs] Failed for {mask_path.name}: {exc}\n')
 
     def _on_segmentation_file_finished(self, success, message, script_path):
         """Handle completion of a single file in folder mode"""
@@ -5285,7 +5262,7 @@ class OmniposeSegTab(QWidget):
                 base_dir = Path(tiff_file).parent
                 output_dir = base_dir / self._get_omnipose_segmentation_folder_name() if base_dir.name.startswith('Tif_') else base_dir / f'{Path(tiff_file).stem}_omnipose_segmentation'
                 mask_guess = output_dir / f'{Path(tiff_file).stem}_masks.tif'
-                self._maybe_write_persistent_cellid_masks(mask_guess)
+                self._write_persistent_cellid_masks(mask_guess, phase_path=Path(tiff_file))
             except Exception:
                 get_logger().debug('Folder-mode persistent Cell ID export failed', exc_info=True)
             try:
@@ -5435,7 +5412,7 @@ class OmniposeSegTab(QWidget):
                 if not is_folder and getattr(self, '_last_output_dir', None):
                     in_path = Path(self.file_path.text())
                     mask_guess = Path(self._last_output_dir) / f'{in_path.stem}_masks.tif'
-                    self._maybe_write_persistent_cellid_masks(mask_guess)
+                    self._write_persistent_cellid_masks(mask_guess, phase_path=in_path)
             except Exception:
                 get_logger().debug('Persistent Cell ID export failed', exc_info=True)
             try:

@@ -49,7 +49,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.7.6
+python main.py --version    # BactoMate 2.8.0
 python main.py --smoke-test # Smoke test OK
 ```
 

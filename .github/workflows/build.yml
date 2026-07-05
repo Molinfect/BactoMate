@@ -3,11 +3,11 @@ name: BactoMate CI (source install)
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags:
       - 'v*'
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   smoke-macos:
