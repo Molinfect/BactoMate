@@ -1,0 +1,66 @@
+# BactoMate build scripts
+
+Packaging helpers for **distributable builds** after a normal source install. Scripts are split by platform — there is no single cross-platform build.
+
+## Quick reference
+
+| Platform | What you get | Build (from project root) |
+|----------|--------------|---------------------------|
+| **macOS** | `BactoMate.app` + optional `.dmg` | `./build/macos/build_app_bundle.sh` then `./build/macos/create_dmg.sh` |
+| **Windows** | Portable folder `dist\BactoMate\` + optional zip | `build\windows\build_windows_bundle.bat` then `build\windows\create_windows_zip.bat` |
+
+**Prerequisite:** run the platform install script first (`setup/macos/install.sh` or `setup\windows\install.bat`).
+
+Legacy paths at `build/*.sh` and `build/*.bat` are stubs that forward to the subfolders below.
+
+## Layout
+
+```
+build/
+  README.md           # This file
+  macos/              # macOS .app and DMG (run on a Mac only)
+  windows/            # Windows portable bundle + zip (run on Windows only)
+```
+
+### `build/macos/` — macOS only
+
+| File | Purpose |
+|------|---------|
+| `build_app_bundle.sh` | Build `BactoMate.app` from source + venv |
+| `create_dmg.sh` | Create `dist/BactoMate.dmg` |
+| `create_icons.sh` | Generate `BactoMate.icns` for the app |
+| `macos_launcher.c` | Native launcher binary for the `.app` |
+
+These scripts **cannot** run on Windows or Linux.
+
+### `build/windows/` — Windows only
+
+| File | Purpose |
+|------|---------|
+| `build_windows_bundle.bat` | Entry point: builds `dist\BactoMate\` |
+| `build_windows_bundle.py` | Copies project, venv, and Python 3.11 runtime |
+| `create_windows_zip.bat` | Zips the bundle for distribution |
+
+The portable bundle includes its own Python runtime — target PCs do **not** need a separate Python install.
+
+These scripts **cannot** run on macOS.
+
+## Typical workflows
+
+### macOS (on a Mac)
+
+```bash
+./setup/macos/install.sh
+./build/macos/build_app_bundle.sh
+./build/macos/create_dmg.sh
+```
+
+### Windows (on a Windows PC)
+
+```bat
+setup\windows\install.bat
+build\windows\build_windows_bundle.bat
+build\windows\create_windows_zip.bat
+```
+
+Copy `dist\BactoMate-win64.zip` to lab machines; launch with `BactoMate.bat` inside the extracted folder.

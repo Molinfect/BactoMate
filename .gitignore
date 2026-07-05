@@ -30,9 +30,9 @@ ENV/
 build/*
 !build/*.sh
 !build/*.bat
-!build/*.spec
-!build/build_windows_bundle.py
-!build/macos_launcher.c
+!build/README.md
+!build/macos/**
+!build/windows/**
 
 # Nuitka
 *.build/

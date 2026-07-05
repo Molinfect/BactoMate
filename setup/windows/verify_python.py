@@ -37,7 +37,7 @@ def main() -> None:
         _fail(
             f"Python 3.11 is required (found {sys.version_info.major}.{sys.version_info.minor}).\n"
             "  Fix: Install Python 3.11 from https://www.python.org/downloads/\n"
-            "  Then run: py -3.11 setup\\install_windows.bat"
+            "  Then run: py -3.11 setup\\windows\\install.bat"
         )
 
     bits = struct.calcsize("P") * 8

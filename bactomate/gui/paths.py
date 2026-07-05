@@ -2,6 +2,8 @@
 Single source of truth for app root, logs dir, and script paths.
 Works in development (repo root), frozen .app bundle, and pip-installed layout.
 """
+from __future__ import annotations
+
 import os
 import sys
 import shutil
@@ -166,19 +168,42 @@ def get_subprocess_pythonpath_root() -> str:
     return str(Path(_pkg.__file__).resolve().parent.parent)
 
 
+def _project_logs_dir_writable() -> Path | None:
+    """Return ``<app_root>/Logs`` when the directory can be created and written."""
+    app_logs = get_app_root() / "Logs"
+    try:
+        app_logs.mkdir(parents=True, exist_ok=True)
+        if os.access(app_logs, os.W_OK):
+            return app_logs
+    except (OSError, PermissionError):
+        pass
+    return None
+
+
 def get_logs_dir() -> Path:
-    """Directory for session logs (*_session.json) and GUI log (bactomate_gui_*.log). When running from .app, use Logs inside the app if writable."""
+    """Directory for session logs (*_session.json) and GUI log (bactomate_gui_*.log).
+
+    Prefer ``<app_root>/Logs`` when writable. On macOS app bundles and Windows source
+    installs in protected folders (e.g. Program Files), fall back to the user data dir
+    (Application Support / %APPDATA%).
+    """
     if _is_installed():
         return _get_user_data_logs_dir()
     if sys.platform == "darwin" and _running_from_app_bundle():
-        app_logs = get_app_root() / "Logs"
+        writable = _project_logs_dir_writable()
+        if writable is not None:
+            return writable
+        return _get_user_data_logs_dir()
+    if sys.platform == "win32":
+        writable = _project_logs_dir_writable()
+        if writable is not None:
+            return writable
+        user_logs = _get_user_data_logs_dir()
         try:
-            app_logs.mkdir(parents=True, exist_ok=True)
-            if os.access(app_logs, os.W_OK):
-                return app_logs
+            user_logs.mkdir(parents=True, exist_ok=True)
         except (OSError, PermissionError):
             pass
-        return _get_user_data_logs_dir()
+        return user_logs
     return get_app_root() / "Logs"
 
 

@@ -2,7 +2,7 @@
 
 Integrated microscopy analysis platform: file conversion, segmentation (Omnipose, U-Net, Cellpose-SAM), mask analysis, tracking, **lineage QC & export**, training, and reporting.
 
-**v2.5 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG packaging can be built locally from the installed `venv`; Windows portable folder + zip via `build\build_windows_bundle.bat`.
+**v2.5 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG: `build/macos/` (Mac only). Windows portable folder: `build/windows/` (Windows only).
 
 ## Quick Install
 
@@ -13,14 +13,16 @@ For most users, open a terminal window and run the commands for your operating s
 ```bash
 git clone https://github.com/poppphil/BactoMate.git
 cd BactoMate
-./setup/install_mac.sh
+./setup/macos/install.sh
 ./launch_gui.sh
 ```
+
+(`./setup/install_mac.sh` is a stub to the same installer.)
 
 If macOS says the script is not executable, run:
 
 ```bash
-chmod +x setup/install_mac.sh setup/setup_fresh_env.sh launch_gui.sh
+chmod +x setup/macos/*.sh launch_gui.sh
 ```
 
 ### Windows
@@ -30,9 +32,13 @@ Open Command Prompt, then run:
 ```bat
 git clone https://github.com/poppphil/BactoMate.git
 cd BactoMate
-setup\install_windows.bat
+setup\windows\install.bat
 launch_windows.bat
 ```
+
+(`setup\install_windows.bat` is a stub to the same installer.)
+
+**Install under your user folder** (e.g. `C:\Users\<you>\BactoMate`), not `Program Files`. Do not run as Administrator.
 
 Or download the repository as a ZIP from GitHub, extract it, open a terminal in the extracted folder, and start from the install command for your OS.
 
@@ -41,15 +47,15 @@ Or download the repository as a ZIP from GitHub, extract it, open a terminal in 
 **Requires:** macOS 10.15+, Python 3.11, Terminal.
 
 ```bash
-chmod +x setup/install_mac.sh setup/setup_fresh_env.sh launch_gui.sh
-./setup/install_mac.sh
+chmod +x setup/macos/*.sh launch_gui.sh
+./setup/macos/install.sh
 ```
 
 Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.8.0
+python main.py --version    # BactoMate 2.8.1
 python main.py --smoke-test # Smoke test OK
 ```
 
@@ -62,8 +68,8 @@ Launch:
 Build a macOS app/DMG after installation:
 
 ```bash
-./build/build_app_bundle.sh
-./build/create_dmg.sh
+./build/macos/build_app_bundle.sh
+./build/macos/create_dmg.sh
 ```
 
 ## Windows — install and launch
@@ -73,7 +79,7 @@ Build a macOS app/DMG after installation:
 Open Command Prompt in the project folder:
 
 ```bat
-setup\install_windows.bat
+setup\windows\install.bat
 ```
 
 Then double-click `launch_windows.bat`, run it from Command Prompt, or launch the installed console command:
@@ -88,8 +94,8 @@ Full Windows troubleshooting: **[docs/INSTALL_AND_LAUNCH_windows.md](docs/INSTAL
 Build a portable Windows folder (includes Python runtime, no install on target PCs):
 
 ```bat
-build\build_windows_bundle.bat
-build\create_windows_zip.bat
+build\windows\build_windows_bundle.bat
+build\windows\create_windows_zip.bat
 ```
 
 ## Documentation
@@ -106,7 +112,7 @@ build\create_windows_zip.bat
 
 | Issue | Fix |
 |-------|-----|
-| macOS Qt / PyQt6 errors | Re-run `./setup/install_mac.sh` or `./setup/repair_pyqt6.sh` |
+| macOS Qt / PyQt6 errors | Re-run `./setup/macos/install.sh` or `./setup/macos/repair_pyqt6.sh` |
 | Windows DLL / torch errors | Install VC++ Redistributable x64, use Python 3.11 64-bit, recreate `venv` |
 | Segmentation Cellpose errors | `python setup/apply_all_patches.py` (with venv active) |
 | GPU optional | CPU works; CUDA PyTorch is offered during install |

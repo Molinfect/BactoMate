@@ -1,4 +1,4 @@
-# Windows-only pip constraints (used by setup\install_windows.bat).
+# Windows-only pip constraints (used by setup\windows\install.bat).
 # dbscan 1.0.0 is sdist-only on Windows and requires MSVC Build Tools to compile.
 # 0.0.10 ships prebuilt win_amd64 wheels and satisfies omnipose's dbscan dependency.
 dbscan==0.0.10

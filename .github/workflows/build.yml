@@ -59,11 +59,11 @@ jobs:
       - name: Install dependencies
         shell: cmd
         run: |
-          python setup\verify_python_windows.py
+          python setup\windows\verify_python.py
           python -m venv venv
           venv\Scripts\python.exe -m pip install "pip>=24.2,<26"
           venv\Scripts\python.exe -m pip install "dbscan==0.0.10" --only-binary dbscan
-          venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\constraints_windows.txt
+          venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\windows\constraints.txt
           venv\Scripts\python.exe -m pip install -e .
           venv\Scripts\python.exe setup\apply_all_patches.py
 
