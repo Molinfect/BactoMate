@@ -2,7 +2,7 @@
 Exit 0 when torch, torchvision, and torchaudio are mutually compatible.
 Exit 1 when a reinstall is needed (mixed CUDA builds, or torchvision ops fail to load).
 
-Used by setup/install_windows.bat step 6 before skipping the CUDA wheel install.
+Used by setup/windows/install.bat step 6 before skipping the CUDA wheel install.
 """
 from __future__ import annotations
 

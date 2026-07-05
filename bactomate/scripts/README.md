@@ -57,7 +57,7 @@ Used from the Segmentation tab (“Check pipeline”) or for manual troubleshoot
 | Path | Purpose |
 |------|---------|
 | `setup/apply_all_patches.py` | Apply Omnipose/Cellpose site-package patches (run by launchers) |
-| `setup/install_mac.sh` / `setup/install_windows.bat` | Create venv and install dependencies |
+| `setup/macos/install.sh` / `setup/windows/install.bat` | Create venv and install dependencies |
 | `launch_gui.sh` / `launch_windows.bat` | Start the GUI |
 
 See [docs/README.md](../../docs/README.md) for install, launch, and bundle build instructions.

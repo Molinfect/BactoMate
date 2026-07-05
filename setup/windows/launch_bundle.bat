@@ -12,7 +12,7 @@ if not exist "%RUNTIME_PY%" (
     exit /b 1
 )
 
-"%RUNTIME_PY%" "%ROOT%setup\patch_bundle_pyvenv.py" "%ROOT%" >nul 2>&1
+"%RUNTIME_PY%" "%ROOT%setup\windows\patch_bundle_pyvenv.py" "%ROOT%" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Failed to configure bundled virtual environment.
     pause
@@ -32,7 +32,7 @@ set "PYTHONPATH="
 set "PYTHONNOUSERSITE=1"
 set "VIRTUAL_ENV=%ROOT%venv"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%setup\minimize_console.ps1" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%setup\windows\minimize_console.ps1" >nul 2>&1
 "%PYEXE%" -m bactomate %*
 set "EC=%ERRORLEVEL%"
 if %EC% neq 0 (

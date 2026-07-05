@@ -5,8 +5,10 @@
 # never need to run on user machines.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# When run from setup/, venv is in project root (parent of setup/)
-if [ -d "$SCRIPT_DIR/venv" ]; then
+# setup/macos/ -> project root is parent of setup/
+if [ -d "$SCRIPT_DIR/../../venv" ]; then
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+elif [ -d "$SCRIPT_DIR/venv" ]; then
     PROJECT_ROOT="$SCRIPT_DIR"
 else
     PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

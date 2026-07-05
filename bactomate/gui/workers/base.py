@@ -322,7 +322,7 @@ class WorkerThread(QThread):
                     return
                 msg = (
                     "This job cannot run in the packaged app (no standalone Python interpreter). "
-                    "Run BactoMate from source (see setup\\install_windows.bat) or use a feature supported in-process."
+                    "Run BactoMate from source (see setup\\windows\\install.bat) or use a feature supported in-process."
                 )
                 self.finished.emit(False, msg)
                 return

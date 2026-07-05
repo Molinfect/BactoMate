@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parent.parent.parent
 
 
 def _query_base_prefix(venv_python: Path) -> Path:
@@ -72,7 +72,7 @@ def _copy_python_runtime(base_prefix: Path, runtime_dir: Path) -> None:
         raise SystemExit(
             "Error: venv was created from Conda Python. Rebuild with python.org 3.11:\n"
             "  rmdir /s /q venv\n"
-            "  setup\\install_windows.bat"
+            "  setup\\windows\\install.bat"
         )
     if runtime_dir.exists():
         shutil.rmtree(runtime_dir)
@@ -113,7 +113,7 @@ def _rewrite_pyvenv_cfg(pyvenv_cfg: Path, runtime_dir: Path) -> None:
 
 def _write_bundle_launcher(dist: Path) -> None:
     launcher = dist / "BactoMate.bat"
-    shutil.copy2(_project_root() / "setup" / "launch_windows_bundle.bat", launcher)
+    shutil.copy2(_project_root() / "setup" / "windows" / "launch_bundle.bat", launcher)
 
 
 def main() -> int:
@@ -124,7 +124,7 @@ def main() -> int:
     root = _project_root()
     venv_python = root / "venv" / "Scripts" / "python.exe"
     if not venv_python.is_file():
-        print("Error: venv not found. Run setup\\install_windows.bat first.", file=sys.stderr)
+        print("Error: venv not found. Run setup\\windows\\install.bat first.", file=sys.stderr)
         return 1
 
     dist = root / "dist" / "BactoMate"
@@ -150,7 +150,7 @@ def main() -> int:
     _rewrite_pyvenv_cfg(pyvenv_cfg, runtime_dir)
 
     _write_bundle_launcher(dist)
-    shutil.copy2(root / "setup" / "launch_windows_bundle.bat", dist / "launch_windows.bat")
+    shutil.copy2(root / "setup" / "windows" / "launch_bundle.bat", dist / "launch_windows.bat")
 
     bundle_py = dist / "venv" / "Scripts" / "python.exe"
     print("Verifying bundle (--version) ...")
@@ -161,7 +161,7 @@ def main() -> int:
     print()
     print(f"Created: {dist}")
     print("Launch: double-click BactoMate.bat or launch_windows.bat inside the folder.")
-    print("Zip for distribution: build\\create_windows_zip.bat")
+    print("Zip for distribution: build\\windows\\create_windows_zip.bat")
     return 0
 
 

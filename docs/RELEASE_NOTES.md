@@ -4,6 +4,17 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.1 (2026-07-05)
+
+### Windows logs, setup/build layout, and install docs
+
+- **Windows logs:** when the project `Logs\` folder is not writable (e.g. install under `Program Files`), logs automatically go to `%APPDATA%\BactoMate\Logs`.
+- **Setup reorganized:** `setup/windows/` (install, launch, constraints) and `setup/macos/` (install, launch, Qt repair); shared `apply_all_patches.py` stays at `setup/`. Legacy stub paths (`setup\install_windows.bat`, etc.) still work.
+- **Build reorganized:** `build/windows/` (portable bundle) and `build/macos/` (`.app`/DMG) with README files clarifying platform scope.
+- **Docs:** Windows install guide updated with install location, logs path, and admin/drag-drop troubleshooting.
+
+---
+
 ## v2.8.0 (2026-07-05)
 
 ### Spatial metrics, pipeline QC outputs, and combined summary workbooks

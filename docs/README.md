@@ -26,14 +26,14 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 ```bash
 git clone https://github.com/poppphil/BactoMate.git
 cd BactoMate
-./setup/install_mac.sh
+./setup/macos/install.sh
 ./launch_gui.sh
 ```
 
 If macOS says the scripts are not executable:
 
 ```bash
-chmod +x setup/install_mac.sh setup/setup_fresh_env.sh launch_gui.sh
+chmod +x setup/macos/*.sh launch_gui.sh
 ```
 
 **Windows:**
@@ -41,17 +41,17 @@ chmod +x setup/install_mac.sh setup/setup_fresh_env.sh launch_gui.sh
 ```bat
 git clone https://github.com/poppphil/BactoMate.git
 cd BactoMate
-setup\install_windows.bat
+setup\windows\install.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.8.0`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.8.1`) and `python main.py --smoke-test`.
 
 macOS app/DMG packaging is restored for local builds:
 
 ```bash
-./build/build_app_bundle.sh
-./build/create_dmg.sh
+./build/macos/build_app_bundle.sh
+./build/macos/create_dmg.sh
 ```
 
 The root **[README](../README.md)** has copy-paste commands. Windows details: **[INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)**.
@@ -109,13 +109,13 @@ python -m bactomate.scripts.batch_process_folder /path/to/folder \
 
 ```bash
 chmod +x setup/install_mac.sh launch_gui.sh
-./setup/install_mac.sh
+./setup/macos/install.sh
 ```
 
 **Windows** (Command Prompt, project root):
 
 ```bat
-setup\install_windows.bat
+setup\windows\install.bat
 ```
 
 Both scripts create `venv/`, install requirements, run `pip install -e .`, apply patches, and run a smoke test.
@@ -139,7 +139,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### macOS: DMG install
 
-> **v2.5 note:** macOS DMGs can be built locally with `./build/build_app_bundle.sh` followed by `./build/create_dmg.sh`. Windows portable folders: `build\build_windows_bundle.bat` then `build\create_windows_zip.bat` (see [INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)).
+> **v2.5 note:** macOS DMGs: `./build/macos/build_app_bundle.sh` then `./build/macos/create_dmg.sh`. Windows portable folders: `build\windows\build_windows_bundle.bat` then `build\windows\create_windows_zip.bat` (see [INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)).
 
 Use this section when a **`BactoMate.dmg`** binary is available (no project folder, no Terminal, no Python install).
 
@@ -158,7 +158,8 @@ The same content as step 1’s text file ships **inside** the DMG so recipients 
 
 - **`bactomate/`** — Main package: **`gui/`** (tabs, workers, styles), **`modules/`** (bioio_reader, foci_utils, tiff_metadata, validation), **`scripts/`** (CLI entry points: analyze_cell_areas, batch_process_*, convert_nd2_to_tif, check_tiff_format, etc.).
 - **`main.py`** — GUI entry point (also `python -m bactomate` via pyproject.toml).
-- **`setup/`** — Environment and launch: `setup_fresh_env.sh`, `launch_gui.sh`, `launch_gui_bundle_strict.sh`, patches.
+- **`setup/`** — Shared `apply_all_patches.py`; **`setup/macos/`** install/launch; **`setup/windows/`** install/launch. See [setup/README.md](../setup/README.md).
+- **`build/`** — **`build/macos/`** (`.app`/DMG, Mac only) and **`build/windows/`** (portable bundle, Windows only). See [build/README.md](../build/README.md).
 - **`build/`** — App icon and bundle: `create_icons.sh`, `build_app_bundle.sh`.
 - **`docs/`** — README and User Manual.
 
@@ -238,14 +239,14 @@ When analyzing a **folder** with multiple FI channels, the merged Excel includes
 
 BactoMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka) and a distributable DMG, or a Windows portable folder with embedded Python 3.11.
 
-1. **Setup:** `./setup/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
+1. **Setup:** `./setup/macos/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
 2. **Icon:** Optionally provide `img/logo2.png`, then run `./build/create_icons.sh`. If no logo is present, the script generates a simple fallback icon.
 3. **Build:** `./build/build_app_bundle.sh` → `BactoMate.app` (copies source + `venv`, bundles Python.framework when available, verifies `--version` and `--smoke-test`)
 4. **DMG:** `./build/create_dmg.sh` → `dist/BactoMate.dmg` (app + Applications symlink + **00 - READ THIS FIRST (macOS install).txt** + **Open BactoMate.command** for first-time open on new Macs)
 
-**Windows bundle** (after `setup\install_windows.bat` on a build PC):
+**Windows bundle** (after `setup\windows\install.bat` on a build PC):
 
-1. **Build:** `build\build_windows_bundle.bat` → `dist\BactoMate\` (source + `venv` + `runtime\Python311\`)
+1. **Build:** `build\windows\build_windows_bundle.bat` → `dist\BactoMate\` (source + `venv` + `runtime\Python311\`)
 2. **Zip:** `build\create_windows_zip.bat` → `dist\BactoMate-win64.zip`
 3. Recipients launch **`BactoMate.bat`** — no separate Python install required.
 
@@ -269,9 +270,9 @@ For structure and cross-machine notes, see the **[User Manual](BACTOMATE_USER_MA
 - **Dock opens Python.app or wrong app after pinning:** The app uses a **native launcher** so the main process is BactoMate, not Python. After rebuilding with `./build/build_app_bundle.sh`: remove any old BactoMate/Python icon from the Dock, then **pin BactoMate.app** by dragging it from Finder onto the Dock. "Keep in Dock" from the running app should now pin BactoMate correctly. If you still see Python.app opening: rebuild the app and re-pin from Finder.
 - **Two Dock icons:** With the native launcher you should see only one BactoMate icon. If you still see two, remove the extra from the Dock and re-pin BactoMate.app from Finder.
 - **"App is damaged" on another Mac:** macOS shows this when the app is not signed with a Developer ID (we use ad‑hoc signing). No payment needed: the DMG includes **Open BactoMate.command**. User drags BactoMate to Applications, then double‑clicks that script once; it clears quarantine and opens the app. After that, opening BactoMate.app works. Alternatively: Right‑click BactoMate.app → Open (first time), or in Terminal: `xattr -cr /Applications/BactoMate.app`.
-- **PyQt6 (cocoa plugin):** `./setup/repair_pyqt6.sh`
-- **GUI won't start:** `source venv/bin/activate`, `pip show PyQt6`, `./setup/repair_pyqt6.sh`, or `./setup/setup_fresh_env.sh`
-- **Segmentation fault:** If the GUI crashes immediately after opening, try recreating the environment: `./setup/setup_fresh_env.sh`. If the crash happens when using a specific file type (e.g. CZI), the issue may be in that code path—report with file type and steps.
+- **PyQt6 (cocoa plugin):** `./setup/macos/repair_pyqt6.sh`
+- **GUI won't start:** `source venv/bin/activate`, `pip show PyQt6`, `./setup/macos/repair_pyqt6.sh`, or `./setup/macos/setup_fresh_env.sh`
+- **Segmentation fault:** If the GUI crashes immediately after opening, try recreating the environment: `./setup/macos/setup_fresh_env.sh`. If the crash happens when using a specific file type (e.g. CZI), the issue may be in that code path—report with file type and steps.
 - **Processing / OOM:** Reduce batch size or use `--no-gpu`. Check Status & Log in the GUI.
 - **Models:** Stored under `~/.cellpose/models`; if corrupted, `./setup/clear_models.sh`
 
@@ -302,7 +303,7 @@ Quick list:
 - `python -m bactomate.scripts.convert_nd2_to_tif` — ND2/LIF/CZI → TIFF
 - `python -m bactomate.scripts.check_tiff_format` — Verify/reshape TIFF
 - `setup/apply_all_patches.py` — Omnipose/cellpose patches
-- `setup/repair_pyqt6.sh`, `setup/setup_fresh_env.sh`, `setup/install_cuda_pytorch.sh`, `setup/clear_models.sh`
+- `setup/macos/repair_pyqt6.sh`, `setup/macos/setup_fresh_env.sh`, `setup/macos/install_cuda_pytorch.sh`, `setup/macos/clear_models.sh`
 - `build/build_app_bundle.sh`, `build/create_dmg.sh`, `build/create_icons.sh`
 
 **Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Remaining engineering tasks: **[PLAN.md](PLAN.md)**.

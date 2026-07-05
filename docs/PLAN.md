@@ -1,6 +1,6 @@
 # BactoMate — project plan
 
-**Status: closed** (2026-07-05, through **v2.8.0**)
+**Status: closed** (2026-07-05, through **v2.8.1**)
 
 This plan tracked follow-up work after the v2.7.7–v2.7.9 refactor wave. All items that were scoped for this release cycle are **done**. What remains below is optional maintenance backlog — not blocking releases or daily use.
 

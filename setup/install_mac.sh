@@ -1,5 +1,5 @@
 #!/bin/bash
-# BactoMate macOS one-shot install. Run from anywhere inside the repo.
+# Back-compat stub — use setup/macos/install.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec bash "$SCRIPT_DIR/setup_fresh_env.sh"
+exec bash "$SCRIPT_DIR/macos/install.sh"

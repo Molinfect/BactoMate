@@ -37,3 +37,35 @@ def test_development_model_dirs_stay_repo_local(monkeypatch, tmp_path):
 
     assert paths.get_omnipose_user_models_dir() == app_root / "omnipose_user_models"
     assert paths.get_omnipose_pretrained_cache_dir() == app_root / "omnipose_pretrained"
+
+
+def test_windows_logs_fallback_to_appdata_when_project_logs_not_writable(monkeypatch, tmp_path):
+    from bactomate.gui import paths
+
+    app_root = tmp_path / "BactoMate"
+    app_root.mkdir()
+    user_logs = tmp_path / "AppData" / "BactoMate" / "Logs"
+
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+    monkeypatch.setattr(paths, "_is_installed", lambda: False)
+    monkeypatch.setattr(paths, "_is_frozen", lambda: False)
+    monkeypatch.setattr(paths, "get_app_root", lambda: app_root)
+    monkeypatch.setattr(paths, "_get_user_data_logs_dir", lambda: user_logs)
+    monkeypatch.setattr(paths, "_project_logs_dir_writable", lambda: None)
+
+    assert paths.get_logs_dir() == user_logs
+
+
+def test_windows_logs_use_project_folder_when_writable(monkeypatch, tmp_path):
+    from bactomate.gui import paths
+
+    app_root = tmp_path / "BactoMate"
+    project_logs = app_root / "Logs"
+
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+    monkeypatch.setattr(paths, "_is_installed", lambda: False)
+    monkeypatch.setattr(paths, "_is_frozen", lambda: False)
+    monkeypatch.setattr(paths, "get_app_root", lambda: app_root)
+    monkeypatch.setattr(paths, "_project_logs_dir_writable", lambda: project_logs)
+
+    assert paths.get_logs_dir() == project_logs
