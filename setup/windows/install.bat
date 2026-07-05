@@ -3,16 +3,57 @@ setlocal EnableDelayedExpansion
 :: BactoMate Windows one-shot install. Strict: python.org 3.11 x64 only; all pip via venv\Scripts\python.exe.
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 set "WIN_DIR=%~dp0"
-set "ROOT=%WIN_DIR%..\.."
-cd /d "%ROOT%"
-set "ROOT=%CD%"
-if not exist "requirements.txt" (
-    echo [ERROR] requirements.txt not found. Run from the BactoMate project root.
-    echo Current dir: %CD%
-    echo Windows setup dir: %WIN_DIR%
+pushd "%WIN_DIR%..\.."
+if errorlevel 1 (
+    echo [ERROR] Could not resolve the BactoMate project root from:
+    echo   %WIN_DIR%
+    echo Extract the full ZIP and run setup\windows\install.bat or install_windows.bat at the project root.
     pause
     exit /b 1
 )
+set "ROOT=%CD%"
+popd
+cd /d "%ROOT%"
+if not exist "%ROOT%\requirements.txt" (
+    echo [ERROR] requirements.txt not found in the project root.
+    echo Expected root: %ROOT%
+    echo Setup script: %WIN_DIR%
+    echo.
+    echo Extract the full GitHub ZIP ^(folder must contain main.py, requirements.txt, setup\^).
+    pause
+    exit /b 1
+)
+
+echo.%ROOT%| findstr /i /c:"\Program Files" /c:"\Program Files (x86)" /c:"\Windows\" >nul 2>&1
+if not errorlevel 1 (
+    echo [ERROR] Do not install under Program Files or Windows.
+    echo Use a user-writable folder, e.g. C:\Users\%USERNAME%\BactoMate
+    echo Current: %ROOT%
+    pause
+    exit /b 1
+)
+
+if not exist "%ROOT%\Logs" mkdir "%ROOT%\Logs" 2>nul
+set "INSTALL_LOG=%ROOT%\Logs\install_last.log"
+echo ========== BactoMate install %DATE% %TIME% ========== > "%INSTALL_LOG%"
+echo ROOT=%ROOT%>> "%INSTALL_LOG%"
+
+:: ZIP downloads are often marked "blocked" outside Desktop; unblock scripts before pip/venv.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Get-ChildItem -LiteralPath '%ROOT%' -Recurse -Include *.bat,*.cmd,*.ps1,*.py -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue" ^
+  >nul 2>&1
+
+set "WRITE_TEST=%ROOT%\Logs\.install_write_test"
+echo test>"%WRITE_TEST%" 2>nul
+if not exist "%WRITE_TEST%" (
+    echo [ERROR] Cannot write to the install folder:
+    echo   %ROOT%
+    echo Choose a folder you own ^(Documents, D:\LabTools, etc.^), not Program Files or a read-only share.
+    echo Log: %INSTALL_LOG%
+    pause
+    exit /b 1
+)
+del /q "%WRITE_TEST%" >nul 2>&1
 
 :: Ignore stray Python env vars from Conda/Homebrew/system during install.
 set "PYTHONHOME="
@@ -40,8 +81,14 @@ if errorlevel 1 (
     exit /b 1
 )
 if exist "%HOST_PY_ERR%" del /q "%HOST_PY_ERR%" >nul 2>&1
-set /p HOST_PY=<"%TEMP%\bactomate_host_py.txt"
+set "HOST_PY="
+for /f "usebackq delims=" %%I in ("%TEMP%\bactomate_host_py.txt") do set "HOST_PY=%%I"
 del /q "%TEMP%\bactomate_host_py.txt" >nul 2>&1
+if not defined HOST_PY (
+    echo [BREAK] Could not read Python 3.11 path from verify script.
+    pause
+    exit /b 1
+)
 if not exist "!HOST_PY!" (
     echo [BREAK] Could not resolve Python 3.11 executable.
     pause
@@ -246,6 +293,7 @@ if exist "%USERPROFILE%\Desktop\BactoMate.lnk" (
 echo.
 echo ========== Install complete ==========
 echo BactoMate uses only: %PYEXE%
+echo Install log: %INSTALL_LOG%
 echo Run by double-clicking BactoMate.lnk or launch_windows.bat:
 echo   %ROOT%\BactoMate.lnk
 echo   %ROOT%\launch_windows.bat

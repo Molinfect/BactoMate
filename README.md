@@ -32,7 +32,7 @@ Open Command Prompt, then run:
 ```bat
 git clone https://github.com/poppphil/BactoMate.git
 cd BactoMate
-setup\windows\install.bat
+install_windows.bat
 launch_windows.bat
 ```
 
@@ -55,7 +55,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.8.2
+python main.py --version    # BactoMate 2.8.3
 python main.py --smoke-test # Smoke test OK
 ```
 

@@ -6,7 +6,7 @@ Platform-specific install and launch helpers. **Shared** scripts live at the top
 
 | Platform | Install | Launch |
 |----------|---------|--------|
-| **Windows** | `setup\windows\install.bat` | `launch_windows.bat` (created at project root by the installer) |
+| **Windows** | `install_windows.bat` or `setup\windows\install.bat` | `launch_windows.bat` (created at project root by the installer) |
 | **macOS** | `./setup/macos/install.sh` | `./launch_gui.sh` |
 
 Legacy paths (`setup\install_windows.bat`, `./setup/install_mac.sh`, etc.) are thin stubs that forward to the folders below.
