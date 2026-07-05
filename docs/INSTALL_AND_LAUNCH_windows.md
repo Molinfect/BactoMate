@@ -16,7 +16,9 @@ Windows-specific scripts live in **`setup\windows\`**. See also [setup/README.md
 
 You do **not** need **Microsoft C++ Build Tools** for a normal install. BactoMate pins `dbscan==0.0.10` on Windows (prebuilt wheel) so Omnipose does not compile native code from source.
 
-**Install location:** extract or clone to a **user-writable** folder, e.g. `C:\Users\<you>\BactoMate`. Do **not** install under `Program Files` — the venv, logs, and outputs need write access. **Never** run BactoMate as Administrator (breaks drag-and-drop).
+**Install location:** extract or clone to a **user-writable** folder, e.g. `C:\Users\<you>\BactoMate` or `D:\LabTools\BactoMate`. Do **not** install under `Program Files` — the venv, logs, and outputs need write access. **Never** run BactoMate as Administrator (breaks drag-and-drop).
+
+Extracting the GitHub ZIP to **Downloads** is fine, but Windows may **block** scripts until unblocked — the installer now runs `Unblock-File` automatically. If double-click still does nothing, right-click the ZIP → **Properties** → **Unblock**, then extract again.
 
 Optional for GPU:
 
@@ -27,10 +29,16 @@ Optional for GPU:
 Open **Command Prompt** or **PowerShell**, `cd` to the project root (folder containing `main.py`), then:
 
 ```bat
+install_windows.bat
+```
+
+or:
+
+```bat
 setup\windows\install.bat
 ```
 
-(`setup\install_windows.bat` is a stub that forwards to the same script.)
+(`setup\install_windows.bat` is a stub to the same script.)
 
 The script will:
 
@@ -63,7 +71,7 @@ venv\Scripts\python.exe main.py --version
 venv\Scripts\python.exe main.py --smoke-test
 ```
 
-You should see `BactoMate 2.8.2` and `Smoke test OK`.
+You should see `BactoMate 2.8.3` and `Smoke test OK`.
 
 ## Logs
 
@@ -88,6 +96,17 @@ This creates `dist\BactoMate\` with project files, `venv\`, and a copied **Pytho
 Rebuild the bundle after upgrading dependencies or BactoMate version.
 
 ## Troubleshooting
+
+### Installer window closes immediately / nothing happens
+
+1. Run from Command Prompt so output stays visible:
+   ```bat
+   cd C:\path\to\BactoMate
+   install_windows.bat
+   ```
+2. Check `Logs\install_last.log` in the project folder for the resolved path and errors.
+3. Do not install under `Program Files` or a read-only network share.
+4. Unblock the ZIP (Properties → Unblock) before extracting, especially from Downloads.
 
 ### Drag-and-drop does nothing / UI feels broken
 

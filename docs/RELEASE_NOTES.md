@@ -4,6 +4,16 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.3 (2026-07-05)
+
+### Windows installer works outside Desktop
+
+- **Root launcher:** `install_windows.bat` at project root (double-click after extracting the ZIP anywhere).
+- **Install hardening:** writable-folder check, reject `Program Files`, auto `Unblock-File` for ZIP downloads, fix Python path parsing when `python.exe` contains spaces.
+- **Install log:** writes `Logs\install_last.log` with resolved project path and errors.
+
+---
+
 ## v2.8.2 (2026-07-05)
 
 ### Segmentation preview: Windows locale spinbox fix
