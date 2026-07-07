@@ -1,7 +1,7 @@
 #!/bin/bash
 # Create a distributable DMG containing BactoMate.app and an Applications symlink.
-# Run from project root: ./build/create_dmg.sh
-# Prerequisite: BactoMate.app must exist (run ./build/build_app_bundle.sh first).
+# Run from project root: ./build/macos/create_dmg.sh
+# Prerequisite: BactoMate.app must exist (run ./build/macos/build_app_bundle.sh first).
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,8 +12,14 @@ DMG_NAME="BactoMate"
 DIST_DIR="$PROJECT_ROOT/dist"
 DMG_PATH="$DIST_DIR/${DMG_NAME}.dmg"
 
+RELEASE_TAG_SH="$SCRIPT_DIR/release_tag.sh"
+if [[ -f "$RELEASE_TAG_SH" ]]; then
+    # shellcheck source=release_tag.sh
+    source "$RELEASE_TAG_SH"
+fi
+
 if [ ! -d "$APP_DIR" ]; then
-    echo "Error: $APP_DIR not found. Run ./build/build_app_bundle.sh first."
+    echo "Error: $APP_DIR not found. Run ./build/macos/build_app_bundle.sh first."
     exit 1
 fi
 
@@ -72,10 +78,18 @@ fi
 OPENEOF
 chmod +x "$OPEN_SCRIPT"
 
+if declare -F bactomate_tag_release_artifacts >/dev/null; then
+    bactomate_tag_release_artifacts "$PROJECT_ROOT" "$DMG_LAYOUT/$APP_NAME.app"
+fi
+
 echo "Creating disk image..."
 # Remove existing DMG so hdiutil create doesn't prompt
 rm -f "$DMG_PATH"
 hdiutil create -volname "$DMG_NAME" -srcfolder "$DMG_LAYOUT" -ov -format UDZO "$DMG_PATH"
+
+if declare -F bactomate_tag_release_artifacts >/dev/null; then
+    bactomate_tag_release_artifacts "$PROJECT_ROOT" "$DMG_PATH" "$APP_DIR"
+fi
 
 echo "Created: $DMG_PATH"
 echo "  DMG-only users: see '00 - READ THIS FIRST (macOS install).txt' inside the image; drag app to Applications, then run 'Open BactoMate.command' once if macOS blocks the app."

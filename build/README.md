@@ -1,6 +1,10 @@
-# BactoMate build scripts
+# BactoMate packaging (maintainers only)
+
+> **End users:** you do not need this folder. Install from source via [`setup/`](../setup/README.md), or download **BactoMate.dmg** / **BactoMate-win64.zip** from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest).
 
 Packaging helpers for **distributable builds** after a normal source install. Scripts are split by platform — there is no single cross-platform build.
+
+Tagged releases (`v*`) build these assets automatically in GitHub Actions and attach them to the release. To build locally, use the commands below.
 
 ## Quick reference
 
@@ -10,8 +14,6 @@ Packaging helpers for **distributable builds** after a normal source install. Sc
 | **Windows** | Portable folder `dist\BactoMate\` + optional zip | `build\windows\build_windows_bundle.bat` then `build\windows\create_windows_zip.bat` |
 
 **Prerequisite:** run the platform install script first (`setup/macos/install.sh` or `setup\windows\install.bat`).
-
-Legacy paths at `build/*.sh` and `build/*.bat` are stubs that forward to the subfolders below.
 
 ## Layout
 
@@ -55,6 +57,8 @@ These scripts **cannot** run on macOS.
 ./build/macos/create_dmg.sh
 ```
 
+Output: `dist/BactoMate.dmg` (Finder tag `v<version>` from `bactomate.__version__`)
+
 ### Windows (on a Windows PC)
 
 ```bat
@@ -63,4 +67,15 @@ build\windows\build_windows_bundle.bat
 build\windows\create_windows_zip.bat
 ```
 
-Copy `dist\BactoMate-win64.zip` to lab machines; launch with `BactoMate.bat` inside the extracted folder.
+Output: `dist\BactoMate-win64.zip`
+
+Copy the zip to lab machines; launch with `BactoMate.bat` inside the extracted folder.
+
+## Release checklist
+
+Before uploading a manual release (if not using CI):
+
+1. Tag on `main` after merging `dev`.
+2. Build DMG (macOS) and/or Windows zip on the target OS.
+3. Attach `dist/BactoMate.dmg` and `dist/BactoMate-win64.zip` to the GitHub release.
+4. Smoke-test: open the app, run `--version` and `--smoke-test` from the bundle.

@@ -4,6 +4,24 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.4 (2026-07-07)
+
+### Analysis, conversion, and packaging
+
+- **CZI/LIF conversion:** channel outputs use `_fi` / `_foci` / `_fi_foci` / `_phase` naming when FI/Foci flags are set (same as ND2/TIFF).
+- **Out-of-focus cell filter:** optional per-frame rejection using phase sharpness (Filter preview → “Reject out-of-focus cells”).
+- **Whole-cell foci channel intensity:** Per-Cell Data and `@summary_per-cell-data` include `Mean FI Intensity (whole cell) [<foci channel>]`; refreshed after filtering.
+- **FI refresh on filtered masks:** workbooks update whole-cell FI/foci columns when filtered masks and TIFFs are available.
+
+### Docs and release assets
+
+- **User docs** focus on `setup/` install-and-run; GitHub Releases carry DMG/zip binaries.
+- **`build/`** stubs removed; scripts live under `build/macos/` and `build/windows/` only.
+- **Release workflow** attaches `BactoMate.dmg` and `BactoMate-win64.zip` on every `v*` tag.
+- **macOS Finder tags:** DMG and `.app` tagged with release version from `bactomate.__version__`.
+
+---
+
 ## v2.8.3 (2026-07-05)
 
 ### Windows installer works outside Desktop

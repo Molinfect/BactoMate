@@ -559,6 +559,133 @@ def _update_per_cell_foci_detail_columns(
     return per_cell, added_cols
 
 
+def _whole_cell_intensity_column_name(channel_label: str) -> str:
+    lbl = (channel_label or "").strip() or "Foci"
+    return f"Mean FI Intensity (whole cell) [{lbl}]"
+
+
+def refresh_workbook_channel_intensities(
+    tab,
+    mask_path: Path,
+    analysis_path: Path,
+    *,
+    artifacts: list[FociChannelArtifact] | None = None,
+    frame_shift: int = 0,
+    per_cell: pd.DataFrame | None = None,
+    write_workbook: bool = True,
+) -> tuple[pd.DataFrame | None, list[str], list[str]]:
+    """
+    Fill whole-cell mean intensity columns from fluorescence stacks and the (filtered) mask.
+
+    Updates FI columns when matching FI stacks exist, and foci-channel whole-cell columns
+    for each foci stack artifact.
+    """
+    from bactomate.gui.analysis_paths import stem_from_mask_path
+    from bactomate.modules.cell_channel_intensity import (
+        apply_whole_cell_intensity_columns,
+        build_whole_cell_intensity_lookup,
+        load_channel_stack_tyx,
+        load_mask_frames_by_index,
+    )
+
+    logs: list[str] = []
+    columns_added: list[str] = []
+    analysis_path = Path(analysis_path)
+    mask_path = Path(mask_path)
+    if per_cell is None:
+        if not analysis_path.is_file():
+            return None, logs, columns_added
+        try:
+            per_cell = pd.read_excel(analysis_path, sheet_name="Per-Cell Data")
+        except Exception as exc:
+            logs.append(f"[Analyze] Whole-cell intensity refresh skipped ({analysis_path.name}): {exc}\n")
+            return None, logs, columns_added
+    if per_cell is None or per_cell.empty:
+        return per_cell, logs, columns_added
+
+    mask_frames = load_mask_frames_by_index(mask_path)
+    if not mask_frames:
+        logs.append(f"[Analyze] Whole-cell intensity refresh skipped: could not read mask {mask_path.name}\n")
+        return per_cell, logs, columns_added
+
+    mask_stem = stem_from_mask_path(mask_path)
+    updated = False
+
+    # FI stacks (Analyze FI)
+    fi_paths: list[Path] = []
+    if hasattr(tab, "_resolve_fi_paths_for_mask"):
+        try:
+            fi_paths = list(tab._resolve_fi_paths_for_mask(mask_path) or [])
+        except Exception:
+            fi_paths = []
+    for fi_path in fi_paths:
+        fi_path = Path(fi_path)
+        if not fi_path.is_file():
+            continue
+        try:
+            stack = load_channel_stack_tyx(fi_path)
+            lookup = build_whole_cell_intensity_lookup(
+                mask_frames=mask_frames,
+                channel_stack=stack,
+                frame_shift=frame_shift,
+            )
+            tag = ""
+            if hasattr(tab, "_extract_channel_tag_for_mask_stem"):
+                try:
+                    tag = str(tab._extract_channel_tag_for_mask_stem(fi_path.stem, mask_stem) or "").strip()
+                except Exception:
+                    tag = ""
+            col = _whole_cell_intensity_column_name(tag or fi_path.stem)
+            per_cell = apply_whole_cell_intensity_columns(per_cell, column_name=col, lookup=lookup)
+            columns_added.append(col)
+            updated = True
+        except Exception as exc:
+            logs.append(f"[Analyze] FI whole-cell refresh failed for {fi_path.name}: {exc}\n")
+
+    # Foci stacks (whole-cell mean on foci channel — not just peak means)
+    foci_artifacts = list(artifacts or [])
+    if not foci_artifacts and hasattr(tab, "_resolve_foci_paths_for_mask"):
+        try:
+            for src in tab._resolve_foci_paths_for_mask(mask_path) or []:
+                foci_artifacts.append(
+                    FociChannelArtifact(
+                        channel_label=Path(src).stem,
+                        foci_stack=Path(src),
+                        csv_path=Path(src),
+                    )
+                )
+        except Exception:
+            pass
+    for art in foci_artifacts:
+        stack_path = Path(art.foci_stack)
+        if not stack_path.is_file():
+            continue
+        try:
+            stack = load_channel_stack_tyx(stack_path)
+            lookup = build_whole_cell_intensity_lookup(
+                mask_frames=mask_frames,
+                channel_stack=stack,
+                frame_shift=frame_shift,
+            )
+            col = _whole_cell_intensity_column_name(art.channel_label)
+            per_cell = apply_whole_cell_intensity_columns(per_cell, column_name=col, lookup=lookup)
+            columns_added.append(col)
+            updated = True
+        except Exception as exc:
+            logs.append(
+                f"[Analyze] Foci-channel whole-cell refresh failed for {stack_path.name}: {exc}\n"
+            )
+
+    if updated and write_workbook and analysis_path.is_file():
+        with pd.ExcelWriter(analysis_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            per_cell.to_excel(writer, sheet_name="Per-Cell Data", index=False)
+        logs.append(
+            f"[Analyze] Updated whole-cell intensity column(s) in {analysis_path.name}: "
+            f"{', '.join(columns_added)}\n"
+        )
+    return per_cell, logs, columns_added
+
+
 def apply_foci_summary_columns(
     summary: pd.DataFrame,
     *,
@@ -648,6 +775,15 @@ def refresh_workbooks_after_filtering(
             log_lines.extend(outcome.messages)
         except Exception as exc:
             log_lines.append(f"[Filtering] Workbook foci refresh failed for {mask_path.name}: {exc}\n")
+        try:
+            _per_cell, intensity_logs, _cols = refresh_workbook_channel_intensities(
+                tab,
+                mask_for_cells,
+                workbook,
+            )
+            log_lines.extend(intensity_logs)
+        except Exception as exc:
+            log_lines.append(f"[Filtering] Whole-cell intensity refresh failed for {mask_path.name}: {exc}\n")
     try:
         from bactomate.gui.foci_overlay_artifacts import refresh_filtered_foci_overlays_after_filtering
 
@@ -737,6 +873,18 @@ def integrate_foci_csv_into_workbook(
                     frame_shift=frame_shift,
                 )
                 outcome.per_cell_columns.extend(per_cell_columns_added)
+            intensity_logs, intensity_cols = refresh_workbook_channel_intensities(
+                tab,
+                mask_path,
+                analysis_path,
+                artifacts=artifacts,
+                frame_shift=frame_shift,
+                per_cell=per_cell,
+                write_workbook=False,
+            )
+            if intensity_logs:
+                outcome.messages.extend(intensity_logs)
+            outcome.per_cell_columns.extend(intensity_cols)
             with pd.ExcelWriter(analysis_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
                 per_cell.to_excel(writer, sheet_name="Per-Cell Data", index=False)
         except Exception as exc:

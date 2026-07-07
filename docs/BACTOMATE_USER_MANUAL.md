@@ -1,6 +1,6 @@
 # BactoMate — Complete User Manual
 
-**Version:** 2.8.3  
+**Version:** 2.8.4  
 **Document type:** Detailed user manual (GUI reference)  
 **Approximate length:** 30–40 A4 pages when printed (body text ~12,000+ words; with headings and lists, fills 30–40 pages at normal font size).  
 **Audience:** Researchers and users who want a full, structured reference to every tab, setting, and workflow in BactoMate.  

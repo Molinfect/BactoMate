@@ -9,14 +9,114 @@ permissions:
   contents: write
 
 jobs:
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python3 -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+          python setup/apply_all_patches.py || true
+
+      - name: Build app bundle and DMG
+        run: |
+          chmod +x setup/macos/*.sh build/macos/*.sh
+          ./build/macos/build_app_bundle.sh
+          ./build/macos/create_dmg.sh
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/BactoMate.dmg
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows zip
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          python setup\windows\verify_python.py
+          python -m venv venv
+          venv\Scripts\python.exe -m pip install "pip>=24.2,<26"
+          venv\Scripts\python.exe -m pip install "dbscan==0.0.10" --only-binary dbscan
+          venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\windows\constraints.txt
+          venv\Scripts\python.exe -m pip install -e .
+          venv\Scripts\python.exe setup\apply_all_patches.py
+
+      - name: Build portable bundle and zip
+        shell: cmd
+        run: |
+          venv\Scripts\python.exe build\windows\build_windows_bundle.py
+          tar -acf dist\BactoMate-win64.zip -C dist\BactoMate .
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/BactoMate-win64.zip
+          if-no-files-found: error
+
   release:
     name: Publish GitHub release
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: release-assets
+
+      - name: Download Windows zip
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-zip
+          path: release-assets
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          append_body: true
+          files: |
+            release-assets/BactoMate.dmg
+            release-assets/BactoMate-win64.zip
+          body: |
+            ## Install
+
+            **Most users should download a binary below** — no Python, Git, or build scripts required.
+
+            | Platform | File | Steps |
+            |----------|------|-------|
+            | **macOS** | `BactoMate.dmg` | Open DMG → drag BactoMate to Applications. If macOS blocks the app, use **Open BactoMate.command** inside the DMG once. |
+            | **Windows** | `BactoMate-win64.zip` | Extract anywhere under your user folder → run `BactoMate.bat`. |
+
+            **Developers / source install:** clone this repo and use [`setup/`](https://github.com/poppphil/BactoMate/tree/main/setup) — see [README](https://github.com/poppphil/BactoMate/blob/main/README.md).
+
+            Packaging scripts under `build/` are for maintainers only.

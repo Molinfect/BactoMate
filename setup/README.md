@@ -1,6 +1,10 @@
 # BactoMate setup scripts
 
-Platform-specific install and launch helpers. **Shared** scripts live at the top level; **Windows** and **macOS** each have their own subfolder.
+Platform-specific **install and launch** helpers for everyone using BactoMate from source.
+
+**Prefer a ready-made app?** Download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest) — you do not need `setup/` or `build/`.
+
+**Shared** scripts live at the top level; **Windows** and **macOS** each have their own subfolder.
 
 ## Quick start
 

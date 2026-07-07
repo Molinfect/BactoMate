@@ -964,6 +964,16 @@ class AnalyzeTab(AnalyzeMasksBase):
                 self.parent_window.log_output(f'[Analyze] Analysis visualization failed: {exc}\n')
         self._set_post_analysis_progress('Writing Run Info…', percent=98)
         try:
+            from bactomate.gui.analysis_workbook import refresh_workbook_channel_intensities
+            _, intensity_logs, _ = refresh_workbook_channel_intensities(
+                self, mask_path, out_path
+            )
+            if hasattr(self.parent_window, 'log_output'):
+                for line in intensity_logs:
+                    self.parent_window.log_output(line)
+        except Exception:
+            get_logger().debug('Whole-cell intensity refresh failed', exc_info=True)
+        try:
             from bactomate.gui.analysis_workbook import write_run_info_sheet
             manifest = self._build_analysis_run_manifest(mask_path=mask_path, fi_path=fi_path, fi_paths=fi_paths, out_path=out_path, task_notes=task_notes, foci_outcome=foci_outcome, foci_available_not_imported=foci_available_not_imported)
             write_run_info_sheet(out_path, manifest)

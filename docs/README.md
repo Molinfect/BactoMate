@@ -11,7 +11,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 - [Command Line Usage](#command-line-usage)
 - [Batch Processing](#batch-processing)
 - [Cell Area Analysis](#cell-area-analysis)
-- [Building App Bundles](#building-app-bundles)
+- [Packaging (maintainers)](#packaging-maintainers)
 - [Troubleshooting](#troubleshooting)
 - [Testing](#testing)
 - [Available Scripts](#available-scripts)
@@ -45,16 +45,11 @@ setup\windows\install.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.8.3`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.8.4`) and `python main.py --smoke-test`.
 
-macOS app/DMG packaging is restored for local builds:
+**Pre-built apps:** download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest) — no `build/` step needed.
 
-```bash
-./build/macos/build_app_bundle.sh
-./build/macos/create_dmg.sh
-```
-
-The root **[README](../README.md)** has copy-paste commands. Windows details: **[INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)**.
+The root **[README](../README.md)** has copy-paste install commands. Windows details: **[INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)**.
 
 ### Module shell (v2.0+)
 
@@ -139,9 +134,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### macOS: DMG install
 
-> **v2.5 note:** macOS DMGs: `./build/macos/build_app_bundle.sh` then `./build/macos/create_dmg.sh`. Windows portable folders: `build\windows\build_windows_bundle.bat` then `build\windows\create_windows_zip.bat` (see [INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)).
-
-Use this section when a **`BactoMate.dmg`** binary is available (no project folder, no Terminal, no Python install).
+Use this section when you downloaded **`BactoMate.dmg`** from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest) (no project folder, no Terminal, no Python install).
 
 1. Double-click **BactoMate.dmg**. A Finder window opens; inside you will see **BactoMate** (the app), a shortcut to **Applications**, **00 - READ THIS FIRST (macOS install).txt** (same steps in plain language), and **Open BactoMate.command**.
 2. Drag **BactoMate** onto **Applications** (or into your Applications folder).
@@ -158,9 +151,8 @@ The same content as step 1’s text file ships **inside** the DMG so recipients 
 
 - **`bactomate/`** — Main package: **`gui/`** (tabs, workers, styles), **`modules/`** (bioio_reader, foci_utils, tiff_metadata, validation), **`scripts/`** (CLI entry points: analyze_cell_areas, batch_process_*, convert_nd2_to_tif, check_tiff_format, etc.).
 - **`main.py`** — GUI entry point (also `python -m bactomate` via pyproject.toml).
-- **`setup/`** — Shared `apply_all_patches.py`; **`setup/macos/`** install/launch; **`setup/windows/`** install/launch. See [setup/README.md](../setup/README.md).
-- **`build/`** — **`build/macos/`** (`.app`/DMG, Mac only) and **`build/windows/`** (portable bundle, Windows only). See [build/README.md](../build/README.md).
-- **`build/`** — App icon and bundle: `create_icons.sh`, `build_app_bundle.sh`.
+- **`setup/`** — Install and launch for all users. See [setup/README.md](../setup/README.md).
+- **`build/`** — **Maintainers only** — package `.app`/DMG (macOS) or portable zip (Windows). See [build/README.md](../build/README.md).
 - **`docs/`** — README and User Manual.
 
 ## Graphical User Interface
@@ -235,39 +227,20 @@ When **Run foci analysis** is enabled (GUI: Analyze Masks → Analyze FI → Run
 
 When analyzing a **folder** with multiple FI channels, the merged Excel includes the Foci sheet from the first channel that has one. For a complete reference to parameters, filters, and workflows, see **[User Manual](BACTOMATE_USER_MANUAL.md)** Section 5.6a and 5.6b.
 
-## Building App Bundles
+## Packaging (maintainers)
 
-BactoMate can be packaged into a macOS `.app` bundle (venv + project files, no Nuitka) and a distributable DMG, or a Windows portable folder with embedded Python 3.11.
+End users should install from **`setup/`** or download binaries from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest).
 
-1. **Setup:** `./setup/macos/setup_fresh_env.sh` (or venv already with `pip install -r requirements.txt`)
-2. **Icon:** Optionally provide `img/logo2.png`, then run `./build/create_icons.sh`. If no logo is present, the script generates a simple fallback icon.
-3. **Build:** `./build/build_app_bundle.sh` → `BactoMate.app` (copies source + `venv`, bundles Python.framework when available, verifies `--version` and `--smoke-test`)
-4. **DMG:** `./build/create_dmg.sh` → `dist/BactoMate.dmg` (app + Applications symlink + **00 - READ THIS FIRST (macOS install).txt** + **Open BactoMate.command** for first-time open on new Macs)
-
-**Windows bundle** (after `setup\windows\install.bat` on a build PC):
-
-1. **Build:** `build\windows\build_windows_bundle.bat` → `dist\BactoMate\` (source + `venv` + `runtime\Python311\`)
-2. **Zip:** `build\create_windows_zip.bat` → `dist\BactoMate-win64.zip`
-3. Recipients launch **`BactoMate.bat`** — no separate Python install required.
-
-**Distribution checklist** (before shipping the DMG):
-
-- **Icon:** In Finder, BactoMate.app shows your custom icon (not a grey placeholder). If you see a generic icon, run `./build/create_icons.sh` and rebuild.
-- **Launch:** Double‑click the app (or `open BactoMate.app`) — it opens once.
-- **Reopen:** Quit the app, then double‑click again (or click the Dock icon if you pinned it). It must open again (see Troubleshooting if it doesn’t).
-- **Dock:** One BactoMate icon; after quit, clicking the pinned Dock icon reopens the app (pin by dragging BactoMate.app from Finder to the Dock).
-- **New Macs (no Apple Developer ID):** The DMG includes **Open BactoMate.command**. Tell users: after dragging BactoMate to Applications, double‑click that script once; it clears macOS quarantine so the app opens. Then they can open BactoMate.app normally.
-
-For structure and cross-machine notes, see the **[User Manual](BACTOMATE_USER_MANUAL.md)**.
+To build **BactoMate.dmg** or **BactoMate-win64.zip** locally, see **[build/README.md](../build/README.md)**. Tagged releases build and attach those files automatically via GitHub Actions.
 
 ## Troubleshooting
 
 - **User-trained models (0 cells, different behaviour):** Use negative mask threshold (e.g. -2) for user models if needed; prefer fewer epochs (e.g. 50) and lower learning rate when fine-tuning. Run **Check pipeline** in the GUI (Segmentation → Omnipose/Cellpose) or `python -m bactomate.scripts.check_omnipose_pipeline compare a.pth b.pth`. **Full details:** User Manual **Appendix B** (training troubleshooting: head drift, background as cells) and **Section 4.8** (user-trained vs built-in models).
 - **Checkpoint format:** BactoMate saves checkpoints with `state_dict` + `nchan`/`nclasses`. The loader is patched via `setup/apply_all_patches.py` (run by `launch_gui.sh`). If segmentation fails, run **Check pipeline** and ensure "Loader unwraps checkpoint dict" is Yes.
 - **App bundle won't launch / no logs / won't reopen:** BactoMate uses **one GUI log** plus **session logs** (under a **Logs** folder). **To see whether the launcher ran:** on macOS open **`~/Library/Application Support/BactoMate/Logs/launch.log`** — the launcher appends one line per launch with the path to the full GUI log. **Go → Go to Folder** → paste `~/Library/Application Support/BactoMate/Logs`. If the app **doesn't open again** after you quit: (1) Check that file — each launch adds a line like `2026-03-02T12:00:00 [from /path] full log: …/Logs/bactomate_gui_2026-03-02_12-00-00.log`. If there is **no new line** when you try to reopen, the launcher did not run (remove the Dock icon and always start by double‑clicking BactoMate.app). (2) **Full logs:** everything (launch, crash, Qt messages, worker/script failures, Omnipose/debug, Analyze Masks script output) goes into one **bactomate_gui_*.log** per run. Only the last **20** GUI logs are kept (capped in `log_config`); session JSONs **\*_session.json** are capped at **100**. When running from the .app these are in Application Support or inside the app’s Logs; from the project they are in `BactoMate-main-V1.0/Logs/`. (3) To see errors in the terminal when reopening, run: `"/path/to/BactoMate.app/Contents/MacOS/BactoMate"` then quit and run the same command again. **launch_chain.log** in `~/Library/Logs/BactoMate/` is a separate diagnostic (one line per start: pid, executable) used by follow_build.py; you can ignore or delete it — the main log is **bactomate_gui_*.log**.
-- **App icon shows grey frame or wrong icon:** The app icon is built from **only** `img/logo2.png` (no extra background is added). Any grey or black in the icon is in that file. For an icon that is 100% your graphic (e.g. only the blue bacterium): use a `logo2.png` that contains only that graphic (e.g. on transparency, no grey or black frame). Then run `./build/create_icons.sh` and `./build/build_app_bundle.sh` again. Rebuild the DMG if needed.
-- **"No bundled framework" / "Bundle requires Python" in bactomate_gui_*.log:** Rebuild with `./build/build_app_bundle.sh`. The restored builder copies the Python.framework when the venv is framework-based (for example Homebrew/python.org Python). If that framework cannot be found, the bundle falls back to the build machine’s Python and is not portable to clean Macs.
-- **Dock opens Python.app or wrong app after pinning:** The app uses a **native launcher** so the main process is BactoMate, not Python. After rebuilding with `./build/build_app_bundle.sh`: remove any old BactoMate/Python icon from the Dock, then **pin BactoMate.app** by dragging it from Finder onto the Dock. "Keep in Dock" from the running app should now pin BactoMate correctly. If you still see Python.app opening: rebuild the app and re-pin from Finder.
+- **App icon shows grey frame or wrong icon:** The app icon is built from **only** `img/logo2.png` (no extra background is added). Any grey or black in the icon is in that file. For an icon that is 100% your graphic (e.g. only the blue bacterium): use a `logo2.png` that contains only that graphic (e.g. on transparency, no grey or black frame). Then run `./build/macos/create_icons.sh` and `./build/macos/build_app_bundle.sh` again. Rebuild the DMG if needed.
+- **"No bundled framework" / "Bundle requires Python" in bactomate_gui_*.log:** Rebuild with `./build/macos/build_app_bundle.sh`. The restored builder copies the Python.framework when the venv is framework-based (for example Homebrew/python.org Python). If that framework cannot be found, the bundle falls back to the build machine’s Python and is not portable to clean Macs.
+- **Dock opens Python.app or wrong app after pinning:** The app uses a **native launcher** so the main process is BactoMate, not Python. After rebuilding with `./build/macos/build_app_bundle.sh`: remove any old BactoMate/Python icon from the Dock, then **pin BactoMate.app** by dragging it from Finder onto the Dock. "Keep in Dock" from the running app should now pin BactoMate correctly. If you still see Python.app opening: rebuild the app and re-pin from Finder.
 - **Two Dock icons:** With the native launcher you should see only one BactoMate icon. If you still see two, remove the extra from the Dock and re-pin BactoMate.app from Finder.
 - **"App is damaged" on another Mac:** macOS shows this when the app is not signed with a Developer ID (we use ad‑hoc signing). No payment needed: the DMG includes **Open BactoMate.command**. User drags BactoMate to Applications, then double‑clicks that script once; it clears quarantine and opens the app. After that, opening BactoMate.app works. Alternatively: Right‑click BactoMate.app → Open (first time), or in Terminal: `xattr -cr /Applications/BactoMate.app`.
 - **PyQt6 (cocoa plugin):** `./setup/macos/repair_pyqt6.sh`
@@ -304,7 +277,8 @@ Quick list:
 - `python -m bactomate.scripts.check_tiff_format` — Verify/reshape TIFF
 - `setup/apply_all_patches.py` — Omnipose/cellpose patches
 - `setup/macos/repair_pyqt6.sh`, `setup/macos/setup_fresh_env.sh`, `setup/macos/install_cuda_pytorch.sh`, `setup/macos/clear_models.sh`
-- `build/build_app_bundle.sh`, `build/create_dmg.sh`, `build/create_icons.sh`
+
+Maintainer packaging scripts: **[build/README.md](../build/README.md)**
 
 **Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Remaining engineering tasks: **[PLAN.md](PLAN.md)**.
 
