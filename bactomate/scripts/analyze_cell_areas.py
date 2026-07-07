@@ -592,6 +592,21 @@ def analyze_masks(masks_path, pixel_size=0.108,
                 cell['fi_cv'] = fi_extra.get('fi_cv', np.nan)
                 cell['fi_top10_mean'] = fi_extra.get('fi_top10_mean', np.nan)
         
+        # Whole-cell mean on foci channel stack (separate from FI or when only foci stack is loaded)
+        if foci_images is not None:
+            foci_plane = np.asarray(coerce_plane_to_2d(foci_images[frame_idx]), dtype=np.float64)
+            if foci_plane.shape[:2] == mask_cleaned.shape[:2]:
+                for cell in filtered:
+                    mean_fc, _, _ = calculate_fi_intensities(
+                        mask_cleaned,
+                        foci_plane,
+                        cell['label'],
+                        boundaries=None,
+                        contour_thickness=fi_contour_thickness,
+                        do_contour=False,
+                    )
+                    cell['mean_foci_channel_whole_cell'] = mean_fc
+        
         # Foci analysis (per-frame detection and assignment to cells)
         if run_foci and foci_images is not None:
             for cell in filtered:
@@ -1376,7 +1391,7 @@ def create_fi_contour_visualization(masks, all_frame_data, fi_images, output_pat
     SCRIPT_LOG.info("FI contour visualization saved")
 
 
-def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None, export_csv=False, pixel_size=0.108):
+def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_channel_name=None, foci_channel_name=None, export_csv=False, pixel_size=0.108):
     """
     Save results to Excel file and optionally to CSV files.
     
@@ -1549,6 +1564,7 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
         if detailed_data is not None:
             detailed_rows = []
             ch_name = fi_channel_name or 'FI'
+            foci_ch_tag = (foci_channel_name or "").strip() or None
             foci_count_col = f'{ch_name}_foci_count'
             foci_ids_col = f'foci_ids_{ch_name}'
             ch_tag = (fi_channel_name or "").strip() or None
@@ -1594,6 +1610,13 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                         row[_s('Contour FI Intensity')] = cell['contour_fi']
                     if 'fi_ratio' in cell:
                         row[_s('FI Ratio (Contour/Mean)')] = cell['fi_ratio']
+                    if 'mean_foci_channel_whole_cell' in cell:
+                        foci_col = (
+                            f"Mean FI Intensity (whole cell) [{foci_ch_tag}]"
+                            if foci_ch_tag
+                            else "Mean FI Intensity (whole cell) [Foci]"
+                        )
+                        row[foci_col] = cell['mean_foci_channel_whole_cell']
                     # Foci columns: count and IDs (existing)
                     if 'foci_count' in cell:
                         row[_s('Number of Foci')] = cell['foci_count']
@@ -2086,11 +2109,13 @@ Examples:
     SCRIPT_LOG.info("=" * 60)
 
     # Save to Excel (and optionally CSV)
+    foci_channel_name = _infer_foci_channel_name(foci_image_path) if foci_image_path else None
     save_to_excel(
         results, output_path,
         detailed_data if args.detailed else None,
         foci_table=foci_table if args.run_foci else None,
-        fi_channel_name=fi_channel_name if (args.fi_image or args.foci_image) else None,
+        fi_channel_name=fi_channel_name if args.fi_image else None,
+        foci_channel_name=foci_channel_name,
         export_csv=getattr(args, 'export_csv', False),
         pixel_size=args.pixel_size,
     )

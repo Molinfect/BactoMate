@@ -2,7 +2,9 @@
 
 Integrated microscopy analysis platform: file conversion, segmentation (Omnipose, U-Net, Cellpose-SAM), mask analysis, tracking, **lineage QC & export**, training, and reporting.
 
-**v2.5 is source-first (developers & researchers):** clone this repo, run the install script for your OS, then launch locally. macOS `.app`/DMG: `build/macos/` (Mac only). Windows portable folder: `build/windows/` (Windows only).
+**Install from source:** clone this repo, run the install script for your OS under `setup/`, then launch. No build step required.
+
+**Prefer a ready-made app?** Download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from the [latest GitHub Release](https://github.com/poppphil/BactoMate/releases/latest) — no Python or Terminal needed.
 
 ## Quick Install
 
@@ -55,7 +57,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.8.3
+python main.py --version    # BactoMate 2.8.4
 python main.py --smoke-test # Smoke test OK
 ```
 
@@ -63,13 +65,6 @@ Launch:
 
 ```bash
 ./launch_gui.sh
-```
-
-Build a macOS app/DMG after installation:
-
-```bash
-./build/macos/build_app_bundle.sh
-./build/macos/create_dmg.sh
 ```
 
 ## Windows — install and launch
@@ -91,22 +86,17 @@ bactomate
 
 Full Windows troubleshooting: **[docs/INSTALL_AND_LAUNCH_windows.md](docs/INSTALL_AND_LAUNCH_windows.md)**
 
-Build a portable Windows folder (includes Python runtime, no install on target PCs):
-
-```bat
-build\windows\build_windows_bundle.bat
-build\windows\create_windows_zip.bat
-```
-
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
+| [setup/README.md](setup/README.md) | Install and launch scripts (start here) |
 | [docs/README.md](docs/README.md) | Full user guide, CLI, and workflows |
 | [bactomate/scripts/README.md](bactomate/scripts/README.md) | Script reference (GUI subprocesses, CLI tools, diagnostics) |
 | [docs/BACTOMATE_USER_MANUAL.md](docs/BACTOMATE_USER_MANUAL.md) | Tab-by-tab reference |
 | [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | Version history |
 | [docs/INSTALL_AND_LAUNCH_windows.md](docs/INSTALL_AND_LAUNCH_windows.md) | Windows install details |
+| [build/README.md](build/README.md) | **Maintainers only** — package `.app`/DMG or Windows zip |
 
 ## Quick troubleshooting
 

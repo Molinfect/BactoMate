@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build BactoMate.app from the current source tree and venv.
 # Run from project root after ./setup/macos/install.sh:
-#   ./build/build_app_bundle.sh
+#   ./build/macos/build_app_bundle.sh
 
 set -euo pipefail
 
@@ -384,5 +384,12 @@ if missing:
     sys.exit(1)
 PY
 
+RELEASE_TAG_SH="$SCRIPT_DIR/release_tag.sh"
+if [[ -f "$RELEASE_TAG_SH" ]]; then
+    # shellcheck source=release_tag.sh
+    source "$RELEASE_TAG_SH"
+    bactomate_tag_release_artifacts "$PROJECT_ROOT" "$APP_DIR"
+fi
+
 echo "Created: $APP_DIR"
-echo "Next: ./build/create_dmg.sh"
+echo "Next: ./build/macos/create_dmg.sh"

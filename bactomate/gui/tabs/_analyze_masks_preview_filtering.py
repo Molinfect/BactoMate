@@ -591,7 +591,12 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     w_min_sol = _mk_spin(decimals=2, mn=0.0, mx=1.0, step=0.05, value=float(fs0.get('min_solidity', 0.7) or 0.7))
     w_excl_border = QCheckBox('Exclude cells at borders')
     w_excl_border.setChecked(bool(fs0.get('exclude_border', False)))
-    cell_group = build_settings_card('Cell filtering', object_name='FilterCellGroup', parent=settings_host, min_cell_width=220, label_min_width=118, control_max_width=92, max_columns=4, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterCellGroup'), fields=[setting_field('Min area (µm²)', w_min_area, min_width=72, max_width=92), setting_field('Max area (µm²)', w_max_area, min_width=72, max_width=92), setting_field('Pixel size (µm)', w_pixel, min_width=72, max_width=92), setting_cell(w_excl_border), setting_field('Min width (µm)', w_min_w, min_width=72, max_width=92), setting_field('Max width (µm)', w_max_w, min_width=72, max_width=92), setting_field('Min aspect', w_min_ar, min_width=72, max_width=92), setting_field('Max aspect', w_max_ar, min_width=72, max_width=92), setting_field('Min length (µm)', w_min_len, min_width=72, max_width=92), setting_field('Max length (µm)', w_max_len, min_width=72, max_width=92), setting_field('Min eccent.', w_min_ecc, min_width=72, max_width=92), setting_field('Min solid.', w_min_sol, min_width=72, max_width=92)])
+    w_focus_en = QCheckBox('Reject out-of-focus cells')
+    w_focus_en.setToolTip('Uses phase/bright-field sharpness (Laplacian variance) within each frame.\nCells below the fraction of the frame median are removed.')
+    w_focus_en.setChecked(bool(fs0.get('focus_filter_enabled', False)))
+    w_focus_frac = _mk_spin(decimals=2, mn=0.05, mx=1.0, step=0.05, value=float(fs0.get('focus_min_fraction_of_median', 0.5) or 0.5))
+    w_focus_frac.setToolTip('Keep cells with focus score ≥ this fraction of the frame median.')
+    cell_group = build_settings_card('Cell filtering', object_name='FilterCellGroup', parent=settings_host, min_cell_width=220, label_min_width=118, control_max_width=92, max_columns=4, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterCellGroup'), fields=[setting_field('Min area (µm²)', w_min_area, min_width=72, max_width=92), setting_field('Max area (µm²)', w_max_area, min_width=72, max_width=92), setting_field('Pixel size (µm)', w_pixel, min_width=72, max_width=92), setting_cell(w_excl_border), setting_cell(w_focus_en), setting_field('Min focus vs median', w_focus_frac, min_width=72, max_width=92), setting_field('Min width (µm)', w_min_w, min_width=72, max_width=92), setting_field('Max width (µm)', w_max_w, min_width=72, max_width=92), setting_field('Min aspect', w_min_ar, min_width=72, max_width=92), setting_field('Max aspect', w_max_ar, min_width=72, max_width=92), setting_field('Min length (µm)', w_min_len, min_width=72, max_width=92), setting_field('Max length (µm)', w_max_len, min_width=72, max_width=92), setting_field('Min eccent.', w_min_ecc, min_width=72, max_width=92), setting_field('Min solid.', w_min_sol, min_width=72, max_width=92)])
     cell_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
     w_prob_en = QCheckBox('Probability ≥')
     w_prob_en.setToolTip('Minimum Spotiflow probability.')
@@ -2512,7 +2517,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     return v if v > 0 else None
                 except Exception:
                     return None
-            tab.set_filter_settings({'pixel_size': float(w_pixel.value()), 'min_aspect_ratio': float(w_min_ar.value()), 'max_aspect_ratio': float(w_max_ar.value()), 'min_eccentricity': float(w_min_ecc.value()), 'min_solidity': float(w_min_sol.value()), 'min_area_um2': _opt0(w_min_area), 'max_area_um2': _opt0(w_max_area), 'min_width_um': _opt0(w_min_w), 'max_width_um': _opt0(w_max_w), 'min_length_um': _opt0(w_min_len), 'max_length_um': _opt0(w_max_len), 'exclude_border': bool(w_excl_border.isChecked())})
+            tab.set_filter_settings({'pixel_size': float(w_pixel.value()), 'min_aspect_ratio': float(w_min_ar.value()), 'max_aspect_ratio': float(w_max_ar.value()), 'min_eccentricity': float(w_min_ecc.value()), 'min_solidity': float(w_min_sol.value()), 'min_area_um2': _opt0(w_min_area), 'max_area_um2': _opt0(w_max_area), 'min_width_um': _opt0(w_min_w), 'max_width_um': _opt0(w_max_w), 'min_length_um': _opt0(w_min_len), 'max_length_um': _opt0(w_max_len), 'exclude_border': bool(w_excl_border.isChecked()), 'focus_filter_enabled': bool(w_focus_en.isChecked()), 'focus_min_fraction_of_median': float(w_focus_frac.value())})
             ch_key = _active_foci_channel_key()
             ch_payload = {'foci_prob_enabled': bool(w_prob_en.isChecked()), 'foci_prob_thresh': float(w_prob_thr.value()), 'foci_min_int_enabled': bool(w_minint_en.isChecked()), 'foci_min_int': float(w_minint.value()), 'foci_per_cell_ratio_enabled': bool(w_ratio_en.isChecked()), 'foci_per_cell_ratio': float(w_ratio.value()), 'foci_exclude_outside_clear': bool(w_foci_excl_outside_clear.isChecked()), 'foci_exclude_outside_touching': bool(w_foci_excl_outside_touch.isChecked()), 'foci_exclude_outside_cells': bool(w_foci_excl_outside_clear.isChecked() and w_foci_excl_outside_touch.isChecked()), 'foci_blob_threshold_frac': float(w_blob_size.currentData() or 0.9), 'foci_blob_max_radius': int(w_blob_radius.value()), 'foci_min_area_px_enabled': bool(w_minarea_en.isChecked()), 'foci_min_area_px': int(w_minarea.value())}
             if hasattr(tab, 'set_foci_channel_settings'):
@@ -2557,6 +2562,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 w_min_len.setValue(float(fs.get('min_length_um') or 0.0))
                 w_max_len.setValue(float(fs.get('max_length_um') or 0.0))
                 w_excl_border.setChecked(bool(fs.get('exclude_border', False)))
+                w_focus_en.setChecked(bool(fs.get('focus_filter_enabled', False)))
+                w_focus_frac.setValue(float(fs.get('focus_min_fraction_of_median', 0.5) or 0.5))
                 w_prob_en.setChecked(bool(fs_ch.get('foci_prob_enabled', False)))
                 w_prob_thr.setValue(float(fs_ch.get('foci_prob_thresh', 0.5) or 0.5))
                 w_minint_en.setChecked(bool(fs_ch.get('foci_min_int_enabled', False)))
@@ -2628,8 +2635,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg._pf_apply_current = apply_current
             dlg._pf_ui_to_settings = _ui_to_settings
             dlg._pf_settings_to_ui = _settings_to_ui
-            dlg._pf_spinboxes = {'pixel_size': w_pixel, 'min_aspect_ratio': w_min_ar, 'max_aspect_ratio': w_max_ar, 'min_eccentricity': w_min_ecc, 'min_solidity': w_min_sol, 'min_area_um2': w_min_area, 'max_area_um2': w_max_area, 'min_width_um': w_min_w, 'max_width_um': w_max_w, 'min_length_um': w_min_len, 'max_length_um': w_max_len, 'foci_prob_thresh': w_prob_thr, 'foci_min_int': w_minint, 'foci_per_cell_ratio': w_ratio, 'foci_min_area_px': w_minarea}
-            dlg._pf_checkboxes = {'exclude_border': w_excl_border, 'foci_prob_enabled': w_prob_en, 'foci_min_int_enabled': w_minint_en, 'foci_per_cell_ratio_enabled': w_ratio_en, 'foci_exclude_outside_clear': w_foci_excl_outside_clear, 'foci_exclude_outside_touching': w_foci_excl_outside_touch, 'foci_min_area_px_enabled': w_minarea_en}
+            dlg._pf_spinboxes = {'pixel_size': w_pixel, 'min_aspect_ratio': w_min_ar, 'max_aspect_ratio': w_max_ar, 'min_eccentricity': w_min_ecc, 'min_solidity': w_min_sol, 'min_area_um2': w_min_area, 'max_area_um2': w_max_area, 'min_width_um': w_min_w, 'max_width_um': w_max_w, 'min_length_um': w_min_len, 'max_length_um': w_max_len, 'focus_min_fraction_of_median': w_focus_frac, 'foci_prob_thresh': w_prob_thr, 'foci_min_int': w_minint, 'foci_per_cell_ratio': w_ratio, 'foci_min_area_px': w_minarea}
+            dlg._pf_checkboxes = {'exclude_border': w_excl_border, 'focus_filter_enabled': w_focus_en, 'foci_prob_enabled': w_prob_en, 'foci_min_int_enabled': w_minint_en, 'foci_per_cell_ratio_enabled': w_ratio_en, 'foci_exclude_outside_clear': w_foci_excl_outside_clear, 'foci_exclude_outside_touching': w_foci_excl_outside_touch, 'foci_min_area_px_enabled': w_minarea_en}
             dlg._pf_blob_combo = w_blob_size
             dlg._pf_blob_radius = w_blob_radius
             dlg._pf_show_foci_table = w_show_foci_table

@@ -1,8 +1,12 @@
 # BactoMate — Install and launch on Windows
 
-This guide is for **source install** from a Git clone or ZIP download. For a portable folder that includes Python (no separate install on target PCs), see **Windows bundle** below.
+This guide is for **source install** from a Git clone or ZIP download.
 
-Windows-specific scripts live in **`setup\windows\`**. See also [setup/README.md](../setup/README.md) and [build/README.md](../build/README.md) for the full layout.
+**Most Windows users:** download **BactoMate-win64.zip** from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest), extract it, and run `BactoMate.bat` — no Python install required.
+
+For a portable folder built from source (maintainers), see **Windows bundle** below.
+
+Windows-specific scripts live in **`setup\windows\`**. See [setup/README.md](../setup/README.md). Packaging scripts are in [build/README.md](../build/README.md) (maintainers only).
 
 ## Prerequisites
 
@@ -71,7 +75,7 @@ venv\Scripts\python.exe main.py --version
 venv\Scripts\python.exe main.py --smoke-test
 ```
 
-You should see `BactoMate 2.8.3` and `Smoke test OK`.
+You should see `BactoMate 2.8.4` and `Smoke test OK`.
 
 ## Logs
 

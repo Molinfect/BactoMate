@@ -358,7 +358,7 @@ class FilteringTab(AnalyzeMasksBase):
         return pick_mask_path_for_preview(self, path_text)
 
     def _default_filter_settings(self) -> dict[str, Any]:
-        return {'pixel_size': 0.108, 'min_aspect_ratio': 1.5, 'max_aspect_ratio': 10.0, 'min_eccentricity': 0.5, 'min_solidity': 0.7, 'min_area_um2': None, 'max_area_um2': None, 'min_width_um': None, 'max_width_um': None, 'min_length_um': None, 'max_length_um': None, 'exclude_border': False, 'foci_prob_enabled': False, 'foci_prob_thresh': 0.5, 'foci_min_int_enabled': False, 'foci_min_int': 0.0, 'foci_per_cell_ratio_enabled': False, 'foci_per_cell_ratio': 2.0, 'foci_exclude_outside_cells': False, 'foci_exclude_outside_clear': False, 'foci_exclude_outside_touching': False, 'foci_blob_threshold_frac': 0.9, 'foci_blob_max_radius': 5, 'foci_min_area_px_enabled': False, 'foci_min_area_px': 1}
+        return {'pixel_size': 0.108, 'min_aspect_ratio': 1.5, 'max_aspect_ratio': 10.0, 'min_eccentricity': 0.5, 'min_solidity': 0.7, 'min_area_um2': None, 'max_area_um2': None, 'min_width_um': None, 'max_width_um': None, 'min_length_um': None, 'max_length_um': None, 'exclude_border': False, 'focus_filter_enabled': False, 'focus_min_fraction_of_median': 0.5, 'foci_prob_enabled': False, 'foci_prob_thresh': 0.5, 'foci_min_int_enabled': False, 'foci_min_int': 0.0, 'foci_per_cell_ratio_enabled': False, 'foci_per_cell_ratio': 2.0, 'foci_exclude_outside_cells': False, 'foci_exclude_outside_clear': False, 'foci_exclude_outside_touching': False, 'foci_blob_threshold_frac': 0.9, 'foci_blob_max_radius': 5, 'foci_min_area_px_enabled': False, 'foci_min_area_px': 1}
 
     def _ensure_filter_settings(self) -> dict[str, Any]:
         fs = getattr(self, '_filter_settings', None)
@@ -567,6 +567,17 @@ class FilteringTab(AnalyzeMasksBase):
                     continue
                 out = np.zeros_like(masks, dtype=np.int32)
                 n_frames = max(1, int(masks.shape[0]))
+                phase_stack = None
+                if fs.get('focus_filter_enabled'):
+                    try:
+                        from bactomate.gui.analysis_visualization import resolve_phase_image_for_mask
+                        from bactomate.modules.image_stack_utils import coerce_stack_to_tyx
+
+                        phase_path = resolve_phase_image_for_mask(mask_path)
+                        if phase_path is not None and phase_path.is_file():
+                            phase_stack = coerce_stack_to_tyx(np.asarray(safe_imread(str(phase_path))))
+                    except Exception:
+                        phase_stack = None
                 for fi in range(masks.shape[0]):
                     if bool(getattr(self, '_cancel_filtering_requested', False)):
                         break
@@ -579,6 +590,23 @@ class FilteringTab(AnalyzeMasksBase):
                         rod = filter_rod_shaped_cells(props, min_aspect_ratio=float(fs.get('min_aspect_ratio', 1.5) or 1.5), max_aspect_ratio=float(fs.get('max_aspect_ratio', 10.0) or 10.0), min_eccentricity=float(fs.get('min_eccentricity', 0.5) or 0.5), min_solidity=float(fs.get('min_solidity', 0.7) or 0.7))
                         filtered = filter_by_size(rod, min_area_um2=fs.get('min_area_um2', None), max_area_um2=fs.get('max_area_um2', None), min_width_um=fs.get('min_width_um', None), max_width_um=fs.get('max_width_um', None), min_length_um=fs.get('min_length_um', None), max_length_um=fs.get('max_length_um', None))
                         accepted = {int(c['label']) for c in filtered}
+                        if accepted and fs.get('focus_filter_enabled') and phase_stack is not None:
+                            try:
+                                from bactomate.modules.cell_focus_score import (
+                                    filter_labels_by_focus,
+                                    score_cells_in_frame,
+                                )
+
+                                ch_idx = max(0, min(int(fi), int(phase_stack.shape[0]) - 1))
+                                phase_plane = np.asarray(phase_stack[ch_idx], dtype=np.float64)
+                                scores = score_cells_in_frame(phase_plane, frame_mask, accepted)
+                                frac = float(fs.get('focus_min_fraction_of_median', 0.5) or 0.5)
+                                accepted = filter_labels_by_focus(
+                                    scores,
+                                    min_fraction_of_median=frac if frac > 0 else None,
+                                )
+                            except Exception:
+                                pass
                         if accepted:
                             out_frame = np.where(np.isin(frame_mask, np.array(list(accepted), dtype=np.int32)), frame_mask, 0)
                         else:

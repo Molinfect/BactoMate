@@ -604,6 +604,38 @@ class ND2ConversionTab(QWidget):
                 return base[:n]
         return [f'Channel_{i + 1}' for i in range(n)]
 
+    def _conversion_fi_foci_index_sets(self, num_channels: int) -> tuple[set[int], set[int]]:
+        fi_indices: set[int] = set()
+        foci_indices: set[int] = set()
+        if getattr(self, 'fi_channel_checks', None) and len(self.fi_channel_checks) >= num_channels:
+            fi_indices = {i for i, cb in enumerate(self.fi_channel_checks) if cb.isChecked()}
+        if getattr(self, 'foci_channel_checks', None) and len(self.foci_channel_checks) >= num_channels:
+            foci_indices = {i for i, cb in enumerate(self.foci_channel_checks) if cb.isChecked()}
+        return fi_indices, foci_indices
+
+    def _conversion_channel_output_path(
+        self,
+        output_base: Path,
+        stem: str,
+        ch: int,
+        channel_names: list[str],
+        *,
+        phase_used: bool,
+        fi_indices: set[int],
+        foci_indices: set[int],
+    ) -> tuple[Path, bool]:
+        from bactomate.modules.conversion_channel_names import split_channel_output_name
+
+        ch_name = channel_names[ch] if ch < len(channel_names) else f'Channel_{ch + 1}'
+        out_name, phase_used = split_channel_output_name(
+            stem,
+            ch_name,
+            in_fi=ch in fi_indices,
+            in_foci=ch in foci_indices,
+            phase_used=phase_used,
+        )
+        return output_base / out_name, phase_used
+
     def _output_metadata_for_tiff(self, frames: int, *, axes: str='TYX') -> dict:
         """ImageJ metadata for generated TIFFs, including manual output overrides."""
         from bactomate.modules.tiff_metadata import build_metadata_dict
@@ -3329,6 +3361,9 @@ class ND2ConversionTab(QWidget):
                         stem_used = lif_file.stem + frame_suffix
                         output_file = output_base / f'{stem_used}.tif'
                         if separate_channels and num_channels > 1 and (channel_dim is not None):
+                            channel_names = self._get_effective_channel_names(num_channels)
+                            fi_indices, foci_indices = self._conversion_fi_foci_index_sets(num_channels)
+                            phase_used = False
                             max_channels = min(num_channels, current_shape[channel_dim])
                             for ch in range(max_channels):
                                 indices = [slice(None)] * len(current_shape)
@@ -3339,7 +3374,15 @@ class ND2ConversionTab(QWidget):
                                     channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                ch_output = output_base / f'{stem_used}_ch{ch + 1}.tif'
+                                ch_output, phase_used = self._conversion_channel_output_path(
+                                    output_base,
+                                    stem_used,
+                                    ch,
+                                    channel_names,
+                                    phase_used=phase_used,
+                                    fi_indices=fi_indices,
+                                    foci_indices=foci_indices,
+                                )
                                 tifffile.imwrite(
                                     str(ch_output),
                                     channel_data,
@@ -3456,6 +3499,9 @@ class ND2ConversionTab(QWidget):
                                 if time_dim is None and t_idx < len(current_shape):
                                     time_dim = t_idx
                             if separate_channels and num_channels > 1 and (channel_dim is not None):
+                                channel_names = self._get_effective_channel_names(num_channels)
+                                fi_indices, foci_indices = self._conversion_fi_foci_index_sets(num_channels)
+                                phase_used = False
                                 max_channels = min(num_channels, current_shape[channel_dim])
                                 for ch in range(max_channels):
                                     indices = [slice(None)] * len(current_shape)
@@ -3469,7 +3515,15 @@ class ND2ConversionTab(QWidget):
                                         channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                                     if len(channel_data.shape) == 2:
                                         channel_data = channel_data[np.newaxis, ...]
-                                    ch_output = output_base / f'{stem_used}_ch{ch + 1}.tif'
+                                    ch_output, phase_used = self._conversion_channel_output_path(
+                                        output_base,
+                                        stem_used,
+                                        ch,
+                                        channel_names,
+                                        phase_used=phase_used,
+                                        fi_indices=fi_indices,
+                                        foci_indices=foci_indices,
+                                    )
                                     tifffile.imwrite(
                                         str(ch_output),
                                         channel_data,
@@ -3548,11 +3602,22 @@ class ND2ConversionTab(QWidget):
                         stem_used_rl = lif_file.stem + (f'_f{frame_start_rl + 1}' if num_time == 1 else '')
                         output_file = output_base / f'{stem_used_rl}.tif'
                         if separate_channels and n_ch > 1:
+                            channel_names = self._get_effective_channel_names(n_ch)
+                            fi_indices, foci_indices = self._conversion_fi_foci_index_sets(n_ch)
+                            phase_used = False
                             for ch in range(n_ch):
                                 channel_data = all_frames[:, ch, :, :]
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                ch_output = output_base / f'{stem_used_rl}_ch{ch + 1}.tif'
+                                ch_output, phase_used = self._conversion_channel_output_path(
+                                    output_base,
+                                    stem_used_rl,
+                                    ch,
+                                    channel_names,
+                                    phase_used=phase_used,
+                                    fi_indices=fi_indices,
+                                    foci_indices=foci_indices,
+                                )
                                 tifffile.imwrite(
                                     str(ch_output),
                                     channel_data,
@@ -3685,9 +3750,8 @@ class ND2ConversionTab(QWidget):
                 data = bleach_correct_stack(np.ascontiguousarray(data), method=bleach_method, channel_indices=bleach_channel_indices)
                 self.parent_window.log_output('  ✓ Bleach correction complete\n')
             from bactomate.modules.tiff_metadata import build_metadata_dict, read_calibration_from_path
+            from bactomate.modules.conversion_channel_names import split_channel_output_name
 
-            def _sanitize(s):
-                return ''.join((c if c.isalnum() or c in '_-' else '_' for c in s or 'channel')).strip('_') or 'channel'
             stem_suffix_tiff = f'_f{frame_start_tiff + 1}' if n_t == 1 else ''
             stem_used_tiff = file_path.stem + stem_suffix_tiff
             (file_ps, file_tp) = read_calibration_from_path(file_path)
@@ -3702,20 +3766,13 @@ class ND2ConversionTab(QWidget):
                 if channel_data.ndim == 2:
                     channel_data = channel_data[np.newaxis, ...]
                 name = channel_names[ch] if ch < len(channel_names) else f'Channel_{ch + 1}'
-                safe = _sanitize(name)
-                in_fi = ch in fi_indices
-                in_foci = ch in foci_indices
-                if in_fi and in_foci:
-                    out_name = f'{stem_used_tiff}_fi_foci_{safe}.tif'
-                elif in_fi:
-                    out_name = f'{stem_used_tiff}_fi_{safe}.tif'
-                elif in_foci:
-                    out_name = f'{stem_used_tiff}_foci_{safe}.tif'
-                elif not phase_used:
-                    out_name = f'{stem_used_tiff}_phase.tif'
-                    phase_used = True
-                else:
-                    out_name = f'{stem_used_tiff}_{safe}.tif'
+                out_name, phase_used = split_channel_output_name(
+                    stem_used_tiff,
+                    name,
+                    in_fi=ch in fi_indices,
+                    in_foci=ch in foci_indices,
+                    phase_used=phase_used,
+                )
                 out_path = output_base / out_name
                 n_frames = int(channel_data.shape[0]) if channel_data.ndim >= 3 else 1
                 write_meta = build_metadata_dict(pixel_size_um=split_ps if split_ps and split_ps > 0 else None, time_per_frame_min=split_tp if split_tp and split_tp > 0 else None, frames=n_frames, images=n_frames, axes='TYX')
@@ -3804,6 +3861,9 @@ class ND2ConversionTab(QWidget):
                         stem_used_czi = czi_file.stem + frame_suffix_czi
                         output_file = output_base / f'{stem_used_czi}.tif'
                         if separate_channels and num_channels > 1 and (channel_dim is not None):
+                            channel_names = self._get_effective_channel_names(num_channels)
+                            fi_indices, foci_indices = self._conversion_fi_foci_index_sets(num_channels)
+                            phase_used = False
                             max_ch = min(num_channels, current_shape[channel_dim])
                             for ch in range(max_ch):
                                 indices = [slice(None)] * len(current_shape)
@@ -3814,7 +3874,15 @@ class ND2ConversionTab(QWidget):
                                     channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                                 if len(channel_data.shape) == 2:
                                     channel_data = channel_data[np.newaxis, ...]
-                                ch_output = output_base / f'{stem_used_czi}_ch{ch + 1}.tif'
+                                ch_output, phase_used = self._conversion_channel_output_path(
+                                    output_base,
+                                    stem_used_czi,
+                                    ch,
+                                    channel_names,
+                                    phase_used=phase_used,
+                                    fi_indices=fi_indices,
+                                    foci_indices=foci_indices,
+                                )
                                 tifffile.imwrite(
                                     str(ch_output),
                                     channel_data,
@@ -3944,6 +4012,9 @@ class ND2ConversionTab(QWidget):
                         if time_dim is None and t_idx < len(current_shape):
                             time_dim = t_idx
                     if separate_channels and num_channels > 1 and (channel_dim is not None):
+                        channel_names = self._get_effective_channel_names(num_channels)
+                        fi_indices, foci_indices = self._conversion_fi_foci_index_sets(num_channels)
+                        phase_used = False
                         max_channels = min(num_channels, current_shape[channel_dim])
                         for ch in range(max_channels):
                             indices = [slice(None)] * len(current_shape)
@@ -3957,7 +4028,15 @@ class ND2ConversionTab(QWidget):
                                 channel_data = np.squeeze(channel_data, axis=tuple(axes_to_squeeze))
                             if len(channel_data.shape) == 2:
                                 channel_data = channel_data[np.newaxis, ...]
-                            ch_output = output_base / f'{stem_used_czi}_ch{ch + 1}.tif'
+                            ch_output, phase_used = self._conversion_channel_output_path(
+                                output_base,
+                                stem_used_czi,
+                                ch,
+                                channel_names,
+                                phase_used=phase_used,
+                                fi_indices=fi_indices,
+                                foci_indices=foci_indices,
+                            )
                             tifffile.imwrite(
                                 str(ch_output),
                                 channel_data,

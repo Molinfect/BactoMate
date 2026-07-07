@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generate the macOS app icon used by build_app_bundle.sh.
-# Run from project root: ./build/create_icons.sh
+# Run from project root: ./build/macos/create_icons.sh
 
 set -euo pipefail
 

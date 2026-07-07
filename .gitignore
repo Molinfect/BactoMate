@@ -26,13 +26,12 @@ env/
 ENV/
 .venv
 
-# Build outputs (keep tracked build scripts under build/)
+# Build outputs (keep tracked packaging scripts under build/macos and build/windows)
 build/*
-!build/*.sh
-!build/*.bat
 !build/README.md
 !build/macos/**
 !build/windows/**
+!build/macos/*.sh
 
 # Nuitka
 *.build/

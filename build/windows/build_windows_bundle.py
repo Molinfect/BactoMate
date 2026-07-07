@@ -1,14 +1,14 @@
 """
 Build a portable Windows folder bundle at dist/BactoMate/.
 
-Analogous to build/build_app_bundle.sh on macOS: copies project source, the project
+Analogous to build/macos/build_app_bundle.sh on macOS: copies project source, the project
 venv, and the Python 3.11 runtime that created the venv so the bundle runs without
 a separate Python install on target PCs.
 
 Run on Windows after setup\\install_windows.bat:
-    python build\\build_windows_bundle.py
+    python build\\windows\\build_windows_bundle.py
 
-Optional zip: build\\create_windows_zip.bat
+Optional zip: build\\windows\\create_windows_zip.bat
 """
 from __future__ import annotations
 
