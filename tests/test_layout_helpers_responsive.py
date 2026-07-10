@@ -13,6 +13,7 @@ from bactomate.gui.layout_helpers import (
     checkbox_with_control,
     columns_for_width,
     compact_control,
+    ensure_dark_combo_popup,
     flex_control,
     labeled_control,
     preview_settings_group,
@@ -107,6 +108,21 @@ def test_adaptive_fill_grid_column_math(qapp) -> None:
 def test_preview_settings_group_theme(qapp) -> None:
     group = preview_settings_group("", object_name="TestMontage")
     assert UI_THEME["preview_card_bg"] in group.styleSheet()
+
+
+def test_ensure_dark_combo_popup_uses_detached_list_view(qapp) -> None:
+    combo = QComboBox()
+    combo.addItems(["300 DPI", "600 DPI", "900 DPI", "1200 DPI", "2400 DPI"])
+    ensure_dark_combo_popup(combo)
+    view = combo.view()
+    assert view is not None
+    assert view.objectName() == "bactomateDarkComboPopup"
+    assert view.parent() is not combo
+    assert getattr(combo, "_bactomate_popup_hooked", False) is True
+    combo.showPopup()
+    container = view.parentWidget()
+    assert container is not None
+    assert container.height() <= 12 * 40 + 20
 
 
 def test_build_settings_card_accepts_fields_and_cells(qapp) -> None:

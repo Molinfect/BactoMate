@@ -63,3 +63,13 @@ def test_apply_highlight_skips_frames_without_detection():
     frame = np.zeros((20, 20, 3), dtype=np.uint8)
     out = TrackingTab._apply_selected_track_halo(frame, 3, 1, None, tracks)
     assert np.array_equal(out, frame)
+
+
+def test_draw_polyline_thickness_one_is_single_pixel():
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    pts = np.array([[5, 5], [5, 7]], dtype=int)
+    TrackingTab._draw_polyline_on_frame(frame, pts, color=(255, 0, 0), thickness=1)
+    assert frame[5, 5, 0] == 255
+    assert frame[5, 6, 0] == 255
+    assert frame[4, 5, 0] == 0
+    assert frame[6, 5, 0] == 0

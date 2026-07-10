@@ -18,8 +18,15 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from bactomate.gui.log_config import get_logger, log_exception
 from bactomate.gui.workers.tracking_io import (
     TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
+    assign_cell_ids_to_tracks_df,
+    blend_path_pixel_on_frame,
     build_track_points_by_id,
     downsample_stacks_for_preview,
+    draw_track_centroid_marker,
+    overlay_label_for_track,
+    resolve_track_at_centroid,
+    should_draw_track_id_labels,
+    tracking_export_viz_style,
 )
 from bactomate.modules.label_render import draw_hq_labels
 from bactomate.modules.tiff_stack_io import read_tiff_stack
@@ -562,13 +569,17 @@ class TrackingWorker(QThread):
                         debug_output.append(f"✗ All extraction methods failed: {str(e2)}")
                         tracks_df = pd.DataFrame(columns=['track_id', 'frame', 'y', 'x'])
             
-            # Add analysis Cell_ID when we have an Excel from Analyze Masks (Omnipose/U-Net → Analyze Masks → Excel in _analysis)
-            if trackid_to_cellid is not None and len(trackid_to_cellid) > 0:
-                if 'track_id' in tracks_df.columns:
-                    tracks_df['Cell_ID'] = tracks_df['track_id'].map(trackid_to_cellid)
-                    # Fill NaN with original track_id for unmapped tracks
-                    tracks_df['Cell_ID'] = tracks_df['Cell_ID'].fillna(tracks_df['track_id']).astype(int)
-                    debug_output.append(f"✓ Updated tracks DataFrame with analysis CellIDs ({len(trackid_to_cellid)} mappings)")
+            if len(tracks_df) > 0:
+                tracks_df = assign_cell_ids_to_tracks_df(
+                    tracks_df,
+                    masks,
+                    excel_file=self.excel_file,
+                    trackid_to_cellid=trackid_to_cellid,
+                )
+                if "Cell_ID" in tracks_df.columns:
+                    debug_output.append(
+                        f"✓ Assigned analysis Cell_IDs per detection ({tracks_df['Cell_ID'].nunique()} unique)"
+                    )
             
             # Add debug info about tracks
             debug_output.append(f"\nTrack DataFrame info:")
@@ -665,16 +676,22 @@ class TrackingWorker(QThread):
             overlay_array = None
             if self.write_visualization and self.original_file:
                 self.progress.emit(87, "Creating overlay with track IDs...")
-                debug_output.append("\nCreating in-memory overlay with track IDs...")
+                debug_output.append("\nCreating tracked overlay with track IDs...")
                 try:
+                    overlay_file = output_dir / f"{stem}_overlay_tracked.tif"
+
                     def overlay_progress(frame_idx, total, _msg=None):
                         pct = 87 + int((frame_idx + 1) / max(total, 1) * 2)  # 87–89%
                         msg = f"Creating overlay: {frame_idx + 1}/{total}"
                         self.progress.emit(pct, msg)
                     overlay_array = self._create_overlay_with_track_ids(
-                        imgs, masks_tracked, output_path=None, progress_callback=overlay_progress
+                        imgs,
+                        masks_tracked,
+                        tracks_df,
+                        output_path=overlay_file,
+                        progress_callback=overlay_progress,
                     )
-                    debug_output.append("✓ Prepared tracked overlay frames (not saved separately)")
+                    debug_output.append(f"✓ Saved tracked overlay to: {overlay_file}")
                 except Exception as e:
                     import traceback
                     debug_output.append(f"⚠ Could not create tracked overlay: {str(e)}")
@@ -2245,6 +2262,13 @@ class TrackingWorker(QThread):
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
         track_points_by_id = build_track_points_by_id(tracks_df)
         unique_track_set = {int(t) for t in unique_tracks}
+        export_style = tracking_export_viz_style(height, width)
+        draw_track_labels = (
+            not preview_fast
+            and should_draw_track_id_labels(num_tracks, height, width)
+            and not use_overlay_base
+        )
+        draw_centroid_markers = not preview_fast and not use_overlay_base
         
         for frame_idx in range(num_frames):
             try:
@@ -2278,13 +2302,13 @@ class TrackingWorker(QThread):
                     for track_id_int in tracks_in_frame:
                         if track_id_int not in track_colors:
                             continue
+                        color = track_colors[track_id_int]
                         
                         points_up_to = [
                             (y, x) for f, y, x in track_points_by_id[track_id_int] if f <= frame_idx
                         ]
                         
                         if len(points_up_to) > 1:
-                            color = track_colors[track_id_int]
                             points = np.array(points_up_to, dtype=int)
                             # Clip points to valid bounds
                             points[:, 0] = np.clip(points[:, 0], 0, height - 1)
@@ -2327,38 +2351,36 @@ class TrackingWorker(QThread):
                                     y_coords = np.linspace(y1, y2, num_steps, dtype=int)
                                     x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
                                 
-                                # Clip coordinates
-                                y_coords = np.clip(y_coords, 1, height - 2)  # Keep 1 pixel margin for 3x3 drawing
-                                x_coords = np.clip(x_coords, 1, width - 2)
+                                y_coords = np.clip(y_coords, 0, height - 1)
+                                x_coords = np.clip(x_coords, 0, width - 1)
                                 
-                                # Draw thick line using vectorized operations (batch process all points)
-                                # Use advanced indexing for speed
                                 for y, x in zip(y_coords, x_coords):
-                                    if preview_fast:
-                                        vis_frame[y, x, 0] = np.clip(
-                                            vis_frame[y, x, 0] * 0.55 + color[0] * 0.45, 0, 255
-                                        ).astype(np.uint8)
-                                        vis_frame[y, x, 1] = np.clip(
-                                            vis_frame[y, x, 1] * 0.55 + color[1] * 0.45, 0, 255
-                                        ).astype(np.uint8)
-                                        vis_frame[y, x, 2] = np.clip(
-                                            vis_frame[y, x, 2] * 0.55 + color[2] * 0.45, 0, 255
-                                        ).astype(np.uint8)
+                                    if preview_fast or not export_style.thick_path:
+                                        blend_path_pixel_on_frame(
+                                            vis_frame,
+                                            int(y),
+                                            int(x),
+                                            color,
+                                            bg_weight=export_style.path_bg_weight,
+                                            fg_weight=export_style.path_fg_weight,
+                                        )
                                     else:
-                                        y_start, y_end = y - 1, y + 2
-                                        x_start, x_end = x - 1, x + 2
+                                        y_start, y_end = int(y) - 1, int(y) + 2
+                                        x_start, x_end = int(x) - 1, int(x) + 2
                                         vis_frame[y_start:y_end, x_start:x_end, 0] = (
-                                            vis_frame[y_start:y_end, x_start:x_end, 0] * 0.3 + color[0] * 0.7
+                                            vis_frame[y_start:y_end, x_start:x_end, 0] * export_style.path_bg_weight
+                                            + color[0] * export_style.path_fg_weight
                                         ).astype(np.uint8)
                                         vis_frame[y_start:y_end, x_start:x_end, 1] = (
-                                            vis_frame[y_start:y_end, x_start:x_end, 1] * 0.3 + color[1] * 0.7
+                                            vis_frame[y_start:y_end, x_start:x_end, 1] * export_style.path_bg_weight
+                                            + color[1] * export_style.path_fg_weight
                                         ).astype(np.uint8)
                                         vis_frame[y_start:y_end, x_start:x_end, 2] = (
-                                            vis_frame[y_start:y_end, x_start:x_end, 2] * 0.3 + color[2] * 0.7
+                                            vis_frame[y_start:y_end, x_start:x_end, 2] * export_style.path_bg_weight
+                                            + color[2] * export_style.path_fg_weight
                                         ).astype(np.uint8)
                         
-                        # Centroid markers only for full-quality export (preview uses mask tint above).
-                        if not preview_fast:
+                        if draw_centroid_markers:
                             current_points = [
                                 (y, x)
                                 for f, y, x in track_points_by_id[track_id_int]
@@ -2368,37 +2390,36 @@ class TrackingWorker(QThread):
                                 y = int(current_points[0][0])
                                 x = int(current_points[0][1])
                                 if 0 <= y < height and 0 <= x < width:
-                                    dot_size = 5
-                                    outline_size = 2
-                                    y_outline_start = max(0, y - dot_size - outline_size)
-                                    y_outline_end = min(height, y + dot_size + outline_size + 1)
-                                    x_outline_start = max(0, x - dot_size - outline_size)
-                                    x_outline_end = min(width, x + dot_size + outline_size + 1)
-                                    yy, xx = np.ogrid[
-                                        y_outline_start:y_outline_end,
-                                        x_outline_start:x_outline_end,
-                                    ]
-                                    center_y, center_x = y - y_outline_start, x - x_outline_start
-                                    dist_sq = (yy - center_y) ** 2 + (xx - center_x) ** 2
-                                    outline_mask = (dist_sq <= (dot_size + outline_size) ** 2) & (
-                                        dist_sq > dot_size ** 2
-                                    )
-                                    vis_frame[
-                                        y_outline_start:y_outline_end,
-                                        x_outline_start:x_outline_end,
-                                        :,
-                                    ][outline_mask] = [255, 255, 255]
-                                    dot_mask = dist_sq <= dot_size ** 2
-                                    vis_frame[
-                                        y_outline_start:y_outline_end,
-                                        x_outline_start:x_outline_end,
-                                        :,
-                                    ][dot_mask] = color
-                                    labels_to_draw.append(
-                                        (str(track_id_int), x + dot_size + outline_size + 2, y - 6)
-                                    )
+                                    draw_track_centroid_marker(vis_frame, y, x, color, export_style)
+                                    if draw_track_labels:
+                                        cell_id = None
+                                        if hasattr(tracks_df, "columns") and "Cell_ID" in tracks_df.columns:
+                                            sub = tracks_df[
+                                                (tracks_df["track_id"].astype(int) == int(track_id_int))
+                                                & (tracks_df["frame"].astype(int) == int(frame_idx))
+                                            ]
+                                            if len(sub):
+                                                try:
+                                                    import pandas as pd
+                                                    val = sub.iloc[0]["Cell_ID"]
+                                                    if val is not None and not pd.isna(val):
+                                                        cid = int(val)
+                                                        if cid != int(track_id_int):
+                                                            cell_id = cid
+                                                except Exception:
+                                                    pass
+                                        label_text = overlay_label_for_track(
+                                            int(track_id_int), cell_id, int(track_id_int)
+                                        )
+                                        labels_to_draw.append(
+                                            (
+                                                label_text,
+                                                x + export_style.label_offset_x,
+                                                y + export_style.label_offset_y,
+                                            )
+                                        )
 
-                if labels_to_draw and not preview_fast:
+                if labels_to_draw and draw_track_labels:
                     try:
                         from PIL import Image
 
@@ -2406,9 +2427,9 @@ class TrackingWorker(QThread):
                         pil_img = draw_hq_labels(
                             pil_img,
                             labels_to_draw,
-                            font_size=12,
-                            scale=2,
-                            stroke_width=2,
+                            font_size=export_style.font_size,
+                            scale=export_style.label_scale,
+                            stroke_width=export_style.stroke_width,
                         )
                         vis_frame = np.array(pil_img)
                     except Exception:
@@ -2584,8 +2605,8 @@ class TrackingWorker(QThread):
         success_msg += "\n".join(debug_output[-12:])
         self.finished.emit(True, success_msg)
     
-    def _create_overlay_with_track_ids(self, images, masks_tracked, output_path=None, progress_callback=None):
-        """Create overlay visualization with track IDs as CellIDs (consistent with tracking visualization).
+    def _create_overlay_with_track_ids(self, images, masks_tracked, tracks_df, output_path=None, progress_callback=None):
+        """Create overlay visualization with track / Cell ID labels matched from tracks_df.
         If progress_callback(frame_idx, total, msg) is given, it is called each frame and tqdm is disabled."""
         import numpy as np
         import matplotlib.pyplot as plt
@@ -2626,6 +2647,8 @@ class TrackingWorker(QThread):
             PIL_AVAILABLE = False
         
         use_callback = callable(progress_callback)
+        export_style = tracking_export_viz_style(height, width)
+        draw_track_labels = should_draw_track_id_labels(num_tracks, height, width)
         overlays = []
         for frame_idx in tqdm(range(num_frames), desc="Creating tracked overlay", disable=use_callback):
             if use_callback:
@@ -2658,21 +2681,24 @@ class TrackingWorker(QThread):
                         if region.label == 0:
                             continue
                         
-                        # Get centroid
                         centroid_y, centroid_x = region.centroid
                         x, y = int(centroid_x), int(centroid_y)
-                        
-                        track_id_str = str(region.label)
-                        text_x, text_y = x + 2, y - 5
-                        labels_to_draw.append((track_id_str, text_x, text_y))
+                        track_id, cell_id = resolve_track_at_centroid(
+                            tracks_df, frame_idx, centroid_y, centroid_x
+                        )
+                        label_text = overlay_label_for_track(track_id, cell_id, int(region.label))
+                        text_x = x + export_style.label_offset_x
+                        text_y = y + export_style.label_offset_y
+                        labels_to_draw.append((label_text, text_x, text_y))
 
-                    pil_img = draw_hq_labels(
-                        pil_img,
-                        labels_to_draw,
-                        font_size=12,
-                        scale=2,
-                        stroke_width=2,
-                    )
+                    if draw_track_labels:
+                        pil_img = draw_hq_labels(
+                            pil_img,
+                            labels_to_draw,
+                            font_size=export_style.font_size,
+                            scale=export_style.label_scale,
+                            stroke_width=export_style.stroke_width,
+                        )
                     overlay = np.array(pil_img)
                 except Exception:
                     # If text rendering fails, continue without labels
@@ -2950,6 +2976,10 @@ class TrackingWorker(QThread):
         if "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
             return None
         unique_tracks = tracks_df["track_id"].unique()
+        export_style = tracking_export_viz_style(height, width)
+        lineage_draw_labels = (
+            should_draw_track_id_labels(len(unique_tracks), height, width) and not use_overlay_base
+        )
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
 
         for frame_idx in range(num_frames):
@@ -3033,43 +3063,60 @@ class TrackingWorker(QThread):
                             else:
                                 y_coords = np.linspace(y1, y2, num_steps, dtype=int)
                                 x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
-                            y_coords = np.clip(y_coords, 1, height - 2)
-                            x_coords = np.clip(x_coords, 1, width - 2)
+                            y_coords = np.clip(y_coords, 0, height - 1)
+                            x_coords = np.clip(x_coords, 0, width - 1)
                             for y, x in zip(y_coords, x_coords):
-                                ys, ye = y - 1, y + 2
-                                xs_, xe = x - 1, x + 2
-                                vis_frame[ys:ye, xs_:xe, 0] = (
-                                    vis_frame[ys:ye, xs_:xe, 0] * 0.3 + color[0] * 0.7
-                                ).astype(np.uint8)
-                                vis_frame[ys:ye, xs_:xe, 1] = (
-                                    vis_frame[ys:ye, xs_:xe, 1] * 0.3 + color[1] * 0.7
-                                ).astype(np.uint8)
-                                vis_frame[ys:ye, xs_:xe, 2] = (
-                                    vis_frame[ys:ye, xs_:xe, 2] * 0.3 + color[2] * 0.7
-                                ).astype(np.uint8)
+                                if export_style.thick_path:
+                                    ys, ye = int(y) - 1, int(y) + 2
+                                    xs_, xe = int(x) - 1, int(x) + 2
+                                    vis_frame[ys:ye, xs_:xe, 0] = (
+                                        vis_frame[ys:ye, xs_:xe, 0] * export_style.path_bg_weight
+                                        + color[0] * export_style.path_fg_weight
+                                    ).astype(np.uint8)
+                                    vis_frame[ys:ye, xs_:xe, 1] = (
+                                        vis_frame[ys:ye, xs_:xe, 1] * export_style.path_bg_weight
+                                        + color[1] * export_style.path_fg_weight
+                                    ).astype(np.uint8)
+                                    vis_frame[ys:ye, xs_:xe, 2] = (
+                                        vis_frame[ys:ye, xs_:xe, 2] * export_style.path_bg_weight
+                                        + color[2] * export_style.path_fg_weight
+                                    ).astype(np.uint8)
+                                else:
+                                    blend_path_pixel_on_frame(
+                                        vis_frame,
+                                        int(y),
+                                        int(x),
+                                        color,
+                                        bg_weight=export_style.path_bg_weight,
+                                        fg_weight=export_style.path_fg_weight,
+                                    )
                     current_track = track_points[track_points["frame"] == frame_idx]
-                    if len(current_track) > 0:
+                    if lineage_draw_labels and len(current_track) > 0:
                         y = int(current_track.iloc[0]["y"])
                         x = int(current_track.iloc[0]["x"])
                         if 0 <= y < height and 0 <= x < width:
-                            dot_size = 2
-                            color = track_colors[track_id_int]
-                            y0 = max(0, y - dot_size)
-                            y1_ = min(height, y + dot_size + 1)
-                            x0 = max(0, x - dot_size)
-                            x1_ = min(width, x + dot_size + 1)
-                            vis_frame[y0:y1_, x0:x1_, 0] = (
-                                vis_frame[y0:y1_, x0:x1_, 0] * 0.35 + color[0] * 0.65
-                            ).astype(np.uint8)
-                            vis_frame[y0:y1_, x0:x1_, 1] = (
-                                vis_frame[y0:y1_, x0:x1_, 1] * 0.35 + color[1] * 0.65
-                            ).astype(np.uint8)
-                            vis_frame[y0:y1_, x0:x1_, 2] = (
-                                vis_frame[y0:y1_, x0:x1_, 2] * 0.35 + color[2] * 0.65
-                            ).astype(np.uint8)
-                            labels_to_draw.append((str(track_id_int), x + dot_size + 3, y - 5))
+                            draw_track_centroid_marker(vis_frame, y, x, color, export_style)
+                            cell_id = None
+                            if "Cell_ID" in tracks_df.columns:
+                                try:
+                                    import pandas as pd
+                                    val = current_track.iloc[0]["Cell_ID"]
+                                    if val is not None and not pd.isna(val):
+                                        cid = int(val)
+                                        if cid != int(track_id_int):
+                                            cell_id = cid
+                                except Exception:
+                                    pass
+                            label_text = overlay_label_for_track(int(track_id_int), cell_id, int(track_id_int))
+                            labels_to_draw.append(
+                                (
+                                    label_text,
+                                    x + export_style.label_offset_x,
+                                    y + export_style.label_offset_y,
+                                )
+                            )
 
-                if labels_to_draw:
+                if labels_to_draw and lineage_draw_labels:
                     try:
                         from PIL import Image
 
@@ -3077,9 +3124,9 @@ class TrackingWorker(QThread):
                         pil_img = draw_hq_labels(
                             pil_img,
                             labels_to_draw,
-                            font_size=12,
-                            scale=2,
-                            stroke_width=2,
+                            font_size=export_style.font_size,
+                            scale=export_style.label_scale,
+                            stroke_width=export_style.stroke_width,
                         )
                         vis_frame = np.array(pil_img)
                     except Exception:

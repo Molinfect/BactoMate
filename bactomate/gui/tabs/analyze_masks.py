@@ -11,7 +11,7 @@ Exports:
 - `AnalyzeMasksTab(parent, mode=...)` factory for backward compatibility
 
 Legacy monolithic implementation notes are documented in:
-`docs/history/analyze_masks_legacy_snapshot.md`
+`docs/internal/history/analyze_masks_legacy_snapshot.md`
 """
 
 from __future__ import annotations

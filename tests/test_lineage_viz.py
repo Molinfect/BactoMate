@@ -208,6 +208,45 @@ def test_plot_lineage_metric_timeseries_parses_foci_list_column() -> None:
     assert np.isfinite(y).all()
 
 
+def test_plot_lineage_cell_cycle_area_uses_integer_frame_ticks() -> None:
+    import pandas as pd
+    from matplotlib.figure import Figure
+
+    from bactomate.modules.lineage_viz import plot_lineage_cell_cycle_area
+
+    area_df = pd.DataFrame(
+        {
+            "track_id": [2, 2, 2, 21, 21, 22, 22, 221, 221, 222, 222],
+            "frame": [0, 1, 2, 6, 7, 6, 7, 17, 18, 17, 18],
+            "area": [4.0, 5.0, 6.0, 7.0, 8.0, 7.5, 8.5, 9.0, 9.5, 9.2, 9.8],
+            "area_source": ["analysis:um2"] * 11,
+            "lineage_id": [2] * 11,
+        }
+    )
+    edges = pd.DataFrame(
+        {
+            "parent_track_id": [2, 22],
+            "daughter_track_id": [21, 221],
+            "division_frame": [6, 17],
+            "parent_last_frame": [5, 16],
+        }
+    )
+    fig = Figure(figsize=(6, 4))
+    ax = fig.add_subplot(111)
+    plot_lineage_cell_cycle_area(
+        ax,
+        area_df,
+        edges,
+        lineage_id=2,
+        label_map={2: "Cell 2", 21: "Cell 2.1", 22: "Cell 2.2", 221: "Cell 2.2.1", 222: "Cell 2.2.2"},
+        title="Lineage 2 cell-cycle area",
+    )
+    tick_vals = ax.get_xticks()
+    assert len(tick_vals) > 0
+    for tick in tick_vals:
+        assert abs(tick - round(tick)) < 1e-6, f"non-integer frame tick: {tick}"
+
+
 def test_export_lineage_figures_writes_png(tmp_path) -> None:
     import pandas as pd
 

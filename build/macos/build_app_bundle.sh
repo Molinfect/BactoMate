@@ -104,8 +104,12 @@ rsync -a \
     --exclude "build/BactoMate.iconset/" \
     --exclude "build/BactoMate.icns" \
     --exclude "Logs/" \
+    --exclude "docs/internal/" \
     --exclude "venv/" \
     "$PROJECT_ROOT/" "$RESOURCES_DIR/"
+
+mkdir -p "$RESOURCES_DIR/Logs"
+touch "$RESOURCES_DIR/Logs/.gitkeep"
 
 echo "Copying virtual environment..."
 rsync -a "$VENV_DIR/" "$RESOURCES_DIR/venv/"

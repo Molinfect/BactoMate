@@ -65,6 +65,6 @@ git push origin vX.Y.Z
 
 ## References
 
-- Lineage join contract: `docs/LINEAGE_ANALYSIS_JOIN_CONTRACT.md`
+- Lineage join contract: `docs/internal/LINEAGE_ANALYSIS_JOIN_CONTRACT.md`
 - Scripts index: `bactomate/scripts/README.md`
 - Release history: `docs/RELEASE_NOTES.md`

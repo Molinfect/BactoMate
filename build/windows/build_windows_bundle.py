@@ -18,9 +18,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from build.public_packaging import (
+    PUBLIC_DEV_ROOT_FILES,
+    PUBLIC_SKIP_DIR_NAMES,
+    copytree_ignore_public,
+    ensure_empty_logs_dir,
+)
+
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent
+    return _ROOT
 
 
 def _query_base_prefix(venv_python: Path) -> Path:
@@ -32,35 +43,26 @@ def _query_base_prefix(venv_python: Path) -> Path:
 
 
 def _should_skip_dir(name: str) -> bool:
-    return name in {
-        ".git",
-        ".pytest_cache",
-        "__pycache__",
-        "dist",
-        "BactoMate.app",
-        "venv.old",
-        "Logs",
-    }
+    return name in PUBLIC_SKIP_DIR_NAMES or name == "__pycache__"
 
 
 def _copy_project_tree(src: Path, dst: Path) -> None:
+    root = src
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():
         if _should_skip_dir(item.name) or item.name.endswith(".pyc"):
             continue
         if item.name == "venv":
             continue
+        if item.is_file() and item.name in PUBLIC_DEV_ROOT_FILES:
+            continue
         target = dst / item.name
         if item.is_dir():
             shutil.copytree(
                 item,
                 target,
-                ignore=shutil.ignore_patterns(
-                    "__pycache__",
-                    "*.pyc",
-                    "*.pyo",
-                    ".DS_Store",
-                    ".pytest_cache",
+                ignore=lambda dir_path, names: copytree_ignore_public(
+                    dir_path, names, root=root
                 ),
             )
         else:
@@ -136,6 +138,7 @@ def main() -> int:
 
     print("Copying project files ...")
     _copy_project_tree(root, dist)
+    ensure_empty_logs_dir(dist / "Logs")
 
     base_prefix = _query_base_prefix(venv_python)
     _copy_python_runtime(base_prefix, runtime_dir)

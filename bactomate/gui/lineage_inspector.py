@@ -435,7 +435,7 @@ class LineageInspectorDialog(QDialog):
         top = QHBoxLayout()
         self._frame_slider = QSlider(Qt.Orientation.Horizontal)
         self._frame_slider.setMinimum(0)
-        self._frame_slider.setMaximum(max(0, int(self._frames.shape[0]) - 1))
+        self._frame_slider.setMaximum(max(0, self._movie_frame_count() - 1))
         self._frame_slider.valueChanged.connect(self._on_frame_changed)
         self._frame_label = QLabel("Frame 1")
         top.addWidget(QLabel("Frame"))
@@ -1822,6 +1822,14 @@ class LineageInspectorDialog(QDialog):
             founder_colors[int(fid)] = (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255))
         return {t: founder_colors.get(founder_by.get(t, t), (80, 160, 220)) for t in tids}
 
+    def _movie_frame_count(self) -> int:
+        """Frames available in the movie scrubber (match preview stack depth)."""
+        n = int(self._frames.shape[0])
+        for arr in (self._stack_images, self._masks_tracked, self._masks_input):
+            if arr is not None and getattr(arr, "ndim", 0) == 3:
+                n = max(n, int(arr.shape[0]))
+        return max(1, n)
+
     def _compose_overlay_frame(self, frame_idx: int) -> np.ndarray:
         from bactomate.gui.tabs.tracking import TrackingTab
 
@@ -2421,7 +2429,8 @@ class LineageInspectorDialog(QDialog):
         return out
 
     def _show_frame(self, idx: int) -> None:
-        idx = max(0, min(idx, int(self._frames.shape[0]) - 1))
+        n_frames = self._movie_frame_count()
+        idx = max(0, min(idx, n_frames - 1))
         self._current_frame = idx
         frame = self._compose_overlay_frame(idx)
         frame = self._highlight_frame(frame, idx)
@@ -2430,7 +2439,7 @@ class LineageInspectorDialog(QDialog):
         self._canvas.set_pixmap(pix, (w, h), reset_view=False)
         self._canvas.set_foci_hover_data(self._build_cell_hover_data(idx))
         self._update_cell_profile_panel()
-        self._frame_label.setText(f"Frame {idx + 1} / {self._frames.shape[0]}")
+        self._frame_label.setText(f"Frame {idx + 1} / {n_frames}")
 
     def _selected_lineage_id(self) -> Optional[int]:
         import pandas as pd

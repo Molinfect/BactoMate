@@ -18,7 +18,7 @@ def _is_pandas_dataframe(obj: Any) -> bool:
         return isinstance(obj, _pd().DataFrame)
     except Exception:
         return False
-TRACKING_PREVIEW_FRAME_LIMIT = 10
+TRACKING_PREVIEW_FRAME_LIMIT = 20
 TRACKING_PREVIEW_FULL_STACK_WARN_FRAMES = 80
 FILTER_CAL_SPIN_WIDTH = 80
 FILTER_CAL_TIME_SPIN_WIDTH = 118
@@ -48,6 +48,7 @@ from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDial
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET
 from bactomate.gui.trackastra_utils import TRACKASTRA_DEFAULT_MODEL, TRACKASTRA_SAM2_MODEL, format_trackastra_model_error, trackastra_pretrained_feats_installed, validate_trackastra_model_choice
 from bactomate.gui.workers import TrackingPreviewResult, TrackingWorker
+from bactomate.gui.workers.tracking_io import overlay_label_for_track
 _TRACKING_PREVIEW_TIFF_CAP = 2500
 TIME_UNIT_TO_MINUTES = {'min': 1.0, 'h': 60.0, 's': 1.0 / 60.0, 'ms': 1.0 / 60000.0}
 _FILTER_TIP_DETECTIONS = 'Detections\nHow many frames have a linked detection (frame, y, x) for this track ID.\n\nExample: seen in 8 frames → detections = 8.\n\nPair with Duration and Gaps: gaps = duration − detections (missing frames inside the span).'
@@ -138,6 +139,11 @@ class TrackingTab(QWidget):
         self._module_preview_mount: Optional[QWidget] = None
         self._preview_surface: Optional[PreviewSurface] = None
         self._embedded_tracking_preview: Optional[QDialog] = None
+        self._tracking_preview_disconnect_live_updates: Optional[Callable[[], None]] = None
+        self._tracking_workspace_path: Optional[str] = None
+        self._tracking_selected_mask_path: Optional[str] = None
+        self._lineage_workspace_path: Optional[str] = None
+        self._lineage_selected_mask_path: Optional[str] = None
         self._last_preview_in_memory = False
         self._last_tracking_preview_result: Optional[TrackingPreviewResult] = None
         self._tracking_candidate_timer = QTimer(self)
@@ -186,10 +192,8 @@ class TrackingTab(QWidget):
         self._tracking_params_panel.hide()
         self._filter_tracks_panel.hide()
         scroll_layout.addStretch(1)
-        self.file_path.textChanged.connect(self._update_tracking_button_state)
-        self.file_path.textChanged.connect(self._update_filter_ranges_from_trajectory)
-        self.file_path.textChanged.connect(self._schedule_tracking_candidate_refresh)
-        self.lineage_file_path.textChanged.connect(self._update_lineage_tracking_button_state)
+        self.file_path.textChanged.connect(self._on_tracking_path_text_changed)
+        self.lineage_file_path.textChanged.connect(self._on_lineage_path_text_changed)
         self._update_tracking_button_state()
         self._update_lineage_tracking_button_state()
         QTimer.singleShot(0, self._update_filter_ranges_from_trajectory)
@@ -225,6 +229,16 @@ class TrackingTab(QWidget):
                 panel.hide()
             except RuntimeError:
                 pass
+
+    def _disconnect_tracking_preview_live_updates(self) -> None:
+        """Stop filter/overlay callbacks from touching a closed preview dialog."""
+        disconnect_fn = getattr(self, '_tracking_preview_disconnect_live_updates', None)
+        if callable(disconnect_fn):
+            try:
+                disconnect_fn()
+            except Exception:
+                pass
+        self._tracking_preview_disconnect_live_updates = None
 
     def _linking_mode_text(self, default: str='greedy') -> str:
         combo = getattr(self, 'mode_combo', None)
@@ -307,68 +321,191 @@ class TrackingTab(QWidget):
     def _schedule_tracking_candidate_refresh(self, _text: str='') -> None:
         self._tracking_candidate_timer.start(200)
 
+    def _on_tracking_path_text_changed(self, _text: str='') -> None:
+        self._sync_workspace_from_path_edit(self.file_path)
+        self._update_tracking_button_state()
+        self._update_filter_ranges_from_trajectory()
+        self._schedule_tracking_candidate_refresh()
+
+    def _on_lineage_path_text_changed(self, _text: str='') -> None:
+        self._sync_workspace_from_path_edit(self.lineage_file_path)
+        self._update_lineage_tracking_button_state()
+
+    def _workspace_attr(self, lineage: bool) -> str:
+        return '_lineage_workspace_path' if lineage else '_tracking_workspace_path'
+
+    def _selected_mask_attr(self, lineage: bool) -> str:
+        return '_lineage_selected_mask_path' if lineage else '_tracking_selected_mask_path'
+
+    @classmethod
+    def _infer_tracking_workspace(cls, path: Path) -> Path:
+        """Prefer the broadest folder that still lists multiple masks (e.g. experiment folder, not one segmentation subfolder)."""
+        if path.is_dir():
+            return path.resolve()
+        if not path.is_file():
+            return path.parent.resolve()
+        ancestor = path.parent.resolve()
+        while ancestor.is_dir():
+            if len(cls._collect_mask_files(ancestor)) > 1:
+                return ancestor
+            parent = ancestor.parent
+            if parent == ancestor:
+                break
+            # Do not walk into pytest/temp roots (sibling test folders look like multi-mask workspaces).
+            if parent.name.lower().startswith("pytest-") or parent.name.lower() in ("tmp", "temp"):
+                break
+            ancestor = parent.resolve()
+        return path.parent.resolve()
+
+    def _sync_workspace_from_path_edit(self, path_edit: QLineEdit) -> None:
+        """Remember folder scope for mask listing when the user changes a path field."""
+        lineage = path_edit is getattr(self, 'lineage_file_path', None)
+        ws_attr = self._workspace_attr(lineage)
+        sel_attr = self._selected_mask_attr(lineage)
+        raw = (path_edit.text() or '').strip()
+        if not raw:
+            setattr(self, ws_attr, None)
+            setattr(self, sel_attr, None)
+            return
+        p = Path(raw)
+        if not p.exists():
+            return
+        if p.is_dir():
+            setattr(self, ws_attr, str(p.resolve()))
+            setattr(self, sel_attr, None)
+            return
+        if is_cell_mask_tiff(p):
+            ws = self._infer_tracking_workspace(p)
+            setattr(self, ws_attr, str(ws))
+            setattr(self, sel_attr, str(p.resolve()))
+            try:
+                if ws.resolve() != p.resolve() and len(self._collect_mask_files(ws)) > 1:
+                    path_edit.blockSignals(True)
+                    try:
+                        path_edit.setText(str(ws))
+                    finally:
+                        path_edit.blockSignals(False)
+            except OSError:
+                pass
+            return
+        setattr(self, ws_attr, str(self._infer_tracking_workspace(p)))
+        setattr(self, sel_attr, None)
+
+    def _workspace_for_path_edit(self, path_edit: QLineEdit) -> Optional[Path]:
+        lineage = path_edit is getattr(self, 'lineage_file_path', None)
+        stored = getattr(self, self._workspace_attr(lineage), None)
+        if stored:
+            wp = Path(stored)
+            if wp.is_dir() and wp.exists():
+                return wp.resolve()
+        raw = (path_edit.text() or '').strip()
+        if not raw:
+            return None
+        p = Path(raw)
+        if not p.exists():
+            return None
+        return self._infer_tracking_workspace(p)
+
+    def _mask_files_for_path_edit(self, path_edit: QLineEdit) -> list[Path]:
+        ws = self._workspace_for_path_edit(path_edit)
+        if ws is None:
+            return []
+        return self._collect_mask_files(ws)
+
+    def _set_selected_mask_for_path_edit(self, path_edit: QLineEdit, mask_path: Path) -> None:
+        lineage = path_edit is getattr(self, 'lineage_file_path', None)
+        try:
+            resolved = str(mask_path.resolve())
+        except OSError:
+            resolved = str(mask_path)
+        setattr(self, self._selected_mask_attr(lineage), resolved)
+
+    def _selected_mask_for_path_edit(self, path_edit: QLineEdit) -> Optional[Path]:
+        lineage = path_edit is getattr(self, 'lineage_file_path', None)
+        sel = getattr(self, self._selected_mask_attr(lineage), None)
+        if sel:
+            sp = Path(sel)
+            if sp.is_file() and sp.exists():
+                try:
+                    return sp.resolve()
+                except OSError:
+                    return sp
+        return self._primary_mask_for_path_edit(path_edit)
+
     def refresh_tracking_candidate_list(self, *, selected: Optional[str]=None) -> None:
-        """Populate the right-hand mask dropdown from the current path."""
+        """Populate the right-hand mask dropdown from the tracking workspace folder."""
         surf = self._preview_surface
         if surf is None:
             return
+        self._sync_workspace_from_path_edit(self.file_path)
         raw = (self.file_path.text() or '').strip()
         if not raw:
-            surf.set_candidate_files([])
+            surf.clear_preview_candidates(reason="no_path")
             return
-        po = Path(raw)
-        if not po.exists():
-            surf.set_candidate_files([])
+        ws = self._workspace_for_path_edit(self.file_path)
+        if ws is None or not ws.exists():
+            surf.clear_preview_candidates(reason="no_masks")
             return
+        paths = self._collect_mask_files(ws)[:_TRACKING_PREVIEW_TIFF_CAP]
+        paths_str = [str(x) for x in paths]
         pick: Optional[str] = selected
-        if po.is_dir():
-            paths = self._collect_mask_files(po)[:_TRACKING_PREVIEW_TIFF_CAP]
-            paths_str = [str(x) for x in paths]
-            embedded_open = getattr(self, '_embedded_tracking_preview', None) is not None
-            if pick is None and embedded_open and paths_str:
-                pick = paths_str[0]
-            surf.set_candidate_files(paths_str, selected=pick, advance_placeholder=embedded_open)
-            return
-        if po.is_file():
-            parent = po.parent
-            if parent.is_dir():
-                paths = self._collect_mask_files(parent)[:_TRACKING_PREVIEW_TIFF_CAP]
-                paths_str = [str(x) for x in paths]
-                if is_cell_mask_tiff(po):
-                    try:
-                        default_sel = str(po.resolve())
-                    except OSError:
-                        default_sel = str(po)
-                else:
-                    match = self._find_mask_for_original(po, paths)
-                    default_sel = str(match.resolve()) if match else paths_str[0] if paths_str else None
-                surf.set_candidate_files(paths_str, selected=pick or default_sel)
-            else:
-                try:
-                    one = str(po.resolve())
-                except OSError:
-                    one = str(po)
-                surf.set_candidate_files([one], selected=pick or one)
+        if pick is None:
+            pick = getattr(self, '_tracking_selected_mask_path', None)
+        embedded_open = getattr(self, '_embedded_tracking_preview', None) is not None
+        surf.set_candidate_files(paths_str, selected=pick, advance_placeholder=embedded_open and pick is None)
 
     def _on_pick_mask_from_preview_list(self, path: str) -> None:
-        """When user picks a mask from the module-shell dropdown, sync the path field."""
+        """When user picks a mask from the module-shell dropdown, sync selection (keep folder path)."""
         if not path:
             return
-        edit = self.file_path
-        if edit.text() == path:
-            return
-        edit.blockSignals(True)
+        busy_action = getattr(self, '_last_track_action', 'preview') or 'preview'
+        path_edit = self.lineage_file_path if busy_action == 'preview_lineage' else self.file_path
         try:
-            edit.setText(path)
-        finally:
-            edit.blockSignals(False)
+            new_sel = str(Path(path).resolve())
+        except OSError:
+            new_sel = str(path)
+        if getattr(self, self._selected_mask_attr(path_edit is self.lineage_file_path), None) == new_sel:
+            return
+        preview_open = getattr(self, '_embedded_tracking_preview', None) is not None
+        self._set_selected_mask_for_path_edit(path_edit, Path(path))
+        raw = (path_edit.text() or '').strip()
+        if raw:
+            try:
+                current = Path(raw).resolve()
+                ws = self._workspace_for_path_edit(path_edit)
+                if current.is_dir() and ws is not None and current == ws:
+                    pass
+                elif current.is_file() and is_cell_mask_tiff(current):
+                    path_edit.blockSignals(True)
+                    try:
+                        path_edit.setText(path)
+                        self._sync_workspace_from_path_edit(path_edit)
+                    finally:
+                        path_edit.blockSignals(False)
+            except OSError:
+                pass
         self._update_tracking_button_state()
         self._update_lineage_tracking_button_state()
         self._update_filter_ranges_from_trajectory()
+        if not preview_open or busy_action not in ('preview', 'preview_lineage'):
+            return
+        mask_file = Path(path)
+        if busy_action == 'preview_lineage':
+            if not self._lineage_preflight_check(mask_file, title='Preview lineage QC'):
+                return
+            from bactomate.modules.lineage_integration import resolve_lineage_mask_path
+            run_mask = resolve_lineage_mask_path(mask_file)
+        else:
+            run_mask = mask_file
+        original_path = self._resolve_original_for_mask(run_mask)
+        original_file = str(original_path) if original_path else None
+        frame_limit = getattr(self, '_last_preview_frame_limit', TRACKING_PREVIEW_FRAME_LIMIT)
+        self._run_single_tracking_preview(run_mask, original_file, self.model_combo.currentText(), self.mode_combo.currentText(), self._resolve_device(), frame_limit=frame_limit, keep_preview_open=False, busy_action=busy_action)
 
     def _dismiss_embedded_tracking_preview(self) -> None:
         prev = getattr(self, '_embedded_tracking_preview', None)
         if prev is not None:
+            self._disconnect_tracking_preview_live_updates()
             self._restore_tracking_preview_panels()
             try:
                 prev.close()
@@ -483,7 +620,7 @@ class TrackingTab(QWidget):
         flex_control(self.filter_time_per_frame_unit, 76)
         self.create_vis_cb = QCheckBox('Create visualization')
         self.create_vis_cb.setChecked(True)
-        self.create_vis_cb.setVisible(False)
+        self.create_vis_cb.setVisible(True)
         self.create_vis_cb.setToolTip(f'Full Run tracking only: build *_overlay_tracked.tif and *_trajectories.tif when a phase stack is found (per-frame overlay with labels — slow on long movies).\n\nUncheck to skip visualization and save only tracks CSV, tracked masks, and the report workbook.\n\nPreview tracking never writes files and uses a separate light in-memory overlay (first {TRACKING_PREVIEW_FRAME_LIMIT} frames only).')
         self.overlay_track_data_cb = QCheckBox('Metrics table')
         self.overlay_track_data_cb.setChecked(False)
@@ -956,11 +1093,11 @@ class TrackingTab(QWidget):
 
     def _primary_mask_for_run_labels(self) -> Optional[Path]:
         """Best-effort mask path for frame-count labels on Run tracking buttons."""
-        return self._primary_mask_for_path_edit(self.file_path)
+        return self._selected_mask_for_path_edit(self.file_path)
 
     def _primary_lineage_mask_for_run_labels(self) -> Optional[Path]:
         """Best-effort mask path for frame-count labels on lineage buttons."""
-        return self._primary_mask_for_path_edit(self.lineage_file_path)
+        return self._selected_mask_for_path_edit(self.lineage_file_path)
 
     def _mask_stack_frame_count(self, mask_path: Path) -> Optional[int]:
         if not mask_path.is_file():
@@ -990,7 +1127,7 @@ class TrackingTab(QWidget):
         file_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         file_list.setMinimumHeight(140)
         preferred_row = 0
-        current_mask = self._primary_mask_for_path_edit(preferred_path_edit or self.file_path)
+        current_mask = self._selected_mask_for_path_edit(preferred_path_edit or self.file_path)
         for (i, p) in enumerate(mask_files):
             mp = Path(p).resolve()
             n_fr = self._mask_stack_frame_count(mp)
@@ -1404,6 +1541,64 @@ class TrackingTab(QWidget):
         return _pd().DataFrame(rows)
 
     @staticmethod
+    def _format_track_hover_tooltip(
+        track_id: int,
+        frame_idx: int,
+        y: float,
+        x: float,
+        metrics: dict[str, Any] | None,
+        *,
+        use_um: bool,
+        use_speed_physical: bool,
+        passes_filter: bool | None,
+        lineage_meta: dict[str, Any] | None = None,
+        preview_n_frames: int | None = None,
+        cell_id: int | None = None,
+    ) -> str:
+        """Multi-line hover text for a tracked cell in the preview overlay."""
+        if cell_id is not None:
+            lines = [
+                f'Cell ID: {int(cell_id)} (analysis ID — matches Excel & export overlays)',
+                f'Track ID: {int(track_id)} (Trackastra link; can differ between preview and full run)',
+            ]
+        else:
+            lines = [f'Track ID: {int(track_id)} (Trackastra linking)']
+        lines.append(f'Frame {int(frame_idx) + 1} · centroid y={y:.1f}, x={x:.1f}')
+        if metrics:
+            if preview_n_frames:
+                lines.append(
+                    f'Preview metrics only (first {int(preview_n_frames)} frames); '
+                    'Excel report uses the full tracked sequence.'
+                )
+            scope = f'preview ({int(preview_n_frames)} frames)' if preview_n_frames else 'preview'
+            detections = int(metrics.get('trajectory_length', 0))
+            duration = int(metrics.get('duration_frames', 0))
+            gaps = int(metrics.get('gap_frames', 0))
+            lines.append(f'{scope.capitalize()}: {detections} detections · spans {duration} frame{"s" if duration != 1 else ""}')
+            if gaps > 0:
+                lines.append(f'Gaps: {gaps} missed frame{"s" if gaps != 1 else ""} (linking quality)')
+            disp = float(metrics.get('displacement_um' if use_um else 'displacement_px', 0.0))
+            path = float(metrics.get('path_length_um' if use_um else 'path_length_px', 0.0))
+            disp_unit = 'µm' if use_um else 'px'
+            lines.append(f'Displacement: {disp:.2f} {disp_unit} · path: {path:.2f} {disp_unit}')
+            if detections >= 2:
+                spd = float(metrics.get('mean_speed_um_s' if use_speed_physical else 'mean_speed_px_frame', 0.0))
+                spd_unit = 'µm/s' if use_speed_physical else 'px/frame'
+                straight = float(metrics.get('straightness', 0.0))
+                lines.append(f'Mean speed: {spd:.3f} {spd_unit} · straightness: {straight:.2f}')
+        if passes_filter is not None:
+            lines.append(f'Passes filters: {"Yes" if passes_filter else "No"}')
+        if lineage_meta:
+            if lineage_meta.get('lineage_id') is not None:
+                lines.append(f"Lineage: {lineage_meta.get('lineage_id')}")
+            if lineage_meta.get('generation') is not None:
+                lines.append(f"Generation: {lineage_meta.get('generation')}")
+            if lineage_meta.get('parent_track_id') is not None:
+                lines.append(f"Parent: {lineage_meta.get('parent_track_id')}")
+        lines.append('Color = track/founder lineage color')
+        return '\n'.join(lines)
+
+    @staticmethod
     def _apply_track_filters(metrics_df: pd.DataFrame, params: dict[str, Any]) -> set[int]:
         from bactomate.gui.tracking_filters import apply_track_filters
         return apply_track_filters(metrics_df, params)
@@ -1458,21 +1653,28 @@ class TrackingTab(QWidget):
 
     @staticmethod
     def _draw_polyline_on_frame(frame_rgb: np.ndarray, points_yx: np.ndarray, *, color: tuple[int, int, int]=(255, 255, 80), thickness: int=2) -> None:
-        """Draw a thick polyline (y, x) in place on an RGB uint8 frame."""
+        """Draw a polyline (y, x) in place on an RGB uint8 frame."""
         if points_yx.shape[0] < 2:
             return
         (h, w) = (frame_rgb.shape[0], frame_rgb.shape[1])
         pts = np.asarray(points_yx, dtype=int)
         pts[:, 0] = np.clip(pts[:, 0], 0, h - 1)
         pts[:, 1] = np.clip(pts[:, 1], 0, w - 1)
+        thick = max(1, int(thickness))
         for i in range(len(pts) - 1):
             (y1, x1) = (int(pts[i, 0]), int(pts[i, 1]))
             (y2, x2) = (int(pts[i + 1, 0]), int(pts[i + 1, 1]))
             steps = max(abs(y2 - y1), abs(x2 - x1), 1)
             step_size = max(1, steps // 60)
             for (y, x) in zip(np.linspace(y1, y2, steps // step_size + 1, dtype=int), np.linspace(x1, x2, steps // step_size + 1, dtype=int)):
-                for dy in range(-thickness, thickness + 1):
-                    for dx in range(-thickness, thickness + 1):
+                if thick <= 1:
+                    if 0 <= y < h and 0 <= x < w:
+                        frame_rgb[y, x, 0] = color[0]
+                        frame_rgb[y, x, 1] = color[1]
+                        frame_rgb[y, x, 2] = color[2]
+                    continue
+                for dy in range(-thick, thick + 1):
+                    for dx in range(-thick, thick + 1):
                         (yy, xx) = (int(y) + dy, int(x) + dx)
                         if 0 <= yy < h and 0 <= xx < w:
                             frame_rgb[yy, xx, 0] = color[0]
@@ -1647,11 +1849,10 @@ class TrackingTab(QWidget):
             self._dismiss_embedded_tracking_preview()
         self._set_run_buttons_busy(True, action=busy_action)
         excel_file = None
+        wb = resolve_analysis_workbook_for_mask(mask_file)
+        if wb is not None:
+            excel_file = str(wb)
         preview_lineage = busy_action == 'preview_lineage'
-        if preview_lineage:
-            wb = resolve_analysis_workbook_for_mask(mask_file)
-            if wb is not None:
-                excel_file = str(wb)
         self.worker = TrackingWorker(mask_file, original_file, excel_file, model_name, mode, device, self, output_dir=None, track_action='preview', frame_limit=frame_limit, write_outputs=False, preview_lineage=preview_lineage)
         self.worker.preview_ready.connect(self._on_tracking_preview_ready)
         self.worker.finished.connect(self.on_tracking_preview_finished)
@@ -1716,6 +1917,9 @@ class TrackingTab(QWidget):
             preview_state['lineage_tables'] = getattr(result, 'lineage_tables', None) or {}
             preview_state['is_lineage_preview'] = bool(getattr(result, 'is_lineage_preview', False))
             preview_state.pop('metrics_df', None)
+            preview_state.pop('composed_frames', None)
+            preview_state.pop('composed_hover', None)
+            preview_state.pop('compose_cache_key', None)
             on_updated()
         model_name = self._selected_trackastra_model()
         if not self._ensure_trackastra_model_available(model_name, title='Re-track'):
@@ -1820,7 +2024,8 @@ class TrackingTab(QWidget):
         if not path.exists():
             show_message_dialog(self._main_window(), 'Not Found', f'Path not found:\n{path}', kind='warning')
             return
-        mask_files = self._mask_files_for_tracking_input(path)
+        self._sync_workspace_from_path_edit(path_edit)
+        mask_files = self._mask_files_for_path_edit(path_edit)
         if not mask_files:
             show_message_dialog(self._main_window(), 'No Mask Files Found', 'No mask TIFF files found for this path.\n\nSelect a *_masks.tif / *_mask_filtered.tif file, or a folder that contains them (e.g. _segmentation_* or a parent folder with Tif_* subfolders).', kind='warning')
             return
@@ -1837,11 +2042,7 @@ class TrackingTab(QWidget):
             mask_file = mask_file.resolve()
             if is_lineage_preview and (not self._lineage_preflight_check(mask_file, title='Preview lineage QC')):
                 return
-            path_edit.blockSignals(True)
-            try:
-                path_edit.setText(str(mask_file))
-            finally:
-                path_edit.blockSignals(False)
+            self._set_selected_mask_for_path_edit(path_edit, mask_file)
             if is_lineage_preview:
                 self._update_lineage_tracking_button_state()
             else:
@@ -1940,12 +2141,13 @@ class TrackingTab(QWidget):
         return
 
     def _write_visualization_for_mask(self, mask_file: Path, track_action: str) -> bool:
-        """Always write tracking disk visualizations (except preview runs)."""
+        """Write tracking disk visualizations when Create visualization is checked (except preview runs)."""
         from bactomate.gui.workers.tracking_io import should_write_tracking_visualization
 
+        user_enabled = bool(getattr(self, 'create_vis_cb', None) and self.create_vis_cb.isChecked())
         return should_write_tracking_visualization(
             mask_file,
-            user_enabled=True,
+            user_enabled=user_enabled,
             track_action=track_action,
         )
 
@@ -2464,6 +2666,7 @@ class TrackingTab(QWidget):
         frame_slider.setMinimum(0)
         frame_slider.setMaximum(max(0, n_frames - 1))
         frame_slider.setValue(max(0, min(initial_frame, n_frames - 1)))
+        preview_state['current_frame_idx'] = int(frame_slider.value())
         frame_label = QLabel('0')
         frame_label.setFixedWidth(40)
         loop_btn = QPushButton('Play')
@@ -2623,30 +2826,61 @@ class TrackingTab(QWidget):
                     return dict(sub.iloc[0])
             return {}
 
-        def _build_tracking_hover_data(frame_idx: int, frame_shape: tuple[int, ...], tracks_df_in: Any, masks_input_arr: Any, masks_tracked_arr: Any) -> list[tuple[float, float, str, float]]:
+        def _build_tracking_hover_data(
+            frame_idx: int,
+            frame_shape: tuple[int, ...],
+            tracks_df_in: Any,
+            masks_input_arr: Any,
+            masks_tracked_arr: Any,
+            *,
+            metrics_df: Any = None,
+            filter_params: dict[str, Any] | None = None,
+            passing_ids: set[int] | None = None,
+        ) -> list[tuple[float, float, str, float]]:
             hover: list[tuple[float, float, str, float]] = []
             if _is_pandas_dataframe(tracks_df_in) and {'track_id', 'frame', 'y', 'x'}.issubset(tracks_df_in.columns):
+                if not _is_pandas_dataframe(metrics_df) or metrics_df.empty:
+                    _refresh_preview_metrics()
+                    metrics_df = preview_state.get('metrics_df')
+                params = filter_params if filter_params is not None else self._get_filter_params()
+                use_um = bool(params.get('use_physical_units'))
+                use_speed_physical = bool(params.get('use_speed_physical'))
+                if passing_ids is None and _is_pandas_dataframe(metrics_df) and (not metrics_df.empty):
+                    passing_ids = self._apply_track_filters(metrics_df, params)
+                metrics_by_track: dict[int, dict[str, Any]] = {}
+                if _is_pandas_dataframe(metrics_df) and (not metrics_df.empty) and 'track_id' in metrics_df.columns:
+                    for _, mrow in metrics_df.iterrows():
+                        metrics_by_track[int(mrow['track_id'])] = dict(mrow)
+                preview_n_frames = int(preview_state['frames'].shape[0]) if preview_state.get('frames') is not None else None
                 current = tracks_df_in[tracks_df_in['frame'].astype(int) == int(frame_idx)]
                 for row in current.itertuples(index=False):
                     tid = int(getattr(row, 'track_id'))
                     y = float(getattr(row, 'y'))
                     x = float(getattr(row, 'x'))
                     dx, dy = TrackingTab._preview_display_xy(y, x, frame_shape)
-                    meta = _lineage_meta_for_track(tid)
-                    tooltip = [
-                        f'Track {tid}',
-                        f'Frame {int(frame_idx) + 1}',
-                        f'Centroid: y={y:.1f}, x={x:.1f}',
-                    ]
-                    if meta:
-                        if meta.get('lineage_id') is not None:
-                            tooltip.append(f"Lineage: {meta.get('lineage_id')}")
-                        if meta.get('generation') is not None:
-                            tooltip.append(f"Generation: {meta.get('generation')}")
-                        if meta.get('parent_track_id') is not None:
-                            tooltip.append(f"Parent: {meta.get('parent_track_id')}")
-                    tooltip.append('Color = track/founder lineage color')
-                    hover.append((float(dx), float(dy), '\n'.join(tooltip), 18.0))
+                    cell_id = None
+                    if hasattr(row, 'Cell_ID'):
+                        try:
+                            cell_id = int(getattr(row, 'Cell_ID'))
+                        except (TypeError, ValueError):
+                            cell_id = None
+                    passes = None
+                    if passing_ids is not None:
+                        passes = tid in passing_ids
+                    tooltip = TrackingTab._format_track_hover_tooltip(
+                        tid,
+                        int(frame_idx),
+                        y,
+                        x,
+                        metrics_by_track.get(tid),
+                        use_um=use_um,
+                        use_speed_physical=use_speed_physical,
+                        passes_filter=passes,
+                        lineage_meta=_lineage_meta_for_track(tid) or None,
+                        preview_n_frames=preview_n_frames,
+                        cell_id=cell_id,
+                    )
+                    hover.append((float(dx), float(dy), tooltip, 18.0))
             layers = preview_state.get('overlay_layers') or {}
             if (
                 bool(layers.get('untracked', False))
@@ -2763,8 +2997,17 @@ class TrackingTab(QWidget):
                         y0, y1 = max(0, y - s), min(height, y + s + 1)
                         x0, x1 = max(0, x - s), min(width, x + s + 1)
                         vis_frame[y0:y1, x0:x1, :] = (0, 255, 120)
-                    if bool(layers.get('ids', True)):
-                        labels_to_draw.append((str(tid), x + 5, y - 5))
+                    if bool(layers.get('ids', False)):
+                        label_tid = tid
+                        label_cid = None
+                        if hasattr(row, 'Cell_ID'):
+                            try:
+                                label_cid = int(getattr(row, 'Cell_ID'))
+                            except (TypeError, ValueError):
+                                label_cid = None
+                        labels_to_draw.append(
+                            (overlay_label_for_track(label_tid, label_cid, tid), x + 5, y - 5)
+                        )
             if labels_to_draw:
                 try:
                     from PIL import Image
@@ -2775,8 +3018,80 @@ class TrackingTab(QWidget):
                     vis_frame = np.asarray(pil_img)
                 except Exception:
                     pass
-            hover = _build_tracking_hover_data(frame_idx, vis_frame.shape, tracks_df_in, masks_in, masks_tr)
+            hover = []
             return vis_frame, hover
+
+        def _preview_hover_data(frame_idx: int, frame_shape: tuple[int, ...], tracks_df_in: Any) -> list[tuple[float, float, str, float]]:
+            metrics_df = preview_state.get('metrics_df')
+            params = self._get_filter_params()
+            passing_ids = set()
+            if _is_pandas_dataframe(metrics_df) and (not metrics_df.empty):
+                passing_ids = self._apply_track_filters(metrics_df, params)
+            return _build_tracking_hover_data(
+                frame_idx,
+                frame_shape,
+                tracks_df_in,
+                preview_state.get('masks_input'),
+                preview_state.get('masks_tracked'),
+                metrics_df=metrics_df,
+                filter_params=params,
+                passing_ids=passing_ids,
+            )
+
+        def _preview_compose_cache_key() -> tuple:
+            layers = tuple(sorted((preview_state.get('overlay_layers') or {}).items()))
+            tracks_df_in = _tracks_for_filtering()
+            tracks_token = id(tracks_df_in)
+            if _is_pandas_dataframe(tracks_df_in) and (not tracks_df_in.empty) and 'track_id' in tracks_df_in.columns:
+                tracks_token = (
+                    int(tracks_df_in['track_id'].nunique()),
+                    int(tracks_df_in['frame'].max()) if 'frame' in tracks_df_in.columns else -1,
+                    len(tracks_df_in),
+                )
+            founder_token = tuple(sorted((preview_state.get('founder_by_track') or {}).items()))
+            return (layers, tracks_token, founder_token, bool(preview_state.get('is_lineage_preview')))
+
+        def _invalidate_preview_compose_cache() -> None:
+            preview_state.pop('composed_frames', None)
+            preview_state.pop('composed_hover', None)
+            preview_state.pop('compose_cache_key', None)
+
+        def _rebuild_preview_compose_cache() -> None:
+            images = preview_state.get('stack_images')
+            if images is None or getattr(images, 'ndim', 0) != 3:
+                _invalidate_preview_compose_cache()
+                return
+            n_frames = int(images.shape[0])
+            tracks_in = _tracks_for_filtering()
+            frames_list: list[np.ndarray] = []
+            hover_list: list[list[tuple[float, float, str, float]]] = []
+            for fi in range(n_frames):
+                frame, _hover = _compose_preview_frame(fi, tracks_in)
+                frames_list.append(np.asarray(frame, dtype=np.uint8))
+                hover_list.append([])
+            preview_state['composed_frames'] = np.stack(frames_list, axis=0) if frames_list else None
+            preview_state['composed_hover'] = hover_list
+            preview_state['compose_cache_key'] = _preview_compose_cache_key()
+
+        def _ensure_preview_compose_cache() -> None:
+            images = preview_state.get('stack_images')
+            if images is None or getattr(images, 'ndim', 0) != 3:
+                return
+            key = _preview_compose_cache_key()
+            if preview_state.get('compose_cache_key') == key and preview_state.get('composed_frames') is not None:
+                return
+            _rebuild_preview_compose_cache()
+
+        def _get_cached_preview_frame(frame_idx: int, tracks_df_in: Any) -> np.ndarray:
+            images = preview_state.get('stack_images')
+            if images is None or getattr(images, 'ndim', 0) != 3:
+                return np.asarray(preview_state['frames'][frame_idx], dtype=np.uint8)
+            _ensure_preview_compose_cache()
+            composed = preview_state.get('composed_frames')
+            if composed is not None and 0 <= frame_idx < int(composed.shape[0]):
+                return np.asarray(composed[frame_idx], dtype=np.uint8).copy()
+            frame, _hover = _compose_preview_frame(frame_idx, tracks_df_in)
+            return np.asarray(frame, dtype=np.uint8)
 
         def _refresh_preview_metrics() -> None:
             tracks_in = _tracks_for_filtering()
@@ -3096,6 +3411,7 @@ class TrackingTab(QWidget):
             preview_state['frames'] = self._draw_filtered_trajectory_overlay(images, filtered_df, masks_tracked=masks_tr)
             preview_state['tracks_df'] = filtered_df
             preview_state['metrics_df'] = metrics_df
+            _invalidate_preview_compose_cache()
             n_tr = filtered_df['track_id'].nunique() if not filtered_df.empty else 0
             dlg.info_label.setText(f'{display_name} — {n_tr} tracks after filter (colored by track ID on masks)')
             nf = preview_state['frames'].shape[0]
@@ -3126,7 +3442,8 @@ class TrackingTab(QWidget):
             fi = max(0, min(int(_state.frame_idx), preview_state['frames'].shape[0] - 1))
             _update_metrics_table(fi)
             tracks_in = _tracks_for_filtering()
-            frame, hover_data = _compose_preview_frame(fi, tracks_in)
+            frame = _get_cached_preview_frame(fi, tracks_in)
+            hover_data = _preview_hover_data(fi, frame.shape, tracks_in)
             highlight_tid = preview_state.get('highlight_track_id')
             if highlight_tid is not None:
                 masks_tr = preview_state.get('masks_tracked')
@@ -3162,33 +3479,92 @@ class TrackingTab(QWidget):
                 info += ' · preview resolution (downsampled)'
             return RenderResult(pixmap=pixmap, image_size=(int(scaled.shape[1]), int(scaled.shape[0])), title_text=f"{display_name} — frame {fi + 1}/{preview_state['frames'].shape[0]}", info_text=info, foci_hover_data=hover_data)
 
+        reapply_btn.clicked.connect(apply_filters)
+        retrack_btn.clicked.connect(retrack_and_filter)
+        dlg_parent = mount if embed else self._main_window()
+        dlg = PreviewDialogBase(dlg_parent, title=display_name, post_canvas_controls=nav, navigation_controls=None, top_controls=settings_scroll, top_controls_title='', top_controls_expanded=False, lut_expanded=False, primary_action_label='Redraw filtered tracks', primary_action_callback=apply_filters, render_callback=_render, minimum_size=(200, 200) if embed else (900, 700), side_controls=None, embedded=embed, show_close_button=not embed, hide_title_and_builtin_info=embed, info_row_above_navigation=False)
+
+        def _preview_live_updates_active() -> bool:
+            return self._qt_widget_alive(dlg) and self._qt_widget_alive(frame_slider)
+
+        def _current_preview_frame() -> int:
+            fi = int(preview_state.get('current_frame_idx', 0))
+            if _preview_live_updates_active():
+                try:
+                    fi = int(frame_slider.value())
+                except RuntimeError:
+                    pass
+            return fi
+
         def _on_overlay_track_data_toggled(_checked: bool) -> None:
+            if not _preview_live_updates_active():
+                return
             section = preview_state.get('metrics_table_section')
             if section is not None:
                 section.setVisible(bool(_checked))
                 if _checked:
                     section.set_expanded(True)
-            _update_metrics_table(frame_slider.value())
+            _update_metrics_table(_current_preview_frame())
             if _checked:
                 QTimer.singleShot(0, _scroll_preview_settings_to_metrics)
                 QTimer.singleShot(80, _scroll_preview_settings_to_metrics)
             dlg.refresh()
 
         def _on_filter_spin_changed() -> None:
+            if not _preview_live_updates_active():
+                return
             preview_state.pop('metrics_df', None)
             _refresh_preview_metrics()
-            _update_metrics_table(frame_slider.value())
+            _update_metrics_table(_current_preview_frame())
+            dlg.refresh()
+
+        filter_spins = (
+            self.filter_min_length,
+            self.filter_max_length,
+            self.filter_min_duration,
+            self.filter_max_duration,
+            self.filter_min_gaps,
+            self.filter_max_gaps,
+            self.filter_min_displacement,
+            self.filter_max_displacement,
+            self.filter_min_path_length,
+            self.filter_max_path_length,
+            self.filter_min_speed,
+            self.filter_max_speed,
+            self.filter_min_straightness,
+            self.filter_pixel_size,
+            self.filter_time_per_frame,
+        )
+
+        def _disconnect_preview_filter_live_updates() -> None:
+            if hasattr(self, 'overlay_track_data_cb'):
+                try:
+                    self.overlay_track_data_cb.stateChanged.disconnect(_on_overlay_track_data_toggled)
+                except (TypeError, RuntimeError):
+                    pass
+            for _spin in filter_spins:
+                try:
+                    _spin.valueChanged.disconnect(_on_filter_spin_changed)
+                except (TypeError, RuntimeError):
+                    pass
+            try:
+                self.filter_time_per_frame_unit.currentTextChanged.disconnect(_on_filter_spin_changed)
+            except (TypeError, RuntimeError):
+                pass
+
+        self._disconnect_tracking_preview_live_updates()
         if hasattr(self, 'overlay_track_data_cb'):
             self.overlay_track_data_cb.stateChanged.connect(_on_overlay_track_data_toggled)
-        for _spin in (self.filter_min_length, self.filter_max_length, self.filter_min_duration, self.filter_max_duration, self.filter_min_gaps, self.filter_max_gaps, self.filter_min_displacement, self.filter_max_displacement, self.filter_min_path_length, self.filter_max_path_length, self.filter_min_speed, self.filter_max_speed, self.filter_min_straightness, self.filter_pixel_size, self.filter_time_per_frame):
-            _spin.valueChanged.connect(lambda _v: _on_filter_spin_changed())
-        self.filter_time_per_frame_unit.currentTextChanged.connect(lambda _t: _on_filter_spin_changed())
-        reapply_btn.clicked.connect(apply_filters)
-        retrack_btn.clicked.connect(retrack_and_filter)
-        dlg_parent = mount if embed else self._main_window()
-        dlg = PreviewDialogBase(dlg_parent, title=display_name, post_canvas_controls=nav, navigation_controls=None, top_controls=settings_scroll, top_controls_title='', top_controls_expanded=False, lut_expanded=False, primary_action_label='Redraw filtered tracks', primary_action_callback=apply_filters, render_callback=_render, minimum_size=(200, 200) if embed else (900, 700), side_controls=None, embedded=embed, show_close_button=not embed, hide_title_and_builtin_info=embed, info_row_above_navigation=False)
+        for _spin in filter_spins:
+            _spin.valueChanged.connect(_on_filter_spin_changed)
+        self.filter_time_per_frame_unit.currentTextChanged.connect(_on_filter_spin_changed)
+        self._tracking_preview_disconnect_live_updates = _disconnect_preview_filter_live_updates
         for _key, _cb in (preview_state.get('overlay_layer_checks') or {}).items():
-            _cb.stateChanged.connect(lambda _state, key=_key, cb=_cb: (preview_state['overlay_layers'].__setitem__(key, cb.isChecked()), dlg.refresh()))
+            def _on_overlay_layer_changed(_state, key=_key, cb=_cb) -> None:
+                preview_state['overlay_layers'].__setitem__(key, cb.isChecked())
+                _invalidate_preview_compose_cache()
+                dlg.refresh()
+            _cb.stateChanged.connect(_on_overlay_layer_changed)
         dlg.set_primary_action(apply_filters, label='Redraw filtered tracks', visible=False)
         try:
             dlg.lut_section.setVisible(False)
@@ -3198,6 +3574,7 @@ class TrackingTab(QWidget):
         dlg.info_label.setText(f'{display_name} — cell outlines colored by track ID (from tracked masks, not raw mask labels)')
 
         def _on_frame_changed(idx: int) -> None:
+            preview_state['current_frame_idx'] = int(idx)
             dlg.set_frame_idx(int(idx))
             frame_label.setText(str(idx))
             _update_metrics_table(int(idx))
@@ -3223,6 +3600,7 @@ class TrackingTab(QWidget):
         def _on_closed(_result: int=0) -> None:
             frame_loop_timer.stop()
             loop_btn.setChecked(False)
+            self._disconnect_tracking_preview_live_updates()
             self._embedded_tracking_preview = None
             self._restore_tracking_preview_panels()
             surf = self._preview_surface
@@ -3239,7 +3617,7 @@ class TrackingTab(QWidget):
             surf = self._preview_surface
             if surf is not None:
                 try:
-                    surf.set_preview_chrome_visible(False)
+                    surf.set_preview_chrome_visible(surf.multiple_candidates_available())
                 except Exception:
                     pass
         else:

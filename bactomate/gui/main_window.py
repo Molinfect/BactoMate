@@ -69,6 +69,17 @@ _STACK_TRAINING = 5
 _MODULE_ID_TO_STACK: dict[str, int] = {MODULE_DASHBOARD: _STACK_DASHBOARD, MODULE_FILE_CONVERSION: _STACK_FILE_CONVERSION, MODULE_SEGMENTATION: _STACK_SEGMENTATION, MODULE_TRACKING: _STACK_TRACKING, MODULE_POST_PROCESSING: _STACK_POST_PROCESSING, MODULE_TRAINING: _STACK_TRAINING}
 _STACK_TO_MODULE_ID: dict[int, str] = {v: k for (k, v) in _MODULE_ID_TO_STACK.items()}
 _PIPELINE_NAV_BAR: tuple[tuple[str, str], ...] = ((MODULE_FILE_CONVERSION, 'File conversion'), (MODULE_SEGMENTATION, 'Segmentation'), (MODULE_TRACKING, 'Tracking'), (MODULE_POST_PROCESSING, 'Post-processing'), (MODULE_TRAINING, 'Training'))
+_MODULE_PREVIEW_CONTEXTS: dict[str, str] = {
+    MODULE_FILE_CONVERSION: 'file_conversion',
+    MODULE_SEGMENTATION: 'segmentation',
+    MODULE_TRACKING: 'tracking',
+    MODULE_POST_PROCESSING: 'post_processing',
+    MODULE_TRAINING: 'training',
+}
+
+
+def _preview_context_for_module(module_id: str) -> str:
+    return _MODULE_PREVIEW_CONTEXTS.get(module_id, 'file_conversion')
 _STATUS_LOG_TEXT_STYLESHEET = 'QTextEdit { background-color: #1f1f1f; color: #dce6f2; border: 1px solid #2d3a47; border-radius: 6px; padding: 6px 8px;}QTextEdit:focus { border-color: #4a9eff; background-color: #252525; }'
 
 def _get_app_icon_path() -> Path | None:
@@ -779,6 +790,10 @@ class MainWindow(QMainWindow):
         shell = self._module_shells.get(module_id)
         if shell is not None:
             shell.set_workspace_line(wr)
+            try:
+                shell.preview_surface().set_preview_context(_preview_context_for_module(module_id))
+            except Exception:
+                pass
         self._apply_workspace_hints_for_module(module_id)
 
     def _update_all_shell_workspace_lines(self) -> None:
@@ -867,10 +882,10 @@ class MainWindow(QMainWindow):
                 self.tracking_tab._dismiss_embedded_tracking_preview()
         except Exception:
             log_exception(get_logger(), 'Dismiss tracking embedded preview')
-        for shell in self._module_shells.values():
+        for module_id, shell in self._module_shells.items():
             try:
                 surf = shell.preview_surface()
-                surf.set_preview_context('file_conversion')
+                surf.set_preview_context(_preview_context_for_module(module_id))
                 surf.clear_mount()
             except Exception:
                 pass
@@ -1310,7 +1325,7 @@ class MainWindow(QMainWindow):
             from bactomate import __version__
             version = __version__
         except Exception:
-            version = '2.8.4'
+            version = '2.8.5'
         show_message_dialog(self, 'About BactoMate', f'BactoMate – bacteria time-lapse batch processing and analysis.\n\nVersion {version}\n\nDocumentation: Help → User manual.', kind='info')
 
     def _check_environment(self) -> None:

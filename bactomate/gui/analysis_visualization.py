@@ -110,30 +110,77 @@ def _normalize_plane_u8(
     return (norm * 255.0).astype(np.uint8)
 
 
-def _normalize_fluorescence_u8(plane: np.ndarray) -> np.ndarray:
+def _normalize_fluorescence_u8(
+    plane: np.ndarray,
+    *,
+    cell_mask: np.ndarray | None = None,
+) -> np.ndarray:
     """
-    Brighter display LUT for dim foci/FI channels.
+    Display LUT for dim foci/FI channels with suppressed background.
 
-    Uses log1p compression and percentiles from signal-bearing pixels so a dark
-  background does not dominate the stretch.
+    When a cell mask is available, background is estimated from pixels outside
+    cells and contrast is computed from in-cell signal so camera noise does not
+    brighten the whole panel.
     """
     arr = np.clip(np.asarray(plane, dtype=np.float32), 0.0, None)
     if arr.size == 0:
         return np.zeros((0, 0), dtype=np.uint8)
-    hi_raw = float(np.percentile(arr, 99.9)) if np.isfinite(arr).any() else 0.0
-    work = np.log1p(arr) if hi_raw > 0 else arr
-    signal = work[work > 0]
-    if signal.size < 64:
-        signal = work.ravel()
-    lo = float(np.percentile(signal, 0.2))
-    hi = float(np.percentile(signal, 99.2))
+
+    mask_i: np.ndarray | None = None
+    if cell_mask is not None:
+        candidate = np.asarray(cell_mask)
+        if candidate.shape == arr.shape[:2]:
+            mask_i = np.asarray(candidate, dtype=np.int32)
+
+    bg = 0.0
+    if mask_i is not None and np.any(mask_i <= 0):
+        bg_vals = arr[mask_i <= 0]
+        bg_vals = bg_vals[np.isfinite(bg_vals)]
+        if bg_vals.size >= 32:
+            bg = float(np.median(bg_vals))
+
+    corrected = np.clip(arr - bg, 0.0, None)
+
+    if mask_i is not None and np.any(mask_i > 0):
+        signal_region = corrected[mask_i > 0]
+    else:
+        signal_region = corrected.ravel()
+    signal_region = signal_region[np.isfinite(signal_region)]
+    positive = signal_region[signal_region > 0]
+    if positive.size >= 32:
+        lut_source = positive
+    elif signal_region.size >= 32:
+        lut_source = signal_region
+    else:
+        lut_source = corrected.ravel()
+
+    use_log = float(np.percentile(lut_source, 99.5)) > 0.0
+    work = np.log1p(corrected) if use_log else corrected
+    if mask_i is not None and np.any(mask_i > 0):
+        work_signal = work[mask_i > 0]
+    else:
+        work_signal = work.ravel()
+    work_signal = work_signal[np.isfinite(work_signal)]
+    if work_signal.size < 32:
+        work_signal = work.ravel()
+
+    lo = float(np.percentile(work_signal, 1.0))
+    hi = float(np.percentile(work_signal, 99.5))
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-        lo = float(np.min(work))
-        hi = float(np.max(work))
+        lo = float(np.min(work_signal))
+        hi = float(np.max(work_signal))
         if hi <= lo:
             return np.zeros(arr.shape, dtype=np.uint8)
+
     norm = np.clip((work - lo) / (hi - lo), 0.0, 1.0)
-    norm = np.power(norm, 0.5)
+    norm = np.power(norm, 0.55)
+
+    if mask_i is not None:
+        outside = mask_i <= 0
+        norm[outside] = 0.0
+    else:
+        norm[norm < 0.04] = 0.0
+
     return (norm * 255.0).astype(np.uint8)
 
 
@@ -251,7 +298,15 @@ def _draw_panel_title(rgb: np.ndarray, title: str) -> np.ndarray:
         from PIL import Image
 
         pil = Image.fromarray(rgb)
-        pil = draw_hq_labels(pil, [(title, 8, 8)], font_size=11, scale=1, stroke_width=2)
+        # Titles looked soft because they were drawn at native resolution while
+        # cell/foci labels use oversampled text rendering. Match that path here.
+        pil = draw_hq_labels(
+            pil,
+            [(title, 8, 7)],
+            font_size=13,
+            scale=2,
+            stroke_width=3,
+        )
         return np.asarray(pil, dtype=np.uint8).copy()
     except Exception:
         return np.asarray(rgb, dtype=np.uint8).copy()
@@ -298,7 +353,7 @@ def _render_foci_panel_frame(
 ) -> np.ndarray:
     h, w = mask_2d.shape[:2]
     if foci_2d is not None and np.asarray(foci_2d).shape == (h, w):
-        gray = _normalize_fluorescence_u8(foci_2d)
+        gray = _normalize_fluorescence_u8(foci_2d, cell_mask=mask_2d)
     else:
         gray = np.zeros((h, w), dtype=np.uint8)
     rgb = np.stack([gray, gray, gray], axis=-1)

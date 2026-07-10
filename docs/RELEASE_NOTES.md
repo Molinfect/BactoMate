@@ -4,6 +4,25 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.5 (2026-07-10)
+
+### Tracking and lineage
+
+- **Tracking preview:** richer hover tooltips (Cell ID, speed, track scope), true 1px paths, faster scrubbing, and **Create visualization** export with resolution-aware styling; saves `*_overlay_tracked.tif`.
+- **Cell ID alignment:** preview movement metrics and hover IDs match analysis Excel when a workbook is available (`Cell_ID` vs mask label).
+- **Mask workspace:** mask dropdown stays available after preview; switching masks re-runs preview without narrowing the folder to a single file.
+- **Stability:** closing the preview no longer crashes filter sliders (`QSlider` deleted) or hides the mask picker.
+- **Frame limit:** tracking and lineage review previews use up to **20** frames (aligned).
+- **Lineage review:** frame slider spans the full preview stack depth.
+
+### Post-processing, layout, and packaging
+
+- **Montage:** improved merged-color handling for multi-channel montages.
+- **Layout:** responsive control layout fixes on smaller windows.
+- **Release bundles:** macOS DMG and Windows zip exclude maintainer-only docs and ship a clean empty **Logs/** folder for new installs.
+
+---
+
 ## v2.8.4 (2026-07-07)
 
 ### Analysis, conversion, and packaging

@@ -58,6 +58,20 @@ def test_fluorescence_lut_brighter_than_zeros():
     assert int(out[30, 30]) > int(out[0, 0])
 
 
+def test_fluorescence_lut_suppresses_noisy_background_outside_cells():
+    rng = np.random.RandomState(0)
+    plane = rng.randint(20, 80, size=(64, 64)).astype(np.float32)
+    mask = np.zeros((64, 64), dtype=np.int32)
+    mask[16:48, 16:48] = 1
+    plane[24:40, 24:40] = 400.0
+    plane[30, 30] = 1200.0
+    out = _normalize_fluorescence_u8(plane, cell_mask=mask)
+    outside_mean = float(out[mask == 0].mean())
+    inside_max = int(out[mask > 0].max())
+    assert outside_mean < 8.0
+    assert inside_max > 80
+
+
 def test_separate_label_positions_spreads_nearby():
     labels = [("1", 10, 10), ("2", 11, 11), ("3", 12, 12)]
     out = _separate_label_positions(labels, min_sep_px=12)
@@ -74,6 +88,14 @@ def test_foci_panel_draws_after_cell_labels():
     panel = _render_foci_panel_frame(foci, mask, rows, title="GFP")
     assert panel.shape == (32, 32, 3)
     assert panel.dtype == np.uint8
+
+
+def test_panel_title_draws_visible_text() -> None:
+    from bactomate.gui.analysis_visualization import _draw_panel_title
+
+    rgb = np.zeros((40, 80, 3), dtype=np.uint8)
+    out = _draw_panel_title(rgb, "Cells")
+    assert int(out[:20, :40].max()) > 0
 
 
 def test_combined_visualization_loads_foci_stack_and_maps_generic_channel(tmp_path):

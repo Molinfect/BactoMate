@@ -184,6 +184,9 @@ python main.py --version
 python main.py --smoke-test
 echo "✓ Smoke test passed"
 
+mkdir -p Logs
+: > Logs/.gitkeep 2>/dev/null || touch Logs/.gitkeep
+
 echo ""
 echo "=========================================="
 echo "Setup complete!"
