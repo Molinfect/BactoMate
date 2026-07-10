@@ -29,6 +29,8 @@ ENV/
 # Build outputs (keep tracked packaging scripts under build/macos and build/windows)
 build/*
 !build/README.md
+!build/public_packaging.py
+!build/strip_dev_tree_for_main.sh
 !build/macos/**
 !build/windows/**
 !build/macos/*.sh
@@ -68,7 +70,8 @@ omnipose_pretrained/
 *.keras
 
 # Logs and session files
-Logs/
+Logs/*
+!Logs/.gitkeep
 *.log
 *_session.json
 

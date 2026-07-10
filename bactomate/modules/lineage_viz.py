@@ -50,6 +50,22 @@ def _safe_int(v: Any) -> Optional[int]:
         return None
 
 
+def _apply_integer_frame_xaxis(ax: Any, frames: Any = None) -> None:
+    """Use whole-number frame ticks (frames are discrete, not fractional)."""
+    from matplotlib.ticker import MaxNLocator
+
+    if frames is not None:
+        arr = np.asarray(frames, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size > 0:
+            lo = int(np.floor(arr.min()))
+            hi = int(np.ceil(arr.max()))
+            if lo == hi:
+                hi = lo + 1
+            ax.set_xlim(lo - 0.4, hi + 0.4)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+
 def build_lineage_tree_layout(
     edges_df: Any,
     tracks_meta_df: Any,
@@ -319,6 +335,7 @@ def plot_lineage_growth(
     ax.set_xlabel("Frame")
     ax.set_ylabel(ylab)
     ax.set_title(title if title != "Lineage growth" or lineage_id is None else f"{title} — lineage {lineage_id}")
+    _apply_integer_frame_xaxis(ax, frames)
     ax.grid(True, alpha=0.25)
     handles, labels = ax.get_legend_handles_labels()
     if labels:
@@ -429,6 +446,7 @@ def plot_lineage_cell_cycle_area(
     ax.set_title(title if lineage_id is None else f"{title} — lineage {lineage_id}")
     ax.set_xlabel("Frame")
     ax.set_ylabel(f"Cell area ({unit})")
+    _apply_integer_frame_xaxis(ax, sub["frame"].astype(float) + 1.0)
     ax.grid(True, alpha=0.25)
     if len(tids) <= 10:
         ax.legend(fontsize=7, loc="best")
@@ -600,6 +618,7 @@ def plot_lineage_metric_timeseries(
     ax.set_xlabel("Frame")
     ax.set_ylabel(ylab)
     ax.set_title(_metric_plot_title(title, lineage_id))
+    _apply_integer_frame_xaxis(ax, frames)
     ax.grid(True, alpha=0.25)
 
 

@@ -1,7 +1,7 @@
 """
 Lineage integration: join Trackastra outputs with Analyze workbooks, build tables, QC, reports.
 
-See docs/LINEAGE_ANALYSIS_JOIN_CONTRACT.md for the stable join contract.
+See docs/internal/LINEAGE_ANALYSIS_JOIN_CONTRACT.md for the stable join contract.
 """
 from __future__ import annotations
 

@@ -75,7 +75,18 @@ Copy the zip to lab machines; launch with `BactoMate.bat` inside the extracted f
 
 Before uploading a manual release (if not using CI):
 
-1. Tag on `main` after merging `dev`.
-2. Build DMG (macOS) and/or Windows zip on the target OS.
-3. Attach `dist/BactoMate.dmg` and `dist/BactoMate-win64.zip` to the GitHub release.
-4. Smoke-test: open the app, run `--version` and `--smoke-test` from the bundle.
+1. On `dev`, finish features and tests.
+2. Run `./build/strip_dev_tree_for_main.sh`, commit, and merge into `main` (or run the script on `main` after merge).
+3. Tag on `main` (`v*`).
+4. Build DMG (macOS) and/or Windows zip on the target OS.
+5. Attach `dist/BactoMate.dmg` and `dist/BactoMate-win64.zip` to the GitHub release.
+6. Smoke-test: open the app, run `--version` and `--smoke-test` from the bundle.
+
+### dev vs main
+
+- **`dev`** — full tree, including `docs/internal/` (plans, join contracts, pipeline diagrams).
+- **`main`** — public-facing clone; run `build/strip_dev_tree_for_main.sh` so internal docs and draft manuscripts are not published.
+
+Bundles (DMG / zip) always exclude `docs/internal/` and include an empty `Logs/` directory regardless of branch.
+
+Step-by-step release (version bump, merge, strip, tag): **`docs/internal/RELEASE_WORKFLOW.md`** on the `dev` branch.

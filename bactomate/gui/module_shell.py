@@ -200,14 +200,19 @@ class PreviewSurface(QWidget):
                 "Choose a mask from the dropdown above, then click Preview filters on the left."
             )
         elif self._preview_context == "tracking":
+            self._tracking_no_path_msg = (
+                "Set a mask TIFF or folder on the left (browse, drag-and-drop, or File/Folder), "
+                "then click Preview tracking. Trajectory overlays appear here with a frame slider, "
+                "overlay layers, and per-track metrics on hover."
+            )
             self._empty_folder_msg = (
-                "No mask .tif / .tiff files found under this folder. "
-                "Set a mask or filtered-mask path on the left, or run segmentation / filtering first."
+                "No mask TIFFs found for this path. Choose a *_masks.tif or filtered-mask file on the left, "
+                "or run segmentation / filtering first."
             )
             self._idle_placeholder_msg = (
-                "Select a mask from the dropdown, then run Preview tracking "
-                "(quick or full time lapse in the setup dialog). "
-                "Trackastra trajectory overlays appear here frame by frame."
+                "Masks for this path are listed in the dropdown above. Pick one if needed, "
+                "then click Preview tracking on the left. While preview is open, use the dropdown "
+                "to switch masks (same frame scope as the last preview)."
             )
         elif self._preview_context == "post_processing_scalebar":
             self._empty_folder_msg = (
@@ -252,6 +257,20 @@ class PreviewSurface(QWidget):
             )
         self._placeholder.setText(self._idle_placeholder_msg)
 
+    def clear_preview_candidates(self, *, reason: str = "no_masks") -> None:
+        """Clear the file combo and show a context-appropriate idle hint (dropdown hidden)."""
+        self._file_combo.blockSignals(True)
+        try:
+            self._file_combo.clear()
+            self._candidate_list_nonempty = False
+            self._sync_preview_chrome_widgets()
+            if self._preview_context == "tracking" and reason == "no_path":
+                self._placeholder.setText(getattr(self, "_tracking_no_path_msg", self._idle_placeholder_msg))
+            else:
+                self._placeholder.setText(self._empty_folder_msg)
+        finally:
+            self._file_combo.blockSignals(False)
+
     def set_toolbar_widget(self, widget: Optional[QWidget]) -> None:
         """Optional row between the file combo and the preview mount (e.g. Preview segmentation)."""
         while self._toolbar_layout.count():
@@ -269,6 +288,17 @@ class PreviewSurface(QWidget):
         """Hide the TIFF picker row while an embedded preview fills the mount (avoids overlap/clutter)."""
         self._preview_chrome_visible = bool(visible)
         self._sync_preview_chrome_widgets()
+
+    def multiple_candidates_available(self) -> bool:
+        """True when the file combo lists two or more selectable masks/files."""
+        try:
+            n = 0
+            for i in range(self._file_combo.count()):
+                if self._file_combo.itemData(i) is not None:
+                    n += 1
+            return n > 1
+        except Exception:
+            return False
 
     def set_file_picker_enabled(self, enabled: bool) -> None:
         """Hide the candidate-file dropdown when a module has no preview picker (e.g. Training)."""
@@ -307,7 +337,7 @@ class PreviewSurface(QWidget):
             self._file_combo.clear()
             placeholder = (
                 "— Select mask —"
-                if self._preview_context == "filtering"
+                if self._preview_context in ("filtering", "tracking")
                 else "— Select file to preview —"
             )
             self._file_combo.addItem(placeholder, None)

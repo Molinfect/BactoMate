@@ -38,7 +38,29 @@ def test_collect_mask_files_segmentation_subfolder(tmp_path: Path):
     assert not any(p.name == "T7_001.tif" for p in found)
 
 
-def test_mask_stack_frame_count_single_page_3d_tiff(tmp_path: Path):
+def test_infer_tracking_workspace_prefers_parent_with_multiple_masks(tmp_path: Path):
+    root = tmp_path / "swimming"
+    root.mkdir()
+    seg_a = root / "T7_001_omnipose_segmentation"
+    seg_b = root / "T7_002_omnipose_segmentation"
+    seg_a.mkdir()
+    seg_b.mkdir()
+    mask_a = seg_a / "T7_001_masks.tif"
+    mask_b = seg_b / "T7_002_masks.tif"
+    mask_a.write_bytes(b"x")
+    mask_b.write_bytes(b"x")
+    ws = TrackingTab._infer_tracking_workspace(mask_a)
+    assert ws.resolve() == root.resolve()
+    assert len(TrackingTab._collect_mask_files(ws)) == 2
+
+
+def test_infer_tracking_workspace_keeps_single_mask_folder(tmp_path: Path):
+    seg = tmp_path / "one_sample_segmentation"
+    seg.mkdir()
+    mask = seg / "sample_masks.tif"
+    mask.write_bytes(b"x")
+    ws = TrackingTab._infer_tracking_workspace(mask)
+    assert ws.resolve() == seg.resolve()
     import numpy as np
     import tifffile
 

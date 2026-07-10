@@ -1225,7 +1225,29 @@ class OmniposeSegTab(QWidget):
         folder_btn = QPushButton('Browse Folder...')
         folder_btn.clicked.connect(self.select_folder)
         path_lay = module_path_action_outer_layout(file_group)
-        path_lay.addWidget(module_path_drop_row(file_group, self.handle_dropped_path_segmentation, line_edit=self.file_path, buttons=(file_btn, folder_btn), info_icon=create_info_icon('Path to a TIFF file or folder for segmentation.\n\nFolder: processes all compatible TIFFs in that directory. Drag and drop a file or folder onto this area.', self)))
+        path_lay.addWidget(module_path_drop_row(
+            file_group,
+            self.handle_dropped_path_segmentation,
+            line_edit=self.file_path,
+            buttons=(file_btn, folder_btn),
+            info_icon=create_info_icon(
+                'Path to a TIFF file or folder for segmentation.\n\n'
+                'Folder: processes all compatible TIFFs in that directory. '
+                'Drag and drop a file or folder onto this area.\n\n'
+                'Foci pairing (when Detect foci is on): put the segmentation input and '
+                'foci stacks in the same folder with matching sample IDs. Names use '
+                'underscores between sample ID and channel tags — hyphen exports '
+                'from other software are not paired automatically.\n\n'
+                'Works:\n'
+                '  EM20129_phase.tif  +  EM20129_foci_ssb.tif\n'
+                '  sample_Phase.tif  +  sample_foci_GFP.tif\n\n'
+                'Does not pair:\n'
+                '  EM20129-Membrane.tif  +  EM20129-ssb_foci.tif\n\n'
+                'Best: File Conversion with Foci ticked for fluorescence channels — '
+                'writes sample_phase.tif and sample_foci_<channel>.tif.',
+                self,
+            ),
+        ))
         actions_layout = module_path_action_buttons_layout()
         self._preview_btn_idle = 'Preview segmentation'
         self.preview_btn = ProgressCancelButton(self._preview_btn_idle)
@@ -1376,7 +1398,7 @@ class OmniposeSegTab(QWidget):
         )
         self.detect_foci = QCheckBox('Detect foci')
         self.detect_foci.setChecked(False)
-        foci_info = create_info_icon('When enabled, BactoMate looks for `*_foci.tif` next to the input file/folder and runs spot detection.\n\nOutputs a raw foci CSV in the segmentation output folder (one per foci channel).\nTune Spotiflow per channel in the preview (Foci channel dropdown under Spotiflow).\nColumns: y, x, intensity, probability (and frame when stacks have multiple frames).', self)
+        foci_info = create_info_icon('When enabled, BactoMate looks for `*_foci.tif` next to the input file/folder and runs spot detection.\n\nOutputs a raw foci CSV in the segmentation output folder (one per foci channel).\nTune Spotiflow per channel in the preview (Foci channel dropdown under Spotiflow).\nColumns: y, x, intensity, probability (and frame when stacks have multiple frames).\n\nSibling foci TIFFs must share the sample prefix with the segmentation input — see the Path info box for naming examples.', self)
         options_panel = ResponsivePanel(breakpoint=480)
         options_panel.set_defer_reflow(True)
         gpu_row = QHBoxLayout()

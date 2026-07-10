@@ -7,6 +7,7 @@ from typing import Callable, Optional, Sequence
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -59,19 +60,59 @@ _COMBO_POPUP_LISTVIEW_STYLESHEET = (
 )
 
 
+def _clamp_combo_popup_height(combo: QComboBox) -> None:
+    """Keep dropdown lists compact when combos live inside scrollable preview panels."""
+    view = combo.view()
+    if view is None:
+        return
+    container = view.parentWidget()
+    if container is None:
+        return
+    count = max(0, int(combo.count()))
+    if count <= 0:
+        return
+    visible = min(count, max(4, int(combo.maxVisibleItems())))
+    row_h = 28
+    if count > 0:
+        try:
+            row_h = max(28, int(view.sizeHintForRow(0)))
+        except Exception:
+            row_h = 28
+    frame = max(0, int(view.frameWidth()) * 2)
+    height = row_h * visible + frame + 4
+    container.setFixedHeight(height)
+    try:
+        view.scrollTo(combo.model().index(combo.currentIndex(), 0), QAbstractItemView.ScrollHint.PositionAtCenter)
+    except Exception:
+        pass
+
+
 def ensure_dark_combo_popup(combo: QComboBox) -> None:
     """Use a styled QListView popup instead of the native Windows dropdown list."""
     view = combo.view()
     if view is None or view.objectName() != "bactomateDarkComboPopup":
-        view = QListView(combo)
+        view = QListView()
         view.setObjectName("bactomateDarkComboPopup")
         combo.setView(view)
     view.setFrameShape(QFrame.Shape.NoFrame)
     view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    view.setUniformItemSizes(True)
+    view.setSizeAdjustPolicy(QAbstractItemView.SizeAdjustPolicy.AdjustToContents)
     view.setStyleSheet(_COMBO_POPUP_LISTVIEW_STYLESHEET)
+    combo.setMaxVisibleItems(12)
     existing = (combo.styleSheet() or "").strip()
     if "combobox-popup" not in existing:
         combo.setStyleSheet((existing + " QComboBox { combobox-popup: 0; }").strip())
+    if not getattr(combo, "_bactomate_popup_hooked", False):
+        original_show_popup = combo.showPopup
+
+        def _show_popup() -> None:
+            original_show_popup()
+            _clamp_combo_popup_height(combo)
+
+        combo.showPopup = _show_popup  # type: ignore[method-assign]
+        combo._bactomate_popup_hooked = True
 
 
 def style_module_combo(combo: QComboBox) -> None:

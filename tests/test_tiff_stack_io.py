@@ -33,5 +33,5 @@ def test_should_write_tracking_visualization_for_long_stack(tmp_path: Path) -> N
     stack = np.zeros((200, 4, 4), dtype=np.uint16)
     tifffile.imwrite(path, stack)
     assert should_write_tracking_visualization(path, user_enabled=True, track_action="movement") is True
-    assert should_write_tracking_visualization(path, user_enabled=False, track_action="movement") is True
+    assert should_write_tracking_visualization(path, user_enabled=False, track_action="movement") is False
     assert should_write_tracking_visualization(path, user_enabled=True, track_action="preview") is False

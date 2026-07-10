@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import numpy as np
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QColorDialog, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QProgressBar, QProgressDialog, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget
@@ -507,6 +507,97 @@ class PostProcessingTab(QWidget):
         if vmax <= vmin:
             return None
         return (vmin, vmax)
+
+    def _montage_recompose_merged_tile(
+        self,
+        channel_tiles: Sequence[tuple],
+        channel_meta: Sequence[dict],
+        *,
+        per_tile_lut: Optional[Dict[Any, Tuple[float, float]]] = None,
+        per_tile_color_override: Optional[Dict[Any, Tuple[float, float, float]]] = None,
+        per_tile_percentile_override: Optional[Dict[Any, Tuple[float, float]]] = None,
+    ) -> Optional[np.ndarray]:
+        """Compose merged RGB from channel source planes using current color/LUT settings."""
+        if not channel_tiles:
+            return None
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+        ch_arrays: list[np.ndarray] = []
+        for (tile, _label, _color) in channel_tiles:
+            if tile is None:
+                continue
+            plane = np.asarray(tile).squeeze()
+            if plane.ndim != 2:
+                continue
+            ch_arrays.append(plane)
+        if not ch_arrays:
+            return None
+        h_max = max(a.shape[0] for a in ch_arrays)
+        w_max = max(a.shape[1] for a in ch_arrays)
+        resized: list[np.ndarray] = []
+        for a in ch_arrays:
+            if a.shape[0] == h_max and a.shape[1] == w_max:
+                resized.append(np.asarray(a, dtype=np.float64))
+            else:
+                a_u8 = ((a.astype(np.float64) - np.nanmin(a)) / max(np.nanmax(a) - np.nanmin(a), 1e-09) * 255).clip(0, 255).astype(np.uint8)
+                resized.append(np.array(Image.fromarray(a_u8).resize((w_max, h_max), Image.Resampling.LANCZOS)).astype(np.float64))
+        arr_hwc = np.stack(resized, axis=-1)
+        colors_ch: list[tuple[float, float, float]] = []
+        per_ch_lut: dict[int, tuple[float, float]] = {}
+        for i, (tile, label, default_color) in enumerate(channel_tiles):
+            if i >= arr_hwc.shape[-1]:
+                break
+            ch_lbl = self._montage_tile_key(label)
+            ch_meta = channel_meta[i] if i < len(channel_meta) else {}
+            ov = self._montage_lookup_color_override_for_meta(
+                ch_lbl, i, ch_meta, default_color, overrides=per_tile_color_override
+            )
+            colors_ch.append(ov if ov is not None else (default_color or (1.0, 1.0, 1.0)))
+            lut_pair = self._montage_lookup_lut_for_meta(per_tile_lut, ch_lbl, i, ch_meta)
+            if lut_pair is not None:
+                clamped_pair = self._montage_clamp_lut_pair(lut_pair, arr_hwc[..., i])
+                if clamped_pair is not None:
+                    per_ch_lut[i] = clamped_pair
+                    continue
+            pct = self._montage_lookup_percentile_override_for_meta(
+                ch_lbl, i, ch_meta, overrides=per_tile_percentile_override
+            )
+            if pct is None:
+                continue
+            (pp_low, pp_high) = pct
+            plane = np.asarray(arr_hwc[..., i], dtype=np.float64)
+            valid = plane[np.isfinite(plane)]
+            if valid.size == 0:
+                continue
+            vvmin = float(np.percentile(valid, max(0.0, min(99.9, float(pp_low)))))
+            vvhigh = max(float(pp_low) + 0.1, min(100.0, float(pp_high)))
+            vvmax = float(np.percentile(valid, vvhigh))
+            if np.isfinite(vvmin) and np.isfinite(vvmax) and vvmax > vvmin:
+                per_ch_lut[i] = (vvmin, vvmax)
+        (h, w) = (arr_hwc.shape[0], arr_hwc.shape[1])
+        comp_rgb = np.zeros((h, w, 3), dtype=np.float64)
+        for c in range(min(arr_hwc.shape[-1], len(colors_ch))):
+            plane = arr_hwc[..., c]
+            (vmin, vmax) = per_ch_lut.get(c, (None, None))
+            valid = plane[np.isfinite(plane)]
+            if valid.size == 0:
+                norm = np.zeros_like(plane, dtype=np.float64)
+            elif vmin is not None and vmax is not None and vmax > vmin:
+                norm = (plane - vmin) / (vmax - vmin)
+            else:
+                vmin_auto = float(np.percentile(valid, self.MONTAGE_AUTO_LUT_LOW))
+                vmax_auto = float(np.percentile(valid, self.MONTAGE_AUTO_LUT_HIGH))
+                if vmax_auto <= vmin_auto:
+                    vmax_auto = vmin_auto + 1.0
+                norm = (plane - vmin_auto) / (vmax_auto - vmin_auto)
+            norm = np.clip(norm, 0.0, 1.0)
+            (r, g, b) = colors_ch[c]
+            comp_rgb[..., 0] += norm * r
+            comp_rgb[..., 1] += norm * g
+            comp_rgb[..., 2] += norm * b
+        return (np.clip(comp_rgb, 0.0, 1.0) * 255).astype(np.uint8)
 
     def _try_update_montage_pixel_size_from_paths(self) -> None:
         """Read pixel size from the first montage input file for embedded scale bar."""
@@ -2913,10 +3004,14 @@ class PostProcessingTab(QWidget):
                         all_arrays_for_global.append(np.asarray(plane, dtype=np.float64))
                 merged = _compose_merged(arr_hwc, colors)
                 tiles.append((merged, f'{base_label} Merged', None))
+                merged_meta: dict[str, Any] = {
+                    'kind': 'merged',
+                    'channel_tile_indices': group_channel_tile_indices,
+                    'channel_norms': group_channel_norms,
+                }
                 if overlay_enabled:
-                    tile_meta.append({'kind': 'merged', 'overlay_group': overlay_group_key, 'channel_tile_indices': group_channel_tile_indices, 'channel_norms': group_channel_norms})
-                else:
-                    tile_meta.append({})
+                    merged_meta['overlay_group'] = overlay_group_key
+                tile_meta.append(merged_meta)
                 continue
             if ds_type == 'tiff_group':
                 base = ds['base']
@@ -2964,10 +3059,14 @@ class PostProcessingTab(QWidget):
                     arr_hwc = np.stack(resized, axis=-1)
                     merged = _compose_merged(arr_hwc, color_list)
                     tiles.append((merged, f'{base} Merged', None))
+                    merged_meta = {
+                        'kind': 'merged',
+                        'channel_tile_indices': group_channel_tile_indices,
+                        'channel_norms': group_channel_norms,
+                    }
                     if overlay_enabled:
-                        tile_meta.append({'kind': 'merged', 'overlay_group': overlay_group_key, 'channel_tile_indices': group_channel_tile_indices, 'channel_norms': group_channel_norms})
-                    else:
-                        tile_meta.append({})
+                        merged_meta['overlay_group'] = overlay_group_key
+                    tile_meta.append(merged_meta)
                 continue
             if ds_type == 'single_tiff':
                 path = ds['path']
@@ -3068,10 +3167,24 @@ class PostProcessingTab(QWidget):
             color_ov = self._montage_lookup_color_override_for_meta(tile_key, idx, meta, None, overrides=per_tile_color_override)
             if color_ov is not None and color_or_none is not None:
                 color_or_none = color_ov
+            if label.endswith(' Merged'):
+                ch_indices = meta.get('channel_tile_indices')
+                if isinstance(ch_indices, list) and ch_indices:
+                    source_tiles = [all_tiles[i] for i in ch_indices if 0 <= i < len(all_tiles)]
+                    source_meta = [all_tile_meta[i] if i < len(all_tile_meta) else {} for i in ch_indices if 0 <= i < len(all_tiles)]
+                    recomposed = self._montage_recompose_merged_tile(
+                        source_tiles,
+                        source_meta,
+                        per_tile_lut=per_tile_lut,
+                        per_tile_color_override=per_tile_color_override,
+                        per_tile_percentile_override=per_tile_percentile_override,
+                    )
+                    if recomposed is not None:
+                        arr = recomposed
             has_lut = bool(per_tile_lut) and any((self._montage_lookup_lut_for_meta(per_tile_lut, self._montage_tile_key(tiles[i][1]), i, tile_meta[i] if i < len(tile_meta) else {}) is not None for i in range(idx)))
             has_color_override = any((self._montage_lookup_color_override_for_meta(self._montage_tile_key(tiles[i][1]), i, tile_meta[i] if i < len(tile_meta) else {}, None, overrides=per_tile_color_override) is not None for i in range(idx)))
             has_pct_override = any((self._montage_lookup_percentile_override_for_meta(self._montage_tile_key(tiles[i][1]), i, tile_meta[i] if i < len(tile_meta) else {}, overrides=per_tile_percentile_override) is not None for i in range(idx)))
-            if label.endswith(' Merged') and color_or_none is None and (idx > 0) and (has_lut or has_color_override or has_pct_override):
+            if label.endswith(' Merged') and color_or_none is None and (idx > 0) and (has_lut or has_color_override or has_pct_override) and (not meta.get('channel_tile_indices')):
                 try:
                     ch_arrays = [np.asarray(tiles[i][0]).squeeze() for i in range(idx)]
                     if all((a.ndim == 2 for a in ch_arrays)) and len(ch_arrays) >= 1:
