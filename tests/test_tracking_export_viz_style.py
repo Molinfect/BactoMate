@@ -12,8 +12,61 @@ from bactomate.gui.workers.tracking_io import (
 def test_tracking_export_viz_style_small_crop_uses_thin_lines() -> None:
     style = tracking_export_viz_style(91, 96)
     assert style.thick_path is False
-    assert style.font_size <= 6
-    assert style.label_scale == 1
+    assert style.font_size <= 8
+
+    crop = tracking_export_viz_style(204, 232)
+    assert crop.thick_path is False
+    assert crop.label_scale >= 2
+
+
+def test_tracking_export_upscale_factor_small_crop() -> None:
+    from bactomate.gui.workers.tracking_io import tracking_export_upscale_factor, upscale_rgb_stack
+
+    assert tracking_export_upscale_factor(204, 232) == 2
+    assert tracking_export_upscale_factor(96, 91) == 4
+    assert tracking_export_upscale_factor(1024, 1024) == 1
+    stack = np.zeros((2, 10, 12, 3), dtype=np.uint8)
+    up = upscale_rgb_stack(stack, 2)
+    assert up.shape == (2, 20, 24, 3)
+
+
+def test_overlay_export_upscale_keeps_native_coords_for_trajectories() -> None:
+    """Disk export upscales, but in-memory overlay must stay native for track y/x."""
+    from bactomate.gui.workers.tracking_io import tracking_export_upscale_factor, upscale_rgb_stack
+
+    native = np.zeros((2, 96, 91, 3), dtype=np.uint8)
+    upscale = tracking_export_upscale_factor(native.shape[1], native.shape[2])
+    saved = upscale_rgb_stack(native, upscale)
+    assert saved.shape == (2, 384, 364, 3)
+    assert native.shape == (2, 96, 91, 3)
+
+
+def test_scale_track_points_by_id_scales_coordinates() -> None:
+    from bactomate.gui.workers.tracking_io import scale_track_points_by_id
+
+    points = {3: [(0, 10.5, 20.0), (1, 12.0, 22.5)]}
+    scaled = scale_track_points_by_id(points, 4)
+    assert scaled[3][0] == (0, 42.0, 80.0)
+    assert scaled[3][1] == (1, 48.0, 90.0)
+
+
+def test_draw_trajectory_paths_on_frame_uses_antialiased_lines() -> None:
+    from bactomate.gui.workers.tracking_io import draw_trajectory_paths_on_frame, tracking_export_viz_style
+
+    frame = np.zeros((40, 40, 3), dtype=np.uint8)
+    style = tracking_export_viz_style(40, 40)
+    out = draw_trajectory_paths_on_frame(
+        frame,
+        track_points_by_id={1: [(0, 5.0, 5.0), (1, 35.0, 35.0)]},
+        track_colors={1: (255, 0, 0)},
+        unique_track_set={1},
+        frame_idx=1,
+        height=40,
+        width=40,
+        export_style=style,
+        use_antialiased_paths=True,
+    )
+    assert int(out.sum()) > 0
 
 
 def test_tracking_export_viz_style_large_frame_keeps_legacy_weight() -> None:

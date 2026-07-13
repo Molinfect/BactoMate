@@ -42,15 +42,62 @@ def test_preflight_strict_requires_analysis_workbook(tmp_path: Path) -> None:
     assert any("workbook" in e.lower() for e in pf.errors)
 
 
-def test_preflight_strict_requires_filtered_mask(tmp_path: Path) -> None:
+def test_preflight_strict_allows_raw_when_no_filtered_mask(tmp_path: Path) -> None:
     from bactomate.modules.lineage_integration import preflight_lineage_run
 
     raw = tmp_path / "sample_masks.tif"
     _write_mask_stack(raw, 2)
+    wb = tmp_path / "_analysis" / "sample_analysis.xlsx"
+    _write_analysis_workbook(wb, 2)
+
     pf = preflight_lineage_run(
         raw,
         linker_mode="greedy",
         model_name="general_2d",
+        require_analysis_workbook=True,
+        strict_lineage=True,
+    )
+    assert pf.ok
+    assert not pf.mask_is_filtered
+    assert not any("filtered" in e.lower() for e in pf.errors)
+
+
+def test_preflight_auto_resolves_filtered_when_available(tmp_path: Path) -> None:
+    from bactomate.modules.lineage_integration import preflight_lineage_run
+
+    filt_dir = tmp_path / "filtered_masks"
+    filt_dir.mkdir()
+    raw = tmp_path / "sample_masks.tif"
+    filtered = filt_dir / "sample_mask_filtered.tif"
+    _write_mask_stack(raw, 2)
+    _write_mask_stack(filtered, 2)
+
+    pf = preflight_lineage_run(
+        raw,
+        linker_mode="greedy",
+        model_name="general_2d",
+        strict_lineage=True,
+    )
+    assert pf.ok
+    assert pf.mask_is_filtered
+    assert pf.resolved_mask_path == filtered
+
+
+def test_preflight_strict_blocks_forced_raw_when_filtered_exists(tmp_path: Path) -> None:
+    from bactomate.modules.lineage_integration import preflight_lineage_run
+
+    filt_dir = tmp_path / "filtered_masks"
+    filt_dir.mkdir()
+    raw = tmp_path / "sample_masks.tif"
+    filtered = filt_dir / "sample_mask_filtered.tif"
+    _write_mask_stack(raw, 2)
+    _write_mask_stack(filtered, 2)
+
+    pf = preflight_lineage_run(
+        raw,
+        linker_mode="greedy",
+        model_name="general_2d",
+        prefer_filtered_mask=False,
         strict_lineage=True,
     )
     assert not pf.ok

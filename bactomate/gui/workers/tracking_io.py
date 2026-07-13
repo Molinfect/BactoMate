@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -27,9 +28,16 @@ __all__ = [
     "overlay_label_for_track",
     "read_tiff_stack",
     "resolve_track_at_centroid",
-    "should_draw_track_id_labels",
+    "scale_track_points_by_id",
+    "draw_trajectory_paths_on_frame",
+    "upscale_mask_stack",
     "should_write_tracking_visualization",
+    "stem_from_tracking_output_folder",
+    "tracking_export_upscale_factor",
     "tracking_export_viz_style",
+    "tracking_output_dir",
+    "tracking_run_folder_name",
+    "upscale_rgb_stack",
 ]
 
 
@@ -67,8 +75,8 @@ def tracking_export_viz_style(height: int, width: int) -> TrackingExportVizStyle
         )
     if min_dim <= 256:
         return TrackingExportVizStyle(
-            font_size=7,
-            label_scale=1,
+            font_size=8,
+            label_scale=2,
             stroke_width=1,
             path_bg_weight=0.58,
             path_fg_weight=0.42,
@@ -80,16 +88,16 @@ def tracking_export_viz_style(height: int, width: int) -> TrackingExportVizStyle
         )
     if min_dim <= 512:
         return TrackingExportVizStyle(
-            font_size=9,
-            label_scale=1,
-            stroke_width=1,
-            path_bg_weight=0.55,
-            path_fg_weight=0.45,
+            font_size=11,
+            label_scale=2,
+            stroke_width=2,
+            path_bg_weight=0.45,
+            path_fg_weight=0.55,
             dot_radius=3,
             dot_outline=1,
-            label_offset_x=3,
-            label_offset_y=-4,
-            thick_path=False,
+            label_offset_x=4,
+            label_offset_y=-5,
+            thick_path=True,
         )
     return TrackingExportVizStyle(
         font_size=11,
@@ -318,6 +326,157 @@ def build_track_points_by_id(tracks_df) -> dict[int, list[tuple[int, float, floa
     return dict(out)
 
 
+def scale_track_points_by_id(
+    points_by_id: dict[int, list[tuple[int, float, float]]],
+    factor: int,
+) -> dict[int, list[tuple[int, float, float]]]:
+    """Scale ``(frame, y, x)`` track coordinates for export-resolution rendering."""
+    scale = max(1, int(factor))
+    if scale <= 1:
+        return points_by_id
+    return {
+        int(tid): [(int(frame), float(y) * scale, float(x) * scale) for frame, y, x in points]
+        for tid, points in points_by_id.items()
+    }
+
+
+def trajectory_export_line_width(style: TrackingExportVizStyle) -> int:
+    """Anti-aliased trajectory stroke width for disk export."""
+    if style.thick_path:
+        return max(3, style.stroke_width + 1)
+    return max(2, style.stroke_width)
+
+
+def draw_trajectory_paths_on_frame(
+    vis_frame: np.ndarray,
+    *,
+    track_points_by_id: dict[int, list[tuple[int, float, float]]],
+    track_colors: dict[int, tuple[int, int, int]],
+    unique_track_set: set[int],
+    frame_idx: int,
+    height: int,
+    width: int,
+    export_style: TrackingExportVizStyle,
+    preview_fast: bool = False,
+    use_antialiased_paths: bool = False,
+) -> np.ndarray:
+    """Draw historical trajectory segments up to ``frame_idx`` onto an RGB frame."""
+    if not track_points_by_id:
+        return vis_frame
+
+    if use_antialiased_paths:
+        try:
+            from PIL import Image, ImageDraw
+
+            pil_img = Image.fromarray(np.ascontiguousarray(vis_frame))
+            draw = ImageDraw.Draw(pil_img)
+            line_width = trajectory_export_line_width(export_style)
+            for track_id_int in unique_track_set:
+                points = track_points_by_id.get(int(track_id_int))
+                if not points:
+                    continue
+                color = track_colors.get(int(track_id_int))
+                if color is None:
+                    continue
+                points_up_to = [(float(y), float(x)) for f, y, x in points if f <= frame_idx]
+                if len(points_up_to) < 2:
+                    continue
+                for (y1, x1), (y2, x2) in zip(points_up_to[:-1], points_up_to[1:]):
+                    draw.line(
+                        [(x1, y1), (x2, y2)],
+                        fill=tuple(int(c) for c in color),
+                        width=line_width,
+                    )
+            return np.asarray(pil_img, dtype=np.uint8)
+        except Exception:
+            pass
+
+    for track_id_int in unique_track_set:
+        points = track_points_by_id.get(int(track_id_int))
+        if not points:
+            continue
+        color = track_colors.get(int(track_id_int))
+        if color is None:
+            continue
+        points_up_to = [(y, x) for f, y, x in points if f <= frame_idx]
+        if len(points_up_to) < 2:
+            continue
+        points_arr = np.array(points_up_to, dtype=float)
+        points_arr[:, 0] = np.clip(points_arr[:, 0], 0, height - 1)
+        points_arr[:, 1] = np.clip(points_arr[:, 1], 0, width - 1)
+        points_arr = points_arr.astype(int)
+        for i in range(len(points_arr) - 1):
+            y1, x1 = points_arr[i]
+            y2, x2 = points_arr[i + 1]
+            dy = abs(y2 - y1)
+            dx = abs(x2 - x1)
+            if dx == 0 and dy == 0:
+                continue
+            max_steps = max(dx, dy)
+            step_size = max(1, max_steps // 40) if preview_fast else 1
+            num_steps = max_steps // step_size + 1
+            if dx > dy:
+                x_coords = np.linspace(x1, x2, num_steps, dtype=int)
+                y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
+            else:
+                y_coords = np.linspace(y1, y2, num_steps, dtype=int)
+                x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
+            y_coords = np.clip(y_coords, 0, height - 1)
+            x_coords = np.clip(x_coords, 0, width - 1)
+            for y, x in zip(y_coords, x_coords):
+                if preview_fast or not export_style.thick_path:
+                    blend_path_pixel_on_frame(
+                        vis_frame,
+                        int(y),
+                        int(x),
+                        color,
+                        bg_weight=export_style.path_bg_weight,
+                        fg_weight=export_style.path_fg_weight,
+                    )
+                else:
+                    y_start, y_end = int(y) - 1, int(y) + 2
+                    x_start, x_end = int(x) - 1, int(x) + 2
+                    vis_frame[y_start:y_end, x_start:x_end, 0] = (
+                        vis_frame[y_start:y_end, x_start:x_end, 0] * export_style.path_bg_weight
+                        + color[0] * export_style.path_fg_weight
+                    ).astype(np.uint8)
+                    vis_frame[y_start:y_end, x_start:x_end, 1] = (
+                        vis_frame[y_start:y_end, x_start:x_end, 1] * export_style.path_bg_weight
+                        + color[1] * export_style.path_fg_weight
+                    ).astype(np.uint8)
+                    vis_frame[y_start:y_end, x_start:x_end, 2] = (
+                        vis_frame[y_start:y_end, x_start:x_end, 2] * export_style.path_bg_weight
+                        + color[2] * export_style.path_fg_weight
+                    ).astype(np.uint8)
+    return vis_frame
+
+
+def upscale_mask_stack(stack: np.ndarray, factor: int) -> np.ndarray:
+    """Nearest-neighbor upscale of (T, H, W) label/mask stacks."""
+    scale = max(1, int(factor))
+    if scale <= 1:
+        return np.asarray(stack)
+    arr = np.asarray(stack)
+    if arr.ndim != 3:
+        return arr
+    from PIL import Image
+
+    resample = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+    t, h, w = arr.shape
+    out_dtype = arr.dtype
+    out = np.zeros((t, h * scale, w * scale), dtype=out_dtype)
+    for i in range(t):
+        frame = arr[i]
+        if np.issubdtype(out_dtype, np.integer) and frame.max() > np.iinfo(np.uint16).max:
+            frame = frame.astype(np.uint32)
+        pil_frame = Image.fromarray(frame)
+        out[i] = np.asarray(
+            pil_frame.resize((w * scale, h * scale), resample=resample),
+            dtype=out_dtype,
+        )
+    return out
+
+
 def downsample_stacks_for_preview(
     masks: np.ndarray,
     imgs: np.ndarray,
@@ -349,3 +508,80 @@ def should_write_tracking_visualization(
     if track_action in ("preview", "preview_lineage"):
         return False
     return bool(user_enabled)
+
+
+TRACKING_OUTPUT_SUFFIX = "_tracking"
+LINEAGE_TRACKING_OUTPUT_SUFFIX = "_lineage_tracking"
+
+
+def tracking_run_folder_name(mask_stem: str, *, lineage: bool) -> str:
+    """Folder name under ``_tracking/`` for a completed run."""
+    suffix = LINEAGE_TRACKING_OUTPUT_SUFFIX if lineage else TRACKING_OUTPUT_SUFFIX
+    return f"{mask_stem}{suffix}"
+
+
+def stem_from_tracking_output_folder(folder_name: str) -> str:
+    """Recover mask stem from ``{stem}_tracking`` or ``{stem}_lineage_tracking``."""
+    name = str(folder_name)
+    for suffix in (LINEAGE_TRACKING_OUTPUT_SUFFIX, TRACKING_OUTPUT_SUFFIX):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def tracking_output_dir(mask_path: Path, *, track_action: str = "movement") -> Path:
+    """Resolve ``…/_tracking/{stem}_tracking`` or ``…/_tracking/{stem}_lineage_tracking``."""
+    from bactomate.gui.analysis_paths import base_dir_for_mask
+
+    base = base_dir_for_mask(Path(mask_path))
+    stem = Path(mask_path).stem
+    lineage = str(track_action or "").strip().lower() == "lineage"
+    return base / "_tracking" / tracking_run_folder_name(stem, lineage=lineage)
+
+
+def tracking_export_upscale_factor(height: int, width: int) -> int:
+    """
+    Upscale factor for publication TIFFs (small crops export at higher pixel size).
+
+    Override with env ``BACTOMATE_TRACKING_VIZ_UPSCALE`` (integer 1–8; ``0`` = disable).
+    """
+    import os
+
+    env = os.getenv("BACTOMATE_TRACKING_VIZ_UPSCALE", "").strip()
+    if env:
+        try:
+            value = int(env)
+            if value <= 0:
+                return 1
+            return max(1, min(value, 8))
+        except ValueError:
+            pass
+    min_dim = max(1, min(int(height), int(width)))
+    if min_dim <= 128:
+        return 4
+    if min_dim <= 320:
+        return 2
+    return 1
+
+
+def upscale_rgb_stack(stack: np.ndarray, factor: int) -> np.ndarray:
+    """LANCZOS upscale of (T, H, W, 3) uint8 RGB stacks."""
+    import numpy as np
+
+    scale = max(1, int(factor))
+    if scale <= 1:
+        return np.asarray(stack, dtype=np.uint8)
+    arr = np.asarray(stack, dtype=np.uint8)
+    if arr.ndim != 4 or arr.shape[-1] != 3:
+        return arr
+    from PIL import Image
+
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    t, h, w, _c = arr.shape
+    out = np.zeros((t, h * scale, w * scale, 3), dtype=np.uint8)
+    for i in range(t):
+        out[i] = np.asarray(
+            Image.fromarray(arr[i]).resize((w * scale, h * scale), resample=resample),
+            dtype=np.uint8,
+        )
+    return out

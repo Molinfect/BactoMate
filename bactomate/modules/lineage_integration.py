@@ -159,6 +159,19 @@ def _workbook_summary_frame_count(workbook_path: Path) -> tuple[int | None, bool
     return max_frame + 1, False
 
 
+def _filtered_mask_available_for_raw(raw: Path) -> Path | None:
+    """Return an on-disk filtered sibling of raw ``*_masks.tif``, if any."""
+    try:
+        from bactomate.gui.artifact_paths import resolve_filtered_mask_path
+
+        found = resolve_filtered_mask_path(Path(raw))
+        if found is not None and Path(found).is_file():
+            return Path(found)
+    except Exception:
+        pass
+    return None
+
+
 def preflight_lineage_run(
     mask_path: Path,
     *,
@@ -189,20 +202,19 @@ def preflight_lineage_run(
     out.resolved_mask_path = resolved
     out.mask_is_filtered = mask_filtered_status(resolved)
 
-    if prefer_filtered_mask and not out.mask_is_filtered and "_masks" in raw.name.lower():
-        filt = resolve_lineage_mask_path(raw, prefer_filtered=True)
-        if filt == raw:
+    if not out.mask_is_filtered and "_masks" in raw.name.lower():
+        available_filtered = _filtered_mask_available_for_raw(raw)
+        if available_filtered is not None and resolved.resolve() == raw.resolve():
             msg = (
-                f"No filtered mask found; using raw mask {raw.name}. "
-                "Run Filtering first and analyze the filtered mask for consistent joins."
+                f"A filtered mask exists ({available_filtered.name}) but lineage would use "
+                f"raw {raw.name}. Select or analyze the filtered mask for consistent Cell_ID joins."
             )
             if strict_lineage:
                 out.ok = False
-                out.errors.append(
-                    "Filtered mask required for lineage tracking. Run Filtering on this mask stack first."
-                )
+                out.errors.append(msg)
             else:
                 out.warnings.append(msg)
+        # No filtered stack on disk: raw-only segmentation → analyze → lineage is valid.
 
     wb = resolve_analysis_workbook_for_mask(resolved)
     out.analysis_workbook = wb
@@ -1126,6 +1138,19 @@ def biology_label_map(labels_df: Any) -> dict[int, str]:
     return out
 
 
+def compact_biology_label_text(label: str) -> str:
+    """Display form used on lineage overlays (``Cell 7.1.1`` → ``7.1.1``)."""
+    text = str(label).strip()
+    if text.startswith("Cell "):
+        return text[5:]
+    return text
+
+
+def compact_biology_label_map(labels_df: Any) -> dict[int, str]:
+    """track_id -> compact biology label for TIFF overlays."""
+    return {tid: compact_biology_label_text(lbl) for tid, lbl in biology_label_map(labels_df).items()}
+
+
 def division_daughters_at_frame(events_df: Any, parent_id: int, division_frame: int) -> list[int]:
     """Sorted daughter track IDs for one mother at one division frame."""
     import pandas as pd
@@ -1470,6 +1495,17 @@ def enrich_lineage_tables(
     if per_cell_df is not None and lineage_points is not None and len(lineage_points) > 0:
         lineage_points = join_analysis_to_lineage_points(lineage_points, per_cell_df)
     area_df = calibrate_area_table(area_df, pixel_size_um)
+    if (
+        area_df is not None
+        and hasattr(area_df, "columns")
+        and len(area_df) > 0
+        and "track_id" in area_df.columns
+        and "lineage_id" not in area_df.columns
+    ):
+        area_df = area_df.copy()
+        area_df["lineage_id"] = area_df["track_id"].map(
+            lambda t: founder.get(int(t), int(t)) if t is not None and not pd.isna(t) else None
+        )
     lineage_events = build_lineage_events(
         edges_df,
         tracks_df,
@@ -1741,8 +1777,14 @@ def load_lineage_tables_from_report_xlsx(xlsx_path: Path) -> dict[str, Any]:
     return tables
 
 
+def _stem_from_lineage_output_folder(folder_name: str) -> str:
+    from bactomate.gui.workers.tracking_io import stem_from_tracking_output_folder
+
+    return stem_from_tracking_output_folder(folder_name)
+
+
 def _is_lineage_tracking_output_dir(path: Path) -> bool:
-    """True when ``path`` looks like ``_tracking/{stem}_tracking/`` output."""
+    """True when ``path`` looks like a lineage tracking output folder."""
     path = Path(path)
     if not path.is_dir():
         return False
@@ -1756,8 +1798,9 @@ def discover_lineage_tracking_dirs(search_root: Path) -> list[Path]:
     Find completed lineage tracking folders under a user-selected path.
 
     Supports:
-    - ``…/{stem}_tracking/`` directly under the folder
-    - ``…/_tracking/{stem}_tracking/`` (standard BactoMate layout)
+    - ``…/{stem}_lineage_tracking/`` (lineage runs, current layout)
+    - ``…/{stem}_tracking/`` with lineage tables (legacy lineage layout)
+    - ``…/_tracking/{stem}_lineage_tracking/`` or ``…/_tracking/{stem}_tracking/``
     - nested ``…/_tracking/*`` when the child contains ``tables/`` or a report
     """
     search_root = Path(search_root).resolve()
@@ -1777,7 +1820,7 @@ def discover_lineage_tracking_dirs(search_root: Path) -> list[Path]:
     if _is_lineage_tracking_output_dir(search_root):
         add(search_root)
 
-    for pattern in ("*_tracking", "*/*_tracking"):
+    for pattern in ("*_lineage_tracking", "*/*_lineage_tracking", "*_tracking", "*/*_tracking"):
         for candidate in search_root.glob(pattern):
             if candidate.is_dir():
                 add(candidate)
@@ -1810,9 +1853,7 @@ def resolve_lineage_source(source: Path) -> tuple[Path, str, Path]:
         return parent, stem, fig_dir
     if source.is_dir():
         if (source / "tables").is_dir():
-            stem = source.name
-            if stem.endswith("_tracking"):
-                stem = stem[: -len("_tracking")]
+            stem = _stem_from_lineage_output_folder(source.name)
             return source, stem, source / "figures"
         reports = sorted(source.glob("*_lineage_report.xlsx"))
         if reports:
@@ -1822,19 +1863,15 @@ def resolve_lineage_source(source: Path) -> tuple[Path, str, Path]:
                 stem = stem[: -len("_lineage_report")]
             parent = rep.parent
             return parent, stem, parent / "figures"
-        nested = sorted(source.glob("*_tracking"))
+        nested = sorted(source.glob("*_lineage_tracking")) + sorted(source.glob("*_tracking"))
         for d in nested:
             if (d / "tables").is_dir():
-                stem = d.name
-                if stem.endswith("_tracking"):
-                    stem = stem[: -len("_tracking")]
+                stem = _stem_from_lineage_output_folder(d.name)
                 return d, stem, d / "figures"
         discovered = discover_lineage_tracking_dirs(source)
         if discovered:
             parent = discovered[0]
-            stem = parent.name
-            if stem.endswith("_tracking"):
-                stem = stem[: -len("_tracking")]
+            stem = _stem_from_lineage_output_folder(parent.name)
             return parent, stem, parent / "figures"
     raise FileNotFoundError(f"Could not resolve lineage source: {source}")
 

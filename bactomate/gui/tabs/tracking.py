@@ -535,7 +535,7 @@ class TrackingTab(QWidget):
         file_btn.clicked.connect(self.select_mask_file)
         folder_btn = QPushButton('Browse Folder...')
         folder_btn.clicked.connect(self.select_folder)
-        path_lay.addWidget(module_path_drop_row(path_panel, self.handle_dropped_path, line_edit=self.file_path, buttons=(file_btn, folder_btn), info_icon=create_info_icon(f'Path to a mask TIFF, original TIFF, or parent folder.\n\nMasks (*_masks.tif, *_mask_filtered.tif) are tracked; matching phase TIFFs are loaded automatically for Trackastra and calibration. Folders are scanned for _segmentation_* and filtered_masks/ subfolders.\n\nFull runs write to _tracking/{{stem}}_tracking/. Preview tracking uses the first {TRACKING_PREVIEW_FRAME_LIMIT} frames only, in memory (nothing written to disk).', self)))
+        path_lay.addWidget(module_path_drop_row(path_panel, self.handle_dropped_path, line_edit=self.file_path, buttons=(file_btn, folder_btn), info_icon=create_info_icon(f'Path to a mask TIFF, original TIFF, or parent folder.\n\nMasks (*_masks.tif, *_mask_filtered.tif) are tracked; matching phase TIFFs are loaded automatically for Trackastra and calibration. Folders are scanned for _segmentation_* and filtered_masks/ subfolders.\n\nFull runs write to _tracking/{{stem}}_tracking/. Lineage runs write to _tracking/{{stem}}_lineage_tracking/. Preview uses the first {TRACKING_PREVIEW_FRAME_LIMIT} frames only, in memory (nothing written to disk).', self)))
         actions_layout = module_path_action_buttons_layout()
         self._preview_btn_idle = 'Preview tracking'
         self._movement_btn_idle = 'Run tracking'
@@ -570,7 +570,7 @@ class TrackingTab(QWidget):
         lineage_file_btn.clicked.connect(self.select_lineage_mask_file)
         lineage_folder_btn = QPushButton('Browse Folder...')
         lineage_folder_btn.clicked.connect(self.select_lineage_folder)
-        path_lay.addWidget(module_path_drop_row(path_panel, self.handle_lineage_dropped_path, line_edit=self.lineage_file_path, buttons=(lineage_file_btn, lineage_folder_btn), info_icon=create_info_icon('Path to a mask TIFF, original TIFF, or parent folder for lineage tracking.\n\nSame mask discovery as Run tracking (_segmentation_*, filtered_masks/, etc.).\n\nExports lineage edges, summary workbook, and optional lineage TIF under _tracking/{stem}_tracking/. greedy_nodiv is switched to greedy automatically.', self)))
+        path_lay.addWidget(module_path_drop_row(path_panel, self.handle_lineage_dropped_path, line_edit=self.lineage_file_path, buttons=(lineage_file_btn, lineage_folder_btn), info_icon=create_info_icon('Path to a mask TIFF, original TIFF, or parent folder for lineage tracking.\n\nSame mask discovery as Run tracking (_segmentation_*, filtered_masks/, etc.).\n\nExports under _tracking/{stem}_lineage_tracking/ (lineage edges, summary workbook, optional lineage TIF). greedy_nodiv is switched to greedy automatically.', self)))
         actions_layout = module_path_action_buttons_layout()
         self._preview_lineage_btn_idle = 'Preview lineage QC'
         self._lineage_btn_idle = 'Run lineage tracking'
@@ -582,7 +582,7 @@ class TrackingTab(QWidget):
         self.lineage_btn = ProgressCancelButton(self._lineage_btn_idle)
         self.lineage_btn.setEnabled(False)
         style_module_primary_button(self.lineage_btn)
-        self.lineage_btn.setToolTip('Full lineage tracking: tables, Excel report, lineage TIF, and PNG figures.\n\nIf Mode is greedy_nodiv, it is switched to greedy so divisions can be recorded.\n\nOutputs live under _tracking/{stem}_tracking/ alongside trajectory files.')
+        self.lineage_btn.setToolTip('Full lineage tracking: tables, Excel report, and visualization TIFFs.\n\nWith Create visualization checked, writes:\n• *_lineage.tif — founder-family colors, trajectory paths, and biology labels (e.g. 7.1.1)\n• *_trajectories.tif — movement-only overlay (plain track IDs)\n\nIf Mode is greedy_nodiv, it is switched to greedy so divisions can be recorded.\n\nOutputs live under _tracking/{stem}_lineage_tracking/.')
         self.lineage_btn.clicked.connect(lambda : self._run_tracking_with_action('lineage'))
         for btn in (self.preview_lineage_btn, self.lineage_btn):
             actions_layout.addWidget(btn)
@@ -1338,12 +1338,14 @@ class TrackingTab(QWidget):
 
     @staticmethod
     def _tracking_output_dir(mask_path: Path, track_action: str='movement', preview_frame_limit: Optional[int]=None) -> Path:
-        """Full runs: ``_tracking/{stem}_tracking``. Preview: ``_preview/{stem}_n{N}`` (no _tracking folder)."""
-        base = base_dir_for_mask(mask_path)
-        stem = mask_path.stem
+        """Full runs: ``_tracking/{stem}_tracking`` or ``_tracking/{stem}_lineage_tracking``."""
+        from bactomate.gui.workers.tracking_io import tracking_output_dir
+
         if track_action == 'preview' and preview_frame_limit is not None and (int(preview_frame_limit) > 0):
+            base = base_dir_for_mask(mask_path)
+            stem = mask_path.stem
             return base / '_preview' / f'{stem}_n{int(preview_frame_limit)}'
-        return base / '_tracking' / f'{stem}_tracking'
+        return tracking_output_dir(mask_path, track_action=track_action)
 
     def _ensure_lineage_linking_mode(self) -> None:
         """greedy_nodiv cannot represent divisions; switch to greedy and notify."""
@@ -2007,7 +2009,7 @@ class TrackingTab(QWidget):
             except Exception as exc:
                 show_message_dialog(self._main_window(), 'Lineage review', f'Could not load lineage tables from output folder:\n{exc}', kind='warning')
                 return
-        show_message_dialog(self._main_window(), 'Lineage review', 'Run Preview lineage QC first, or complete lineage tracking with outputs under _tracking/{stem}_tracking/.', kind='info')
+        show_message_dialog(self._main_window(), 'Lineage review', 'Run Preview lineage QC first, or complete lineage tracking with outputs under _tracking/{stem}_lineage_tracking/.', kind='info')
 
     def _run_tracking_with_action(self, track_action: str) -> None:
         if track_action in ('lineage', 'preview_lineage'):

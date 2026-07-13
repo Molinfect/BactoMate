@@ -9,7 +9,7 @@ worker result look "superseded", so ``_last_preview`` stayed empty and
 ``_render`` always fell back to the unfiltered baseline.
 
 Spec under test:
-1. Opening the preview shows an unfiltered baseline (no cached filter result).
+1. Opening the preview auto-applies current filters once (pass/fail overlay + hover).
 2. Clicking Apply preview must populate ``_last_preview`` with worker output
    (accepted/rejected) -- the result must NOT be silently discarded.
 3. The cached result must survive a subsequent ``refresh()``.
@@ -105,6 +105,14 @@ def _write_phase_tif(tmp_dir: Path, *, pixel_size_um: float) -> Path:
     return phase_path
 
 
+def _wait_for_filter_apply(dlg, timeout_s: float = 20.0) -> bool:
+    """Wait until the filter preview worker has committed ``_last_preview``."""
+    return _wait_until(
+        lambda: "mask_2d" in (getattr(dlg, "_last_preview", None) or {}),
+        timeout_s=timeout_s,
+    )
+
+
 def _open_preview(tmp_dir: Path):
     from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
 
@@ -180,9 +188,14 @@ def test_preview_apply_populates_last_preview_with_filtered_result():
             assert apply_current is not None
             assert spinboxes is not None and "min_aspect_ratio" in spinboxes
 
-            # Pre-apply: unfiltered baseline (no cached result).
-            assert "mask_2d" not in (getattr(dlg, "_last_preview", None) or {}), (
-                "Pre-apply state must be unfiltered (no cached result)"
+            ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
+            assert ok, "Opening the preview should auto-apply current filters once"
+
+            last_before = dict(getattr(dlg, "_last_preview", {}))
+            accepted_before = set(int(x) for x in (last_before.get("accepted") or []))
+            rejected_before = set(int(x) for x in (last_before.get("rejected") or []))
+            assert accepted_before or rejected_before, (
+                "Auto-apply should partition cells into accepted/rejected sets"
             )
 
             # Tighten min_aspect_ratio so the square cells fall outside the filter.
@@ -259,6 +272,9 @@ def test_progress_dialog_close_does_not_bump_request_id():
             apply_current = getattr(dlg, "_pf_apply_current", None)
             assert apply_current is not None
 
+            ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
+            assert ok, "Opening the preview should auto-apply current filters once"
+
             rid_changes: list[tuple[int, int]] = []
             real_setattr = type(dlg).__setattr__
 
@@ -271,17 +287,17 @@ def test_progress_dialog_close_does_not_bump_request_id():
 
             type(dlg).__setattr__ = traced_setattr
             try:
+                spinboxes = getattr(dlg, "_pf_spinboxes", None)
+                assert spinboxes is not None and "min_aspect_ratio" in spinboxes
+                spinboxes["min_aspect_ratio"].setValue(6.0)
+                QCoreApplication.processEvents()
                 apply_current()
-                ok = _wait_until(
-                    lambda: "mask_2d" in (getattr(dlg, "_last_preview", None) or {}),
-                    timeout_s=20.0,
-                )
+                ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
                 assert ok, "Worker result should reach _last_preview"
 
-                # Exactly one rid bump expected: the one from _start_worker (0 -> 1).
-                # Any additional bump means progress-dialog dismissal triggered
-                # _cancel_current and corrupted the in-flight request id.
-                assert rid_changes == [(0, 1)], (
+                # Exactly one rid bump expected from this manual apply.
+                start_rid = int(getattr(dlg, "_preview_request_id", 0)) - 1
+                assert rid_changes == [(start_rid, start_rid + 1)], (
                     f"Expected a single rid increment from _start_worker; "
                     f"got {rid_changes}. An extra increment indicates the "
                     f"progress-dialog 'canceled' signal is still firing during "

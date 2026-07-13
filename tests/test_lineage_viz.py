@@ -208,6 +208,71 @@ def test_plot_lineage_metric_timeseries_parses_foci_list_column() -> None:
     assert np.isfinite(y).all()
 
 
+def test_attach_lineage_id_to_area_df_enables_filtering() -> None:
+    import pandas as pd
+
+    from bactomate.modules.lineage_viz import _attach_lineage_id_to_area_df, plot_lineage_cell_cycle_area
+    from matplotlib.figure import Figure
+
+    area_df = pd.DataFrame(
+        {
+            "track_id": [1, 1, 2, 2, 3, 3],
+            "frame": [0, 1, 0, 1, 0, 1],
+            "area": [4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            "area_source": ["analysis:um2"] * 6,
+        }
+    )
+    tables = {"founder_by_track": {1: 10, 2: 10, 3: 20}}
+    enriched = _attach_lineage_id_to_area_df(area_df, tables)
+    assert enriched is not None
+    assert list(enriched["lineage_id"].unique()) == [10, 20]
+
+    fig = Figure(figsize=(6, 4))
+    ax = fig.add_subplot(111)
+    plot_lineage_cell_cycle_area(
+        ax,
+        enriched,
+        None,
+        lineage_id=10,
+        title="Cell-cycle area — lineage 10",
+    )
+    assert ax.get_title() == "Cell-cycle area — lineage 10"
+    assert len(ax.lines) == 2
+
+
+def test_plot_lineage_cell_cycle_area_overlay_legend_per_family() -> None:
+    import pandas as pd
+    from matplotlib.figure import Figure
+
+    from bactomate.modules.lineage_viz import plot_lineage_cell_cycle_area_overlay
+
+    area_df = pd.DataFrame(
+        {
+            "track_id": [1, 1, 2, 2, 3, 3],
+            "frame": [0, 1, 0, 1, 0, 1],
+            "area": [4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            "area_source": ["analysis:um2"] * 6,
+            "lineage_id": [10, 10, 10, 10, 20, 20],
+        }
+    )
+    fig = Figure(figsize=(8, 4))
+    ax = fig.add_subplot(111)
+    plot_lineage_cell_cycle_area_overlay(
+        ax,
+        area_df,
+        None,
+        lineage_ids=[10, 20],
+        title="Cell-cycle area — all lineages",
+    )
+    assert ax.get_title() == "Cell-cycle area — all lineages"
+    assert len(ax.lines) == 3
+    legend = ax.get_legend()
+    assert legend is not None
+    legend_labels = [t.get_text() for t in legend.get_texts()]
+    assert "Lineage 10" in legend_labels
+    assert "Lineage 20" in legend_labels
+
+
 def test_plot_lineage_cell_cycle_area_uses_integer_frame_ticks() -> None:
     import pandas as pd
     from matplotlib.figure import Figure
