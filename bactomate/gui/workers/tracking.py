@@ -23,10 +23,15 @@ from bactomate.gui.workers.tracking_io import (
     build_track_points_by_id,
     downsample_stacks_for_preview,
     draw_track_centroid_marker,
+    draw_trajectory_paths_on_frame,
     overlay_label_for_track,
     resolve_track_at_centroid,
+    scale_track_points_by_id,
     should_draw_track_id_labels,
+    tracking_export_upscale_factor,
     tracking_export_viz_style,
+    upscale_mask_stack,
+    upscale_rgb_stack,
 )
 from bactomate.modules.label_render import draw_hq_labels
 from bactomate.modules.tiff_stack_io import read_tiff_stack
@@ -607,11 +612,9 @@ class TrackingWorker(QThread):
             if self.output_dir is not None:
                 output_dir = self.output_dir
             else:
-                # Fallback: determine base directory (go up one level if in Tif_*, _segmentation, or _analysis)
-                base_dir = mask_path.parent
-                if base_dir.name.startswith('Tif_') or '_segmentation' in base_dir.name or base_dir.name == '_analysis':
-                    base_dir = base_dir.parent
-                output_dir = base_dir / "_tracking" / f"{mask_path.stem}_tracking"
+                from bactomate.gui.workers.tracking_io import tracking_output_dir
+
+                output_dir = tracking_output_dir(mask_path, track_action=str(self.track_action or "movement"))
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             stem = Path(self.mask_file).stem
@@ -684,7 +687,7 @@ class TrackingWorker(QThread):
                         pct = 87 + int((frame_idx + 1) / max(total, 1) * 2)  # 87–89%
                         msg = f"Creating overlay: {frame_idx + 1}/{total}"
                         self.progress.emit(pct, msg)
-                    overlay_array = self._create_overlay_with_track_ids(
+                    overlay_array, overlay_export = self._create_overlay_with_track_ids(
                         imgs,
                         masks_tracked,
                         tracks_df,
@@ -711,7 +714,7 @@ class TrackingWorker(QThread):
                         self.progress.emit(pct, msg)
                     self._create_trajectory_visualization(
                         imgs, masks_tracked, tracks_df, vis_file, progress_callback,
-                        overlay_frames=overlay_array,
+                        overlay_frames=overlay_export if overlay_export is not None else overlay_array,
                     )
                     debug_output.append(f"✓ Saved trajectory visualization to: {vis_file}")
                 except Exception as e:
@@ -746,7 +749,17 @@ class TrackingWorker(QThread):
                         debug_output.append(f"✓ Saved lineage summary: {lineage_summary_legacy.name}")
                     if self.write_visualization and self.original_file:
                         try:
+                            from bactomate.modules.lineage_integration import (
+                                build_biology_track_labels,
+                                compact_biology_label_map,
+                            )
+
                             founder_by_track = self._lineage_founder_map(edges_df, tracks_df)
+                            lineage_meta = self._lineage_per_track_summary(edges_df, tracks_df)
+                            bio_labels_df = build_biology_track_labels(
+                                edges_df, tracks_df, lineage_meta
+                            )
+                            biology_label_by_track = compact_biology_label_map(bio_labels_df)
                             vis_lineage = output_dir / f"{stem}_lineage.tif"
                             self._create_lineage_visualization(
                                 imgs,
@@ -758,10 +771,14 @@ class TrackingWorker(QThread):
                                 progress_callback=lambda pct, msg: self.progress.emit(
                                     min(99, max(92, int(pct))), msg
                                 ),
-                                overlay_frames=overlay_array,
+                                overlay_frames=None,
                                 masks_input=masks,
+                                biology_label_by_track=biology_label_by_track,
                             )
-                            debug_output.append(f"✓ Saved lineage visualization: {vis_lineage.name}")
+                            debug_output.append(
+                                f"✓ Saved lineage visualization: {vis_lineage.name} "
+                                "(founder colors, paths, biology labels e.g. 7.1.1)"
+                            )
                         except Exception as e:
                             import traceback
                             debug_output.append(f"⚠ Lineage visualization failed: {e}")
@@ -2229,11 +2246,15 @@ class TrackingWorker(QThread):
         use_overlay_base = overlay_frames is not None and overlay_frames.ndim == 4
         
         if use_overlay_base:
-            num_frames, height, width = overlay_frames.shape[0], overlay_frames.shape[1], overlay_frames.shape[2]
+            num_frames = overlay_frames.shape[0]
+            if images is not None and getattr(images, "ndim", 0) >= 3 and images.shape[0] == num_frames:
+                native_height, native_width = images.shape[1], images.shape[2]
+            else:
+                native_height, native_width = overlay_frames.shape[1], overlay_frames.shape[2]
             debug_output.append("  - Using overlay as base (trajectories only)")
         else:
             num_frames = images.shape[0]
-            height, width = images.shape[1], images.shape[2]
+            native_height, native_width = images.shape[1], images.shape[2]
             if progress_callback:
                 progress_callback(91, "Normalizing images...")
             img_min = images.min(axis=(1, 2), keepdims=True)
@@ -2241,6 +2262,16 @@ class TrackingWorker(QThread):
             img_range = img_max - img_min
             img_range[img_range == 0] = 1
             images_norm = ((images - img_min) / img_range * 255).astype(np.uint8)
+
+        export_factor = 1
+        if output_path is not None and not preview_fast:
+            export_factor = tracking_export_upscale_factor(native_height, native_width)
+        height = native_height * export_factor
+        width = native_width * export_factor
+        if export_factor > 1:
+            debug_output.append(
+                f"  - Rendering export at {width}×{height} ({export_factor}× native)"
+            )
         
         # Get unique track IDs and colormap
         if 'track_id' in tracks_df.columns:
@@ -2261,14 +2292,35 @@ class TrackingWorker(QThread):
         
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
         track_points_by_id = build_track_points_by_id(tracks_df)
+        if export_factor > 1:
+            track_points_by_id = scale_track_points_by_id(track_points_by_id, export_factor)
         unique_track_set = {int(t) for t in unique_tracks}
         export_style = tracking_export_viz_style(height, width)
+        use_aa_paths = bool(output_path is not None and not preview_fast and export_factor > 1)
         draw_track_labels = (
             not preview_fast
             and should_draw_track_id_labels(num_tracks, height, width)
             and not use_overlay_base
         )
         draw_centroid_markers = not preview_fast and not use_overlay_base
+
+        if use_overlay_base:
+            if (
+                export_factor > 1
+                and overlay_frames.shape[1] == native_height * export_factor
+                and overlay_frames.shape[2] == native_width * export_factor
+            ):
+                base_frames = overlay_frames
+            elif export_factor > 1:
+                base_frames = upscale_rgb_stack(overlay_frames, export_factor)
+            else:
+                base_frames = overlay_frames
+        elif export_factor > 1:
+            gray_rgb = np.stack([images_norm, images_norm, images_norm], axis=-1)
+            base_frames = upscale_rgb_stack(gray_rgb, export_factor)
+            masks_tracked = upscale_mask_stack(masks_tracked, export_factor)
+        else:
+            base_frames = None
         
         for frame_idx in range(num_frames):
             try:
@@ -2276,8 +2328,8 @@ class TrackingWorker(QThread):
                     progress_pct = int(90 + (frame_idx / num_frames) * 10)
                     progress_callback(progress_pct, f"Creating visualization: {frame_idx + 1}/{num_frames} ({progress_pct}%)")
                 
-                if use_overlay_base:
-                    vis_frame = np.ascontiguousarray(overlay_frames[frame_idx].copy())
+                if use_overlay_base or export_factor > 1:
+                    vis_frame = np.ascontiguousarray(base_frames[frame_idx].copy())
                 else:
                     img = images_norm[frame_idx]
                     vis_frame = np.stack([img, img, img], axis=-1)
@@ -2293,94 +2345,29 @@ class TrackingWorker(QThread):
                 
                 labels_to_draw = []
                 if track_points_by_id:
-                    tracks_in_frame = [
-                        track_id_int
-                        for track_id_int, points in track_points_by_id.items()
-                        if track_id_int in unique_track_set and any(f <= frame_idx for f, _, _ in points)
-                    ]
+                    vis_frame = draw_trajectory_paths_on_frame(
+                        vis_frame,
+                        track_points_by_id=track_points_by_id,
+                        track_colors=track_colors,
+                        unique_track_set=unique_track_set,
+                        frame_idx=frame_idx,
+                        height=height,
+                        width=width,
+                        export_style=export_style,
+                        preview_fast=preview_fast,
+                        use_antialiased_paths=use_aa_paths,
+                    )
                     
-                    for track_id_int in tracks_in_frame:
-                        if track_id_int not in track_colors:
-                            continue
-                        color = track_colors[track_id_int]
-                        
-                        points_up_to = [
-                            (y, x) for f, y, x in track_points_by_id[track_id_int] if f <= frame_idx
+                    if draw_centroid_markers:
+                        tracks_in_frame = [
+                            track_id_int
+                            for track_id_int, points in track_points_by_id.items()
+                            if track_id_int in unique_track_set and any(f == frame_idx for f, _, _ in points)
                         ]
-                        
-                        if len(points_up_to) > 1:
-                            points = np.array(points_up_to, dtype=int)
-                            # Clip points to valid bounds
-                            points[:, 0] = np.clip(points[:, 0], 0, height - 1)
-                            points[:, 1] = np.clip(points[:, 1], 0, width - 1)
-                            
-                            # Draw lines between consecutive points using optimized approach
-                            # For speed, we'll draw lines more efficiently
-                            for i in range(len(points) - 1):
-                                y1, x1 = points[i]
-                                y2, x2 = points[i + 1]
-                                
-                                # Calculate line length
-                                dy = abs(y2 - y1)
-                                dx = abs(x2 - x1)
-                                
-                                if dx == 0 and dy == 0:
-                                    continue
-                                
-                                # Optimize: Use fewer points for long lines (subsample)
-                                max_steps = max(dx, dy)
-                                # For very long lines, subsample more aggressively
-                                if preview_fast:
-                                    step_size = max(1, max_steps // 40)
-                                elif max_steps > 200:
-                                    step_size = max(1, max_steps // 200)  # Very aggressive subsampling
-                                elif max_steps > 50:
-                                    step_size = max(1, max_steps // 50)  # Moderate subsampling
-                                else:
-                                    step_size = 1  # Full resolution for short lines
-                                
-                                num_steps = max_steps // step_size + 1
-                                
-                                # Generate line points using numpy (much faster than loops)
-                                if dx > dy:
-                                    # Horizontal line
-                                    x_coords = np.linspace(x1, x2, num_steps, dtype=int)
-                                    y_coords = np.round(np.linspace(y1, y2, num_steps)).astype(int)
-                                else:
-                                    # Vertical line
-                                    y_coords = np.linspace(y1, y2, num_steps, dtype=int)
-                                    x_coords = np.round(np.linspace(x1, x2, num_steps)).astype(int)
-                                
-                                y_coords = np.clip(y_coords, 0, height - 1)
-                                x_coords = np.clip(x_coords, 0, width - 1)
-                                
-                                for y, x in zip(y_coords, x_coords):
-                                    if preview_fast or not export_style.thick_path:
-                                        blend_path_pixel_on_frame(
-                                            vis_frame,
-                                            int(y),
-                                            int(x),
-                                            color,
-                                            bg_weight=export_style.path_bg_weight,
-                                            fg_weight=export_style.path_fg_weight,
-                                        )
-                                    else:
-                                        y_start, y_end = int(y) - 1, int(y) + 2
-                                        x_start, x_end = int(x) - 1, int(x) + 2
-                                        vis_frame[y_start:y_end, x_start:x_end, 0] = (
-                                            vis_frame[y_start:y_end, x_start:x_end, 0] * export_style.path_bg_weight
-                                            + color[0] * export_style.path_fg_weight
-                                        ).astype(np.uint8)
-                                        vis_frame[y_start:y_end, x_start:x_end, 1] = (
-                                            vis_frame[y_start:y_end, x_start:x_end, 1] * export_style.path_bg_weight
-                                            + color[1] * export_style.path_fg_weight
-                                        ).astype(np.uint8)
-                                        vis_frame[y_start:y_end, x_start:x_end, 2] = (
-                                            vis_frame[y_start:y_end, x_start:x_end, 2] * export_style.path_bg_weight
-                                            + color[2] * export_style.path_fg_weight
-                                        ).astype(np.uint8)
-                        
-                        if draw_centroid_markers:
+                        for track_id_int in tracks_in_frame:
+                            if track_id_int not in track_colors:
+                                continue
+                            color = track_colors[track_id_int]
                             current_points = [
                                 (y, x)
                                 for f, y, x in track_points_by_id[track_id_int]
@@ -2438,14 +2425,15 @@ class TrackingWorker(QThread):
                 visualization[frame_idx] = vis_frame
             except Exception as e:
                 debug_output.append(f"  Frame {frame_idx}: trajectory drawing failed: {e}")
-                if use_overlay_base:
-                    vis_frame = np.ascontiguousarray(overlay_frames[frame_idx].copy())
+                if use_overlay_base or export_factor > 1:
+                    vis_frame = np.ascontiguousarray(base_frames[frame_idx].copy())
                 else:
                     img = images_norm[frame_idx]
                     vis_frame = np.stack([img, img, img], axis=-1)
                 visualization[frame_idx] = vis_frame
         
         if output_path is not None:
+            upscale = export_factor
             if progress_callback:
                 progress_callback(99, "Saving visualization file...")
             T = visualization.shape[0]
@@ -2454,6 +2442,8 @@ class TrackingWorker(QThread):
                 from bactomate.modules.tiff_metadata import build_metadata_dict
                 ps = getattr(self, '_cal_ps', 0) or 0
                 tp = getattr(self, '_cal_tp', 0) or 0
+                if upscale > 1 and ps > 0:
+                    ps = float(ps) / float(upscale)
                 meta = build_metadata_dict(
                     pixel_size_um=ps if ps > 0 else None,
                     time_per_frame_min=tp if tp > 0 else None,
@@ -2545,6 +2535,21 @@ class TrackingWorker(QThread):
                 self.progress.emit(min(99, int(pct)), str(msg))
 
             if is_lineage and founder_by_track:
+                from bactomate.modules.lineage_integration import (
+                    build_biology_track_labels,
+                    compact_biology_label_map,
+                )
+
+                lineage_meta = self._lineage_per_track_summary(
+                    edges_df if edges_df is not None else pd.DataFrame(),
+                    tracks_df,
+                )
+                bio_labels_df = build_biology_track_labels(
+                    edges_df if edges_df is not None else pd.DataFrame(),
+                    tracks_df,
+                    lineage_meta,
+                )
+                biology_label_by_track = compact_biology_label_map(bio_labels_df)
                 frames_rgb = self._create_lineage_visualization(
                     imgs,
                     masks_tracked,
@@ -2555,6 +2560,7 @@ class TrackingWorker(QThread):
                     progress_callback=vis_progress,
                     overlay_frames=None,
                     masks_input=masks_input,
+                    biology_label_by_track=biology_label_by_track,
                 )
             else:
                 frames_rgb = self._create_trajectory_visualization(
@@ -2647,9 +2653,15 @@ class TrackingWorker(QThread):
             PIL_AVAILABLE = False
         
         use_callback = callable(progress_callback)
-        export_style = tracking_export_viz_style(height, width)
-        draw_track_labels = should_draw_track_id_labels(num_tracks, height, width)
+        export_factor = tracking_export_upscale_factor(height, width) if output_path is not None else 1
+        export_height = height * export_factor
+        export_width = width * export_factor
+        native_style = tracking_export_viz_style(height, width)
+        export_style = tracking_export_viz_style(export_height, export_width)
+        draw_track_labels_native = should_draw_track_id_labels(num_tracks, height, width)
+        draw_track_labels_export = should_draw_track_id_labels(num_tracks, export_height, export_width)
         overlays = []
+        export_overlays = []
         for frame_idx in tqdm(range(num_frames), desc="Creating tracked overlay", disable=use_callback):
             if use_callback:
                 progress_callback(frame_idx, num_frames, "Creating overlay")
@@ -2687,17 +2699,17 @@ class TrackingWorker(QThread):
                             tracks_df, frame_idx, centroid_y, centroid_x
                         )
                         label_text = overlay_label_for_track(track_id, cell_id, int(region.label))
-                        text_x = x + export_style.label_offset_x
-                        text_y = y + export_style.label_offset_y
+                        text_x = x + native_style.label_offset_x
+                        text_y = y + native_style.label_offset_y
                         labels_to_draw.append((label_text, text_x, text_y))
 
-                    if draw_track_labels:
+                    if draw_track_labels_native:
                         pil_img = draw_hq_labels(
                             pil_img,
                             labels_to_draw,
-                            font_size=export_style.font_size,
-                            scale=export_style.label_scale,
-                            stroke_width=export_style.stroke_width,
+                            font_size=native_style.font_size,
+                            scale=native_style.label_scale,
+                            stroke_width=native_style.stroke_width,
                         )
                     overlay = np.array(pil_img)
                 except Exception:
@@ -2705,14 +2717,62 @@ class TrackingWorker(QThread):
                     pass
             
             overlays.append(overlay)
+
+            if export_factor > 1:
+                img_export = upscale_rgb_stack(img_rgb[np.newaxis, ...], export_factor)[0]
+                mask_export = upscale_mask_stack(mask[np.newaxis, ...], export_factor)[0]
+                mask_rgb_export = np.zeros((export_height, export_width, 3), dtype=np.float32)
+                for track_id, color in track_colors.items():
+                    mask_rgb_export[mask_export == track_id] = color[:3]
+                mask_rgb_export = (mask_rgb_export * 255).astype(np.uint8)
+                overlay_export = (img_export * 0.5 + mask_rgb_export * 0.5).astype(np.uint8)
+                if PIL_AVAILABLE and mask_export.max() > 0:
+                    try:
+                        pil_export = Image.fromarray(overlay_export)
+                        regions_export = regionprops(mask_export)
+                        labels_export = []
+                        for region in regions_export:
+                            if region.label == 0:
+                                continue
+                            centroid_y, centroid_x = region.centroid
+                            x = int(centroid_x)
+                            y = int(centroid_y)
+                            track_id, cell_id = resolve_track_at_centroid(
+                                tracks_df, frame_idx, centroid_y, centroid_x
+                            )
+                            label_text = overlay_label_for_track(track_id, cell_id, int(region.label))
+                            labels_export.append(
+                                (
+                                    label_text,
+                                    x + export_style.label_offset_x,
+                                    y + export_style.label_offset_y,
+                                )
+                            )
+                        if draw_track_labels_export:
+                            pil_export = draw_hq_labels(
+                                pil_export,
+                                labels_export,
+                                font_size=export_style.font_size,
+                                scale=export_style.label_scale,
+                                stroke_width=export_style.stroke_width,
+                            )
+                        overlay_export = np.array(pil_export)
+                    except Exception:
+                        pass
+                export_overlays.append(overlay_export)
         
         overlay_array = np.stack(overlays, axis=0)
+        export_overlay_array = np.stack(export_overlays, axis=0) if export_overlays else None
         if output_path is not None:
-            T = overlay_array.shape[0]
+            upscale = export_factor
+            save_array = export_overlay_array if export_overlay_array is not None else overlay_array
+            T = save_array.shape[0]
             try:
                 from bactomate.modules.tiff_metadata import build_metadata_dict
                 ps = getattr(self, '_cal_ps', 0) or 0
                 tp = getattr(self, '_cal_tp', 0) or 0
+                if upscale > 1 and ps > 0:
+                    ps = float(ps) / float(upscale)
                 # axes TYXC so metadata matches 4D RGB stack (T, H, W, 3); avoids tifffile "axes do not match shape" warning
                 meta = build_metadata_dict(
                     pixel_size_um=ps if ps > 0 else None,
@@ -2721,10 +2781,11 @@ class TrackingWorker(QThread):
                     images=T,
                     frames=T,
                 )
-                tifffile.imwrite(str(output_path), overlay_array, metadata=meta, compression='zlib')
+                tifffile.imwrite(str(output_path), save_array, metadata=meta, compression='zlib')
             except Exception:
-                tifffile.imwrite(str(output_path), overlay_array, compression='zlib')
-        return overlay_array
+                tifffile.imwrite(str(output_path), save_array, compression='zlib')
+        # Return native resolution so trajectory/lineage drawing uses the same y/x space as tracks_df.
+        return overlay_array, export_overlay_array
 
     @staticmethod
     def _lineage_edges_dataframe(napari_graph: Any, tracks_df) -> Any:
@@ -2915,13 +2976,28 @@ class TrackingWorker(QThread):
         progress_callback=None,
         overlay_frames=None,
         masks_input=None,
+        *,
+        biology_label_by_track: dict[int, str] | None = None,
     ) -> Optional[np.ndarray]:
-        """RGB stack: founder-family colors, trajectories, division markers, track IDs (same style as trajectories)."""
+        """RGB stack: founder-family colors, trajectories, division markers, biology labels (e.g. 7.1.1)."""
         import numpy as np
         import matplotlib.pyplot as plt
         import tifffile
+        from bactomate.gui.workers.tracking_io import (
+            blend_path_pixel_on_frame,
+            draw_track_centroid_marker,
+            overlay_label_for_track,
+            should_draw_track_id_labels,
+            tracking_export_viz_style,
+        )
 
-        use_overlay_base = overlay_frames is not None and overlay_frames.ndim == 4
+        use_biology_labels = bool(biology_label_by_track)
+        # Full lineage render: never reuse the plain track-ID overlay as base.
+        use_overlay_base = (
+            not use_biology_labels
+            and overlay_frames is not None
+            and overlay_frames.ndim == 4
+        )
         if use_overlay_base:
             num_frames, height, width = overlay_frames.shape[0], overlay_frames.shape[1], overlay_frames.shape[2]
             images_norm = None
@@ -2977,9 +3053,15 @@ class TrackingWorker(QThread):
             return None
         unique_tracks = tracks_df["track_id"].unique()
         export_style = tracking_export_viz_style(height, width)
-        lineage_draw_labels = (
+        lineage_draw_labels = use_biology_labels or (
             should_draw_track_id_labels(len(unique_tracks), height, width) and not use_overlay_base
         )
+
+        def _lineage_label_text(track_id_int: int, cell_id: int | None) -> str:
+            if biology_label_by_track and track_id_int in biology_label_by_track:
+                return str(biology_label_by_track[track_id_int])
+            return overlay_label_for_track(track_id_int, cell_id, track_id_int)
+
         visualization = np.zeros((num_frames, height, width, 3), dtype=np.uint8)
 
         for frame_idx in range(num_frames):
@@ -3055,7 +3137,7 @@ class TrackingWorker(QThread):
                             if dx == 0 and dy == 0:
                                 continue
                             max_steps = max(dx, dy)
-                            step_size = max(1, max_steps // 50) if max_steps > 50 else 1
+                            step_size = 1
                             num_steps = max_steps // step_size + 1
                             if dx > dy:
                                 x_coords = np.linspace(x1, x2, num_steps, dtype=int)
@@ -3107,7 +3189,7 @@ class TrackingWorker(QThread):
                                             cell_id = cid
                                 except Exception:
                                     pass
-                            label_text = overlay_label_for_track(int(track_id_int), cell_id, int(track_id_int))
+                            label_text = _lineage_label_text(int(track_id_int), cell_id)
                             labels_to_draw.append(
                                 (
                                     label_text,
@@ -3144,6 +3226,9 @@ class TrackingWorker(QThread):
 
         if output_path is None:
             return visualization
+        upscale = tracking_export_upscale_factor(height, width)
+        if upscale > 1:
+            visualization = upscale_rgb_stack(visualization, upscale)
         if progress_callback:
             progress_callback(99, "Saving lineage visualization...")
         T = visualization.shape[0]
@@ -3153,6 +3238,8 @@ class TrackingWorker(QThread):
 
             ps = getattr(self, "_cal_ps", 0) or 0
             tp = getattr(self, "_cal_tp", 0) or 0
+            if upscale > 1 and ps > 0:
+                ps = float(ps) / float(upscale)
             meta = build_metadata_dict(
                 pixel_size_um=ps if ps > 0 else None,
                 time_per_frame_min=tp if tp > 0 else None,

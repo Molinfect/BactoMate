@@ -630,3 +630,258 @@ def pick_mask_path_for_preview(
         message="Multiple mask files were found. Choose which mask to preview:",
         default_path=default_path,
     )
+
+
+def _active_threshold(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0 else None
+
+
+def _morphology_fail_reasons(prop: dict[str, Any], settings: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    try:
+        aspect = float(prop.get("aspect_ratio", 0.0) or 0.0)
+        ecc = float(prop.get("eccentricity", 0.0) or 0.0)
+        sol = float(prop.get("solidity", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return ["Morphology filter failed"]
+    min_ar = float(settings.get("min_aspect_ratio", 1.5) or 1.5)
+    max_ar = float(settings.get("max_aspect_ratio", 10.0) or 10.0)
+    min_ecc = float(settings.get("min_eccentricity", 0.5) or 0.5)
+    min_sol = float(settings.get("min_solidity", 0.7) or 0.7)
+    if aspect < min_ar:
+        reasons.append(f"Aspect ratio {aspect:.2f} < min {min_ar:.2f}")
+    elif aspect > max_ar:
+        reasons.append(f"Aspect ratio {aspect:.2f} > max {max_ar:.2f}")
+    if ecc < min_ecc:
+        reasons.append(f"Eccentricity {ecc:.2f} < min {min_ecc:.2f}")
+    if sol < min_sol:
+        reasons.append(f"Solidity {sol:.2f} < min {min_sol:.2f}")
+    return reasons or ["Morphology filter failed"]
+
+
+def _size_fail_reasons(prop: dict[str, Any], settings: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    checks = (
+        ("area_um2", "min_area_um2", "max_area_um2", "Area (µm²)"),
+        ("width_um", "min_width_um", "max_width_um", "Width (µm)"),
+        ("length_um", "min_length_um", "max_length_um", "Length (µm)"),
+    )
+    for (metric_key, min_key, max_key, label) in checks:
+        try:
+            value = float(prop.get(metric_key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        min_v = _active_threshold(settings.get(min_key))
+        max_v = _active_threshold(settings.get(max_key))
+        if min_v is not None and value < min_v:
+            reasons.append(f"{label} {value:.2f} < min {min_v:.2f}")
+        if max_v is not None and value > max_v:
+            reasons.append(f"{label} {value:.2f} > max {max_v:.2f}")
+    return reasons or ["Size filter failed"]
+
+
+def evaluate_cell_filter_details(
+    mask_2d: Any,
+    settings: dict[str, Any],
+    *,
+    accepted: set[int] | None = None,
+    rejected: set[int] | None = None,
+    phase_plane: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Per-cell metrics and fail reasons for filter-preview hover tooltips."""
+    import numpy as np
+    from skimage.measure import regionprops
+
+    from bactomate.scripts.analyze_cell_areas import (
+        calculate_cell_properties,
+        filter_by_size,
+        filter_rod_shaped_cells,
+    )
+
+    mask = np.asarray(mask_2d, dtype=np.int32)
+    if mask.ndim != 2:
+        return []
+    h, w = mask.shape[:2]
+    pixel_size = float(settings.get("pixel_size", 0.108) or 0.108)
+    exclude_border = bool(settings.get("exclude_border", False))
+    accepted_set = {int(x) for x in (accepted or set()) if int(x) > 0}
+    rejected_set = {int(x) for x in (rejected or set()) if int(x) > 0}
+
+    centroids: dict[int, tuple[float, float]] = {}
+    border_labels: set[int] = set()
+    for region in regionprops(mask):
+        label = int(region.label)
+        if label <= 0:
+            continue
+        cy, cx = region.centroid
+        centroids[label] = (float(cy), float(cx))
+        min_row, min_col, max_row, max_col = region.bbox
+        if min_row <= 0 or min_col <= 0 or max_row >= h or max_col >= w:
+            border_labels.add(label)
+
+    props_list = calculate_cell_properties(
+        mask,
+        pixel_size=pixel_size,
+        exclude_border=exclude_border,
+    )
+    props_by_label = {int(p["label"]): dict(p) for p in props_list}
+    rod_ok = {
+        int(p["label"])
+        for p in filter_rod_shaped_cells(
+            props_list,
+            min_aspect_ratio=float(settings.get("min_aspect_ratio", 1.5) or 1.5),
+            max_aspect_ratio=float(settings.get("max_aspect_ratio", 10.0) or 10.0),
+            min_eccentricity=float(settings.get("min_eccentricity", 0.5) or 0.5),
+            min_solidity=float(settings.get("min_solidity", 0.7) or 0.7),
+        )
+    }
+    size_ok = {
+        int(p["label"])
+        for p in filter_by_size(
+            [p for p in props_list if int(p["label"]) in rod_ok],
+            min_area_um2=settings.get("min_area_um2"),
+            max_area_um2=settings.get("max_area_um2"),
+            min_width_um=settings.get("min_width_um"),
+            max_width_um=settings.get("max_width_um"),
+            min_length_um=settings.get("min_length_um"),
+            max_length_um=settings.get("max_length_um"),
+        )
+    }
+    focus_scores: dict[int, float] = {}
+    size_accepted = set(size_ok)
+    if bool(settings.get("focus_filter_enabled")) and phase_plane is not None and size_accepted:
+        try:
+            from bactomate.modules.cell_focus_score import (
+                filter_labels_by_focus,
+                score_cells_in_frame,
+            )
+
+            scores = score_cells_in_frame(
+                np.asarray(phase_plane, dtype=np.float64),
+                mask,
+                size_accepted,
+            )
+            focus_scores = {int(k): float(v) for k, v in dict(scores or {}).items()}
+            frac = float(settings.get("focus_min_fraction_of_median", 0.5) or 0.5)
+            size_accepted = set(
+                filter_labels_by_focus(
+                    scores,
+                    min_fraction_of_median=frac if frac > 0 else None,
+                )
+            )
+        except Exception:
+            focus_scores = {}
+
+    details: list[dict[str, Any]] = []
+    for label in sorted(centroids):
+        cy, cx = centroids[label]
+        prop = props_by_label.get(label)
+        if accepted_set or rejected_set:
+            status = "pass" if label in accepted_set else "fail"
+        else:
+            status = "pass" if label in size_accepted else "fail"
+        reasons: list[str] = []
+        if status == "fail":
+            if exclude_border and label in border_labels:
+                reasons.append("Touches image border")
+            elif prop is None:
+                reasons.append("Excluded from analysis")
+            elif label not in rod_ok:
+                reasons.extend(_morphology_fail_reasons(prop, settings))
+            elif label not in size_ok:
+                reasons.extend(_size_fail_reasons(prop, settings))
+            elif bool(settings.get("focus_filter_enabled")) and label not in size_accepted:
+                score = focus_scores.get(label)
+                frac = float(settings.get("focus_min_fraction_of_median", 0.5) or 0.5)
+                if score is not None:
+                    reasons.append(
+                        f"Focus score {score:.3f} below {frac:.2f}× frame median"
+                    )
+                else:
+                    reasons.append("Out of focus")
+        area_px = int(prop.get("area_pixels", 0) or 0) if prop else 0
+        details.append(
+            {
+                "label": int(label),
+                "status": status,
+                "y": cy,
+                "x": cx,
+                "area_px": area_px,
+                "fail_reasons": reasons,
+                "metrics": prop or {},
+                "focus_score": focus_scores.get(label),
+            }
+        )
+    return details
+
+
+def format_cell_filter_tooltip(cell: dict[str, Any]) -> str:
+    """Multi-line tooltip for hover on a segmented cell in the filter preview."""
+    label = int(cell.get("label", 0) or 0)
+    status = str(cell.get("status", "pass")).lower()
+    is_fail = status == "fail"
+    title = f"Cell {label} — FAIL" if is_fail else f"Cell {label} — pass"
+    metrics = dict(cell.get("metrics") or {})
+    lines = [title, f"Position: y={float(cell.get('y', 0.0)):.1f}, x={float(cell.get('x', 0.0)):.1f}"]
+    metric_specs = (
+        ("Area (µm²)", "area_um2"),
+        ("Width (µm)", "width_um"),
+        ("Length (µm)", "length_um"),
+        ("Aspect", "aspect_ratio"),
+        ("Eccentricity", "eccentricity"),
+        ("Solidity", "solidity"),
+    )
+    for label_txt, key in metric_specs:
+        if key not in metrics:
+            continue
+        try:
+            lines.append(f"{label_txt}: {float(metrics[key]):.2f}")
+        except (TypeError, ValueError):
+            continue
+    focus_score = cell.get("focus_score")
+    if focus_score is not None:
+        try:
+            lines.append(f"Focus score: {float(focus_score):.3f}")
+        except (TypeError, ValueError):
+            pass
+    reasons = cell.get("fail_reasons")
+    if is_fail and isinstance(reasons, list) and reasons:
+        parts = [f"<b>{title}</b>"] + [
+            line.replace("&", "&amp;").replace("<", "&lt;") for line in lines[1:]
+        ]
+        parts.append("<br/><b>Failed filters:</b>")
+        for reason in reasons:
+            text = str(reason).replace("&", "&amp;").replace("<", "&lt;")
+            parts.append(f'<span style="color:#ff6666">• {text}</span>')
+        return "<br/>".join(parts)
+    return "\n".join(lines)
+
+
+def build_cell_hover_data(
+    cell_details: list[dict[str, Any]],
+    mask_shape: tuple[int, int],
+    display_shape: tuple[int, int],
+) -> list[tuple[float, float, str, float]]:
+    """Build ImageCanvas hover entries for segmented cells in scaled preview coordinates."""
+    import numpy as np
+
+    h0, w0 = int(mask_shape[0]), int(mask_shape[1])
+    h1, w1 = int(display_shape[0]), int(display_shape[1])
+    sx = w1 / w0 if w0 else 1.0
+    sy = h1 / h0 if h0 else 1.0
+    scale = max(sx, sy, 1e-06)
+    out: list[tuple[float, float, str, float]] = []
+    for cell in cell_details or []:
+        try:
+            cy = float(cell.get("y", 0.0) or 0.0)
+            cx = float(cell.get("x", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        area_px = max(1.0, float(cell.get("area_px", 4) or 4))
+        radius = max(8.0, min(42.0, (area_px / 3.14159265) ** 0.5 * scale * 0.45))
+        out.append((cx * sx, cy * sy, format_cell_filter_tooltip(cell), float(radius)))
+    return out

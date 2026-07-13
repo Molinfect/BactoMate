@@ -255,6 +255,20 @@ def test_build_biology_track_labels_tree() -> None:
     assert split == "Cell 1 → Cell 1.1 + Cell 1.2 @ frame 3"
 
 
+def test_compact_biology_label_map_strips_cell_prefix() -> None:
+    import pandas as pd
+
+    from bactomate.modules.lineage_integration import compact_biology_label_map
+
+    labels = pd.DataFrame(
+        {
+            "track_id": [5, 1, 11],
+            "biology_label": ["Cell 7", "Cell 7.1.1", "Cell 7.1.2"],
+        }
+    )
+    assert compact_biology_label_map(labels) == {5: "7", 1: "7.1.1", 11: "7.1.2"}
+
+
 def test_terminal_frame_division_is_flagged() -> None:
     import pandas as pd
 
@@ -485,7 +499,7 @@ def test_resolve_lineage_source_finds_tracking_under_parent_folder(tmp_path) -> 
     from bactomate.modules.lineage_integration import discover_lineage_tracking_dirs, resolve_lineage_source
 
     tif_files = tmp_path / "Tif_files"
-    out = tif_files / "_tracking" / "Merged-1_phase_mask_filtered_tracking"
+    out = tif_files / "_tracking" / "Merged-1_phase_mask_filtered_lineage_tracking"
     tables = out / "tables"
     tables.mkdir(parents=True)
     (tables / "lineage_points.parquet").write_bytes(b"")
@@ -493,9 +507,21 @@ def test_resolve_lineage_source_finds_tracking_under_parent_folder(tmp_path) -> 
 
     discovered = discover_lineage_tracking_dirs(tif_files)
     assert len(discovered) == 1
-    assert discovered[0].name == "Merged-1_phase_mask_filtered_tracking"
+    assert discovered[0].name == "Merged-1_phase_mask_filtered_lineage_tracking"
 
     parent, stem, fig_dir = resolve_lineage_source(tif_files)
     assert parent == out
     assert stem == "Merged-1_phase_mask_filtered"
     assert fig_dir == out / "figures"
+
+
+def test_resolve_lineage_source_supports_legacy_tracking_folder_name(tmp_path) -> None:
+    from bactomate.modules.lineage_integration import resolve_lineage_source
+
+    out = tmp_path / "_tracking" / "sample_masks_tracking"
+    (out / "tables").mkdir(parents=True)
+    (out / "sample_masks_lineage_report.xlsx").write_bytes(b"x")
+
+    parent, stem, _fig = resolve_lineage_source(out)
+    assert parent == out
+    assert stem == "sample_masks"

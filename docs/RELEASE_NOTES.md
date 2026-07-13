@@ -4,6 +4,24 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.6 (2026-07-13)
+
+### Filter preview
+
+- **Auto-apply on open:** current cell and foci filters run once when the preview opens, so pass/fail overlays and hover tooltips work immediately.
+- **Cell hover:** tooltips show pass/fail status, morphology metrics, and rejection reasons after apply.
+- **Layout:** cell-filter checkboxes aligned on a cleaner footer row.
+
+### Tracking and lineage exports
+
+- **Trajectory TIFF quality:** export renders at target resolution with anti-aliased paths; fixed coordinate mismatch when overlay was upscaled before drawing paths.
+- **Lineage preflight:** no longer blocks when no filtered mask exists on disk (raw-only pipeline allowed).
+- **Lineage TIFF labels:** biology-style hierarchical labels on `*_lineage.tif` exports.
+- **Lineage outputs:** cell-cycle area summary overlay; lineage tracking folder renamed to `{stem}_lineage_tracking`.
+- **Tracking folders:** movement tracking stays under `{stem}_tracking/`.
+
+---
+
 ## v2.8.5 (2026-07-10)
 
 ### Tracking and lineage

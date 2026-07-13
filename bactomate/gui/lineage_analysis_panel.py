@@ -190,7 +190,7 @@ class LineageAnalysisPanel:
         file_font = QFont()
         file_font.setPointSize(12)
         self._source_edit = QLineEdit()
-        self._source_edit.setPlaceholderText("Tif_files/, …/_tracking/{stem}_tracking/, or *_lineage_report.xlsx")
+        self._source_edit.setPlaceholderText("Tif_files/, …/_tracking/{stem}_lineage_tracking/, or *_lineage_report.xlsx")
         self._source_edit.setMinimumWidth(0)
         self._source_edit.setFont(file_font)
         self._source_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -208,7 +208,7 @@ class LineageAnalysisPanel:
                 info_icon=create_info_icon(
                     "Lineage tracking output folder, parent folder (e.g. Tif_files with _tracking/), "
                     "or *_lineage_report.xlsx.\n\n"
-                    "BactoMate searches for _tracking/{stem}_tracking/ automatically. "
+                    "BactoMate searches for _tracking/{stem}_lineage_tracking/ (or legacy *_tracking/) automatically. "
                     "Filled after Run lineage tracking; plots open on the right preview pane.",
                     host,
                 ),

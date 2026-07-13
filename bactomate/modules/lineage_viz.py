@@ -443,13 +443,171 @@ def plot_lineage_cell_cycle_area(
             marker = "o" if status == "accepted" else "x"
             ax.scatter([div_f + 1], [y], s=30, c=color, marker=marker, edgecolors="white", linewidths=0.6, zorder=4)
 
-    ax.set_title(title if lineage_id is None else f"{title} — lineage {lineage_id}")
+    ax.set_title(title)
     ax.set_xlabel("Frame")
     ax.set_ylabel(f"Cell area ({unit})")
     _apply_integer_frame_xaxis(ax, sub["frame"].astype(float) + 1.0)
     ax.grid(True, alpha=0.25)
     if len(tids) <= 10:
         ax.legend(fontsize=7, loc="best")
+
+
+def plot_lineage_cell_cycle_area_overlay(
+    ax: Any,
+    area_df: Any,
+    edges_df: Any = None,
+    *,
+    lineage_ids: list[int],
+    label_map: Optional[dict[int, str]] = None,
+    events_df: Any = None,
+    include_candidate_divisions: bool = True,
+    title: str = "Cell-cycle area — all lineages",
+) -> None:
+    """All founder families on one axes; color = lineage family, legend explains colors."""
+    import pandas as pd
+    from matplotlib import colormaps
+
+    ax.clear()
+    if area_df is None or not isinstance(area_df, pd.DataFrame) or len(area_df) == 0:
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "No cell area data", ha="center", va="center", transform=ax.transAxes)
+        return
+    if not {"track_id", "frame", "area"}.issubset(area_df.columns):
+        ax.set_title(title)
+        return
+    if not lineage_ids:
+        plot_lineage_cell_cycle_area(
+            ax,
+            area_df,
+            edges_df,
+            label_map=label_map,
+            events_df=events_df,
+            include_candidate_divisions=include_candidate_divisions,
+            title=title,
+        )
+        return
+
+    sub = area_df.copy()
+    if "lineage_id" in sub.columns:
+        lid_set = {int(x) for x in lineage_ids}
+        sub = sub[sub["lineage_id"].astype(int).isin(lid_set)]
+    if len(sub) == 0:
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "No cell area data for selected lineages", ha="center", va="center", transform=ax.transAxes)
+        return
+
+    unit = "px"
+    if "area_source" in sub.columns:
+        src = " ".join(str(v) for v in sub["area_source"].dropna().unique().tolist()).lower()
+        if "um" in src or "µm" in src or "analysis:" in src:
+            unit = "µm²"
+    sub["frame"] = pd.to_numeric(sub["frame"], errors="coerce")
+    sub["area"] = pd.to_numeric(sub["area"], errors="coerce")
+    sub = sub.dropna(subset=["frame", "area", "track_id"]).sort_values(["track_id", "frame"])
+    if len(sub) == 0:
+        ax.set_title(title)
+        return
+
+    cmap = colormaps.get_cmap("tab10")
+    point_lookup: dict[tuple[int, int], float] = {}
+    for row in sub.itertuples(index=False):
+        point_lookup[(int(row.track_id), int(row.frame))] = float(row.area)
+
+    tids = sorted(int(t) for t in sub["track_id"].dropna().unique().tolist())
+    tid_to_lid: dict[int, int] = {}
+    if "lineage_id" in sub.columns:
+        for tid in tids:
+            rows = sub[sub["track_id"].astype(int) == tid]["lineage_id"].dropna()
+            if len(rows):
+                tid_to_lid[tid] = int(rows.iloc[0])
+
+    legend_seen: set[int] = set()
+    for i, lid in enumerate(sorted(int(x) for x in lineage_ids)):
+        family_color = cmap(i % 10)
+        family_tids = [tid for tid in tids if tid_to_lid.get(tid, lid) == int(lid)]
+        if not family_tids and int(lid) in tids:
+            family_tids = [int(lid)]
+        for tid in family_tids:
+            g = sub[sub["track_id"].astype(int) == int(tid)].sort_values("frame")
+            if len(g) == 0:
+                continue
+            show_legend = int(lid) not in legend_seen
+            if show_legend:
+                legend_seen.add(int(lid))
+            ax.plot(
+                g["frame"].astype(float) + 1.0,
+                g["area"],
+                marker="o",
+                markersize=3.0,
+                linewidth=1.1,
+                color=family_color,
+                alpha=0.88,
+                label=f"Lineage {lid}" if show_legend else None,
+                zorder=2,
+            )
+
+    if edges_df is not None and isinstance(edges_df, pd.DataFrame) and len(edges_df) > 0:
+        for er in edges_df.itertuples(index=False):
+            p = _safe_int(getattr(er, "parent_track_id", None))
+            d = _safe_int(getattr(er, "daughter_track_id", None))
+            div_f = _safe_int(getattr(er, "division_frame", None))
+            plf = _safe_int(getattr(er, "parent_last_frame", None))
+            if p is None or d is None or div_f is None:
+                continue
+            if p not in tids and d not in tids:
+                continue
+            parent_frame = plf if plf is not None else max(0, div_f - 1)
+            ya = point_lookup.get((p, parent_frame)) or point_lookup.get((p, div_f))
+            yb = point_lookup.get((d, div_f))
+            if ya is None or yb is None:
+                continue
+            ax.plot(
+                [parent_frame + 1, div_f + 1],
+                [ya, yb],
+                color="#666666",
+                linestyle=":",
+                linewidth=0.9,
+                alpha=0.65,
+                zorder=1,
+            )
+
+    if events_df is not None:
+        for lid in lineage_ids:
+            ev = _division_events_for_lineage(
+                events_df,
+                lineage_id=int(lid),
+                include_candidates=include_candidate_divisions,
+            )
+            for er in ev.itertuples(index=False):
+                div_f = _safe_int(getattr(er, "division_frame", None))
+                d = _safe_int(getattr(er, "daughter_track_id", None))
+                if div_f is None or d is None:
+                    continue
+                y = point_lookup.get((d, div_f))
+                if y is None:
+                    continue
+                status = str(getattr(er, "review_status", "candidate")).lower()
+                color = "#d62728" if status == "accepted" else "#f2c94c"
+                marker = "o" if status == "accepted" else "x"
+                ax.scatter(
+                    [div_f + 1],
+                    [y],
+                    s=28,
+                    c=color,
+                    marker=marker,
+                    edgecolors="white",
+                    linewidths=0.5,
+                    zorder=4,
+                )
+
+    ax.set_title(title)
+    ax.set_xlabel("Frame")
+    ax.set_ylabel(f"Cell area ({unit})")
+    _apply_integer_frame_xaxis(ax, sub["frame"].astype(float) + 1.0)
+    ax.grid(True, alpha=0.25)
+    handles, labels = ax.get_legend_handles_labels()
+    if labels:
+        ax.legend(fontsize=8, loc="best", title="Founder family")
 
 
 def _parse_numeric_list_cell(value: Any) -> list[float]:
@@ -768,13 +926,48 @@ def _biology_label_map_from_tables(tables: dict[str, Any]) -> dict[int, str]:
     return label_map
 
 
+def _founder_map_from_tables(tables: dict[str, Any]) -> dict[int, int]:
+    """track_id -> founder lineage_id from lineage tables."""
+    founder = tables.get("founder_by_track_curated") or tables.get("founder_by_track") or {}
+    if isinstance(founder, dict) and founder:
+        return {int(k): int(v) for k, v in founder.items()}
+    import pandas as pd
+
+    meta = tables.get("lineage_tracks_meta_curated") or tables.get("lineage_tracks_meta")
+    if meta is not None and isinstance(meta, pd.DataFrame) and {"track_id", "lineage_id"}.issubset(meta.columns):
+        out: dict[int, int] = {}
+        for row in meta.itertuples(index=False):
+            tid = _safe_int(getattr(row, "track_id", None))
+            lid = _safe_int(getattr(row, "lineage_id", None))
+            if tid is not None and lid is not None:
+                out[tid] = lid
+        return out
+    return {}
+
+
+def _attach_lineage_id_to_area_df(area_df: Any, tables: dict[str, Any]) -> Any:
+    """Ensure track_area rows carry lineage_id for per-family filtering."""
+    import pandas as pd
+
+    if area_df is None or not isinstance(area_df, pd.DataFrame) or len(area_df) == 0:
+        return area_df
+    if "lineage_id" in area_df.columns or "track_id" not in area_df.columns:
+        return area_df
+    founder = _founder_map_from_tables(tables)
+    if not founder:
+        return area_df
+    out = area_df.copy()
+    out["lineage_id"] = out["track_id"].map(lambda t: founder.get(int(t), int(t)) if t is not None else None)
+    return out
+
+
 def _track_area_from_tables(tables: dict[str, Any]) -> Any:
     """Return track_area table, synthesizing from lineage_points when needed."""
     import pandas as pd
 
     area_df = tables.get("track_area")
     if area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
-        return area_df
+        return _attach_lineage_id_to_area_df(area_df, tables)
     pts = tables.get("lineage_points")
     if pts is None or not isinstance(pts, pd.DataFrame) or len(pts) == 0:
         return None
@@ -950,22 +1143,6 @@ def export_lineage_analysis_figures(
                 fig.savefig(p, dpi=dpi)
                 written.append(p)
 
-        if area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
-            fig = Figure(figsize=(8, 4), tight_layout=True)
-            ax = fig.add_subplot(111)
-            plot_lineage_cell_cycle_area(
-                ax,
-                area_df,
-                edges,
-                lineage_id=int(lid),
-                label_map=label_map,
-                events_df=events,
-                title=f"Cell-cycle area — lineage {lid}",
-            )
-            p = analysis_dir / f"lineage_{lid}_cell_cycle_area.png"
-            fig.savefig(p, dpi=dpi)
-            written.append(p)
-
         if growth_ts is not None and isinstance(growth_ts, pd.DataFrame) and len(growth_ts) > 0:
             fig = Figure(figsize=(8, 3), tight_layout=True)
             axes = fig.subplots(1, 2)
@@ -1000,6 +1177,22 @@ def export_lineage_analysis_figures(
         plot_lineage_growth_overlay(axes[0], growth_ts, lids, title="All lineages — growth", events_df=events)
         plot_lineage_growth_overlay(axes[1], growth_ts, lids, log_scale=True, title="All lineages — log growth", events_df=events)
         p = analysis_dir / f"{stem}_growth_overlay.png"
+        fig.savefig(p, dpi=dpi)
+        written.append(p)
+
+    if lids and area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
+        fig = Figure(figsize=(9, 4.5), tight_layout=True)
+        ax = fig.add_subplot(111)
+        plot_lineage_cell_cycle_area_overlay(
+            ax,
+            area_df,
+            edges,
+            lineage_ids=lids,
+            label_map=label_map,
+            events_df=events,
+            title="Cell-cycle area — all lineages",
+        )
+        p = analysis_dir / f"{stem}_cell_cycle_area.png"
         fig.savefig(p, dpi=dpi)
         written.append(p)
 
@@ -1096,34 +1289,28 @@ def export_lineage_figures(
         fig.savefig(p, dpi=dpi)
         written.append(p)
 
-    if area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0 and lids:
-        n = len(lids)
-        if n <= MAX_COMBINED_TREE_LINEAGES:
-            cols = min(2, n)
-            rows = int(np.ceil(n / cols))
-            fig = Figure(figsize=(4.5 * cols, 3.2 * rows), tight_layout=True)
-            axes = fig.subplots(rows, cols, squeeze=False)
-            for idx, lid in enumerate(lids):
-                r, c = divmod(idx, cols)
-                plot_lineage_cell_cycle_area(
-                    axes[r][c],
-                    area_df,
-                    edges,
-                    lineage_id=int(lid),
-                    label_map=label_map,
-                    events_df=events,
-                    title=f"Cell-cycle area — lineage {lid}",
-                )
-            for idx in range(n, rows * cols):
-                r, c = divmod(idx, cols)
-                axes[r][c].set_visible(False)
-            p = output_dir / f"{stem}_cell_cycle_area.png"
-            fig.savefig(p, dpi=dpi)
-            written.append(p)
-    elif area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
-        fig = Figure(figsize=(8, 4), tight_layout=True)
+    if area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
+        fig = Figure(figsize=(9, 4.5), tight_layout=True)
         ax = fig.add_subplot(111)
-        plot_lineage_cell_cycle_area(ax, area_df, edges, label_map=label_map, events_df=events, title="Cell-cycle area trace")
+        if lids:
+            plot_lineage_cell_cycle_area_overlay(
+                ax,
+                area_df,
+                edges,
+                lineage_ids=lids,
+                label_map=label_map,
+                events_df=events,
+                title="Cell-cycle area — all lineages",
+            )
+        else:
+            plot_lineage_cell_cycle_area(
+                ax,
+                area_df,
+                edges,
+                label_map=label_map,
+                events_df=events,
+                title="Cell-cycle area trace",
+            )
         p = output_dir / f"{stem}_cell_cycle_area.png"
         fig.savefig(p, dpi=dpi)
         written.append(p)

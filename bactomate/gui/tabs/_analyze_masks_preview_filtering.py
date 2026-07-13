@@ -15,7 +15,7 @@ from bactomate.gui.widgets import create_info_icon, show_message_dialog
 from bactomate.gui.styles import filter_preview_card_stylesheet, preview_table_stylesheet
 from bactomate.gui.foci_filter_pipeline import FOCI_BLOB_SIZE_PRESETS, FociPassFailCache, accepted_cell_labels_cache_key, accepted_cell_labels_for_foci, sync_foci_peaks_with_accepted_cells, compute_foci_pass_fail_for_frame, draw_foci_blob_contours_on_rgb, filter_foci_csv_rows, fit_foci_table_columns, foci_blob_max_radius, foci_blob_threshold_frac, foci_pass_fail_cache_key, format_foci_cell_id_display, populate_foci_preview_table
 from bactomate.gui.foci_overlay_draw import DEFAULT_FOCI_PREVIEW_RENDER_CAP, draw_peak_rings_on_rgb
-from bactomate.gui.filter_preview_utils import cell_filter_settings_signature, foci_channel_key_for_path, foci_channel_settings_signature, resolve_foci_settings_for_source, seed_foci_channel_settings
+from bactomate.gui.filter_preview_utils import cell_filter_settings_signature, foci_channel_key_for_path, foci_channel_settings_signature, resolve_foci_settings_for_source, seed_foci_channel_settings, evaluate_cell_filter_details, build_cell_hover_data
 from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, WorkerGuard, RenderResult
 from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
 _FOCI_PASS_RGB = (255, 165, 0)
@@ -458,6 +458,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     In the Segmentation module shell, embeds in the right-hand preview pane (no popup).
     This preview is intentionally filtering-only (no re-detection):
     - foci markers come from existing foci CSVs (if present)
+    - current filter settings are applied automatically when the preview opens
     """
     raw = (path_text or '').strip()
     if not raw:
@@ -596,7 +597,15 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     w_focus_en.setChecked(bool(fs0.get('focus_filter_enabled', False)))
     w_focus_frac = _mk_spin(decimals=2, mn=0.05, mx=1.0, step=0.05, value=float(fs0.get('focus_min_fraction_of_median', 0.5) or 0.5))
     w_focus_frac.setToolTip('Keep cells with focus score ≥ this fraction of the frame median.')
-    cell_group = build_settings_card('Cell filtering', object_name='FilterCellGroup', parent=settings_host, min_cell_width=220, label_min_width=118, control_max_width=92, max_columns=4, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterCellGroup'), fields=[setting_field('Min area (µm²)', w_min_area, min_width=72, max_width=92), setting_field('Max area (µm²)', w_max_area, min_width=72, max_width=92), setting_field('Pixel size (µm)', w_pixel, min_width=72, max_width=92), setting_cell(w_excl_border), setting_cell(w_focus_en), setting_field('Min focus vs median', w_focus_frac, min_width=72, max_width=92), setting_field('Min width (µm)', w_min_w, min_width=72, max_width=92), setting_field('Max width (µm)', w_max_w, min_width=72, max_width=92), setting_field('Min aspect', w_min_ar, min_width=72, max_width=92), setting_field('Max aspect', w_max_ar, min_width=72, max_width=92), setting_field('Min length (µm)', w_min_len, min_width=72, max_width=92), setting_field('Max length (µm)', w_max_len, min_width=72, max_width=92), setting_field('Min eccent.', w_min_ecc, min_width=72, max_width=92), setting_field('Min solid.', w_min_sol, min_width=72, max_width=92)])
+    cell_filter_toggles = QWidget(settings_host)
+    cell_filter_toggles.setObjectName('FilterCellToggles')
+    toggle_lay = QHBoxLayout(cell_filter_toggles)
+    toggle_lay.setContentsMargins(0, 2, 0, 0)
+    toggle_lay.setSpacing(24)
+    toggle_lay.addWidget(w_excl_border, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    toggle_lay.addWidget(w_focus_en, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    toggle_lay.addStretch(1)
+    cell_group = build_settings_card('Cell filtering', object_name='FilterCellGroup', parent=settings_host, min_cell_width=220, label_min_width=118, control_max_width=92, max_columns=4, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterCellGroup'), fields=[setting_field('Min area (µm²)', w_min_area, min_width=72, max_width=92), setting_field('Max area (µm²)', w_max_area, min_width=72, max_width=92), setting_field('Pixel size (µm)', w_pixel, min_width=72, max_width=92), setting_field('Min focus vs median', w_focus_frac, min_width=72, max_width=92), setting_field('Min width (µm)', w_min_w, min_width=72, max_width=92), setting_field('Max width (µm)', w_max_w, min_width=72, max_width=92), setting_field('Min aspect', w_min_ar, min_width=72, max_width=92), setting_field('Max aspect', w_max_ar, min_width=72, max_width=92), setting_field('Min length (µm)', w_min_len, min_width=72, max_width=92), setting_field('Max length (µm)', w_max_len, min_width=72, max_width=92), setting_field('Min eccent.', w_min_ecc, min_width=72, max_width=92), setting_field('Min solid.', w_min_sol, min_width=72, max_width=92)], footer_widgets=[cell_filter_toggles])
     cell_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
     w_prob_en = QCheckBox('Probability ≥')
     w_prob_en.setToolTip('Minimum Spotiflow probability.')
@@ -1015,7 +1024,17 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         foci_src = _foci_source_for_source_key(source_key)
         frame_rows = _rows_for_frame(_load_rows_for_source(foci_src), int(frame_idx))
         raw_n = len(frame_rows)
-        dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': np.asarray(_preview_mask_stack()[int(frame_idx)], dtype=np.int32), 'accepted': accepted, 'rejected': rejected, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': _get_bg_frame(int(frame_idx), source_key), 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}'}
+        mask_arr = np.asarray(_preview_mask_stack()[int(frame_idx)], dtype=np.int32)
+        filter_settings = dict(tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {})
+        phase_plane = _get_bg_frame(int(frame_idx), source_key)
+        cell_details = evaluate_cell_filter_details(
+            mask_arr,
+            filter_settings,
+            accepted=accepted,
+            rejected=rejected,
+            phase_plane=phase_plane,
+        )
+        dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': mask_arr, 'accepted': accepted, 'rejected': rejected, 'cell_details': cell_details, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': phase_plane, 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}'}
         _store_foci_pass_fail_cache(int(frame_idx), foci_channels_last, accepted=accepted, request_settings=dict(tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}))
         _clear_preview_layer_caches(dlg)
         try:
@@ -2179,12 +2198,37 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             if not hover_pass and (not hover_fail):
                 (hover_pass, hover_fail) = (list(pass_peaks), list(fail_peaks))
             hover_builder = None
+            hover_builders: list = []
+
+            def _append_cell_hover(_last=last, _mask_shape=tuple(mask_2d.shape[:2]), _disp_shape=tuple(overlay.shape[:2])):
+                if not (show_cells and cell_filter_applied):
+                    return []
+                cell_details = _last.get('cell_details') if isinstance(_last, dict) else None
+                if not cell_details:
+                    return []
+                return build_cell_hover_data(cell_details, _mask_shape, _disp_shape)
+
+            if show_cells and cell_filter_applied and isinstance(last, dict) and last.get('cell_details'):
+                hover_builders.append(_append_cell_hover)
             if show_foci and (hover_pass or hover_fail):
                 hover_key = _foci_hover_cache_key(int(state.frame_idx), foci_sig, draw_blobs=bool(foci_after_apply), mask_shape=mask_2d.shape[:2], display_shape=overlay.shape[:2], mask_path_key=mask_path_key, channel_overlay_vis=_foci_channel_overlay_vis_key(dlg), accepted_cell_labels=accepted_for_foci_gating)
 
                 def _builder(_dlg=dlg, _key=hover_key, _pass=list(hover_pass), _fail=list(hover_fail), _mask_shape=tuple(mask_2d.shape[:2]), _disp_shape=tuple(overlay.shape[:2]), _fs=dict(foci_fs or {}), _mask=np.asarray(mask_2d)):
                     return _cached_foci_hover_data(_dlg, cache_key=_key, pass_peaks=_pass, fail_peaks=_fail, mask_shape=_mask_shape, display_shape=_disp_shape, settings=_fs, mask_2d=_mask)
-                hover_builder = _builder
+
+                hover_builders.append(_builder)
+
+            if hover_builders:
+                def _combined_hover_builder(_builders=list(hover_builders)):
+                    merged: list[tuple[float, float, str, float]] = []
+                    for build in _builders:
+                        try:
+                            merged.extend(list(build() or []))
+                        except Exception:
+                            continue
+                    return merged
+
+                hover_builder = _combined_hover_builder
             info_out = info_text
             if contour_info:
                 info_out = f'{info_text}  |  {contour_info}'.strip()
@@ -2497,7 +2541,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 _sync_filter_settings_panel_height()
                 _sync_filter_panels_for_view()
                 _scroll_settings_to_top()
-                dlg.refresh()
+                # Run filters once on open so pass/fail overlays and cell hover work immediately.
+                apply_current()
             except Exception:
                 pass
         QTimer.singleShot(0, _deferred_initial_refresh)
