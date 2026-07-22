@@ -36,6 +36,26 @@ _CHANNEL_SUFFIX_TOKENS = {
     "dapi",
 }
 
+_ROLE_MARKERS = ("_fi_foci", "_phase", "_foci", "_fi")
+
+
+def stem_has_role_marker(stem: str) -> bool:
+    """True when a TIFF stem already carries a BactoMate role tag."""
+    low = f"_{(stem or '').strip('_').lower()}_"
+    return any(marker in low for marker in _ROLE_MARKERS)
+
+
+def longest_common_underscore_prefix(stem_a: str, stem_b: str) -> str:
+    """Longest shared ``_``-delimited prefix (casefold token compare)."""
+    pa = [p for p in (stem_a or "").split("_") if p != ""]
+    pb = [p for p in (stem_b or "").split("_") if p != ""]
+    out: list[str] = []
+    for a, b in zip(pa, pb):
+        if a.casefold() != b.casefold():
+            break
+        out.append(a)
+    return "_".join(out)
+
 
 def foci_detection_dir(pipeline_dir: Path) -> Path:
     """Folder for raw Spotiflow peak CSVs (+ optional QC overlays) after segmentation."""
@@ -146,11 +166,19 @@ def sample_identity_stem(stem: str) -> str:
     """
     Canonical sample/replicate stem shared by phase/FI/foci/mask exports.
 
+    Primary rule: strip at role markers (``_phase``, ``_fi``, ``_foci``, ``_fi_foci``).
+    Also strips mask suffixes and double-underscore replicate cuts.
+
+    Dye-token stripping (``_GFP``, ``_mCherry``, …) remains as a weak legacy aid for
+    older exports without ``_fi`` tags. Free-form names like ``_DIA`` are *not* in that
+    list — use :func:`foci_pairs_with_input` LCP fallback for those.
+
     Examples:
       ``EM20140_NoPhage_001_mCherry`` -> ``EM20140_NoPhage_001``
       ``EM20140_NoPhage_001_foci_GFP`` -> ``EM20140_NoPhage_001``
       ``EM20140_NoPhage__mCherry`` -> ``EM20140_NoPhage``
       ``sample_Phase60X`` -> ``sample``
+      ``EM20285_003_phase`` -> ``EM20285_003``
     """
     s = (stem or "").strip("_")
     low = s.lower()
@@ -159,7 +187,7 @@ def sample_identity_stem(stem: str) -> str:
             s = s[: -len(suffix)].strip("_")
             low = s.lower()
             break
-    for marker in ("_fi_foci", "_phase", "_foci", "_fi"):
+    for marker in _ROLE_MARKERS:
         idx = low.find(marker)
         if idx >= 0:
             return s[:idx].strip("_")
@@ -169,6 +197,47 @@ def sample_identity_stem(stem: str) -> str:
     if len(parts) > 1 and parts[-1].lower() in _CHANNEL_SUFFIX_TOKENS:
         return "_".join(parts[:-1]).strip("_")
     return s.strip("_")
+
+
+def foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
+    """
+    True when ``foci_stem`` is a foci stack for the same acquisition as ``input_stem``.
+
+    1. **Role-marker identity** — ``sample_identity_stem`` equal on both sides.
+    2. **Legacy LCP** — when the input has *no* role marker (e.g. ``EM20285_003_DIA``),
+       pair if the foci role-stripped ID equals the longest common underscore prefix and
+       the foci file matches that prefix as a foci sibling.
+    """
+    inp = (input_stem or "").strip()
+    foc = (foci_stem or "").strip()
+    if not inp or not foc:
+        return False
+    if "_foci" not in foc.lower():
+        return False
+    # Pure foci-as-input: require exact identity match (no LCP bleed).
+    if "_foci" in inp.lower() and "_fi_foci" not in inp.lower():
+        return sample_identity_stem(inp).casefold() == sample_identity_stem(foc).casefold()
+
+    inp_id = sample_identity_stem(inp)
+    foc_id = sample_identity_stem(foc)
+    if inp_id and foc_id and inp_id.casefold() == foc_id.casefold():
+        return True
+
+    # Legacy free-form phase names (DIA, etc.): LCP only when input lacks role tags.
+    if stem_has_role_marker(inp):
+        return False
+    if not foc_id:
+        return False
+    lcp = longest_common_underscore_prefix(inp, foc)
+    if not lcp or lcp.casefold() != foc_id.casefold():
+        return False
+    if not foci_tiff_stem_matches_prefix(foc, lcp):
+        return False
+    il = inp.casefold()
+    pl = lcp.casefold()
+    if il == pl:
+        return True
+    return il.startswith(pl + "_")
 
 
 def dedupe_mask_paths_prefer_filtered(paths: Sequence[Path]) -> list[Path]:
@@ -728,8 +797,11 @@ def discover_foci_source_tiffs(input_stem: str, *search_dirs: Path) -> list[Path
             uniq.append(fp)
 
     inp_key = stem_pairing_prefix(stem)
-    paired = [x for x in uniq if stem_pairing_prefix(x.stem) == inp_key]
-    uniq = paired if paired else uniq
+    paired = [x for x in uniq if foci_pairs_with_input(stem, x.stem)]
+    # Prefer strict pairs; if none matched but identity keys equal after strip, keep those.
+    if not paired:
+        paired = [x for x in uniq if stem_pairing_prefix(x.stem).casefold() == inp_key.casefold()]
+    uniq = paired
     uniq.sort(key=lambda x: x.name.lower())
     return uniq
 

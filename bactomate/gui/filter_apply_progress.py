@@ -106,7 +106,14 @@ class FilterApplyProgressDialog(QDialog):
             or self._detail_label.text() != detail_txt
         )
         elapsed = now - self._last_ui_update_ts
-        if self._last_ui_update_ts > 0 and elapsed < self._min_ui_interval_s and pct < 100:
+        # Never drop a percent increase — early throttle was freezing the bar at 0%
+        # while a long step (e.g. focus scoring) ran with no further UI updates.
+        if (
+            pct <= prev
+            and self._last_ui_update_ts > 0
+            and elapsed < self._min_ui_interval_s
+            and pct < 100
+        ):
             return
         if not ui_changed:
             return

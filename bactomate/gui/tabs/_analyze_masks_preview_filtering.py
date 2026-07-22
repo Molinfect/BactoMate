@@ -570,42 +570,115 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     settings_outer.setContentsMargins(0, 0, 0, 0)
     settings_outer.setSpacing(6)
 
-    def _mk_spin(*, decimals: int, mn: float, mx: float, step: float, value: float, width: int=90) -> QDoubleSpinBox:
+    def _mk_spin(*, decimals: int, mn: float, mx: float, step: float, value: float, width: int=80) -> QDoubleSpinBox:
         w = QDoubleSpinBox()
         w.setDecimals(int(decimals))
         w.setRange(float(mn), float(mx))
         w.setSingleStep(float(step))
         w.setValue(float(value))
-        flex_control(w, int(width), combo_style=False)
+        flex_control(w, int(width), combo_style=False, max_width=int(width))
         w.setKeyboardTracking(False)
         return w
-    w_min_area = _mk_spin(decimals=2, mn=0.0, mx=10000.0, step=0.1, value=float(fs0.get('min_area_um2') or 0.0))
-    w_max_area = _mk_spin(decimals=2, mn=0.0, mx=10000.0, step=0.1, value=float(fs0.get('max_area_um2') or 0.0))
-    w_min_w = _mk_spin(decimals=2, mn=0.0, mx=100.0, step=0.1, value=float(fs0.get('min_width_um') or 0.0))
-    w_max_w = _mk_spin(decimals=2, mn=0.0, mx=100.0, step=0.1, value=float(fs0.get('max_width_um') or 0.0))
-    w_min_len = _mk_spin(decimals=2, mn=0.0, mx=500.0, step=0.1, value=float(fs0.get('min_length_um') or 0.0))
-    w_max_len = _mk_spin(decimals=2, mn=0.0, mx=500.0, step=0.1, value=float(fs0.get('max_length_um') or 0.0))
-    w_pixel = _mk_spin(decimals=3, mn=0.001, mx=10.0, step=0.001, value=float(fs0.get('pixel_size', 0.108) or 0.108))
-    w_min_ar = _mk_spin(decimals=2, mn=1.0, mx=20.0, step=0.1, value=float(fs0.get('min_aspect_ratio', 1.5) or 1.5))
-    w_max_ar = _mk_spin(decimals=2, mn=1.0, mx=50.0, step=0.5, value=float(fs0.get('max_aspect_ratio', 10.0) or 10.0))
-    w_min_ecc = _mk_spin(decimals=2, mn=0.0, mx=1.0, step=0.05, value=float(fs0.get('min_eccentricity', 0.5) or 0.5))
-    w_min_sol = _mk_spin(decimals=2, mn=0.0, mx=1.0, step=0.05, value=float(fs0.get('min_solidity', 0.7) or 0.7))
+    _CELL_SPIN_W = 80
+    w_min_area = _mk_spin(decimals=2, mn=0.0, mx=10000.0, step=0.1, value=float(fs0.get('min_area_um2') or 0.0), width=_CELL_SPIN_W)
+    w_max_area = _mk_spin(decimals=2, mn=0.0, mx=10000.0, step=0.1, value=float(fs0.get('max_area_um2') or 0.0), width=_CELL_SPIN_W)
+    w_min_w = _mk_spin(decimals=2, mn=0.0, mx=100.0, step=0.1, value=float(fs0.get('min_width_um') or 0.0), width=_CELL_SPIN_W)
+    w_max_w = _mk_spin(decimals=2, mn=0.0, mx=100.0, step=0.1, value=float(fs0.get('max_width_um') or 0.0), width=_CELL_SPIN_W)
+    w_min_len = _mk_spin(decimals=2, mn=0.0, mx=500.0, step=0.1, value=float(fs0.get('min_length_um') or 0.0), width=_CELL_SPIN_W)
+    w_max_len = _mk_spin(decimals=2, mn=0.0, mx=500.0, step=0.1, value=float(fs0.get('max_length_um') or 0.0), width=_CELL_SPIN_W)
+    w_pixel = _mk_spin(decimals=3, mn=0.001, mx=10.0, step=0.001, value=float(fs0.get('pixel_size', 0.108) or 0.108), width=_CELL_SPIN_W)
+    w_min_ar = _mk_spin(decimals=2, mn=1.0, mx=20.0, step=0.1, value=float(fs0.get('min_aspect_ratio', 1.5) or 1.5), width=_CELL_SPIN_W)
+    w_max_ar = _mk_spin(decimals=2, mn=1.0, mx=50.0, step=0.5, value=float(fs0.get('max_aspect_ratio', 10.0) or 10.0), width=_CELL_SPIN_W)
+    w_min_ecc = _mk_spin(decimals=2, mn=0.0, mx=1.0, step=0.05, value=float(fs0.get('min_eccentricity', 0.5) or 0.5), width=_CELL_SPIN_W)
+    w_min_sol = _mk_spin(decimals=2, mn=0.0, mx=1.0, step=0.05, value=float(fs0.get('min_solidity', 0.7) or 0.7), width=_CELL_SPIN_W)
     w_excl_border = QCheckBox('Exclude cells at borders')
     w_excl_border.setChecked(bool(fs0.get('exclude_border', False)))
+    w_excl_border.setToolTip('Remove cells that touch the image border.')
     w_focus_en = QCheckBox('Reject out-of-focus cells')
-    w_focus_en.setToolTip('Uses phase/bright-field sharpness (Laplacian variance) within each frame.\nCells below the fraction of the frame median are removed.')
+    w_focus_en.setToolTip(
+        'Reject cells that score below a fraction of the frame-median focus score.\n'
+        'Uses the Focus modality selected next to this checkbox.'
+    )
     w_focus_en.setChecked(bool(fs0.get('focus_filter_enabled', False)))
-    w_focus_frac = _mk_spin(decimals=2, mn=0.05, mx=1.0, step=0.05, value=float(fs0.get('focus_min_fraction_of_median', 0.5) or 0.5))
-    w_focus_frac.setToolTip('Keep cells with focus score ≥ this fraction of the frame median.')
+    w_focus_frac = _mk_spin(decimals=2, mn=0.05, mx=1.0, step=0.05, value=float(fs0.get('focus_min_fraction_of_median', 0.5) or 0.5), width=_CELL_SPIN_W)
+    w_focus_frac.setToolTip(
+        'Keep cells with focus score ≥ this fraction of the sharper cells in the frame '
+        '(80th percentile). Not the median — if most cells are soft, a median gate cannot '
+        'reject them. Only used when “Reject out-of-focus cells” is enabled.'
+    )
+    w_focus_mod = QComboBox()
+    w_focus_mod.addItem('Phase contrast', 'phase')
+    w_focus_mod.addItem('Bright-field', 'brightfield')
+    _mod0 = str(fs0.get('focus_modality', 'phase') or 'phase').strip().lower()
+    w_focus_mod.setCurrentIndex(1 if _mod0 in ('bf', 'brightfield', 'bright-field', 'transmission') else 0)
+    flex_control(w_focus_mod, 110, max_width=140)
+    w_focus_mod.setToolTip(
+        'Imaging modality for the out-of-focus score.\n'
+        'Phase contrast: inner-edge sharpness × cell–background contrast, with a penalty for '
+        'thick bright defocus halos.\n'
+        'Bright-field: interior Laplacian sharpness (classic autofocus-style).'
+    )
+    _cell_filter_info = (
+        'Cell filtering\n\n'
+        'Size limits (area, width, length):\n'
+        '• 0.00 = no limit for that field (filter off)\n'
+        '• Set a value > 0 to enforce that min or max\n\n'
+        'Pixel size (µm): converts mask pixels to physical units for area/width/length.\n\n'
+        'Aspect / eccentricity / solidity: shape gates for rod-like cells '
+        '(these always apply; they are not “0 = off”).\n\n'
+        'Min focus vs top: relative gate (0–1) vs the sharper cells in the frame '
+        '(80th percentile), not the median. Keep cells at least this fraction of that '
+        'reference (hover shows “Focus vs top cells: X×”). '
+        'Higher = stricter. Click Apply after changing it.\n\n'
+        'Exclude cells at borders: drop objects touching the frame edge.\n\n'
+        'Reject out-of-focus cells: remove cells below the chosen fraction of the top cells.\n'
+        'This ranks within the frame — it is not an absolute “is focused” detector.\n'
+        'Focus modality (dropdown next to that checkbox):\n'
+        '• Phase contrast — ranks cells by the radial intensity profile at the edge '
+        '(steep rise into a near, compact halo). Soft/far “glow” halos score lower; '
+        'neighbor cells are excluded from the profile rings.\n'
+        '• Bright-field — classic interior sharpness (Laplacian / edge energy).'
+    )
+    cell_filter_info = create_info_icon(_cell_filter_info, parent_widget=settings_host, compact=True)
     cell_filter_toggles = QWidget(settings_host)
     cell_filter_toggles.setObjectName('FilterCellToggles')
     toggle_lay = QHBoxLayout(cell_filter_toggles)
     toggle_lay.setContentsMargins(0, 2, 0, 0)
-    toggle_lay.setSpacing(24)
+    toggle_lay.setSpacing(10)
     toggle_lay.addWidget(w_excl_border, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     toggle_lay.addWidget(w_focus_en, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    toggle_lay.addWidget(w_focus_mod, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    toggle_lay.addWidget(cell_filter_info, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     toggle_lay.addStretch(1)
-    cell_group = build_settings_card('Cell filtering', object_name='FilterCellGroup', parent=settings_host, min_cell_width=220, label_min_width=118, control_max_width=92, max_columns=4, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterCellGroup'), fields=[setting_field('Min area (µm²)', w_min_area, min_width=72, max_width=92), setting_field('Max area (µm²)', w_max_area, min_width=72, max_width=92), setting_field('Pixel size (µm)', w_pixel, min_width=72, max_width=92), setting_field('Min focus vs median', w_focus_frac, min_width=72, max_width=92), setting_field('Min width (µm)', w_min_w, min_width=72, max_width=92), setting_field('Max width (µm)', w_max_w, min_width=72, max_width=92), setting_field('Min aspect', w_min_ar, min_width=72, max_width=92), setting_field('Max aspect', w_max_ar, min_width=72, max_width=92), setting_field('Min length (µm)', w_min_len, min_width=72, max_width=92), setting_field('Max length (µm)', w_max_len, min_width=72, max_width=92), setting_field('Min eccent.', w_min_ecc, min_width=72, max_width=92), setting_field('Min solid.', w_min_sol, min_width=72, max_width=92)], footer_widgets=[cell_filter_toggles])
+
+    def _cell_spin_field(label: str, spin: QDoubleSpinBox):
+        return setting_field(label, spin, min_width=_CELL_SPIN_W, max_width=_CELL_SPIN_W)
+    cell_group = build_settings_card(
+        'Cell filtering',
+        object_name='FilterCellGroup',
+        parent=settings_host,
+        min_cell_width=220,
+        label_min_width=118,
+        control_max_width=_CELL_SPIN_W,
+        max_columns=4,
+        h_spacing=18,
+        stylesheet=filter_preview_card_stylesheet('FilterCellGroup'),
+        fields=[
+            _cell_spin_field('Min area (µm²)', w_min_area),
+            _cell_spin_field('Max area (µm²)', w_max_area),
+            _cell_spin_field('Pixel size (µm)', w_pixel),
+            _cell_spin_field('Min focus vs top', w_focus_frac),
+            _cell_spin_field('Min width (µm)', w_min_w),
+            _cell_spin_field('Max width (µm)', w_max_w),
+            _cell_spin_field('Min aspect', w_min_ar),
+            _cell_spin_field('Max aspect', w_max_ar),
+            _cell_spin_field('Min length (µm)', w_min_len),
+            _cell_spin_field('Max length (µm)', w_max_len),
+            _cell_spin_field('Min eccent.', w_min_ecc),
+            _cell_spin_field('Min solid.', w_min_sol),
+        ],
+        footer_widgets=[cell_filter_toggles],
+    )
     cell_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
     w_prob_en = QCheckBox('Probability ≥')
     w_prob_en.setToolTip('Minimum Spotiflow probability.')
@@ -862,7 +935,14 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 return (ps, None, 'metadata')
         return (0.0, None, 'none')
 
-    def _sync_preview_pixel_size_from_metadata(source_path: Optional[Path]=None) -> None:
+    def _sync_preview_pixel_size_from_metadata(source_path: Optional[Path]=None, *, force: bool=False) -> None:
+        """Fill pixel size from TIFF metadata once (or when ``force``).
+
+        View-image switches must not overwrite a user-tuned / first-image value;
+        filter params stay locked while browsing the preview image list.
+        """
+        if bool(getattr(dlg, '_pixel_size_locked_from_metadata', False)) and (not force):
+            return
         (ps, src, kind) = _calibration_for_preview_source(source_path or _selected_image_path())
         if ps <= 0:
             w_pixel.setToolTip('Pixel size for physical cell filters. No metadata calibration was found.')
@@ -876,7 +956,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             except Exception:
                 pass
         src_txt = f' from {src.name}' if src is not None else ''
-        w_pixel.setToolTip(f'Auto-filled{src_txt} ({kind}).')
+        w_pixel.setToolTip(f'Auto-filled{src_txt} ({kind}). Locked while switching preview images.')
         if hasattr(tab, 'set_filter_settings'):
             try:
                 tab.set_filter_settings({'pixel_size': float(ps)})
@@ -887,6 +967,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 tab._apply_pixel_size_from_calibration(float(ps), indicator='(from preview metadata)')
             except Exception:
                 pass
+        try:
+            dlg._pixel_size_locked_from_metadata = True
+        except Exception:
+            pass
 
     def _view_path_is_foci(path: Optional[Path]) -> bool:
         if path is None:
@@ -1388,7 +1472,38 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     def get_current_parameters(fs: Optional[dict]=None) -> dict:
         if fs is None:
             fs = tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}
-        return {'pixel_size': float(fs.get('pixel_size', 0.108) or 0.108), 'exclude_border': bool(fs.get('exclude_border', False)), 'min_aspect_ratio': float(fs.get('min_aspect_ratio', 1.5) or 1.5), 'max_aspect_ratio': float(fs.get('max_aspect_ratio', 10.0) or 10.0), 'min_eccentricity': float(fs.get('min_eccentricity', 0.5) or 0.5), 'min_solidity': float(fs.get('min_solidity', 0.7) or 0.7), 'min_area': fs.get('min_area_um2', None), 'max_area': fs.get('max_area_um2', None), 'min_width': fs.get('min_width_um', None), 'max_width': fs.get('max_width_um', None), 'min_length': fs.get('min_length_um', None), 'max_length': fs.get('max_length_um', None)}
+        return {
+            'pixel_size': float(fs.get('pixel_size', 0.108) or 0.108),
+            'exclude_border': bool(fs.get('exclude_border', False)),
+            'min_aspect_ratio': float(fs.get('min_aspect_ratio', 1.5) or 1.5),
+            'max_aspect_ratio': float(fs.get('max_aspect_ratio', 10.0) or 10.0),
+            'min_eccentricity': float(fs.get('min_eccentricity', 0.5) or 0.5),
+            'min_solidity': float(fs.get('min_solidity', 0.7) or 0.7),
+            'min_area': fs.get('min_area_um2', None),
+            'max_area': fs.get('max_area_um2', None),
+            'min_width': fs.get('min_width_um', None),
+            'max_width': fs.get('max_width_um', None),
+            'min_length': fs.get('min_length_um', None),
+            'max_length': fs.get('max_length_um', None),
+            'focus_filter_enabled': bool(fs.get('focus_filter_enabled', False)),
+            'focus_min_fraction_of_median': float(fs.get('focus_min_fraction_of_median', 0.5) or 0.5),
+            'focus_modality': str(fs.get('focus_modality', 'phase') or 'phase'),
+        }
+
+    def _phase_plane_for_focus(frame_idx: int) -> Optional[np.ndarray]:
+        """Phase/BF plane for out-of-focus scoring (not the currently viewed FI/foci channel)."""
+        for (i, fp) in enumerate(bg_paths):
+            low = Path(fp).name.lower()
+            if '_foci' in low or ('_fi' in low and '_phase' not in low):
+                continue
+            plane = _get_bg_frame(int(frame_idx), ('file', i))
+            if plane is not None:
+                return np.asarray(plane)
+        if bg_paths:
+            plane = _get_bg_frame(int(frame_idx), ('file', 0))
+            if plane is not None:
+                return np.asarray(plane)
+        return None
 
     def _settings_signature_for(fs: Optional[dict]) -> str:
         """Best-effort stable signature for a filter settings snapshot."""
@@ -1491,6 +1606,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         request_settings_sig = str(settings_sig)
         request_source_key = tuple(source_key)
         params = get_current_parameters(request_settings)
+        if bool(params.get('focus_filter_enabled')):
+            try:
+                params['focus_phase_plane'] = _phase_plane_for_focus(int(frame_idx))
+            except Exception:
+                params['focus_phase_plane'] = None
         display_params = {'do_fi_contour': False, 'fi_contour_thickness_val': 1, 'run_foci': False, 'foci_snapshot': None}
         foci_src = _foci_source_for_source_key(request_source_key)
         raw_rows_all = _load_rows_for_source(foci_src)
@@ -2344,6 +2464,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             pass
         dlg._close_pending = False
         dlg._preview_request_id = 0
+        dlg._pixel_size_locked_from_metadata = False
 
         class _FilterPreviewResizeFilter(QObject):
 
@@ -2420,11 +2541,42 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 dlg.refresh()
             finally:
                 dlg.set_extra('nav_only', False)
+
+        def _reapply_last_settings_for_preview_image() -> None:
+            """After a View-image switch: keep UI params, re-apply filters for the new image."""
+            try:
+                _sync_filter_panels_for_view()
+            except Exception:
+                pass
+            try:
+                apply_current()
+            except Exception:
+                pass
+            if bool(w_show_foci_table.isChecked()):
+                try:
+                    _schedule_foci_table_refresh()
+                except NameError:
+                    pass
+                except Exception:
+                    pass
         frame_spin.valueChanged.connect(lambda _v: _sync_nav_state_only(reset_lut=False))
 
         def _on_image_combo_changed(*_) -> None:
-            _sync_preview_pixel_size_from_metadata(_selected_image_path())
-            _sync_nav_state_only(reset_lut=True)
+            # Hidden combo mirror: do not overwrite pixel size; re-apply last settings.
+            try:
+                _ui_to_settings()
+            except Exception:
+                pass
+            try:
+                dlg.set_frame_idx(int(frame_spin.value()) - 1)
+                dlg.set_source_key(_selected_source())
+                dlg.state().vmin = None
+                dlg.state().vmax = None
+                dlg.lut_widget.set_lut(None, None)
+            except Exception:
+                pass
+            _clear_preview_base_caches(dlg)
+            _reapply_last_settings_for_preview_image()
         image_combo.currentIndexChanged.connect(_on_image_combo_changed)
 
         def _on_nav_changed(st: PreviewNavState, reason: str) -> None:
@@ -2467,12 +2619,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                         dlg.lut_widget.set_lut(None, None)
                     except Exception:
                         pass
-                    try:
-                        _settings_to_ui()
-                        _sync_preview_pixel_size_from_metadata(_selected_image_path())
-                        _sync_filter_panels_for_view()
-                    except Exception:
-                        pass
+                    # Keep last cell/foci params (no metadata overwrite, no _settings_to_ui reload)
+                    # and re-apply them so the new View image shows the same filter effect.
+                    _reapply_last_settings_for_preview_image()
+                    return
                 dlg.set_extra('nav_only', True)
                 try:
                     dlg.refresh()
@@ -2562,7 +2712,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     return v if v > 0 else None
                 except Exception:
                     return None
-            tab.set_filter_settings({'pixel_size': float(w_pixel.value()), 'min_aspect_ratio': float(w_min_ar.value()), 'max_aspect_ratio': float(w_max_ar.value()), 'min_eccentricity': float(w_min_ecc.value()), 'min_solidity': float(w_min_sol.value()), 'min_area_um2': _opt0(w_min_area), 'max_area_um2': _opt0(w_max_area), 'min_width_um': _opt0(w_min_w), 'max_width_um': _opt0(w_max_w), 'min_length_um': _opt0(w_min_len), 'max_length_um': _opt0(w_max_len), 'exclude_border': bool(w_excl_border.isChecked()), 'focus_filter_enabled': bool(w_focus_en.isChecked()), 'focus_min_fraction_of_median': float(w_focus_frac.value())})
+            tab.set_filter_settings({'pixel_size': float(w_pixel.value()), 'min_aspect_ratio': float(w_min_ar.value()), 'max_aspect_ratio': float(w_max_ar.value()), 'min_eccentricity': float(w_min_ecc.value()), 'min_solidity': float(w_min_sol.value()), 'min_area_um2': _opt0(w_min_area), 'max_area_um2': _opt0(w_max_area), 'min_width_um': _opt0(w_min_w), 'max_width_um': _opt0(w_max_w), 'min_length_um': _opt0(w_min_len), 'max_length_um': _opt0(w_max_len), 'exclude_border': bool(w_excl_border.isChecked()), 'focus_filter_enabled': bool(w_focus_en.isChecked()), 'focus_min_fraction_of_median': float(w_focus_frac.value()), 'focus_modality': str(w_focus_mod.currentData() or 'phase')})
             ch_key = _active_foci_channel_key()
             ch_payload = {'foci_prob_enabled': bool(w_prob_en.isChecked()), 'foci_prob_thresh': float(w_prob_thr.value()), 'foci_min_int_enabled': bool(w_minint_en.isChecked()), 'foci_min_int': float(w_minint.value()), 'foci_per_cell_ratio_enabled': bool(w_ratio_en.isChecked()), 'foci_per_cell_ratio': float(w_ratio.value()), 'foci_exclude_outside_clear': bool(w_foci_excl_outside_clear.isChecked()), 'foci_exclude_outside_touching': bool(w_foci_excl_outside_touch.isChecked()), 'foci_exclude_outside_cells': bool(w_foci_excl_outside_clear.isChecked() and w_foci_excl_outside_touch.isChecked()), 'foci_blob_threshold_frac': float(w_blob_size.currentData() or 0.9), 'foci_blob_max_radius': int(w_blob_radius.value()), 'foci_min_area_px_enabled': bool(w_minarea_en.isChecked()), 'foci_min_area_px': int(w_minarea.value())}
             if hasattr(tab, 'set_foci_channel_settings'):
@@ -2580,18 +2730,22 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     fs_ch = resolve_foci_settings_for_source(dict(fs), None)
             except Exception:
                 fs_ch = resolve_foci_settings_for_source(dict(fs), None)
-            for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_radius):
+            for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_focus_frac, w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_radius):
                 try:
                     w.blockSignals(True)
                 except Exception:
                     pass
-            for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside_clear, w_foci_excl_outside_touch, w_minarea_en, w_show_foci_table):
+            for cb in (w_excl_border, w_focus_en, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside_clear, w_foci_excl_outside_touch, w_minarea_en, w_show_foci_table):
                 try:
                     cb.blockSignals(True)
                 except Exception:
                     pass
             try:
                 w_blob_size.blockSignals(True)
+            except Exception:
+                pass
+            try:
+                w_focus_mod.blockSignals(True)
             except Exception:
                 pass
             try:
@@ -2609,6 +2763,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 w_excl_border.setChecked(bool(fs.get('exclude_border', False)))
                 w_focus_en.setChecked(bool(fs.get('focus_filter_enabled', False)))
                 w_focus_frac.setValue(float(fs.get('focus_min_fraction_of_median', 0.5) or 0.5))
+                _mod = str(fs.get('focus_modality', 'phase') or 'phase').strip().lower()
+                w_focus_mod.setCurrentIndex(1 if _mod in ('bf', 'brightfield', 'bright-field', 'transmission') else 0)
                 w_prob_en.setChecked(bool(fs_ch.get('foci_prob_enabled', False)))
                 w_prob_thr.setValue(float(fs_ch.get('foci_prob_thresh', 0.5) or 0.5))
                 w_minint_en.setChecked(bool(fs_ch.get('foci_min_int_enabled', False)))
@@ -2629,7 +2785,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 w_blob_size.setCurrentIndex(blob_sel)
                 w_blob_radius.setValue(int(fs_ch.get('foci_blob_max_radius', 5) or 5))
             finally:
-                for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_radius):
+                for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_focus_frac, w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_radius):
                     try:
                         w.blockSignals(False)
                     except Exception:
@@ -2638,7 +2794,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     w_blob_size.blockSignals(False)
                 except Exception:
                     pass
-                for cb in (w_excl_border, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside_clear, w_foci_excl_outside_touch, w_minarea_en, w_show_foci_table):
+                try:
+                    w_focus_mod.blockSignals(False)
+                except Exception:
+                    pass
+                for cb in (w_excl_border, w_focus_en, w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside_clear, w_foci_excl_outside_touch, w_minarea_en, w_show_foci_table):
                     try:
                         cb.blockSignals(False)
                     except Exception:
@@ -2683,6 +2843,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg._pf_spinboxes = {'pixel_size': w_pixel, 'min_aspect_ratio': w_min_ar, 'max_aspect_ratio': w_max_ar, 'min_eccentricity': w_min_ecc, 'min_solidity': w_min_sol, 'min_area_um2': w_min_area, 'max_area_um2': w_max_area, 'min_width_um': w_min_w, 'max_width_um': w_max_w, 'min_length_um': w_min_len, 'max_length_um': w_max_len, 'focus_min_fraction_of_median': w_focus_frac, 'foci_prob_thresh': w_prob_thr, 'foci_min_int': w_minint, 'foci_per_cell_ratio': w_ratio, 'foci_min_area_px': w_minarea}
             dlg._pf_checkboxes = {'exclude_border': w_excl_border, 'focus_filter_enabled': w_focus_en, 'foci_prob_enabled': w_prob_en, 'foci_min_int_enabled': w_minint_en, 'foci_per_cell_ratio_enabled': w_ratio_en, 'foci_exclude_outside_clear': w_foci_excl_outside_clear, 'foci_exclude_outside_touching': w_foci_excl_outside_touch, 'foci_min_area_px_enabled': w_minarea_en}
             dlg._pf_blob_combo = w_blob_size
+            dlg._pf_focus_modality = w_focus_mod
             dlg._pf_blob_radius = w_blob_radius
             dlg._pf_show_foci_table = w_show_foci_table
             dlg._pf_foci_table = foci_table

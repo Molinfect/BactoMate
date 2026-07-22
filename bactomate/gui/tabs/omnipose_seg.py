@@ -1699,8 +1699,7 @@ class OmniposeSegTab(QWidget):
             uniq.append(fp)
         uniq.sort(key=lambda x: x.name.lower())
         try:
-            inp_key = OmniposeSegTab._stem_pairing_prefix(stem)
-            paired = [x for x in uniq if OmniposeSegTab._stem_pairing_prefix(x.stem) == inp_key]
+            paired = [x for x in uniq if OmniposeSegTab._foci_pairs_with_input(stem, x.stem)]
             uniq = paired
         except Exception:
             pass
@@ -1710,6 +1709,13 @@ class OmniposeSegTab(QWidget):
         except OSError:
             uniq = [x for x in uniq if str(x) != str(p)]
         return uniq
+
+    @staticmethod
+    def _foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
+        """Delegate to shared role-marker + legacy LCP pairing."""
+        from bactomate.gui.artifact_paths import foci_pairs_with_input
+
+        return foci_pairs_with_input(input_stem, foci_stem)
 
     @staticmethod
     def _stem_pairing_prefix(stem: str) -> str:

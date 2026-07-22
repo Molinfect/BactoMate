@@ -225,6 +225,8 @@ class ND2ConversionTab(QWidget):
     def _show_file_conversion_preview(self, **kwargs: Any) -> Any:
         kwargs.setdefault('embed_parent', self._module_preview_mount)
         from bactomate.gui.preview.file_conversion_preview import show_file_conversion_preview
+        # Always drop leaked preview→checkbox slots before (re)building the canvas.
+        self._rebind_conversion_crop_signals()
         prev = self._embed_fc_preview_widget
         if prev is not None:
             prev.deleteLater()
@@ -241,6 +243,29 @@ class ND2ConversionTab(QWidget):
             except Exception:
                 pass
         return dlg
+
+    def _rebind_conversion_crop_signals(self) -> None:
+        """Ensure crop checkbox/button only call the tab handlers (no stale preview slots)."""
+        cb = getattr(self, 'extract_crop_cb', None)
+        if cb is not None:
+            try:
+                cb.toggled.disconnect()
+            except TypeError:
+                pass
+            try:
+                cb.toggled.connect(self._on_extract_crop_toggled)
+            except Exception:
+                pass
+        btn = getattr(self, 'clear_crop_btn', None)
+        if btn is not None:
+            try:
+                btn.clicked.disconnect()
+            except TypeError:
+                pass
+            try:
+                btn.clicked.connect(self._clear_conversion_crop)
+            except Exception:
+                pass
 
     def _refresh_embedded_conversion_preview(self) -> None:
         """If a file is selected for preview and the right panel is available, render the preview in place."""
@@ -440,8 +465,11 @@ class ND2ConversionTab(QWidget):
             section.set_expanded(True)
 
     def _on_extract_crop_toggled(self, enabled: bool) -> None:
+        # Clear stale preview lambdas left from earlier canvas instances (same session).
+        self._rebind_conversion_crop_signals()
         if not enabled:
             self._clear_conversion_crop()
+            return
         self._sync_conversion_crop_overlay()
 
     def _clear_conversion_crop(self) -> None:
@@ -703,12 +731,50 @@ class ND2ConversionTab(QWidget):
         if num_channels <= 1:
             self.channel_options_group.setVisible(False)
             return
-        src_hint = {'labels': 'Channel names from ImageJ/Fiji Labels in the file.', 'ome': 'Channel names from OME-TIFF metadata.', 'info': 'Channel names from ImageJ Info / ImageDescription text.', 'luts': 'No names in file — inferred from display LUT colors (edit to match your dyes, e.g. dsRed, GFP).', 'default': 'No channel names in file metadata — edit names below (used in output filenames).'}.get(self._channel_names_source_hint, '')
-        info_label = QLabel('Tick per channel: FI adds "_fi" in filename (Analyze Masks); Foci adds "_foci" for foci analysis; Z-channel = max Z-projection; Bleach correct = photobleaching correction.' + (f'\n\n{src_hint}' if src_hint else ''))
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet('color: #a0a0a0; font-size: 10pt;')
-        self.channel_options_layout.addWidget(info_label)
-        self.channel_options_layout.addSpacing(12)
+        src_hint = {
+            'labels': 'Channel names from ImageJ/Fiji Labels in the file.',
+            'ome': 'Channel names from OME-TIFF metadata.',
+            'info': 'Channel names from ImageJ Info / ImageDescription text.',
+            'luts': 'No names in file — inferred from display LUT colors (edit to match your dyes, e.g. dsRed, GFP).',
+            'default': 'No channel names in file metadata — edit names below (used in output filenames).',
+        }.get(self._channel_names_source_hint, '')
+        channel_help = (
+            'Channel roles (required for pairing)\n\n'
+            'Unticked channels: one becomes "_phase"; any further unmarked become "_fi_<name>".\n'
+            'Tick FI / Foci to force those tags. Free-form microscope names (DIA, TRITC, …) are labels only.\n\n'
+            'Defaults: Phase is guessed from metadata/name hints (not always channel 1); '
+            'other channels start as FI.\n'
+            'Z-channel = max Z-projection; Bleach correct = photobleaching correction.'
+        )
+        if src_hint:
+            channel_help = f'{channel_help}\n\n{src_hint}'
+        header = QWidget()
+        header_row = QHBoxLayout(header)
+        header_row.setContentsMargins(0, 0, 0, 4)
+        header_row.setSpacing(6)
+        header_label = QLabel('Channels')
+        header_label.setStyleSheet('font-weight: 600;')
+        header_row.addWidget(header_label, 0)
+        header_row.addWidget(create_info_icon(channel_help, parent_widget=self), 0)
+        header_row.addStretch(1)
+        self.channel_options_layout.addWidget(header)
+        from bactomate.modules.conversion_channel_names import default_fi_indices_for_channels, guess_phase_channel_index
+
+        names_list = [str(n) for n in channel_names]
+        wavelengths = None
+        try:
+            wl = (self.file_info or {}).get('channel_wavelengths')
+            if isinstance(wl, (list, tuple)):
+                wavelengths = list(wl)
+        except Exception:
+            wavelengths = None
+        phase_idx = guess_phase_channel_index(names_list, channel_wavelengths=wavelengths)
+        default_fi = default_fi_indices_for_channels(
+            num_channels,
+            names_list,
+            channel_wavelengths=wavelengths,
+            phase_index=phase_idx,
+        )
         for (i, name) in enumerate(channel_names):
             row_widget = QWidget()
             row = QHBoxLayout()
@@ -718,20 +784,24 @@ class ND2ConversionTab(QWidget):
             ch_label.setMinimumWidth(72)
             name_edit = QLineEdit(str(name))
             name_edit.setPlaceholderText(f'Channel_{i + 1}')
-            name_edit.setToolTip('Used in output filenames (e.g. stem_fi_GFP.tif). Edit if metadata has no dye names.')
+            name_edit.setToolTip('Label only (e.g. DIA, TRITC). Role tags (_phase / _fi / _foci) come from the checkboxes / defaults.')
             name_edit.setMinimumWidth(120)
             self.channel_name_edits.append(name_edit)
             row.addWidget(ch_label)
             row.addWidget(name_edit, 1)
             row.addSpacing(8)
             fi_cb = QCheckBox('FI')
-            fi_cb.setToolTip('Save with "_fi" in filename (e.g. stem_fi.tif) for Analyze Masks batch')
+            fi_cb.setToolTip('Save with "_fi" in filename (e.g. stem_fi_TRITC.tif) for Analyze Masks / FI pairing')
+            if i in default_fi:
+                fi_cb.setChecked(True)
             foci_cb = QCheckBox('Foci')
-            foci_cb.setToolTip('Save with "_foci" in filename for Analyze Masks foci analysis')
+            foci_cb.setToolTip('Save with "_foci" in filename for Detect foci / Analyze Masks foci analysis')
             z_cb = QCheckBox('Z-channel')
             z_cb.setToolTip('Apply max Z-projection for this channel (when Z stack > 1)')
             bleach_cb = QCheckBox('Bleach correct')
             bleach_cb.setToolTip('Apply bleach correction to this channel')
+            if i == phase_idx:
+                ch_label.setToolTip('Default Phase candidate (from metadata/name hints). Leave FI/Foci unticked to export as *_phase.tif.')
             row.addWidget(fi_cb)
             row.addWidget(foci_cb)
             row.addWidget(z_cb)

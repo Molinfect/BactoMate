@@ -256,6 +256,91 @@ def test_preview_pixel_size_uses_metadata_from_original_phase_tiff():
             _shutdown(tab, parent)
 
 
+def _write_foci_tif(tmp_dir: Path, *, pixel_size_um: float) -> Path:
+    foci_path = tmp_dir / "sample_foci_GFP.tif"
+    stack = np.zeros((1, 64, 64), dtype=np.uint16)
+    tifffile.imwrite(
+        str(foci_path),
+        stack,
+        imagej=True,
+        metadata={"images": 1, "frames": 1, "unit": "micron"},
+        resolution=(1.0 / float(pixel_size_um), 1.0 / float(pixel_size_um)),
+        resolutionunit=1,
+    )
+    return foci_path
+
+
+def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
+    """Switching View must keep last filter params and re-apply them (not metadata-overwrite)."""
+
+    _qapp()
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        _write_phase_tif(tmp_dir, pixel_size_um=0.25)
+        _write_foci_tif(tmp_dir, pixel_size_um=0.50)
+        mask_path = _write_mask_tif(tmp_dir)
+        tab, parent = _build_tab(tmp_dir)
+        from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+        show_filter_preview(tab, str(mask_path))
+        QCoreApplication.processEvents()
+        dlg = getattr(tab, "_filter_preview_dialog", None)
+        try:
+            assert dlg is not None
+            ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
+            assert ok, "Opening the preview should auto-apply once"
+
+            spinboxes = getattr(dlg, "_pf_spinboxes", None)
+            assert spinboxes is not None and "pixel_size" in spinboxes
+            assert spinboxes["pixel_size"].value() == pytest.approx(0.25, abs=0.001)
+
+            # User-tuned params on the first preview image.
+            spinboxes["pixel_size"].setValue(0.33)
+            spinboxes["min_aspect_ratio"].setValue(5.0)
+            QCoreApplication.processEvents()
+            apply_current = getattr(dlg, "_pf_apply_current", None)
+            assert apply_current is not None
+            apply_current()
+            ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
+            assert ok
+
+            last_before = dict(getattr(dlg, "_last_preview", {}) or {})
+            rejected_before = set(int(x) for x in (last_before.get("rejected") or []))
+            assert rejected_before, "Tight aspect filter should reject square cells"
+
+            nav = getattr(dlg, "_nav_ctrl", None)
+            assert nav is not None
+            combo = nav._image_combo
+            assert combo.count() >= 2, "Need phase + foci View entries to switch images"
+
+            src_before = tuple(last_before.get("source_key") or ())
+            combo.setCurrentIndex(1 if combo.currentIndex() == 0 else 0)
+            QCoreApplication.processEvents()
+
+            ok = _wait_until(
+                lambda: tuple((getattr(dlg, "_last_preview", {}) or {}).get("source_key") or ())
+                != src_before
+                and "mask_2d" in (getattr(dlg, "_last_preview", {}) or {}),
+                timeout_s=20.0,
+            )
+            assert ok, "Switching View must re-apply last settings for the new image"
+
+            assert spinboxes["pixel_size"].value() == pytest.approx(0.33, abs=0.001), (
+                "Pixel size must stay locked when switching preview images "
+                "(must not pick up the other TIFF's metadata)"
+            )
+            assert tab.get_filter_settings()["pixel_size"] == pytest.approx(0.33, abs=0.001)
+            assert spinboxes["min_aspect_ratio"].value() == pytest.approx(5.0, abs=0.01)
+
+            last_after = dict(getattr(dlg, "_last_preview", {}) or {})
+            rejected_after = set(int(x) for x in (last_after.get("rejected") or []))
+            assert rejected_after == rejected_before, (
+                "Re-apply on image switch should keep the same last cell-filter outcome"
+            )
+        finally:
+            _shutdown(tab, parent)
+
+
 def test_progress_dialog_close_does_not_bump_request_id():
     """Regression: dismissing the in-flight progress dialog after the worker
     finishes must not bump ``_preview_request_id``. The previous bug had
