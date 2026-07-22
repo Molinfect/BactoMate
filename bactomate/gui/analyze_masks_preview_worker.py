@@ -459,6 +459,50 @@ class AnalyzeMasksPreviewWorker(QObject):
                     max_length_um=params.get("max_length"),
                 )
                 accepted_labels = {cell["label"] for cell in filtered}
+                if bool(params.get("focus_filter_enabled")) and accepted_labels:
+                    phase_plane = params.get("focus_phase_plane")
+                    if phase_plane is not None:
+                        self._emit_progress(
+                            self._pct_in_step(2, 0.97),
+                            self._step(2, 4, "Cells · Focus filter"),
+                            "Reject out-of-focus cells",
+                        )
+                        try:
+                            from bactomate.modules.cell_focus_score import (
+                                filter_labels_by_focus,
+                                score_cells_in_frame,
+                            )
+
+                            n_focus = max(1, len(accepted_labels))
+
+                            def _focus_progress(done: int, total: int) -> None:
+                                tot = max(1, int(total))
+                                frac = min(1.0, float(done) / float(tot))
+                                self._emit_progress(
+                                    self._pct_in_step(2, 0.94 + 0.05 * frac),
+                                    self._step(2, 4, "Cells · Focus filter"),
+                                    f"Scoring focus {int(done):,} / {tot:,}",
+                                )
+
+                            self._emit_progress(
+                                self._pct_in_step(2, 0.94),
+                                self._step(2, 4, "Cells · Focus filter"),
+                                f"Scoring focus 0 / {n_focus:,}",
+                            )
+                            scores = score_cells_in_frame(
+                                np.asarray(phase_plane, dtype=np.float64),
+                                mask_work,
+                                accepted_labels,
+                                modality=params.get("focus_modality", "phase"),
+                                progress_callback=_focus_progress,
+                            )
+                            frac = float(params.get("focus_min_fraction_of_median", 0.5) or 0.5)
+                            accepted_labels = filter_labels_by_focus(
+                                scores,
+                                min_fraction_of_median=frac if frac > 0 else None,
+                            )
+                        except Exception:
+                            pass
                 all_labels = set(np.unique(mask_work)) - {0}
                 rejected_labels = all_labels - accepted_labels
                 accepted_list = list(accepted_labels)

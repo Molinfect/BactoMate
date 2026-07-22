@@ -329,31 +329,46 @@ def show_file_conversion_preview(
     dlg.set_primary_action(None, visible=False)
 
     def sync_crop_overlay() -> None:
-        canvas = dlg.canvas
-        if not _crop_mode_enabled():
-            canvas.enable_drag_selection = False
-            canvas.enable_roi_editing = False
-            canvas.clear_roi_overlays()
-            canvas.setToolTip("Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag).")
-            return
-        canvas.enable_drag_selection = True
-        canvas.enable_roi_editing = True
-        canvas.selection_button = Qt.MouseButton.RightButton
-        canvas.click_button = Qt.MouseButton.LeftButton
-        canvas.pan_button = Qt.MouseButton.MiddleButton
-        canvas.setToolTip(
-            "Zoom: mouse wheel. Pan: middle-drag. Extract crop enabled: right-drag a box; drag handles to adjust."
-        )
-        native = roi_state.get("native_hw")
-        display = roi_state.get("display_hw")
-        roi = getattr(tab, "_conversion_crop_roi", None)
-        if roi and native and display:
-            disp_roi = roi_native_to_display(roi, native, display)
-            if disp_roi is not None:
-                canvas.set_editable_roi(disp_roi, color=QColor(255, 230, 0))
+        canvas = getattr(dlg, "canvas", None)
+        try:
+            from shiboken6 import isValid
+
+            if canvas is None or not isValid(canvas):
                 return
-        canvas.set_editable_roi(None)
-        canvas.set_pending_roi(None)
+        except Exception:
+            if canvas is None:
+                return
+        try:
+            if not _crop_mode_enabled():
+                canvas.enable_drag_selection = False
+                canvas.enable_roi_editing = False
+                canvas.clear_roi_overlays()
+                canvas.setToolTip(
+                    "Zoom: mouse wheel. Pan: left-click and drag (or middle-click and drag)."
+                )
+                return
+            canvas.enable_drag_selection = True
+            canvas.enable_roi_editing = True
+            canvas.selection_button = Qt.MouseButton.RightButton
+            canvas.click_button = Qt.MouseButton.LeftButton
+            canvas.pan_button = Qt.MouseButton.MiddleButton
+            canvas.setToolTip(
+                "Zoom: mouse wheel. Pan: middle-drag. Extract crop enabled: "
+                "right-drag a box; drag handles to adjust."
+            )
+            native = roi_state.get("native_hw")
+            display = roi_state.get("display_hw")
+            roi = getattr(tab, "_conversion_crop_roi", None)
+            if roi and native and display:
+                disp_roi = roi_native_to_display(roi, native, display)
+                if disp_roi is not None:
+                    canvas.set_editable_roi(disp_roi, color=QColor(255, 230, 0))
+                    return
+            canvas.set_editable_roi(None)
+            canvas.set_pending_roi(None)
+        except RuntimeError:
+            # Canvas was deleted while a stale tab checkbox slot still fired.
+            return
 
     def _display_dims() -> tuple[int, int] | None:
         display = roi_state.get("display_hw")
@@ -389,12 +404,18 @@ def show_file_conversion_preview(
         dh, dw = dims
         x0, y0 = roi_state["drag_start"]
         pending = normalize_roi(int(x0), int(y0), int(x), int(y), dw, dh, min_size=8)
-        dlg.canvas.set_pending_roi(pending)
+        try:
+            dlg.canvas.set_pending_roi(pending)
+        except RuntimeError:
+            return
 
     def on_crop_drag_finished(x: int, y: int) -> None:
         drag_start = roi_state.get("drag_start")
         roi_state["drag_start"] = None
-        dlg.canvas.set_pending_roi(None)
+        try:
+            dlg.canvas.set_pending_roi(None)
+        except RuntimeError:
+            return
         if not _crop_mode_enabled() or drag_start is None:
             return
         dims = _display_dims()
@@ -421,10 +442,9 @@ def show_file_conversion_preview(
     dlg.canvas.drag_finished.connect(on_crop_drag_finished)
     dlg.canvas.roi_edit_finished.connect(on_roi_edit_finished)
 
-    if hasattr(tab, "extract_crop_cb"):
-        tab.extract_crop_cb.toggled.connect(lambda _checked: sync_crop_overlay())
-    if hasattr(tab, "clear_crop_btn"):
-        tab.clear_crop_btn.clicked.connect(lambda: sync_crop_overlay())
+    # Do NOT connect tab.extract_crop_cb / clear_crop_btn here. Those live on the
+    # long-lived tab and already call tab._sync_conversion_crop_overlay(). Connecting
+    # again each preview open left stale lambdas pointing at deleted canvases.
 
     _orig_refresh = dlg.refresh
 

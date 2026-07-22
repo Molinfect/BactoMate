@@ -159,10 +159,12 @@ def test_filter_apply_progress_throttles_rapid_updates() -> None:
 
     dlg = FilterApplyProgressDialog(None)
     dlg._min_ui_interval_s = 0.2
-    dlg.set_progress(10, "A", "")
-    first = dlg._bar.value()
+    dlg.set_progress(10, "A", "one")
+    # Same percent + rapid detail change may be throttled…
+    dlg.set_progress(10, "A", "two")
+    # …but a percent increase must never be dropped (avoids stuck 0% bars).
     dlg.set_progress(11, "B", "")
-    assert dlg._bar.value() == first
+    assert dlg._bar.value() >= 11
     time.sleep(0.21)
     dlg.set_progress(12, "C", "")
     assert dlg._bar.value() >= 12

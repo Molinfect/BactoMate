@@ -144,3 +144,66 @@ def test_worker_sees_pixel_size_change_through_size_filter():
         "pixel_size change must propagate through filter_by_size — "
         f"small_px={sorted(acc_small)} large_px={sorted(acc_large)}"
     )
+
+
+def test_worker_applies_focus_filter_when_enabled():
+    """Reject out-of-focus cells must change accept/reject in the preview worker."""
+
+    _ensure_qapp()
+    rng = np.random.default_rng(0)
+    mask = np.zeros((64, 64), dtype=np.int32)
+    mask[20:30, 20:30] = 1
+    mask[40:50, 40:50] = 2
+    phase = np.zeros((64, 64), dtype=np.float32)
+    phase[20:30, 20:30] = rng.normal(100.0, 8.0, (10, 10))
+    phase[40:50, 40:50] = rng.normal(40.0, 0.2, (10, 10))
+
+    base = _params(min_aspect_ratio=1.0)
+    base["min_eccentricity"] = 0.0
+    base["min_solidity"] = 0.0
+    base["focus_filter_enabled"] = True
+    base["focus_phase_plane"] = phase
+    base["focus_modality"] = "brightfield"
+    base["focus_min_fraction_of_median"] = 0.1
+    acc_loose, _, _ = _run_worker_sync(mask, base)
+
+    strict = dict(base)
+    strict["focus_min_fraction_of_median"] = 0.9
+    acc_strict, rej_strict, _ = _run_worker_sync(mask, strict)
+
+    assert 1 in acc_loose and 2 in acc_loose
+    assert 1 in acc_strict
+    assert 2 in rej_strict
+    assert set(acc_strict) != set(acc_loose)
+
+
+def test_cell_filter_signature_includes_focus_settings():
+    from bactomate.gui.filter_preview_utils import cell_filter_settings_signature
+
+    a = {
+        "pixel_size": 0.1,
+        "focus_filter_enabled": True,
+        "focus_min_fraction_of_median": 0.5,
+        "focus_modality": "phase",
+    }
+    b = {
+        "pixel_size": 0.1,
+        "focus_filter_enabled": True,
+        "focus_min_fraction_of_median": 0.9,
+        "focus_modality": "phase",
+    }
+    c = {
+        "pixel_size": 0.1,
+        "focus_filter_enabled": False,
+        "focus_min_fraction_of_median": 0.9,
+        "focus_modality": "phase",
+    }
+    d = {
+        "pixel_size": 0.1,
+        "focus_filter_enabled": True,
+        "focus_min_fraction_of_median": 0.5,
+        "focus_modality": "brightfield",
+    }
+    assert cell_filter_settings_signature(a) != cell_filter_settings_signature(b)
+    assert cell_filter_settings_signature(b) != cell_filter_settings_signature(c)
+    assert cell_filter_settings_signature(a) != cell_filter_settings_signature(d)

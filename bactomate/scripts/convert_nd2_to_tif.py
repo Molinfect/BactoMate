@@ -250,7 +250,30 @@ def bleach_correct_stack(
 
 def _sanitize_channel_name_for_filename(name: str) -> str:
     """Replace characters unsuitable for filenames with underscore."""
-    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name).strip("_") or "channel"
+    from bactomate.modules.conversion_channel_names import sanitize_channel_name_for_filename
+
+    return sanitize_channel_name_for_filename(name)
+
+
+def _nd2_channel_output_filename(
+    stem: str,
+    channel_name: str,
+    *,
+    ch_idx: int,
+    fi_set: set,
+    foci_set: set,
+    phase_used: bool,
+) -> tuple[str, bool]:
+    """Role-tagged TIFF name for one ND2 channel (no bare ``{stem}_{name}.tif``)."""
+    from bactomate.modules.conversion_channel_names import split_channel_output_name
+
+    return split_channel_output_name(
+        stem,
+        channel_name,
+        in_fi=ch_idx in fi_set,
+        in_foci=ch_idx in foci_set,
+        phase_used=phase_used,
+    )
 
 
 def convert_nd2_to_tif(
@@ -696,24 +719,18 @@ def convert_nd2_to_tif(
                                 fi_set = set(fi_channel_indices or [])
                                 foci_set = set(foci_channel_indices or [])
                                 print(f"  Saving {num_channels} channels as separate files (each with {frames_to_extract} timepoints)")
+                                phase_used = False
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]  # Extract channel: TYX
                                     channel_name = channel_names[ch_idx]
-                                    safe_name = _sanitize_channel_name_for_filename(channel_name)
-                                    in_fi = ch_idx in fi_set
-                                    in_foci = ch_idx in foci_set
-                                    if in_fi and in_foci:
-                                        tag = "_fi_foci"
-                                    elif in_fi:
-                                        tag = "_fi"
-                                    elif in_foci:
-                                        tag = "_foci"
-                                    else:
-                                        tag = ""
-                                    base = nd2_file.stem + frame_suffix + tag
-                                    # Always include channel name in filename (e.g. stem_fi_mScarlet.tif).
-                                    # Analyze Masks finds FI via stem_fi or stem_fi_*.
-                                    output_filename = f"{base}_{safe_name}.tif"
+                                    output_filename, phase_used = _nd2_channel_output_filename(
+                                        nd2_file.stem + frame_suffix,
+                                        channel_name,
+                                        ch_idx=ch_idx,
+                                        fi_set=fi_set,
+                                        foci_set=foci_set,
+                                        phase_used=phase_used,
+                                    )
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} (shape: {channel_data.shape}) -> {output_filename}")
                                     acq_info = build_acquisition_info_string(acquisition_meta, channel_name=channel_name, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None
@@ -743,22 +760,18 @@ def convert_nd2_to_tif(
                             if len(all_frames.shape) == 4 and all_frames.shape[1] == num_channels:
                                 fi_set = set(fi_channel_indices or [])
                                 foci_set = set(foci_channel_indices or [])
+                                phase_used = False
                                 for ch_idx in range(num_channels):
                                     channel_data = all_frames[:, ch_idx, :, :]
                                     channel_name = channel_names[ch_idx]
-                                    safe_name = _sanitize_channel_name_for_filename(channel_name)
-                                    in_fi = ch_idx in fi_set
-                                    in_foci = ch_idx in foci_set
-                                    if in_fi and in_foci:
-                                        tag = "_fi_foci"
-                                    elif in_fi:
-                                        tag = "_fi"
-                                    elif in_foci:
-                                        tag = "_foci"
-                                    else:
-                                        tag = ""
-                                    base = nd2_file.stem + frame_suffix + tag
-                                    output_filename = f"{base}_{safe_name}.tif"
+                                    output_filename, phase_used = _nd2_channel_output_filename(
+                                        nd2_file.stem + frame_suffix,
+                                        channel_name,
+                                        ch_idx=ch_idx,
+                                        fi_set=fi_set,
+                                        foci_set=foci_set,
+                                        phase_used=phase_used,
+                                    )
                                     output_path = output_dir / output_filename
                                     print(f"    Saving channel {ch_idx + 1}/{num_channels}: {channel_name} -> {output_filename}")
                                     acq_info = build_acquisition_info_string(acquisition_meta, channel_name=channel_name, source_name=nd2_file.name) if build_acquisition_info_string and acquisition_meta else None

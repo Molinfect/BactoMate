@@ -4,6 +4,24 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.7 (2026-07-22)
+
+### Conversion and pairing
+
+- **Channel role tags:** conversion always emits `_phase` / `_fi_<name>` (no bare free-form channel stems); smarter Phase vs FI defaults from metadata/name hints.
+- **Foci pairing:** more robust matching via role-marker strip plus legacy LCP fallback (avoids cross-well mis-pairs).
+- **Channel help UI:** long role/defaults text moved into a Channels `(?)` info icon for consistency with other panels.
+- **Extract crop:** fixed stale preview-canvas crash when toggling crop after the preview was rebuilt.
+
+### Filter preview and out-of-focus cells
+
+- **Settings persistence on View switch:** pixel size and filter params stay after the first apply; switching View re-applies last settings instead of overwriting from metadata.
+- **Out-of-focus filter:** preview worker applies focus rejection (was batch-only); modality choice (phase vs bright-field); phase metric uses radial edge/halo profile tuned on real stacks; gate vs top cells (p80) instead of median.
+- **Hover focus readout:** shows relative focus vs top cells (no confusing raw Laplacian score).
+- **Cell-filter UI:** uniform spin widths; clearer size/focus tooltips (`0.00` = no size limit).
+
+---
+
 ## v2.8.6 (2026-07-13)
 
 ### Filter preview

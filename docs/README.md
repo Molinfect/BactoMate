@@ -45,7 +45,7 @@ setup\windows\install.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.8.6`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.8.7`) and `python main.py --smoke-test`.
 
 **Pre-built apps:** download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest) — no `build/` step needed.
 

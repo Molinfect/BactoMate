@@ -14,3 +14,10 @@ def test_foci_only_channel_gets_foci_suffix():
 def test_fi_and_foci_combined_tag():
     name, _ = split_channel_output_name("sample", "GFP", in_fi=True, in_foci=True, phase_used=False)
     assert name == "sample_fi_foci_GFP.tif"
+
+
+def test_second_unmarked_channel_becomes_fi_not_bare():
+    first, used = split_channel_output_name("sample", "DIA", in_fi=False, in_foci=False, phase_used=False)
+    assert first == "sample_phase.tif" and used
+    second, _ = split_channel_output_name("sample", "TRITC", in_fi=False, in_foci=False, phase_used=True)
+    assert second == "sample_fi_TRITC.tif"

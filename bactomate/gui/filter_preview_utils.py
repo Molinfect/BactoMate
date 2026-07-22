@@ -102,6 +102,9 @@ CELL_FILTER_SETTING_KEYS: tuple[str, ...] = (
     "max_width_um",
     "min_length_um",
     "max_length_um",
+    "focus_filter_enabled",
+    "focus_min_fraction_of_median",
+    "focus_modality",
 )
 
 
@@ -391,11 +394,17 @@ def same_replicate(mask_path: Path, file_path: Path) -> bool:
     if mt and ft:
         return mt == ft
     try:
-        from bactomate.gui.artifact_paths import sample_identity_stem
+        from bactomate.gui.artifact_paths import foci_pairs_with_input, sample_identity_stem
 
-        return sample_identity_stem(mask_stem_from_path(mask_path)).lower() == sample_identity_stem(
-            file_path.stem
-        ).lower()
+        ms = mask_stem_from_path(mask_path)
+        fs = file_path.stem
+        if sample_identity_stem(ms).lower() == sample_identity_stem(fs).lower():
+            return True
+        # Legacy free-form phase names (e.g. *_DIA) ↔ *_foci_* siblings.
+        if "_foci" in fs.lower() and foci_pairs_with_input(ms, fs):
+            return True
+        if "_foci" in ms.lower() and foci_pairs_with_input(fs, ms):
+            return True
     except Exception:
         pass
     # No replicate token — require shared prefix up to channel suffix.
@@ -515,6 +524,13 @@ def path_matches_mask_sample(tab: Any, mask_path: Path, file_path: Path) -> bool
         return False
     fs = file_path.stem
     ms = mask_stem_from_path(mask_path)
+    try:
+        from bactomate.gui.artifact_paths import foci_pairs_with_input
+
+        if "_foci" in fs.lower() and foci_pairs_with_input(ms, fs):
+            return True
+    except Exception:
+        pass
     stems: list[str] = [ms]
     try:
         for s in tab._candidate_match_stems(ms):
@@ -752,11 +768,13 @@ def evaluate_cell_filter_details(
         )
     }
     focus_scores: dict[int, float] = {}
+    focus_reference: float | None = None
     size_accepted = set(size_ok)
     if bool(settings.get("focus_filter_enabled")) and phase_plane is not None and size_accepted:
         try:
             from bactomate.modules.cell_focus_score import (
                 filter_labels_by_focus,
+                focus_reference_score,
                 score_cells_in_frame,
             )
 
@@ -764,8 +782,10 @@ def evaluate_cell_filter_details(
                 np.asarray(phase_plane, dtype=np.float64),
                 mask,
                 size_accepted,
+                modality=settings.get("focus_modality", "phase"),
             )
             focus_scores = {int(k): float(v) for k, v in dict(scores or {}).items()}
+            focus_reference = focus_reference_score(focus_scores)
             frac = float(settings.get("focus_min_fraction_of_median", 0.5) or 0.5)
             size_accepted = set(
                 filter_labels_by_focus(
@@ -775,6 +795,7 @@ def evaluate_cell_filter_details(
             )
         except Exception:
             focus_scores = {}
+            focus_reference = None
 
     details: list[dict[str, Any]] = []
     for label in sorted(centroids):
@@ -797,12 +818,11 @@ def evaluate_cell_filter_details(
             elif bool(settings.get("focus_filter_enabled")) and label not in size_accepted:
                 score = focus_scores.get(label)
                 frac = float(settings.get("focus_min_fraction_of_median", 0.5) or 0.5)
-                if score is not None:
-                    reasons.append(
-                        f"Focus score {score:.3f} below {frac:.2f}× frame median"
-                    )
+                if score is not None and focus_reference is not None and focus_reference > 0:
+                    rel = float(score) / float(focus_reference)
+                    reasons.append(f"Focus {rel:.2f}× top cells (need ≥ {frac:.2f}×)")
                 else:
-                    reasons.append("Out of focus")
+                    reasons.append(f"Out of focus (need ≥ {frac:.2f}× top cells)")
         area_px = int(prop.get("area_pixels", 0) or 0) if prop else 0
         details.append(
             {
@@ -814,6 +834,13 @@ def evaluate_cell_filter_details(
                 "fail_reasons": reasons,
                 "metrics": prop or {},
                 "focus_score": focus_scores.get(label),
+                "focus_median": focus_reference,  # legacy key; value is p80 reference
+                "focus_reference": focus_reference,
+                "focus_min_fraction_of_median": float(
+                    settings.get("focus_min_fraction_of_median", 0.5) or 0.5
+                )
+                if bool(settings.get("focus_filter_enabled"))
+                else None,
             }
         )
     return details
@@ -845,7 +872,18 @@ def format_cell_filter_tooltip(cell: dict[str, Any]) -> str:
     focus_score = cell.get("focus_score")
     if focus_score is not None:
         try:
-            lines.append(f"Focus score: {float(focus_score):.3f}")
+            raw = float(focus_score)
+            ref = cell.get("focus_reference")
+            if ref is None:
+                ref = cell.get("focus_median")
+            frac = cell.get("focus_min_fraction_of_median")
+            if ref is not None and float(ref) > 0:
+                rel = raw / float(ref)
+                # Relative to sharper cells in the frame (p80), not the median.
+                line = f"Focus vs top cells: {rel:.2f}×"
+                if frac is not None:
+                    line += f" (keep ≥ {float(frac):.2f}×)"
+                lines.append(line)
         except (TypeError, ValueError):
             pass
     reasons = cell.get("fail_reasons")
