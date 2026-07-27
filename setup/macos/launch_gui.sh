@@ -361,7 +361,9 @@ else
 fi
 
 # Verify patches are applied (fast file check, no Python import of cellpose/torch)
-if [ -f "$SCRIPT_DIR/apply_all_patches.py" ]; then
+# Shared patcher lives in setup/ (repo) or Resources/setup/ (app bundle), not setup/macos/
+PATCHES_PY="$PROJECT_ROOT/setup/apply_all_patches.py"
+if [ -f "$PATCHES_PY" ]; then
     PATCH_FILE=""
     for f in "$PROJECT_ROOT/venv/lib/python"*"/site-packages/cellpose_omni/models.py"; do
         [ -f "$f" ] && PATCH_FILE="$f" && break
@@ -374,7 +376,7 @@ if [ -f "$SCRIPT_DIR/apply_all_patches.py" ]; then
     fi
     if [ "$NEED_PATCH" = true ]; then
         echo "$(date): Applying compatibility patches..." >> "$LOG_FILE"
-        "$PYTHON_CMD" "$SCRIPT_DIR/apply_all_patches.py" >> "$LOG_FILE" 2>&1 || true
+        "$PYTHON_CMD" "$PATCHES_PY" >> "$LOG_FILE" 2>&1 || true
     fi
 fi
 

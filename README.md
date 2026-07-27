@@ -4,7 +4,7 @@ Integrated microscopy analysis platform: file conversion, segmentation (Omnipose
 
 **Install from source:** clone this repo, run the install script for your OS under `setup/`, then launch. No build step required.
 
-**Prefer a ready-made app?** Download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from the [latest GitHub Release](https://github.com/poppphil/BactoMate/releases/latest) — no Python or Terminal needed.
+**Prefer a ready-made app?** Download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from the [latest GitHub Release](https://github.com/Molinfect/BactoMate/releases/latest) — no Python or Terminal needed.
 
 ## Quick Install
 
@@ -13,7 +13,7 @@ For most users, open a terminal window and run the commands for your operating s
 ### macOS
 
 ```bash
-git clone https://github.com/poppphil/BactoMate.git
+git clone https://github.com/Molinfect/BactoMate.git
 cd BactoMate
 ./setup/macos/install.sh
 ./launch_gui.sh
@@ -32,7 +32,7 @@ chmod +x setup/macos/*.sh launch_gui.sh
 Open Command Prompt, then run:
 
 ```bat
-git clone https://github.com/poppphil/BactoMate.git
+git clone https://github.com/Molinfect/BactoMate.git
 cd BactoMate
 install_windows.bat
 launch_windows.bat
@@ -57,7 +57,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.8.7
+python main.py --version    # BactoMate 2.8.8
 python main.py --smoke-test # Smoke test OK
 ```
 

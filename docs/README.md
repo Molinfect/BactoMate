@@ -24,7 +24,7 @@ Bacterial cell segmentation and analysis tool using Omnipose with a user-friendl
 **macOS:**
 
 ```bash
-git clone https://github.com/poppphil/BactoMate.git
+git clone https://github.com/Molinfect/BactoMate.git
 cd BactoMate
 ./setup/macos/install.sh
 ./launch_gui.sh
@@ -39,15 +39,15 @@ chmod +x setup/macos/*.sh launch_gui.sh
 **Windows:**
 
 ```bat
-git clone https://github.com/poppphil/BactoMate.git
+git clone https://github.com/Molinfect/BactoMate.git
 cd BactoMate
 setup\windows\install.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.8.7`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.8.8`) and `python main.py --smoke-test`.
 
-**Pre-built apps:** download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest) — no `build/` step needed.
+**Pre-built apps:** download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest) — no `build/` step needed.
 
 The root **[README](../README.md)** has copy-paste install commands. Windows details: **[INSTALL_AND_LAUNCH_windows.md](INSTALL_AND_LAUNCH_windows.md)**.
 
@@ -134,7 +134,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### macOS: DMG install
 
-Use this section when you downloaded **`BactoMate.dmg`** from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest) (no project folder, no Terminal, no Python install).
+Use this section when you downloaded **`BactoMate.dmg`** from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest) (no project folder, no Terminal, no Python install).
 
 1. Double-click **BactoMate.dmg**. A Finder window opens; inside you will see **BactoMate** (the app), a shortcut to **Applications**, **00 - READ THIS FIRST (macOS install).txt** (same steps in plain language), and **Open BactoMate.command**.
 2. Drag **BactoMate** onto **Applications** (or into your Applications folder).
@@ -245,7 +245,7 @@ When analyzing a **folder** with multiple FI channels, the merged Excel includes
 
 ## Packaging (maintainers)
 
-End users should install from **`setup/`** or download binaries from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest).
+End users should install from **`setup/`** or download binaries from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest).
 
 To build **BactoMate.dmg** or **BactoMate-win64.zip** locally, see **[build/README.md](../build/README.md)**. Tagged releases build and attach those files automatically via GitHub Actions.
 

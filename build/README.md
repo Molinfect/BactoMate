@@ -1,6 +1,6 @@
 # BactoMate packaging (maintainers only)
 
-> **End users:** you do not need this folder. Install from source via [`setup/`](../setup/README.md), or download **BactoMate.dmg** / **BactoMate-win64.zip** from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest).
+> **End users:** you do not need this folder. Install from source via [`setup/`](../setup/README.md), or download **BactoMate.dmg** / **BactoMate-win64.zip** from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest).
 
 Packaging helpers for **distributable builds** after a normal source install. Scripts are split by platform — there is no single cross-platform build.
 
