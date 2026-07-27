@@ -2,7 +2,7 @@
 
 This guide is for **source install** from a Git clone or ZIP download.
 
-**Most Windows users:** download **BactoMate-win64.zip** from [GitHub Releases](https://github.com/poppphil/BactoMate/releases/latest), extract it, and run `BactoMate.bat` — no Python install required.
+**Most Windows users:** download **BactoMate-win64.zip** from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest), extract it, and run `BactoMate.bat` — no Python install required.
 
 For a portable folder built from source (maintainers), see **Windows bundle** below.
 
@@ -75,7 +75,7 @@ venv\Scripts\python.exe main.py --version
 venv\Scripts\python.exe main.py --smoke-test
 ```
 
-You should see `BactoMate 2.8.7` and `Smoke test OK`.
+You should see `BactoMate 2.8.8` and `Smoke test OK`.
 
 ## Logs
 

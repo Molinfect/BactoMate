@@ -1,7 +1,16 @@
 # Release workflow (maintainers)
 
-Use this checklist when shipping a new version (e.g. **v2.8.5**).  
-**Audience:** you + Cursor (“follow `docs/internal/RELEASE_WORKFLOW.md` and release v2.8.5”).
+Use this checklist when shipping a new version (e.g. **v2.8.8**).  
+**Audience:** you + Cursor (“follow `docs/internal/RELEASE_WORKFLOW.md` and release v2.8.8”).
+
+**Canonical GitHub repo:** [Molinfect/BactoMate](https://github.com/Molinfect/BactoMate)  
+Releases: [https://github.com/Molinfect/BactoMate/releases](https://github.com/Molinfect/BactoMate/releases)
+
+```bash
+# Point origin at the lab repo (once per clone)
+git remote set-url origin https://github.com/Molinfect/BactoMate.git
+git remote -v
+```
 
 ## Branch roles
 
@@ -84,9 +93,9 @@ If you strip and commit on `dev`, internal docs are gone from `dev` too.
    - Builds macOS DMG + Windows zip (both exclude `docs/internal/`)
    - Publishes release with assets attached
 
-10. **Smoke-check** the [latest release](https://github.com/poppphil/BactoMate/releases/latest):
+10. **Smoke-check** the [latest release](https://github.com/Molinfect/BactoMate/releases/latest):
     - Download zip / DMG if attached
-    - Or clone `main` at tag and run install + `--smoke-test`
+    - Or clone `main` at tag from `https://github.com/Molinfect/BactoMate.git` and run install + `--smoke-test`
 
 ---
 

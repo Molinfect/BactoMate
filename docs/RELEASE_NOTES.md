@@ -4,6 +4,19 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.8 (2026-07-27)
+
+### Repo and packaging
+
+- **GitHub home:** project moved to the lab org — [Molinfect/BactoMate](https://github.com/Molinfect/BactoMate) (docs and release workflow updated).
+
+### Conversion and macOS setup
+
+- **Extract crop:** clearing the crop region also unticks **Extract crop**, so conversion no longer fails with “crop region required” after Clear crop.
+- **macOS install patches:** `setup/macos/install.sh` / `setup_fresh_env.sh` now find `setup/apply_all_patches.py` correctly (was looking under `setup/macos/`).
+
+---
+
 ## v2.8.7 (2026-07-22)
 
 ### Conversion and pairing

@@ -169,7 +169,7 @@ jobs:
             ### macOS (when no DMG is attached)
 
             ```bash
-            git clone https://github.com/poppphil/BactoMate.git
+            git clone https://github.com/Molinfect/BactoMate.git
             cd BactoMate
             git checkout ${{ github.ref_name }}
             ./setup/macos/install.sh
@@ -178,4 +178,4 @@ jobs:
 
             Or build a local DMG on a Mac: `./build/macos/build_app_bundle.sh` then `./build/macos/create_dmg.sh`.
 
-            **Developers:** see [README](https://github.com/poppphil/BactoMate/blob/main/README.md) and [`setup/`](https://github.com/poppphil/BactoMate/tree/main/setup).
+            **Developers:** see [README](https://github.com/Molinfect/BactoMate/blob/main/README.md) and [`setup/`](https://github.com/Molinfect/BactoMate/tree/main/setup).

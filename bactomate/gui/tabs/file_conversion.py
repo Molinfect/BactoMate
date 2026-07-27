@@ -474,6 +474,15 @@ class ND2ConversionTab(QWidget):
 
     def _clear_conversion_crop(self) -> None:
         self._conversion_crop_roi = None
+        # Clearing the region must also disable Extract crop, otherwise conversion
+        # fails with "crop region required" while the box is still ticked.
+        cb = getattr(self, 'extract_crop_cb', None)
+        if cb is not None and cb.isChecked():
+            cb.blockSignals(True)
+            try:
+                cb.setChecked(False)
+            finally:
+                cb.blockSignals(False)
         self._update_crop_status_label()
         self._sync_conversion_crop_overlay()
 
@@ -486,8 +495,15 @@ class ND2ConversionTab(QWidget):
     def set_conversion_crop_roi(self, roi: Optional[RoiTuple]) -> None:
         """Store crop ROI in native image coordinates (from preview)."""
         self._conversion_crop_roi = roi
-        if roi is not None and hasattr(self, 'extract_crop_cb'):
-            self.extract_crop_cb.setChecked(True)
+        if hasattr(self, 'extract_crop_cb'):
+            # Drawing a crop enables Extract crop; clearing it disables it.
+            want_checked = roi is not None
+            if self.extract_crop_cb.isChecked() != want_checked:
+                self.extract_crop_cb.blockSignals(True)
+                try:
+                    self.extract_crop_cb.setChecked(want_checked)
+                finally:
+                    self.extract_crop_cb.blockSignals(False)
         self._update_crop_status_label()
         self._sync_conversion_crop_overlay()
 

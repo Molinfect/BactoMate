@@ -97,13 +97,14 @@ if [ -f "requirements.txt" ]; then
         fi
     fi
     
-    # Apply all patches automatically
+    # Apply all patches automatically (shared script lives in setup/, not setup/macos/)
     echo ""
     echo "Applying compatibility patches..."
-    if [ -f "$SCRIPT_DIR/apply_all_patches.py" ]; then
-        python3 "$SCRIPT_DIR/apply_all_patches.py" || echo "⚠ Warning: Some patches may have failed"
+    PATCHES_PY="$PROJECT_ROOT/setup/apply_all_patches.py"
+    if [ -f "$PATCHES_PY" ]; then
+        python3 "$PATCHES_PY" || echo "⚠ Warning: Some patches may have failed"
     else
-        echo "⚠ Warning: apply_all_patches.py not found in setup/"
+        echo "⚠ Warning: apply_all_patches.py not found at $PATCHES_PY"
     fi
 else
     echo "WARNING: requirements.txt not found!"
