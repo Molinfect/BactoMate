@@ -21,6 +21,16 @@ __all__ = [
 ]
 
 
+def _qt_alive(obj) -> bool:
+    """True while the underlying C++ QObject still exists."""
+    try:
+        from shiboken6 import isValid
+
+        return bool(obj is not None and isValid(obj))
+    except Exception:
+        return obj is not None
+
+
 class FilterApplyProgressDialog(QDialog):
     """Progress window with separate step title and detail lines."""
 
@@ -31,7 +41,10 @@ class FilterApplyProgressDialog(QDialog):
         self.setObjectName("FilterApplyProgressDialog")
         self.setWindowTitle("Applying filters")
         self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        # Do not DeleteOnClose: set_progress() may processEvents() and deliver a
+        # queued worker result that closes this dialog mid-update. Immediate C++
+        # deletion caused Windows access violations / macOS segfaults in CI.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setMinimumWidth(560)
         self.setMaximumWidth(920)
         layout = QVBoxLayout(self)
@@ -75,10 +88,20 @@ class FilterApplyProgressDialog(QDialog):
         layout.addWidget(self._bar)
         layout.addWidget(self._cancel)
         self._processing_events = False
+        self._closing = False
+        # When False, skip processEvents (async preview workers). Batch Filter
+        # keeps the default True so the bar paints during long sync work.
+        self._pump_events = True
         self._last_ui_update_ts = 0.0
         self._min_ui_interval_s = 0.05
 
+    def set_pump_events(self, enabled: bool) -> None:
+        """Enable/disable nested processEvents during set_progress."""
+        self._pump_events = bool(enabled)
+
     def _resize_to_content(self) -> None:
+        if not _qt_alive(self) or self._closing:
+            return
         try:
             self.adjustSize()
             hint = self.sizeHint()
@@ -90,7 +113,7 @@ class FilterApplyProgressDialog(QDialog):
 
     def set_progress(self, percent: int, step: str, detail: str = "") -> None:
         """Update overall percent, current step title, and optional sub-detail."""
-        if self._processing_events:
+        if not _qt_alive(self) or self._closing or self._processing_events:
             return
         try:
             prev = int(self._bar.value())
@@ -123,6 +146,8 @@ class FilterApplyProgressDialog(QDialog):
         self._bar.setValue(pct)
         self._resize_to_content()
         self._last_ui_update_ts = now
+        if not self._pump_events:
+            return
         try:
             from PyQt6.QtWidgets import QApplication
 
@@ -132,9 +157,16 @@ class FilterApplyProgressDialog(QDialog):
                 try:
                     app.processEvents()
                 finally:
-                    self._processing_events = False
+                    # Nested close/result delivery must not touch a dying dialog.
+                    if _qt_alive(self):
+                        self._processing_events = False
         except Exception:
-            self._processing_events = False
+            if _qt_alive(self):
+                self._processing_events = False
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._closing = True
+        super().closeEvent(event)
 
     def finish_and_close(self, delay_ms: int = 0) -> None:
         """Show 100% then close automatically (batch Filter File/Folder)."""
@@ -147,6 +179,15 @@ class FilterApplyProgressDialog(QDialog):
             pass
         self.set_progress(100, "Complete", "")
         if delay_ms <= 0:
+            self._closing = True
             self.close()
+            self.deleteLater()
             return
-        QTimer.singleShot(int(delay_ms), self, self.close)
+        QTimer.singleShot(int(delay_ms), self, self._finish_close_later)
+
+    def _finish_close_later(self) -> None:
+        if not _qt_alive(self):
+            return
+        self._closing = True
+        self.close()
+        self.deleteLater()

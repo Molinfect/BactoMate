@@ -134,11 +134,8 @@ def test_spotiflow_detect_cache_short_circuits(monkeypatch) -> None:
     assert len(out1) == len(out2) == 1
 
 
-def test_filter_apply_progress_reentrancy_guard() -> None:
+def test_filter_apply_progress_reentrancy_guard(qapp) -> None:
     pytest.importorskip("PyQt6")
-    from PyQt6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
 
     from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog
 
@@ -149,11 +146,34 @@ def test_filter_apply_progress_reentrancy_guard() -> None:
     assert dlg._step_label.text() == "before"
 
 
-def test_filter_apply_progress_throttles_rapid_updates() -> None:
+def test_filter_apply_progress_survives_nested_close_during_process_events(qapp) -> None:
+    """Regression: nested processEvents must not access-violate when the dialog
+    is closed mid-update (Windows 0xC0000005 / macOS segfault in CI)."""
     pytest.importorskip("PyQt6")
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QTimer
 
-    QApplication.instance() or QApplication([])
+    from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog, _qt_alive
+
+    dlg = FilterApplyProgressDialog(None)
+    dlg.show()
+    qapp.processEvents()
+
+    # Close while set_progress is pumping the event loop.
+    QTimer.singleShot(0, dlg.close)
+    dlg.set_progress(40, "Applying", "nested close")
+    qapp.processEvents()
+
+    # Dialog may be closed but must remain a valid Python/C++ object until deleteLater.
+    assert _qt_alive(dlg)
+    assert dlg._closing is True
+    # Further updates after close are no-ops (must not crash).
+    dlg.set_progress(90, "late", "ignored")
+    dlg.deleteLater()
+    qapp.processEvents()
+
+
+def test_filter_apply_progress_throttles_rapid_updates(qapp) -> None:
+    pytest.importorskip("PyQt6")
 
     from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog
 
