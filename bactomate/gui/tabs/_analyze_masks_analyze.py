@@ -87,26 +87,71 @@ class AnalyzeTab(AnalyzeMasksBase):
         if getattr(self.parent_window, '_save_session_log', None):
             self.parent_window._save_session_log()
 
+    def _find_filtered_mask_sibling(self, mask_path: Path) -> Path | None:
+        """Locate a filtered mask for ``mask_path`` (same folder or workspace scan)."""
+        mask_path = Path(mask_path)
+        try:
+            from bactomate.gui.artifact_paths import (
+                collect_filtered_mask_files_in_folder,
+                is_filtered_mask_tiff,
+                mask_sample_identity_key,
+                resolve_filtered_mask_path,
+            )
+        except Exception:
+            return None
+        try:
+            if is_filtered_mask_tiff(mask_path) and mask_path.is_file():
+                return mask_path
+        except Exception:
+            pass
+        try:
+            resolved = resolve_filtered_mask_path(mask_path)
+            if resolved is not None and Path(resolved).is_file():
+                return Path(resolved)
+        except Exception:
+            pass
+        # Broader fallback: scan the Analyze path (e.g. Tif_files/) for a matching filtered mask.
+        try:
+            root_txt = (self.file_path.text() or '').strip()
+            root = Path(root_txt) if root_txt else mask_path.parent
+            if root.is_file():
+                root = root.parent
+            if not root.is_dir():
+                root = mask_path.parent
+            key = mask_sample_identity_key(mask_path)
+            for cand in collect_filtered_mask_files_in_folder(root):
+                if mask_sample_identity_key(cand) == key and Path(cand).is_file():
+                    return Path(cand)
+        except Exception:
+            pass
+        return None
+
     def _resolve_effective_mask_for_analysis(self, mask_path: Path) -> Path:
         """Mask file that Analyze will actually use after the filtered-mask preference is applied."""
         mask_path = Path(mask_path)
         if not bool(getattr(self, 'use_filtered_masks_cb', None) and self.use_filtered_masks_cb.isChecked()):
             return mask_path
-        try:
-            from bactomate.gui.artifact_paths import resolve_filtered_mask_path
-
-            name_lower = mask_path.name.lower()
-            if name_lower.endswith(('_masks.tif', '_masks.tiff')) and '_mask_filtered' not in name_lower:
-                resolved = resolve_filtered_mask_path(mask_path)
-                if resolved is not None and Path(resolved).is_file():
-                    return Path(resolved)
-        except Exception:
-            pass
-        return mask_path
+        found = self._find_filtered_mask_sibling(mask_path)
+        return Path(found) if found is not None else mask_path
 
     @staticmethod
     def _is_filtered_mask_path(path: Path) -> bool:
-        return '_mask_filtered' in Path(path).name.lower()
+        try:
+            from bactomate.gui.artifact_paths import is_filtered_mask_tiff
+
+            return bool(is_filtered_mask_tiff(path))
+        except Exception:
+            return '_mask_filtered' in Path(path).name.lower()
+
+    def _fi_feedback_mask_label(self, listed_mask: Path, effective_mask: Path) -> str:
+        """Parenthetical for Analyze FI overview: never say 'raw' (misleading)."""
+        effective_mask = Path(effective_mask)
+        listed_mask = Path(listed_mask)
+        if self._is_filtered_mask_path(effective_mask):
+            if listed_mask.resolve() != effective_mask.resolve() and not self._is_filtered_mask_path(listed_mask):
+                return f'{effective_mask.name} (filtered; from {listed_mask.name})'
+            return f'{effective_mask.name} (filtered)'
+        return f'{effective_mask.name} (mask)'
 
     def _reset_analyze_btn_idle(self) -> None:
         btn = self.primary_action_btn
@@ -748,13 +793,7 @@ class AnalyzeTab(AnalyzeMasksBase):
                 effective_mask = self._resolve_effective_mask_for_analysis(mask_path)
                 fi_paths = self._resolve_fi_inputs_for_mask(effective_mask)
                 total += max(1, len(fi_paths)) if fi_paths else 1
-                is_filtered = self._is_filtered_mask_path(effective_mask)
-                if is_filtered:
-                    mask_label = f'{effective_mask.name} (filtered)'
-                    if Path(mask_path).resolve() != Path(effective_mask).resolve() and not self._is_filtered_mask_path(mask_path):
-                        mask_label = f'{effective_mask.name} (filtered; from {mask_path.name})'
-                else:
-                    mask_label = f'{effective_mask.name} (raw masks)'
+                mask_label = self._fi_feedback_mask_label(mask_path, effective_mask)
                 linked = ', '.join((p.name for p in fi_paths)) if fi_paths else '(no linked FI/foci TIFF found)'
                 fi_lines.append(f'• {mask_label} → {linked}')
             noun = 'analysis' if total == 1 else 'analyses'
