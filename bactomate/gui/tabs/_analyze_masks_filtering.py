@@ -517,7 +517,7 @@ class FilteringTab(AnalyzeMasksBase):
         try:
             from bactomate.scripts.analyze_cell_areas import calculate_cell_properties, filter_rod_shaped_cells, filter_by_size
         except Exception as e:
-            progress.close()
+            _close_progress_dialog()
             show_message_dialog(self, 'Filtering Error', f'Could not import filtering pipeline:\n{e}', kind='warning')
             self._filtering_in_progress = False
             try:

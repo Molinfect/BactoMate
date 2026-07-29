@@ -1636,6 +1636,9 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception:
             pass
         prog = FilterApplyProgressDialog(dlg)
+        # Async worker already delivers progress via the Qt event loop; nested
+        # processEvents here raced with result_ready/close (CI access violation).
+        prog.set_pump_events(False)
         prog.set_progress(0, 'Applying filters', plan_line or 'Starting…')
         prog.show()
         try:
@@ -1651,17 +1654,24 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
 
         def on_progress(pct: int, step: str, detail: str='') -> None:
             try:
+                if getattr(dlg, '_progress_dialog', None) is not prog:
+                    return
+            except Exception:
+                return
+            try:
+                from bactomate.gui.filter_apply_progress import _qt_alive
+
+                if not _qt_alive(prog) or bool(getattr(prog, '_closing', False)):
+                    return
+            except Exception:
+                return
+            try:
                 base = str(getattr(dlg, '_filter_apply_plan_line', '') or '').strip()
                 sub = str(detail or '').strip()
                 combined = '\n'.join((p for p in (base, sub) if p))
                 prog.set_progress(int(pct), str(step), combined)
             except Exception:
                 pass
-            if int(pct) >= 100:
-                try:
-                    prog.set_progress(100, str(step), str(detail or ''))
-                except Exception:
-                    pass
         worker.progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
 
         def _set_primary_idle() -> None:
@@ -1711,25 +1721,38 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         def _safely_dismiss_progress() -> None:
             """Dismiss the progress dialog without treating completion as cancel."""
             try:
+                worker.progress.disconnect(on_progress)
+            except Exception:
+                pass
+            try:
                 prog.canceled.disconnect(_cancel_current)
             except Exception:
                 pass
-            try:
-                prog.set_progress(100, 'Step 4/4 · Complete', '')
-            except Exception:
-                pass
-            try:
-                prog.close()
-            except Exception:
-                pass
-
-        def on_result_ready(rid_out, fid, acc_list, rej_list, _all_list, n_obj, err, vis, _peaks, _n_foci_total, _n_foci_drawn, _raw_median_fi, _min_rel, _mode_txt, pass_peaks_out, fail_peaks_out, foci_channels_out):
-            _safely_dismiss_progress()
             try:
                 if getattr(dlg, '_progress_dialog', None) is prog:
                     dlg._progress_dialog = None
             except Exception:
                 pass
+            try:
+                from bactomate.gui.filter_apply_progress import _qt_alive
+
+                if not _qt_alive(prog):
+                    return
+            except Exception:
+                return
+            try:
+                prog._closing = True
+                prog.set_progress(100, 'Step 4/4 · Complete', '')
+            except Exception:
+                pass
+            try:
+                prog.close()
+                prog.deleteLater()
+            except Exception:
+                pass
+
+        def on_result_ready(rid_out, fid, acc_list, rej_list, _all_list, n_obj, err, vis, _peaks, _n_foci_total, _n_foci_drawn, _raw_median_fi, _min_rel, _mode_txt, pass_peaks_out, fail_peaks_out, foci_channels_out):
+            _safely_dismiss_progress()
             try:
                 if int(rid_out) != int(getattr(dlg, '_preview_request_id', rid_out)):
                     return
@@ -1778,13 +1801,18 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             try:
                 if getattr(dlg, '_progress_dialog', None) is prog:
                     _safely_dismiss_progress()
-                    dlg._progress_dialog = None
                 elif getattr(dlg, '_progress_dialog', None) is not None:
+                    stale = dlg._progress_dialog
                     try:
-                        dlg._progress_dialog.canceled.disconnect()
+                        stale.canceled.disconnect()
                     except Exception:
                         pass
-                    dlg._progress_dialog.close()
+                    try:
+                        stale._closing = True
+                        stale.close()
+                        stale.deleteLater()
+                    except Exception:
+                        pass
                     dlg._progress_dialog = None
             except Exception:
                 pass
@@ -2034,6 +2062,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             n_obj = last.get('n_obj')
             from bactomate.gui.filter_preview_utils import format_incremental_apply_plan
             prog = FilterApplyProgressDialog(dlg)
+            prog.set_pump_events(False)
             prog.set_progress(100, 'Complete', format_incremental_apply_plan(plan))
             prog.show()
             try:
@@ -2045,11 +2074,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 dlg.set_extra('filter_cell_recomputing', False)
             except Exception:
                 pass
-            QTimer.singleShot(250, prog.close)
             try:
                 dlg._progress_dialog = None
             except Exception:
                 pass
+            prog.finish_and_close(250)
             return
         bundle = _build_foci_apply_bundle(idx, dict(fs), incremental_plan=plan, request_source_key=src)
         _start_worker(idx, settings_snapshot=dict(fs), settings_sig=sig, source_key=src, foci_apply_bundle=bundle)
@@ -2419,11 +2448,17 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 pass
         try:
             if getattr(dlg, '_progress_dialog', None) is not None:
+                stale = dlg._progress_dialog
                 try:
-                    dlg._progress_dialog.canceled.disconnect()
+                    stale.canceled.disconnect()
                 except Exception:
                     pass
-                dlg._progress_dialog.close()
+                try:
+                    stale._closing = True
+                    stale.close()
+                    stale.deleteLater()
+                except Exception:
+                    pass
                 dlg._progress_dialog = None
         except Exception:
             pass
