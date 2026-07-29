@@ -25,9 +25,9 @@ FILTER_CAL_TIME_SPIN_WIDTH = 118
 FILTER_METRIC_SPIN_WIDTH = 68
 FILTER_METRIC_DEC_SPIN_WIDTH = 80
 FILTER_GRID_COLUMNS = 2
-FILTER_METRIC_CELL_MIN_HEIGHT = 34
+FILTER_METRIC_CELL_MIN_HEIGHT = 40
 FILTER_GRID_H_SPACING = 10
-FILTER_GRID_V_SPACING = 6
+FILTER_GRID_V_SPACING = 10
 METRICS_TABLE_COL_WEIGHTS = (36, 56, 72, 88, 44, 72, 72, 88, 72, 56)
 METRICS_TABLE_COL_MIN_WIDTH = 28
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
@@ -2693,12 +2693,13 @@ class TrackingTab(QWidget):
         settings_host = QWidget()
         settings_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay = QVBoxLayout(settings_host)
-        settings_lay.setContentsMargins(0, 0, 0, 0)
+        settings_lay.setContentsMargins(0, 4, 0, 8)
         settings_lay.setSpacing(10)
         tracking_params_section = CollapsibleSection('Tracking parameters', self._tracking_params_panel, parent=settings_host, expanded=False, compact=True)
         tracking_params_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay.addWidget(tracking_params_section)
-        filter_tracks_section = CollapsibleSection('Filter tracks', self._filter_tracks_panel, parent=settings_host, expanded=False, compact=True)
+        # Expanded by default so the multi-row filter options are not crushed under the canvas.
+        filter_tracks_section = CollapsibleSection('Filter tracks', self._filter_tracks_panel, parent=settings_host, expanded=True, compact=True)
         filter_tracks_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay.addWidget(filter_tracks_section)
         overlay_layers_host = QWidget()
@@ -2768,11 +2769,53 @@ class TrackingTab(QWidget):
         settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
         settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        settings_scroll.setMinimumHeight(130 if embed else 180)
-        settings_scroll.setMaximumHeight(420 if embed else 520)
+        settings_max_h = 560 if embed else 640
+        settings_scroll.setMaximumHeight(settings_max_h)
         settings_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         settings_scroll.setWidget(settings_host)
         preview_state['settings_scroll'] = settings_scroll
+
+        def _sync_preview_settings_height(*_a: object) -> None:
+            """Grow the settings strip so expanded Filter tracks options stay visible above the canvas."""
+            try:
+                filter_exp = bool(filter_tracks_section.is_expanded())
+                params_exp = bool(tracking_params_section.is_expanded())
+                metrics_sec = preview_state.get('metrics_table_section')
+                metrics_exp = bool(
+                    metrics_sec is not None
+                    and metrics_sec.isVisible()
+                    and metrics_sec.is_expanded()
+                )
+            except Exception:
+                filter_exp, params_exp, metrics_exp = (True, False, False)
+            # Headers + overlay row always present.
+            need = 110 if embed else 130
+            if filter_exp:
+                # Calibration row + ~4 metric rows (2-column grid) with spacing.
+                need += 260 if embed else 280
+            if params_exp:
+                need += 70
+            if metrics_exp:
+                need += 220
+            need = max(180 if embed else 220, min(int(settings_max_h), int(need)))
+            try:
+                # Prefer content size hint when larger (e.g. metrics table).
+                hint = int(settings_host.sizeHint().height()) + 12
+                need = max(need, min(int(settings_max_h), hint))
+            except Exception:
+                pass
+            settings_scroll.setMinimumHeight(need)
+            try:
+                settings_host.updateGeometry()
+                settings_scroll.updateGeometry()
+            except Exception:
+                pass
+
+        tracking_params_section.toggled.connect(_sync_preview_settings_height)
+        filter_tracks_section.toggled.connect(_sync_preview_settings_height)
+        metrics_table_section.toggled.connect(_sync_preview_settings_height)
+        preview_state['sync_settings_height'] = _sync_preview_settings_height
+        _sync_preview_settings_height()
 
         def _scroll_preview_settings_to_metrics() -> None:
             """Scroll the preview settings panel so the metrics table is visible."""
@@ -3506,6 +3549,9 @@ class TrackingTab(QWidget):
                 section.setVisible(bool(_checked))
                 if _checked:
                     section.set_expanded(True)
+            sync_h = preview_state.get('sync_settings_height')
+            if callable(sync_h):
+                sync_h()
             _update_metrics_table(_current_preview_frame())
             if _checked:
                 QTimer.singleShot(0, _scroll_preview_settings_to_metrics)
