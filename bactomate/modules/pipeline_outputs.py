@@ -95,7 +95,7 @@ def regenerate_segmentation_overlay(
     log: LogFn = None,
 ) -> Path | None:
     """
-    Regenerate ``{stem}_overlay.tif`` from mask + phase stack with Cell ID labels.
+    Regenerate ``overlays/{stem}_overlay.tif`` from mask + phase with Cell ID labels.
 
     Uses the mask pixel values as Cell ID labels (persistent IDs when assigned).
     """
@@ -119,7 +119,10 @@ def regenerate_segmentation_overlay(
         stem = stem[: -len("_masks")]
     elif stem.endswith("_unet_masks"):
         stem = stem[: -len("_unet_masks")]
-    overlay_path = mask_path.parent / f"{stem}_overlay.tif"
+    # Keep overlays under overlays/ (same as the segment CLI) — avoid a second copy at folder root.
+    overlay_dir = mask_path.parent / "overlays"
+    overlay_dir.mkdir(parents=True, exist_ok=True)
+    overlay_path = overlay_dir / f"{stem}_overlay.tif"
     try:
         from bactomate.scripts.batch_process_tiff_sequence import overlay_masks_on_images
 
@@ -132,8 +135,18 @@ def regenerate_segmentation_overlay(
         n = min(images_tyx.shape[0], masks_tyx.shape[0])
         overlay_masks_on_images(images_tyx[:n], masks_tyx[:n], str(overlay_path))
         write_png_preview_from_tiff(overlay_path)
+        # Drop legacy root-level overlay copies left by older builds.
+        for legacy in (
+            mask_path.parent / f"{stem}_overlay.tif",
+            mask_path.parent / f"{stem}_overlay.png",
+        ):
+            try:
+                if legacy.is_file() and legacy.resolve() != overlay_path.resolve():
+                    legacy.unlink()
+            except Exception:
+                pass
         if log is not None:
-            log(f"Segmentation overlay (Cell IDs): {mask_path.name} → {overlay_path.name}\n")
+            log(f"Segmentation overlay (Cell IDs): {mask_path.name} → overlays/{overlay_path.name}\n")
         return overlay_path
     except Exception as exc:
         _logger.warning("Overlay regeneration failed for %s: %s", mask_path, exc)
@@ -189,18 +202,23 @@ def write_filter_stage_visualization(
     log: LogFn = None,
 ) -> Path | None:
     """
-    Write ``{stem}_filter_visualization.tif`` (+ PNG) after the Filtering stage.
+    Write ``visualizations/{stem}_filter_visualization.tif`` (+ PNG) after Filtering.
     """
     mask_path = Path(mask_path)
     try:
-        from bactomate.gui.analysis_paths import analysis_dir_from_base, base_dir_for_mask
+        from bactomate.gui.analysis_paths import (
+            analysis_dir_from_base,
+            analysis_visualizations_dir,
+            base_dir_for_mask,
+        )
         from bactomate.gui.analysis_visualization import resolve_phase_image_for_mask
         from bactomate.scripts.analyze_cell_areas import create_filter_visualization
 
         analysis_dir = analysis_dir_from_base(base_dir_for_mask(mask_path))
-        analysis_dir.mkdir(parents=True, exist_ok=True)
+        vis_dir = analysis_visualizations_dir(analysis_dir)
+        vis_dir.mkdir(parents=True, exist_ok=True)
         vis_stem = mask_path.stem.replace("_masks", "").replace("_unet_masks", "")
-        vis_output = analysis_dir / f"{vis_stem}_filter_visualization.tif"
+        vis_output = vis_dir / f"{vis_stem}_filter_visualization.tif"
 
         all_frame_data = build_filter_frame_data_from_masks(
             original_masks,

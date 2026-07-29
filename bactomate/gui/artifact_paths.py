@@ -339,7 +339,13 @@ def discover_mask_tiffs_for_workspace(path: Path) -> list[Path]:
         return []
     if path.is_file():
         if is_cell_mask_tiff(path):
-            return dedupe_mask_paths_prefer_filtered([path.resolve()])
+            resolved = path.resolve()
+            # If the user pointed at raw *_masks.tif, prefer the filtered sibling when present.
+            if not is_filtered_mask_tiff(resolved):
+                filt = resolve_filtered_mask_path(resolved)
+                if filt is not None:
+                    return [Path(filt).resolve()]
+            return dedupe_mask_paths_prefer_filtered([resolved])
         root = path.parent.resolve()
     else:
         root = path.resolve()

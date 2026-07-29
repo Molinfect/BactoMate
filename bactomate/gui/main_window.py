@@ -781,6 +781,7 @@ class MainWindow(QMainWindow):
             return
         current_idx = self._central_stack.currentIndex()
         if current_idx != idx and current_idx != _STACK_DASHBOARD:
+            # Switching modules tears down embedded previews (including File Conversion's ND2 view).
             self._dismiss_all_embedded_previews()
         self._central_stack.setCurrentIndex(idx)
         self._sync_pipeline_nav_highlights(module_id)
@@ -795,6 +796,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._apply_workspace_hints_for_module(module_id)
+        # After dismiss, rebuild File Conversion preview from the still-selected path/file_info.
+        # Dropdown selection alone does not re-fire (signals blocked while restoring the row).
+        if module_id == MODULE_FILE_CONVERSION:
+            try:
+                self.nd2_tab.refresh_conversion_candidate_list()
+            except Exception:
+                log_exception(get_logger(), 'Refresh conversion candidate list on module show')
+            QTimer.singleShot(
+                100,
+                lambda: getattr(self.nd2_tab, '_refresh_embedded_conversion_preview', lambda: None)(),
+            )
 
     def _update_all_shell_workspace_lines(self) -> None:
         wr = str(self._workspace_root) if self._workspace_root else ''

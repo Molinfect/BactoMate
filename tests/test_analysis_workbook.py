@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -145,3 +146,97 @@ def test_read_foci_csv_rows_preserves_blob_columns(tmp_path: Path) -> None:
     assert rows[0]["size_px"] == 7
     assert float(rows[0]["mean_intensity"]) == 95.0
     assert rows[0]["cell_id"] == 3
+
+
+def test_refresh_workbook_channel_intensities_keeps_existing_columns_when_no_updates(tmp_path: Path) -> None:
+    import numpy as np
+    import tifffile
+
+    from bactomate.gui.analysis_workbook import refresh_workbook_channel_intensities
+
+    mask_path = tmp_path / "sample_mask_filtered.tif"
+    tifffile.imwrite(mask_path, np.ones((1, 4, 4), dtype=np.uint16))
+    analysis_path = tmp_path / "sample_analysis.xlsx"
+    with pd.ExcelWriter(analysis_path, engine="openpyxl") as writer:
+        pd.DataFrame({"Frame": [1], "Cell_ID": [1], "Area (µm²)": [2.5]}).to_excel(
+            writer, sheet_name="Per-Cell Data", index=False
+        )
+
+    class _Tab:
+        pass
+
+    per_cell, logs, cols = refresh_workbook_channel_intensities(_Tab(), mask_path, analysis_path)
+    assert logs == []
+    assert cols == []
+    assert per_cell is not None
+    assert list(per_cell.columns) == ["Frame", "Cell_ID", "Area (µm²)"]
+
+    written = pd.read_excel(analysis_path, sheet_name="Per-Cell Data")
+    assert list(written.columns) == ["Frame", "Cell_ID", "Area (µm²)"]
+
+
+def test_integrate_foci_csv_into_workbook_writes_mask_file_and_focus_area(tmp_path: Path) -> None:
+    from bactomate.gui.analysis_workbook import integrate_foci_csv_into_workbook
+
+    mask_path = tmp_path / "sample_mask_filtered.tif"
+    mask_path.write_bytes(b"stub")
+    analysis_path = tmp_path / "sample_analysis.xlsx"
+    with pd.ExcelWriter(analysis_path, engine="openpyxl") as writer:
+        pd.DataFrame({"Frame": [0], "Number of Cells": [1]}).to_excel(
+            writer, sheet_name="Summary", index=False
+        )
+        pd.DataFrame({"Frame": [0], "Cell_ID": [1]}).to_excel(
+            writer, sheet_name="Per-Cell Data", index=False
+        )
+
+    class _Spin:
+        def value(self) -> float:
+            return 0.5
+
+    class _Tab:
+        pixel_size = _Spin()
+
+    channel_rows = [
+        (
+            "GFP",
+            [
+                {
+                    "frame": 0,
+                    "cell_id": 1,
+                    "channel_name": "GFP",
+                    "y": 10,
+                    "x": 20,
+                    "intensity": 100.0,
+                    "size_px": 4,
+                    "mean_intensity": 80.0,
+                    "rel_intensity": 1.2,
+                    "in_cell": True,
+                }
+            ],
+        )
+    ]
+
+    def _fake_refresh(_tab, _mask_path, _analysis_path, *, artifacts=None, frame_shift=0, per_cell=None, write_workbook=True):
+        return per_cell, [], []
+
+    with patch(
+        "bactomate.gui.analysis_workbook.collect_channel_rows_for_mask",
+        return_value=(channel_rows, {}, [], []),
+    ), patch(
+        "bactomate.gui.tabs._analyze_masks_colocalization._persist_workbook_count_updates",
+        return_value=None,
+    ), patch(
+        "bactomate.gui.tabs._analyze_masks_colocalization._infer_frame_shift",
+        return_value=0,
+    ), patch(
+        "bactomate.gui.analysis_workbook.refresh_workbook_channel_intensities",
+        side_effect=_fake_refresh,
+    ):
+        outcome = integrate_foci_csv_into_workbook(_Tab(), mask_path, analysis_path)
+
+    assert outcome.performed is True
+    per_cell = pd.read_excel(analysis_path, sheet_name="Per-Cell Data")
+    assert "Mask file" not in per_cell.columns
+    foci = pd.read_excel(analysis_path, sheet_name="Foci")
+    assert "Mask file" not in foci.columns
+    assert float(foci.loc[0, "Foci Area (µm²)"]) == 1.0

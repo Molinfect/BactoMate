@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 ANALYSIS_SUBDIR = "_analysis"
+ANALYSIS_VIS_SUBDIR = "visualizations"
 
 
 def stem_from_mask_path(mask_path: Path) -> str:
@@ -67,6 +68,11 @@ def base_dir_for_mask(mask_path: Path) -> Path:
 def analysis_dir_from_base(base_dir: Path) -> Path:
     """Directory where analysis Excel files live (base_dir / _analysis)."""
     return base_dir / ANALYSIS_SUBDIR
+
+
+def analysis_visualizations_dir(analysis_dir: Path | str) -> Path:
+    """QC images under ``_analysis/visualizations/`` (filter + analysis panels)."""
+    return Path(analysis_dir) / ANALYSIS_VIS_SUBDIR
 
 
 def find_analysis_excel_for_mask(mask_path: Path, base_dir: Path) -> Path | None:

@@ -803,15 +803,17 @@ def show_linked_mask_selection_dialog(
     title: str = "Select Files",
     message: str = "Select mask files to process:",
     right_header: str = "Linked artifacts (follow mask selection)",
+    left_header: str = "Selected masks",
+    filter_label_text: str = "Select masks containing:",
     show_fi: bool = True,
     initial_filename_filter: str = "",
     return_filename_filter: bool = False,
     default_checked: Optional[Callable[[Path], bool]] = None,
 ) -> Union[list[Path], tuple[Optional[list[Path]], str], tuple[None, None], None]:
     """
-  Show a two-column file picker: masks (left) and linked foci CSV / FI paths (right).
+  Show a two-column file picker: masks (left) and linked analysis inputs (right).
 
-  ``companion_for_mask`` returns ``{"foci": [(csv_path, kind_label), ...], "fi": [path, ...]}``.
+  ``companion_for_mask`` returns lists under keys like ``mask``, ``phase``, ``foci``, and ``fi``.
   Unchecking a mask unchecks and disables its linked rows on the right.
   Falls back to :func:`show_file_selection_dialog` when no companions exist for any mask.
     """
@@ -827,7 +829,9 @@ def show_linked_mask_selection_dialog(
             comp = {}
         foci = comp.get("foci") or []
         fi = comp.get("fi") or [] if show_fi else []
-        if foci or fi:
+        mask_rows = comp.get("mask") or []
+        phase_rows = comp.get("phase") or []
+        if foci or fi or mask_rows or phase_rows:
             has_companions = True
             break
     if not has_companions:
@@ -864,7 +868,7 @@ def show_linked_mask_selection_dialog(
     style_compact_action_button(deselect_all_btn, horizontal_padding=20)
     button_layout.addWidget(select_all_btn)
     button_layout.addWidget(deselect_all_btn)
-    filter_label = QLabel("Select masks containing:")
+    filter_label = QLabel(str(filter_label_text or "Select files containing:"))
     filter_label.setStyleSheet("color: #cccccc;")
     filter_edit = QLineEdit()
     filter_edit.setPlaceholderText("e.g. phase")
@@ -928,11 +932,19 @@ def show_linked_mask_selection_dialog(
             comp = companion_for_mask(mp) or {}
         except Exception:
             comp = {}
+        mask_rows = list(comp.get("mask") or [])
+        phase_rows = list(comp.get("phase") or [])
         foci_rows = list(comp.get("foci") or [])
         fi_rows = list(comp.get("fi") or []) if show_fi else []
-        if not foci_rows and not fi_rows:
+        if not mask_rows and not phase_rows and not foci_rows and not fi_rows:
             continue
         _add_header(mp)
+        for artifact_path, kind in mask_rows:
+            kind_lbl = str(kind or "mask").replace("_", " ")
+            _add_companion(mp, f"  {kind_lbl.title()}: {Path(artifact_path).name}", Path(artifact_path))
+        for artifact_path, kind in phase_rows:
+            kind_lbl = str(kind or "phase").replace("_", " ")
+            _add_companion(mp, f"  {kind_lbl.title()}: {Path(artifact_path).name}", Path(artifact_path))
         for csv_path, kind in foci_rows:
             kind_lbl = str(kind or "csv").replace("_", " ")
             _add_companion(mp, f"  CSV ({kind_lbl}): {Path(csv_path).name}", Path(csv_path))
@@ -942,7 +954,7 @@ def show_linked_mask_selection_dialog(
             else:
                 fi_path, fi_kind = fi_entry, "fi"
             kind_lbl = fi_kind.replace("_", " ")
-            _add_companion(mp, f"  FI ({kind_lbl}): {Path(fi_path).name}", Path(fi_path))
+            _add_companion(mp, f"  TIFF ({kind_lbl}): {Path(fi_path).name}", Path(fi_path))
 
     def _set_companion_row_active(row: QListWidgetItem, active: bool) -> None:
         flags = Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable
@@ -986,7 +998,7 @@ def show_linked_mask_selection_dialog(
     left_lay = QVBoxLayout(left_col)
     left_lay.setContentsMargins(0, 0, 4, 0)
     left_lay.setSpacing(4)
-    left_lbl = QLabel("Mask TIFFs")
+    left_lbl = QLabel(str(left_header or "Selected files"))
     left_lbl.setStyleSheet("color: #c8d0dc; font-weight: 600;")
     left_lay.addWidget(left_lbl)
     left_lay.addWidget(mask_list, 1)

@@ -13,15 +13,39 @@ def preview_view_label(path: Path) -> str:
     """Short label for the filter-preview View dropdown."""
     p = Path(path)
     low = p.name.lower()
-    if "_foci" in low:
-        return f"Foci {short_foci_stack_label(p)}"
+    # Mask stacks must never be mislabeled as FI just because the stem contains "_fi_".
+    if "_masks" in low or "_mask_filtered" in low:
+        return "Cells (mask)"
+    if "_fi_foci" in low or "_foci" in low:
+        return f"Foci: {short_foci_stack_label(p)}"
     if "_fi" in low:
         tag = short_foci_stack_label(p)
         if tag and tag != p.stem:
-            return f"FI {tag}"
-    if "phase" in low or "dic" in low:
-        return "Input image"
+            return f"FI: {tag}"
+        return "FI"
+    if "phase" in low or "dic" in low or "bright" in low:
+        return "Phase / input"
     return p.name
+
+
+def _is_preview_background_tiff(path: Path) -> bool:
+    """True for phase/FI/foci stacks — not mask, overlay, or QC visualization TIFFs."""
+    low = Path(path).name.lower()
+    if not low.endswith((".tif", ".tiff")):
+        return False
+    if any(
+        token in low
+        for token in (
+            "_masks",
+            "_mask_filtered",
+            "_overlay",
+            "_filter_visualization",
+            "_analysis_visualization",
+            "_trajectories",
+        )
+    ):
+        return False
+    return True
 
 
 def discover_channel_stacks_near_mask(mask_path: Path) -> list[Path]:
@@ -40,6 +64,8 @@ def discover_channel_stacks_near_mask(mask_path: Path) -> list[Path]:
             "*_FI_*.tiff",
         ):
             for p in folder.glob(pat):
+                if not _is_preview_background_tiff(p):
+                    continue
                 key = file_identity_key(p)
                 if key in seen:
                     continue
@@ -52,12 +78,12 @@ def enrich_background_paths_for_mask(
     tab: Any, mask_path: Path, paths: list[Path]
 ) -> list[Path]:
     """Merge phase, FI, and foci stacks so the View dropdown lists every previewable channel."""
-    merged: list[Path] = [Path(p) for p in paths]
+    merged: list[Path] = [Path(p) for p in paths if _is_preview_background_tiff(Path(p))]
     seen: set[str] = {file_identity_key(p) for p in merged}
 
     def _stage(p: Path) -> None:
         p = Path(p)
-        if not p.is_file():
+        if not p.is_file() or not _is_preview_background_tiff(p):
             return
         key = file_identity_key(p)
         if key in seen:
@@ -492,7 +518,7 @@ def collect_background_paths_for_mask(tab: Any, mask_path: Path) -> list[Path]:
     raw: list[Path] = []
 
     def _add(p: Path) -> None:
-        if not p.is_file():
+        if not p.is_file() or not _is_preview_background_tiff(p):
             return
         key = file_identity_key(p)
         if key in seen:

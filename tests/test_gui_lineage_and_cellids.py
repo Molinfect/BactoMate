@@ -79,12 +79,10 @@ def test_write_persistent_cellid_masks_creates_output(omnipose_tab, tmp_path: Pa
     stack[1, 4:8, 4:8] = 1
     tifffile.imwrite(mask, stack)
     omnipose_tab._write_persistent_cellid_masks(mask)
-    out = tmp_path / "sample_masks_cellids.tif"
-    assert out.is_file()
-    written = tifffile.imread(str(out))
-    assert written.shape == stack.shape
-    assert int(written.max()) >= 1
+    # Sidecar is no longer written; IDs live in the primary mask.
+    assert not (tmp_path / "sample_masks_cellids.tif").exists()
     primary = tifffile.imread(str(mask))
+    assert primary.shape == stack.shape
     assert int(primary.max()) >= 1
     omnipose_tab.parent_window.log_output.assert_called()
 
@@ -94,7 +92,8 @@ def test_write_persistent_cellid_masks_always_runs(omnipose_tab, tmp_path: Path)
     tifffile.imwrite(mask, np.zeros((2, 8, 8), dtype=np.uint16))
     omnipose_tab.assign_persistent_cellids.setChecked(False)
     omnipose_tab._write_persistent_cellid_masks(mask)
-    assert (tmp_path / "sample_masks_cellids.tif").is_file()
+    assert not (tmp_path / "sample_masks_cellids.tif").exists()
+    assert mask.is_file()
 
 
 @pytest.fixture
@@ -115,9 +114,8 @@ def test_unet_write_persistent_cellid_masks_creates_output(unet_tab, tmp_path: P
     stack[1, 4:8, 4:8] = 1
     tifffile.imwrite(mask, stack)
     unet_tab._write_persistent_cellid_masks(mask)
-    out = tmp_path / "sample_unet_masks_cellids.tif"
-    assert out.is_file()
-    written = tifffile.imread(str(out))
+    assert not (tmp_path / "sample_unet_masks_cellids.tif").exists()
+    written = tifffile.imread(str(mask))
     assert written.shape == stack.shape
     assert int(written.max()) >= 1
     unet_tab.parent_window.log_output.assert_called()
@@ -128,4 +126,5 @@ def test_unet_write_persistent_cellid_masks_always_runs(unet_tab, tmp_path: Path
     tifffile.imwrite(mask, np.zeros((2, 8, 8), dtype=np.uint16))
     unet_tab.assign_persistent_cellids.setChecked(False)
     unet_tab._write_persistent_cellid_masks(mask)
-    assert (tmp_path / "sample_unet_masks_cellids.tif").is_file()
+    assert not (tmp_path / "sample_unet_masks_cellids.tif").exists()
+    assert mask.is_file()

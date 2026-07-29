@@ -1738,7 +1738,7 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                 ps = float(pixel_size) if pixel_size and pixel_size > 0 else 0.108
                 df_foci['area_um2'] = df_foci['size_px'].astype(float).mul(ps ** 2)
                 # Reorder and rename columns for clarity
-                col_map = {'size_px': 'Area (px)', 'area_um2': 'Area (µm²)', 'mean_intensity': 'Mean intensity (focus blob)', 'rel_intensity': 'Rel intensity (peak/frame median)'}
+                col_map = {'size_px': 'Area (px)', 'area_um2': 'Foci Area (µm²)', 'mean_intensity': 'Mean intensity (focus blob)', 'rel_intensity': 'Rel intensity (peak/frame median)'}
                 spatial_rename = {
                     'distance_to_contour_um': 'Distance to contour (µm)',
                     'longitudinal_position': 'Longitudinal position',
@@ -1751,14 +1751,14 @@ def save_to_excel(results, output_path, detailed_data=None, foci_table=None, fi_
                 df_foci = df_foci.rename(columns={k: v for k, v in col_map.items() if k in df_foci.columns})
                 cols = [
                     'foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity',
-                    'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)',
+                    'Area (px)', 'Foci Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)',
                     'Distance to contour (µm)', 'Longitudinal position', 'Radial offset (µm)',
                     'Distance to nearest pole (µm)', 'Membrane proximal', 'Cell orientation (deg)',
                     'in_cell',
                 ]
                 df_foci = df_foci[[c for c in cols if c in df_foci.columns]]
             else:
-                df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell'])
+                df_foci = pd.DataFrame(columns=['foci_id', 'cell_id', 'frame', 'channel_name', 'y', 'x', 'intensity', 'Area (px)', 'Foci Area (µm²)', 'Mean intensity (focus blob)', 'Rel intensity (peak/frame median)', 'in_cell'])
             df_foci.to_excel(writer, sheet_name='Foci', index=False)
 
         try:

@@ -4,6 +4,27 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.8.9 (2026-07-29)
+
+### Segmentation and Detect foci
+
+- **Folder segmentation overview:** with Detect foci on, the file picker shows a two-column overview — selected segmentation inputs on the left, and the matched Spotiflow companion TIFFs (`*_foci*` / `*_fi_foci*`) on the right — so pairings are visible before the batch starts.
+- **Segmentation inputs:** `*_foci*` / `*_fi_foci*` stacks are no longer listed as cell-segmentation inputs (Spotiflow companions only). Plain `*_fi_*` fluorescence remains available for fluor models; phase is still preferred when present.
+
+### Analyze and Filtering
+
+- **Linked analysis inputs:** Analyze folder picker shows the effective mask plus phase/FI/foci companions; feedback text uses the filtered mask when available and counts only real FI tasks (mask TIFFs are no longer treated as FI inputs).
+- **Filtering View labels:** clearer channel labels — Cells (mask), FI: …, Foci: …, Phase / input — and mask stacks are no longer mislabeled as FI.
+- **Foci sheet:** physical focus size column renamed to **Foci Area (µm²)** (`size_px × pixel_size²`).
+
+### Outputs and packaging
+
+- **Leaner analysis artifacts:** no duplicate `*_masks_cellids.tif` (IDs stay in `*_masks.tif`); overlays under `overlays/`; analysis QC under `_analysis/visualizations/`; CSV and combined summary remain off by default.
+- **Session logs:** GUI/session logs go to BactoMate `Logs/` (or Application Support), not next to raw data.
+- **README:** refreshed landing page with banner / overview / demo assets.
+
+---
+
 ## v2.8.8 (2026-07-27)
 
 ### Repo and packaging

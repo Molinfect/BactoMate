@@ -229,8 +229,9 @@ class UNetSegmentTab(QWidget):
         self.assign_persistent_cellids.setChecked(True)
         self.assign_persistent_cellids.setVisible(False)
         cellids_info = create_info_icon(
-            'Link cells across frames after segmentation and write {stem}_cellids.tif beside each mask stack. '
-            'Use that file in Analyze Masks and Tracking so the same cell keeps the same ID through the pipeline.',
+            'After segmentation, cells are linked across frames and persistent Cell IDs are written '
+            'into each mask stack (the file Analyze Masks and Tracking use). '
+            'A separate *_cellids.tif copy is no longer written.',
             self,
         )
         cellids_row.addWidget(self.assign_persistent_cellids)

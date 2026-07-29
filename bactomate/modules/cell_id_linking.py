@@ -129,16 +129,21 @@ def write_persistent_cellid_mask_file(
     phase_path: Path | str | None = None,
     replace_primary_mask: bool = True,
     regenerate_overlay: bool = True,
+    write_cellids_sidecar: bool = False,
     log: LogFn = None,
 ) -> Path | None:
     """
-    Link cells across frames and write ``{stem}_cellids{suffix}`` beside the mask stack.
+    Link cells across frames and update the primary mask stack in place.
 
-    When ``replace_primary_mask`` is True (default), the input mask TIFF is overwritten
-    with persistent Cell IDs so downstream Filtering / Analyze always see linked IDs.
-    Optionally regenerates the segmentation overlay with Cell ID labels.
+    When ``replace_primary_mask`` is True (default), ``*_masks.tif`` is overwritten with
+    persistent Cell IDs so Filtering / Analyze always see linked IDs. A separate
+    ``*_masks_cellids.tif`` sidecar is **not** written by default (it was always a
+    duplicate of the overwritten primary). Pass ``write_cellids_sidecar=True`` only
+    when an explicit copy is needed.
 
-    Returns the cellids output path on success, or ``None`` if skipped or failed.
+    Optionally regenerates the segmentation overlay under ``overlays/``.
+
+    Returns the primary mask path (or sidecar path if written) on success, else ``None``.
     """
     mask_path = Path(mask_path)
     if not mask_path.is_file():
@@ -154,20 +159,26 @@ def write_persistent_cellid_mask_file(
         if masks.ndim == 2:
             masks = masks[np.newaxis, ...]
         masks_with_cellids = link_persistent_cell_ids_raw(masks, pixel_size=ps)
-        out_path = mask_path.parent / f"{mask_path.stem}_cellids{mask_path.suffix}"
-        tifffile.imwrite(str(out_path), masks_with_cellids)
+        out_path = mask_path
+        if write_cellids_sidecar:
+            out_path = mask_path.parent / f"{mask_path.stem}_cellids{mask_path.suffix}"
+            tifffile.imwrite(str(out_path), masks_with_cellids)
         if replace_primary_mask:
             tifffile.imwrite(str(mask_path), masks_with_cellids)
+            out_path = mask_path
+        elif not write_cellids_sidecar:
+            # Nothing to persist — caller asked for neither primary nor sidecar.
+            return None
         if regenerate_overlay:
             from bactomate.modules.pipeline_outputs import regenerate_segmentation_overlay
 
             regenerate_segmentation_overlay(
-                mask_path,
+                mask_path if replace_primary_mask else out_path,
                 phase_path=phase_path,
                 log=log,
             )
         if log is not None:
-            log(f"Persistent Cell IDs: {mask_path.name} → {out_path.name}\n")
+            log(f"Persistent Cell IDs assigned in {mask_path.name}\n")
         return out_path
     except Exception as exc:
         if log is not None:

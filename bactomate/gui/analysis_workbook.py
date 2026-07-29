@@ -873,7 +873,7 @@ def integrate_foci_csv_into_workbook(
                     frame_shift=frame_shift,
                 )
                 outcome.per_cell_columns.extend(per_cell_columns_added)
-            intensity_logs, intensity_cols = refresh_workbook_channel_intensities(
+            per_cell, intensity_logs, intensity_cols = refresh_workbook_channel_intensities(
                 tab,
                 mask_path,
                 analysis_path,
@@ -892,6 +892,18 @@ def integrate_foci_csv_into_workbook(
 
     if foci_table:
         df_foci = pd.DataFrame(foci_table)
+        pixel_size = 0.0
+        try:
+            pixel_size = float(tab.pixel_size.value())
+        except Exception:
+            pixel_size = 0.0
+        if pixel_size <= 0:
+            pixel_size = 0.108
+        if "size_px" in df_foci.columns and "Foci Area (µm²)" not in df_foci.columns:
+            try:
+                df_foci["Foci Area (µm²)"] = df_foci["size_px"].astype(float) * (float(pixel_size) ** 2)
+            except Exception:
+                pass
         col_order = [
             "foci_id",
             "cell_id",
@@ -901,6 +913,7 @@ def integrate_foci_csv_into_workbook(
             "x",
             "intensity",
             "size_px",
+            "Foci Area (µm²)",
             "mean_intensity",
             "rel_intensity",
             "in_cell",
