@@ -93,6 +93,8 @@ def test_merge_phase_and_fi_produces_one_excel():
         tab.folder_phase_per_mask = {}
         tab._merge_fi_channels_into_one_excel()
         assert merged_path.exists()
+        assert not phase_path.exists(), "phase intermediate should be removed after merge"
+        assert not fi_path_excel.exists(), "FI channel intermediate should be removed after merge"
         with pd.ExcelFile(merged_path) as xl:
             assert "Summary" in xl.sheet_names
             assert "Per-Cell Data" in xl.sheet_names
@@ -211,12 +213,69 @@ def test_merge_two_fi_channels_adds_coloc_per_cell_columns():
 
         tab._merge_fi_channels_into_one_excel()
         assert merged_path.exists()
+        assert not phase_path.exists()
+        assert not gfp_path.exists()
+        assert not ms_path.exists()
         per_cell = pd.read_excel(merged_path, sheet_name="Per-Cell Data")
         # Colocalization pair counts are added by the post-analysis colocalization step,
         # not by the FI-channel merge itself.
         row0 = per_cell.iloc[0]
         assert int(row0["num foci [GFP]"]) == 1
         assert int(row0["num foci [mScarlet]"]) == 1
+
+
+def test_merge_deduplicates_equivalent_whole_cell_fi_columns():
+    """Legacy bracket/paren whole-cell FI columns should collapse to one final column."""
+    if not QT_AVAILABLE:
+        if pytest:
+            pytest.skip("PyQt6 or AnalyzeMasksTab not available")
+        return
+    app = QApplication.instance() or QApplication(sys.argv)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        analysis_dir = tmp / "_analysis"
+        analysis_dir.mkdir(parents=True)
+        mask_path = tmp / "m_mask_filtered.tif"
+        mask_path.touch()
+        fi_path = tmp / "m_fi_Alexa647.tif"
+        fi_path.touch()
+
+        summary = pd.DataFrame({"Frame": [1], "Number of Cells": [1]})
+        phase_path = analysis_dir / "m_mask_filtered_analysis_phase.xlsx"
+        with pd.ExcelWriter(phase_path, engine="openpyxl") as w:
+            summary.to_excel(w, sheet_name="Summary", index=False)
+            pd.DataFrame({"Frame": [1], "Cell_ID": [1], "Area (µm²)": [12.0]}).to_excel(
+                w, sheet_name="Per-Cell Data", index=False
+            )
+
+        fi_path_excel = analysis_dir / "m_mask_filtered_analysis_Alexa647.xlsx"
+        fi_df = pd.DataFrame(
+            {
+                "Frame": [1],
+                "Cell_ID": [1],
+                "Mean FI Intensity (whole cell) [Alexa647]": [10.0],
+                "Mean FI Intensity (whole cell) (Alexa647)": [10.0],
+                "Contour FI Intensity": [None],
+            }
+        )
+        with pd.ExcelWriter(fi_path_excel, engine="openpyxl") as w:
+            summary.to_excel(w, sheet_name="Summary", index=False)
+            fi_df.to_excel(w, sheet_name="Per-Cell Data", index=False)
+
+        merged_path = analysis_dir / "m_mask_filtered_analysis.xlsx"
+        tab = AnalyzeTab(parent=None)
+        tab.parent_window = type("Mock", (), {"log_output": lambda self, msg: None})()
+        tab.folder_fi_tasks = [
+            (mask_path, None, phase_path),
+            (mask_path, fi_path, fi_path_excel),
+        ]
+        tab.folder_results = [True, True]
+        tab._merge_fi_channels_into_one_excel()
+
+        per_cell = pd.read_excel(merged_path, sheet_name="Per-Cell Data")
+        same_name_cols = [c for c in per_cell.columns if "Alexa647" in str(c) and "Mean FI Intensity" in str(c)]
+        assert same_name_cols == ["Mean FI Intensity (Alexa647)"]
+        assert "Contour FI Intensity (Alexa647)" not in per_cell.columns
 
 
 def test_coloc_pair_sheet_contains_pair_level_distance_and_ids():

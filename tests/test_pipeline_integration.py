@@ -49,6 +49,8 @@ def test_pipeline_masks_analyze_lineage_join(tmp_path: Path) -> None:
 
     cellid_path = write_persistent_cellid_mask_file(mask_path, pixel_size=0.1)
     assert cellid_path is not None and cellid_path.is_file()
+    assert cellid_path == mask_path
+    assert not (seg / "sample_masks_cellids.tif").exists()
 
     results, all_frame_data, masks_with_cellids, _masks_raw, foci_table = analyze_masks(
         str(cellid_path),

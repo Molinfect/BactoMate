@@ -87,8 +87,19 @@ def test_cell_and_foci_settings_signatures_are_independent() -> None:
 
 
 def test_preview_view_label_shortens_foci_and_phase() -> None:
-    assert preview_view_label(Path("sample_fi_foci_GFP.tif")) == "Foci GFP"
-    assert preview_view_label(Path("sample_Phase60x.tif")) == "Input image"
+    assert preview_view_label(Path("sample_fi_foci_GFP.tif")) == "Foci: GFP"
+    assert preview_view_label(Path("sample_fi_mCherry.tif")) == "FI: mCherry"
+    assert preview_view_label(Path("sample_Phase60x.tif")) == "Phase / input"
+    assert preview_view_label(Path("sample_fi_mCherry_masks.tif")) == "Cells (mask)"
+
+
+def test_is_preview_background_tiff_excludes_masks() -> None:
+    from bactomate.gui.filter_preview_utils import _is_preview_background_tiff
+
+    assert _is_preview_background_tiff(Path("sample_fi_mCherry.tif"))
+    assert _is_preview_background_tiff(Path("sample_fi_foci_GFP.tif"))
+    assert not _is_preview_background_tiff(Path("sample_fi_mCherry_masks.tif"))
+    assert not _is_preview_background_tiff(Path("sample_phase_mask_filtered.tif"))
 
 
 def test_resolve_foci_settings_per_channel() -> None:

@@ -27,7 +27,7 @@ from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_CO
 from bactomate.gui.mask_utils import OMNIPOSE_MASKS_SUBDIR, OMNIPOSE_MASKS_TILED_SUBDIR, ensure_omnipose_masks_has_images, ensure_training_images_nchan, get_training_pairs, infer_training_filters, prepare_omnipose_masks_from_pairs, tile_training_data
 from bactomate.gui.omnipose_utils import eval_uses_affinity_segmentation, omnipose_eval_first_mask, inspect_omnipose_checkpoint, is_affinity_builtin_model, load_bact_phase_affinity_model, load_cellpose_segmentation_model, prepare_user_pretrained_loader_path
 from bactomate.gui.utils import safe_imread
-from bactomate.gui.widgets import ClickableTooltip, ProgressCancelButton, TooltipClickFilter, DragDropGroupBox, PathDropWidget, create_info_icon, show_confirm_dialog, show_file_selection_dialog, show_message_dialog, style_dialog_button_box
+from bactomate.gui.widgets import ClickableTooltip, ProgressCancelButton, TooltipClickFilter, DragDropGroupBox, PathDropWidget, create_info_icon, show_confirm_dialog, show_file_selection_dialog, show_linked_mask_selection_dialog, show_message_dialog, style_dialog_button_box
 from bactomate.gui.workers import WorkerThread
 from bactomate.gui.module_shell import detach_mount_widget
 from bactomate.gui.workspace_scanner import list_tiff_files
@@ -1392,8 +1392,9 @@ class OmniposeSegTab(QWidget):
         self.assign_persistent_cellids.setChecked(True)
         self.assign_persistent_cellids.setVisible(False)
         cellids_info = create_info_icon(
-            'Link cells across frames after segmentation and write {stem}_masks_cellids.tif beside the raw mask stack. '
-            'Use that file in Analyze Masks and Tracking so the same cell keeps the same ID through the pipeline.',
+            'After segmentation, cells are linked across frames and persistent Cell IDs are written '
+            'into {stem}_masks.tif (the file Analyze Masks and Tracking use). '
+            'A separate *_masks_cellids.tif copy is no longer written.',
             self,
         )
         self.detect_foci = QCheckBox('Detect foci')
@@ -1710,6 +1711,22 @@ class OmniposeSegTab(QWidget):
             uniq = [x for x in uniq if str(x) != str(p)]
         return uniq
 
+    def _companions_for_segmentation_input(self, input_image_path: Path) -> dict[str, list]:
+        """Linked TIFFs shown before folder-mode segmentation when Detect foci is enabled."""
+        input_image_path = Path(input_image_path)
+        companion_rows: list[tuple[Path, str]] = []
+        try:
+            for fp in self._find_foci_sources_for_input(input_image_path):
+                companion_rows.append((Path(fp), 'spotiflow companion'))
+        except Exception:
+            pass
+        return {
+            'mask': [(input_image_path, 'segmentation input')],
+            'phase': [],
+            'foci': [],
+            'fi': companion_rows,
+        }
+
     @staticmethod
     def _foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
         """Delegate to shared role-marker + legacy LCP pairing."""
@@ -1735,11 +1752,17 @@ class OmniposeSegTab(QWidget):
 
     @staticmethod
     def _is_segmentation_input_file(path: Path) -> bool:
-        """Return True when a TIFF should be treated as segmentation input."""
+        """Return True when a TIFF should be treated as a cell-segmentation input.
+
+        Allowed: phase/BF stacks and (optionally) plain ``*_fi_*`` fluorescence for
+        fluor-model workflows. Excluded: foci detection stacks (``*_foci*``,
+        ``*_fi_foci*``), masks, overlays, and QC visualizations.
+        """
         name = path.name.lower()
         if '_masks' in name or '_overlay' in name or '_filter_visualization' in name:
             return False
-        if '_foci' in name and '_fi_foci' not in name:
+        # Foci companions are for Spotiflow peak detection, not cell outlines.
+        if '_fi_foci' in name or '_foci' in name:
             return False
         return True
 
@@ -1755,8 +1778,9 @@ class OmniposeSegTab(QWidget):
         Prefer plain segmentation inputs by default.
 
         If at least one TIFF name contains neither ``_fi`` nor ``_foci``, auto-check only
-        those plain files. If none exist, fall back to checking all listed files; this
-        supports fluorescence-only segmentation exports such as bact_fluor_omni.
+        those plain files. If none exist, fall back to checking remaining listed files
+        (typically plain ``*_fi_*`` fluorescence for bact_fluor-style runs — foci stacks
+        are already excluded from the list).
         """
         files = [Path(p) for p in tiff_files]
         has_plain_input = any((not cls._looks_like_fi_or_foci_input(p) for p in files))
@@ -5199,11 +5223,33 @@ class OmniposeSegTab(QWidget):
                 return
             detect_foci_on = bool(getattr(self, 'detect_foci', None) is not None and self.detect_foci.isChecked())
             if detect_foci_on:
-                seg_message = f'Select TIFFs to segment ({len(tiff_files)} listed).\n\nDetect foci is enabled: when plain phase/input TIFFs are present, files whose names contain "_fi" or "_foci" are not pre-selected (they are usually fluorescence/foci companion channels, not segmentation inputs).'
+                seg_message = (
+                    f'Select TIFFs to segment ({len(tiff_files)} listed).\n\n'
+                    'Detect foci is enabled: phase/input TIFFs are preferred. '
+                    'Plain "*_fi_*" fluorescence files stay available for fluor models, '
+                    'but "*_foci*" / "*_fi_foci*" stacks are omitted (Spotiflow companions, not cell inputs). '
+                    'When a phase TIFF is present, "*_fi_*" files are not pre-selected.\n\n'
+                    'The right side previews the segmentation input plus any matching Spotiflow companion TIFFs.'
+                )
             else:
                 seg_message = f'Select files to process (all {len(tiff_files)} files selected by default):'
             default_checked = self._default_segmentation_selection_predicate(tiff_files)
-            result = show_file_selection_dialog(self, tiff_files, title='Select Files for Segmentation', message=seg_message, initial_filename_filter=getattr(self, '_segment_filename_filter', '') or '', return_filename_filter=True, default_checked=default_checked)
+            if detect_foci_on:
+                result = show_linked_mask_selection_dialog(
+                    self,
+                    tiff_files,
+                    companion_for_mask=self._companions_for_segmentation_input,
+                    title='Select Files for Segmentation',
+                    message=seg_message,
+                    left_header='Selected segmentation inputs',
+                    right_header='Segmentation input + Spotiflow companions',
+                    filter_label_text='Select inputs containing:',
+                    initial_filename_filter=getattr(self, '_segment_filename_filter', '') or '',
+                    return_filename_filter=True,
+                    default_checked=default_checked,
+                )
+            else:
+                result = show_file_selection_dialog(self, tiff_files, title='Select Files for Segmentation', message=seg_message, initial_filename_filter=getattr(self, '_segment_filename_filter', '') or '', return_filename_filter=True, default_checked=default_checked)
             (selected_files, filter_used) = result if isinstance(result, tuple) else (result, '')
             if filter_used is not None:
                 self._segment_filename_filter = filter_used or ''

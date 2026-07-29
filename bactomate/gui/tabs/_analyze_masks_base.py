@@ -435,19 +435,20 @@ class AnalyzeMasksBase(QWidget):
                 "Cells (phase + Cell_ID labels) | each foci channel (peaks + foci_id labels)."
             )
         self.export_csv = QCheckBox("Also save CSV")
-        self.export_csv.setChecked(True)
+        self.export_csv.setChecked(False)
         self.export_csv.setToolTip(
             "Also write Summary, Per-Cell Data, and Foci (if present) as CSV files "
-            "next to each *_analysis.xlsx."
+            "next to each *_analysis.xlsx. Off by default to keep _analysis/ tidy."
         )
         self.create_combined_summary: QCheckBox | None = None
         if is_analyze:
             self.create_combined_summary = QCheckBox("Create combined summary")
-            self.create_combined_summary.setChecked(True)
+            self.create_combined_summary.setChecked(False)
             self.create_combined_summary.setToolTip(
-                "After analyzing a folder, combine all analysis exports into one workbook "
-                "({folder}_combined_summary.xlsx in _analysis/): stacked Summary, Per-Cell, "
-                "and Foci sheets plus a wide time-series pivot."
+                "After analyzing a folder with multiple samples, combine all analysis exports "
+                "into one workbook ({folder}_combined_summary.xlsx in _analysis/): stacked "
+                "Summary, Per-Cell, and Foci sheets plus a wide time-series pivot.\n\n"
+                "Off by default — turn on for multi-sample batches."
             )
         self.exclude_border_cb = QCheckBox("Exclude masks at borders")
         self.exclude_border_cb.setChecked(False)
@@ -492,11 +493,11 @@ class AnalyzeMasksBase(QWidget):
             outputs_row.addWidget(
                 create_info_icon(
                     "Also save CSV — writes *_summary.csv, *_per_cell.csv, and *_foci.csv "
-                    "beside each analysis Excel.\n\n"
-                    "Create combined summary — after a folder batch, writes "
+                    "beside each analysis Excel (optional; off by default).\n\n"
+                    "Create combined summary — after a multi-sample folder batch, writes "
                     "{folder}_combined_summary.xlsx in _analysis/ with stacked sheets: "
                     "Combined Summary (long), Combined Summary (wide), Combined Per-Cell Data, "
-                    "and Combined Foci (when foci analysis was run).",
+                    "and Combined Foci (when foci analysis was run). Off by default.",
                     self,
                 ),
                 0,
@@ -730,9 +731,9 @@ class AnalyzeMasksBase(QWidget):
         self.min_length.setValue(0)
         self.detailed.setChecked(True)
         self.create_vis.setChecked(True)
-        self.export_csv.setChecked(True)
+        self.export_csv.setChecked(False)
         if getattr(self, 'create_combined_summary', None) is not None:
-            self.create_combined_summary.setChecked(True)
+            self.create_combined_summary.setChecked(False)
         self.exclude_border_cb.setChecked(False)
 
     # ---- File/folder selection ---------------------------------------
@@ -961,6 +962,9 @@ class AnalyzeMasksBase(QWidget):
                 return out
             for f in directory.iterdir():
                 if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+                    continue
+                low = f.name.lower()
+                if any((token in low for token in ("_masks", "_mask_filtered", "_overlay", "_analysis", "_filter_visualization"))):
                     continue
                 if any(self._matches_fi_name(f.stem, s) for s in stems):
                     out.append(f)

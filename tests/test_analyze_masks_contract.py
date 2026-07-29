@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtWidgets import QWidget
+from unittest.mock import patch
 
 from bactomate.gui.tabs.analyze_masks import AnalyzeMasksTab, AnalyzeTab, FilteringTab
 
@@ -54,3 +55,50 @@ def test_factory_returns_expected_tabs_and_rejects_full_mode(qt_parent):
     assert isinstance(t2, AnalyzeTab)
     with pytest.raises(ValueError):
         AnalyzeMasksTab(parent=qt_parent, mode="full")
+
+
+def test_update_fi_feedback_marks_filtered_mask_and_counts_only_real_fi_tasks(qt_parent):
+    tab = AnalyzeTab(parent=qt_parent)
+    tab.analyze_fi.setChecked(True)
+    tab.fi_mode_match_by_name.setChecked(True)
+    raw_mask = Path("/tmp/sample_fi_mCherry_masks.tif")
+    filtered_mask = Path("/tmp/filtered_masks/sample_fi_mCherry_mask_filtered.tif")
+    fi_path = Path("/tmp/sample_fi_mCherry.tif")
+    foci_path = Path("/tmp/sample_fi_foci_GFP.tif")
+    tab._get_mask_files_for_feedback = lambda: [raw_mask]
+    tab._resolve_effective_mask_for_analysis = lambda _mask: filtered_mask
+    tab._resolve_fi_inputs_for_mask = lambda _mask: [fi_path, foci_path]
+
+    tab._update_fi_feedback()
+
+    text = tab.fi_feedback.toPlainText()
+    assert "1 mask file(s) -> 2 FI analyses".replace("->", "→") in text
+    assert "sample_fi_mCherry_mask_filtered.tif (filtered; from sample_fi_mCherry_masks.tif)" in text
+    assert "sample_fi_mCherry_masks.tif, " not in text
+
+
+def test_companions_for_analysis_mask_uses_filtered_mask_and_drops_mask_tiffs_from_fi_rows(qt_parent, tmp_path: Path):
+    tab = AnalyzeTab(parent=qt_parent)
+    tab.fi_mode_match_by_name.setChecked(True)
+    tab.analyze_fi.setChecked(True)
+    tab.include_foci_from_detection.setChecked(False)
+
+    raw_mask = tmp_path / "sample_fi_mCherry_masks.tif"
+    filtered_dir = tmp_path / "filtered_masks"
+    filtered_dir.mkdir()
+    filtered_mask = filtered_dir / "sample_fi_mCherry_mask_filtered.tif"
+    input_tiff = tmp_path / "sample_fi_mCherry.tif"
+    foci_tiff = tmp_path / "sample_fi_foci_GFP.tif"
+    for path in (raw_mask, filtered_mask, input_tiff, foci_tiff):
+        path.write_bytes(b"stub")
+
+    tab._resolve_effective_mask_for_analysis = lambda _mask: filtered_mask
+    tab._resolve_fi_paths_for_mask = lambda _mask: [input_tiff]
+    tab._resolve_fi_inputs_for_mask = lambda _mask: [input_tiff, foci_tiff]
+
+    with patch("bactomate.gui.tabs._analyze_masks_analyze.resolve_phase_image_for_mask", return_value=input_tiff):
+        companions = tab._companions_for_analysis_mask(raw_mask)
+
+    assert companions["mask"] == [(filtered_mask, "filtered mask used")]
+    assert companions["phase"] == [(input_tiff, "input image")]
+    assert companions["fi"] == [(input_tiff, "fi"), (foci_tiff, "fi foci channel")]

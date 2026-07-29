@@ -16,6 +16,7 @@ from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
 from bactomate.gui.widgets import create_info_icon, show_file_selection_dialog, show_linked_mask_selection_dialog, show_message_dialog
 from bactomate.gui.workers import WorkerThread
 from bactomate.gui.log_config import get_logger
+from bactomate.gui.analysis_visualization import resolve_phase_image_for_mask
 from bactomate.modules.validation import mask_fi_spatial_shape_match, paths_exist
 from bactomate.gui.tabs._analyze_masks_base import AnalyzeMasksBase
 
@@ -85,6 +86,27 @@ class AnalyzeTab(AnalyzeMasksBase):
             self.parent_window.log_output('\n'.join(lines) + '\n')
         if getattr(self.parent_window, '_save_session_log', None):
             self.parent_window._save_session_log()
+
+    def _resolve_effective_mask_for_analysis(self, mask_path: Path) -> Path:
+        """Mask file that Analyze will actually use after the filtered-mask preference is applied."""
+        mask_path = Path(mask_path)
+        if not bool(getattr(self, 'use_filtered_masks_cb', None) and self.use_filtered_masks_cb.isChecked()):
+            return mask_path
+        try:
+            from bactomate.gui.artifact_paths import resolve_filtered_mask_path
+
+            name_lower = mask_path.name.lower()
+            if name_lower.endswith(('_masks.tif', '_masks.tiff')) and '_mask_filtered' not in name_lower:
+                resolved = resolve_filtered_mask_path(mask_path)
+                if resolved is not None and Path(resolved).is_file():
+                    return Path(resolved)
+        except Exception:
+            pass
+        return mask_path
+
+    @staticmethod
+    def _is_filtered_mask_path(path: Path) -> bool:
+        return '_mask_filtered' in Path(path).name.lower()
 
     def _reset_analyze_btn_idle(self) -> None:
         btn = self.primary_action_btn
@@ -217,13 +239,19 @@ class AnalyzeTab(AnalyzeMasksBase):
                     return
                 folder = p if p.is_dir() else p.parent
                 from bactomate.gui.artifact_paths import collect_filtered_mask_files_in_folder
-                n_filt = len(collect_filtered_mask_files_in_folder(p))
+                # Always scan the folder (not a file path) so filtered_masks/ is found.
+                n_filt = len(collect_filtered_mask_files_in_folder(folder))
                 if n_filt:
                     self.filtered_masks_hint.setText(f'({n_filt} filtered mask(s) found)')
                 else:
                     self.filtered_masks_hint.setText('(no filtered masks found; will fall back)')
             except Exception:
                 self.filtered_masks_hint.setText('')
+            # Keep the Analyze FI overview in sync when filtered masks appear/disappear.
+            try:
+                self._update_fi_feedback()
+            except Exception:
+                pass
         self.file_path.textChanged.connect(lambda : _refresh_hint())
         self.use_filtered_masks_cb.toggled.connect(lambda _v: _refresh_hint())
         _refresh_hint()
@@ -316,10 +344,28 @@ class AnalyzeTab(AnalyzeMasksBase):
         return len(seen)
 
     def _companions_for_analysis_mask(self, mask_path: Path) -> dict[str, list]:
-        """Foci CSV and FI paths linked to one mask for the analysis file picker."""
+        """All linked analysis inputs for one mask, using the effective mask if filtered output exists."""
         from bactomate.gui.artifact_paths import infer_pipeline_dir_from_mask, resolve_filtered_foci_csv, resolve_segmentation_foci_csv
-        mask_path = Path(mask_path)
+        raw_mask_path = Path(mask_path)
+        mask_path = self._resolve_effective_mask_for_analysis(raw_mask_path)
         include_foci_csv = bool(getattr(self, 'include_foci_from_detection', None) and self.include_foci_from_detection.isChecked())
+        mask_rows: list[tuple[Path, str]] = []
+        try:
+            kind = 'filtered mask used' if self._is_filtered_mask_path(mask_path) else 'mask used'
+            mask_rows.append((mask_path, kind))
+        except Exception:
+            pass
+        phase_rows: list[tuple[Path, str]] = []
+        try:
+            phase_path = resolve_phase_image_for_mask(mask_path)
+            if phase_path is not None and Path(phase_path).is_file():
+                phase_kind = 'phase image'
+                phase_name = Path(phase_path).name.lower()
+                if not any((token in phase_name for token in ('phase', 'dic', 'bright'))):
+                    phase_kind = 'input image'
+                phase_rows.append((Path(phase_path), phase_kind))
+        except Exception:
+            pass
         foci_rows: list[tuple[Path, str]] = []
         seen_csv: set[str] = set()
         if include_foci_csv:
@@ -347,25 +393,21 @@ class AnalyzeTab(AnalyzeMasksBase):
             if self._is_match_by_name_mode():
                 explicit = [Path(p) for p in self._resolve_fi_paths_for_mask(mask_path) or []]
                 explicit_keys = {str(p.resolve()) for p in explicit}
-                for p in explicit:
-                    fi_rows.append((p, 'fi'))
-                for p in self._resolve_foci_paths_for_mask(mask_path) or []:
-                    pp = Path(p)
-                    key = str(pp.resolve())
-                    if key in explicit_keys:
-                        continue
-                    fi_rows.append((pp, 'fi foci channel'))
+                merged = [Path(p) for p in self._resolve_fi_inputs_for_mask(mask_path) or []]
+                for p in merged:
+                    kind = 'fi' if str(p.resolve()) in explicit_keys else 'fi foci channel'
+                    fi_rows.append((p, kind))
             else:
                 single = getattr(self, '_single_fi_path', None)
                 if single is not None and Path(single).is_file():
                     fi_rows.append((Path(single), 'fi'))
         except Exception:
             pass
-        return {'foci': foci_rows, 'fi': fi_rows}
+        return {'mask': mask_rows, 'phase': phase_rows, 'foci': foci_rows, 'fi': fi_rows}
 
     def _mask_has_analysis_companions(self, mask_path: Path) -> bool:
         comp = self._companions_for_analysis_mask(mask_path)
-        return bool(comp.get('foci') or comp.get('fi'))
+        return bool(comp.get('mask') or comp.get('phase') or comp.get('foci') or comp.get('fi'))
 
     def _refresh_foci_csv_hint(self) -> None:
         """Update foci CSV hint/checkbox and auto-enable Analyze FI when *_fi* TIFFs exist."""
@@ -702,11 +744,22 @@ class AnalyzeTab(AnalyzeMasksBase):
             fi_lines = []
             total = 0
             for mask_path in masks:
-                fi_paths = self._resolve_fi_inputs_for_mask(mask_path)
-                total += len(fi_paths)
-                fi_lines.append(f"• {mask_path.name} → {(', '.join((p.name for p in fi_paths)) if fi_paths else '(no FI found)')}")
-            header = f'{len(masks)} mask file(s) → {total} analyses\n\n'
-            self.fi_feedback.setPlainText(header + 'Analyze FI (mask → FI channel(s)):\n' + '\n'.join(fi_lines))
+                # Prefer filtered sibling even when discovery still listed the raw *_masks.tif.
+                effective_mask = self._resolve_effective_mask_for_analysis(mask_path)
+                fi_paths = self._resolve_fi_inputs_for_mask(effective_mask)
+                total += max(1, len(fi_paths)) if fi_paths else 1
+                is_filtered = self._is_filtered_mask_path(effective_mask)
+                if is_filtered:
+                    mask_label = f'{effective_mask.name} (filtered)'
+                    if Path(mask_path).resolve() != Path(effective_mask).resolve() and not self._is_filtered_mask_path(mask_path):
+                        mask_label = f'{effective_mask.name} (filtered; from {mask_path.name})'
+                else:
+                    mask_label = f'{effective_mask.name} (raw masks)'
+                linked = ', '.join((p.name for p in fi_paths)) if fi_paths else '(no linked FI/foci TIFF found)'
+                fi_lines.append(f'• {mask_label} → {linked}')
+            noun = 'analysis' if total == 1 else 'analyses'
+            header = f'{len(masks)} mask file(s) → {total} FI {noun}\n\n'
+            self.fi_feedback.setPlainText(header + 'Analyze FI (effective mask used → FI inputs analyzed):\n' + '\n'.join(fi_lines))
         elif self._single_fi_path and self._single_fi_path.exists():
             self.fi_feedback.setPlainText(f'FI file: {self._single_fi_path.name} will be used for all masks.')
         else:
@@ -729,21 +782,18 @@ class AnalyzeTab(AnalyzeMasksBase):
             if not mask_files:
                 show_message_dialog(self, 'No Mask Files Found', 'No mask files found in the selected folder.', kind='warning')
                 return
-            include_foci_csv = bool(getattr(self, 'include_foci_from_detection', None) and self.include_foci_from_detection.isChecked())
             show_fi_picker = bool(self.analyze_fi.isChecked())
             use_linked_picker = any((self._mask_has_analysis_companions(m) for m in mask_files))
-            if use_linked_picker and include_foci_csv and show_fi_picker:
-                picker_message = f'Select mask files to analyze ({len(mask_files)} listed). Linked foci CSV and FI TIFFs follow each mask on the right.'
-                right_header = 'Linked foci CSV + FI-channel TIFFs'
-            elif use_linked_picker and include_foci_csv:
-                picker_message = f'Select mask files to analyze ({len(mask_files)} listed). Linked foci CSV files follow each mask on the right.'
-                right_header = 'Linked foci CSV files'
-            elif use_linked_picker and show_fi_picker:
-                picker_message = f'Select mask files to analyze ({len(mask_files)} listed). Linked FI-channel TIFFs follow each mask on the right.'
-                right_header = 'Linked FI-channel TIFFs'
+            if use_linked_picker:
+                picker_message = (
+                    f'Select mask files to analyze ({len(mask_files)} listed). '
+                    'The right side shows the effective mask plus every linked analysis input '
+                    '(phase, FI TIFFs, and foci CSV/TIFF artifacts when found).'
+                )
+                right_header = 'Linked analysis inputs'
             else:
                 picker_message = f'Select mask files to analyze (all {len(mask_files)} files selected by default):'
-                right_header = 'Linked artifacts'
+                right_header = 'Linked analysis inputs'
             if use_linked_picker:
                 selected_files = show_linked_mask_selection_dialog(self, mask_files, companion_for_mask=self._companions_for_analysis_mask, title='Select Mask Files for Analysis', message=picker_message, right_header=right_header, show_fi=show_fi_picker)
             else:
@@ -769,7 +819,7 @@ class AnalyzeTab(AnalyzeMasksBase):
             def _add_task(mask_p: Path, fi_p: Path | None, out_p: Path) -> None:
                 self.folder_fi_tasks.append((mask_p, fi_p, out_p))
             for mask_path in selected_files:
-                mask_path = mask_path.resolve()
+                mask_path = self._resolve_effective_mask_for_analysis(mask_path.resolve())
                 base_dir = base_dir_for_mask(mask_path)
                 stem = stem_from_mask_path(mask_path)
                 analysis_dir = analysis_dir_from_base(base_dir)
@@ -808,17 +858,7 @@ class AnalyzeTab(AnalyzeMasksBase):
             self._process_next_folder_file()
             return
         input_file = Path(self.file_path.text()).resolve()
-        if getattr(self, 'use_filtered_masks_cb', None) is not None and self.use_filtered_masks_cb.isChecked():
-            try:
-                from bactomate.gui.artifact_paths import resolve_filtered_mask_path
-                name_lower = input_file.name.lower()
-                if name_lower.endswith(('_masks.tif', '_masks.tiff')) and '_mask_filtered' not in name_lower:
-                    resolved = resolve_filtered_mask_path(input_file)
-                    if resolved is not None:
-                        input_file = resolved
-            except Exception:
-                pass
-        mask_path = input_file
+        mask_path = self._resolve_effective_mask_for_analysis(input_file)
         base_dir = base_dir_for_mask(mask_path)
         stem = stem_from_mask_path(mask_path)
         analysis_dir = analysis_dir_from_base(base_dir)
@@ -861,6 +901,12 @@ class AnalyzeTab(AnalyzeMasksBase):
         try:
             import bactomate
             manifest['BactoMate version'] = str(getattr(bactomate, '__version__', ''))
+        except Exception:
+            pass
+        try:
+            phase_path = resolve_phase_image_for_mask(Path(mask_path))
+            if phase_path is not None and Path(phase_path).is_file():
+                manifest['Phase image'] = str(Path(phase_path).resolve())
         except Exception:
             pass
         fi_inputs: list[Path] = []
@@ -984,33 +1030,59 @@ class AnalyzeTab(AnalyzeMasksBase):
         try:
             from bactomate.gui.analysis_workbook import write_master_per_cell_summary
             analysis_dir = analysis_dir_from_base(base_dir_for_mask(mask_path))
+            # Skip when combined summary is on (it already stacks Per-Cell) or for a single workbook.
+            write_combined = bool(
+                getattr(self, 'create_combined_summary', None) is not None
+                and self.create_combined_summary.isChecked()
+            )
+            if not write_combined:
+                from bactomate.gui.analysis_workbook import discover_analysis_workbooks
 
-            def _master_log(msg: str) -> None:
-                if hasattr(self.parent_window, 'log_output'):
-                    self.parent_window.log_output(msg)
-            write_master_per_cell_summary(analysis_dir, log_callback=_master_log)
+                n_books = len(discover_analysis_workbooks(analysis_dir) or [])
+                if n_books >= 2:
+
+                    def _master_log(msg: str) -> None:
+                        if hasattr(self.parent_window, 'log_output'):
+                            self.parent_window.log_output(msg)
+
+                    write_master_per_cell_summary(analysis_dir, log_callback=_master_log)
         except Exception:
             get_logger().debug('Master per-cell summary write failed', exc_info=True)
 
     def _write_combined_analysis_visualization(self, *, mask_path: Path, analysis_path: Path, prefer_filtered: bool) -> None:
         """One horizontal multi-panel TIFF: Cells (phase) | each foci channel."""
+        from bactomate.gui.analysis_paths import analysis_visualizations_dir
         from bactomate.gui.analysis_visualization import write_combined_analysis_visualization
         mask_path = Path(mask_path)
         analysis_path = Path(analysis_path)
         base_dir = base_dir_for_mask(mask_path)
         analysis_dir = analysis_dir_from_base(base_dir)
-        analysis_dir.mkdir(parents=True, exist_ok=True)
-        out_vis = analysis_dir / f'{mask_path.stem}_analysis_visualization.tif'
-        for legacy in (analysis_dir / f'{mask_path.stem}_filter_visualization.tif', *analysis_dir.glob(f'{mask_path.stem}_foci_visualization*.tif')):
-            try:
-                if legacy.is_file():
-                    legacy.unlink()
-            except Exception:
-                pass
+        vis_dir = analysis_visualizations_dir(analysis_dir)
+        vis_dir.mkdir(parents=True, exist_ok=True)
+        out_vis = vis_dir / f'{mask_path.stem}_analysis_visualization.tif'
+        # Drop legacy / per-channel filter viz left in _analysis/ or visualizations/.
+        cleanup_dirs = (analysis_dir, vis_dir)
+        stem = mask_path.stem
+        patterns = (
+            f'{stem}_filter_visualization*',
+            f'{stem}_foci_visualization*',
+            f'{stem}_analysis_*_filter_visualization*',
+            f'{stem}_analysis_*_fi_contours_visualization*',
+        )
+        for folder in cleanup_dirs:
+            if not folder.is_dir():
+                continue
+            for pattern in patterns:
+                for legacy in folder.glob(pattern):
+                    try:
+                        if legacy.is_file():
+                            legacy.unlink()
+                    except Exception:
+                        pass
         ok = write_combined_analysis_visualization(self, mask_path=mask_path, output_path=out_vis, analysis_workbook=analysis_path if analysis_path.is_file() else None, prefer_filtered=prefer_filtered)
         if hasattr(self.parent_window, 'log_output'):
             if ok:
-                self.parent_window.log_output(f'[Analyze] Wrote analysis visualization: {out_vis.name}\n')
+                self.parent_window.log_output(f'[Analyze] Wrote analysis visualization: visualizations/{out_vis.name}\n')
             else:
                 self.parent_window.log_output(f'[Analyze] Could not write analysis visualization ({out_vis.name}). Check the session log for details.\n')
 
@@ -1229,7 +1301,9 @@ class AnalyzeTab(AnalyzeMasksBase):
             args += ['--detailed']
         if getattr(self, 'export_csv', None) is not None and self.export_csv.isChecked():
             args += ['--export-csv']
-        args += ['--visualization']
+        # Analysis QC image is written once after merge (_write_combined_analysis_visualization).
+        # Skip per-task filter/FI-contour TIFFs (they duplicate that panel and leave channel leftovers).
+        args += ['--no-visualization']
         if getattr(self, 'analyze_fi', None) is not None and self.analyze_fi.isChecked() and (fi_path is not None):
             args += ['--fi-image', str(fi_path)]
             if getattr(self, 'analyze_fi_contour', None) is not None and self.analyze_fi_contour.isChecked():
@@ -1453,6 +1527,102 @@ class AnalyzeTab(AnalyzeMasksBase):
                     if not colmap:
                         return (df, {})
                     return (df.rename(columns=colmap), colmap)
+
+                def _collapse_redundant_fi_columns(df: 'pd.DataFrame') -> 'pd.DataFrame':
+                    """Drop duplicate FI columns that only differ by old bracket/parenthesis naming."""
+                    if df is None or df.empty:
+                        return df
+                    canonical_groups: dict[str, list[int]] = {}
+
+                    def _canonical_key(name: str) -> str:
+                        s = str(name or '').strip()
+                        s = re.sub(r'\s+', ' ', s)
+                        s = re.sub(r'\.\d+$', '', s)
+                        if '[' in s and s.endswith(']'):
+                            i = s.rfind('[')
+                            base = s[:i].rstrip()
+                            tag = s[i + 1:-1].strip()
+                            if tag:
+                                s = f'{base} ({tag})'
+                        s = s.replace('Mean FI Intensity (whole cell)', 'Mean FI Intensity')
+                        return s
+
+                    cols = list(df.columns)
+                    for idx, col in enumerate(cols):
+                        if not isinstance(col, str):
+                            continue
+                        key = _canonical_key(col)
+                        canonical_groups.setdefault(key, []).append(idx)
+
+                    rename_by_index: dict[int, str] = {}
+                    keep_indices: list[int] = []
+                    for idx, col in enumerate(cols):
+                        key = _canonical_key(col) if isinstance(col, str) else str(col)
+                        positions = canonical_groups.get(key, [])
+                        if len(positions) < 2:
+                            if isinstance(col, str) and col != key:
+                                rename_by_index[idx] = key
+                            keep_indices.append(idx)
+                            continue
+                        if positions[0] != idx:
+                            continue
+                        preferred_idx = next((i for i in positions if cols[i] == key), positions[0])
+                        keep_indices.append(preferred_idx)
+                        if isinstance(cols[preferred_idx], str) and cols[preferred_idx] != key:
+                            rename_by_index[preferred_idx] = key
+
+                    # Rebuild by position so duplicate labels do not re-expand on selection.
+                    df = df.iloc[:, keep_indices].copy()
+                    new_cols: list[object] = []
+                    original_keep_cols = [cols[i] for i in keep_indices]
+                    for out_idx, col in enumerate(original_keep_cols):
+                        src_idx = keep_indices[out_idx]
+                        new_cols.append(rename_by_index.get(src_idx, col))
+                    df.columns = new_cols
+
+                    # One more pass: if any duplicate names remain, keep the first non-empty copy by position.
+                    final_keep: list[int] = []
+                    seen_by_name: dict[str, int] = {}
+                    for idx, col in enumerate(list(df.columns)):
+                        name = str(col)
+                        prev_idx = seen_by_name.get(name)
+                        if prev_idx is None:
+                            seen_by_name[name] = idx
+                            final_keep.append(idx)
+                            continue
+                        existing = df.iloc[:, prev_idx]
+                        current = df.iloc[:, idx]
+                        same_values = existing.equals(current) or existing.fillna('__NA__').equals(current.fillna('__NA__'))
+                        current_empty = not bool(current.notna().any())
+                        if not same_values and not current_empty:
+                            final_keep.append(idx)
+                    if len(final_keep) != len(df.columns):
+                        df = df.iloc[:, final_keep].copy()
+                    return df
+
+                def _drop_all_empty_optional_columns(df: 'pd.DataFrame') -> 'pd.DataFrame':
+                    """Prune columns that were added for disabled/unused features and stayed fully empty."""
+                    if df is None or df.empty:
+                        return df
+                    keep: list[str] = []
+                    always_keep_prefixes = ('Frame', 'Cell_ID', 'Cell Label', 'Area ', 'Length ', 'Width ', 'Aspect Ratio', 'Eccentricity', 'Solidity', 'Centroid ', 'Orientation ', 'Perimeter ', 'Circularity')
+                    for col in list(df.columns):
+                        name = str(col)
+                        if any(name.startswith(prefix) for prefix in always_keep_prefixes):
+                            keep.append(col)
+                            continue
+                        series = df[col]
+                        if hasattr(series, "columns"):
+                            series = series.iloc[:, 0]
+                        has_value = bool(series.notna().any())
+                        if not has_value:
+                            try:
+                                has_value = any(str(v).strip() not in ('', 'nan', 'None') for v in series.tolist())
+                            except Exception:
+                                has_value = False
+                        if has_value:
+                            keep.append(col)
+                    return df[keep]
                 if phase_entries:
                     phase_path = phase_entries[0][0]
                     try:
@@ -1525,6 +1695,7 @@ class AnalyzeTab(AnalyzeMasksBase):
                 except Exception:
                     pass
                 if merged is not None and (not merged.empty):
+                    merged = _collapse_redundant_fi_columns(merged)
                     simple_foci_cols: set[str] = set()
                     for col in list(merged.columns):
                         if not isinstance(col, str):
@@ -1554,6 +1725,7 @@ class AnalyzeTab(AnalyzeMasksBase):
                     drop_cols = [c for c in list(merged.columns) if isinstance(c, str) and _is_foci_clutter_col(c)]
                     if drop_cols:
                         merged = merged.drop(columns=drop_cols, errors='ignore')
+                    merged = _drop_all_empty_optional_columns(merged)
                 foci_by_channel: dict[str, list[pd.DataFrame]] = {}
                 for (excel_path, _fp, ch_lbl) in fi_entries:
                     try:
@@ -1606,9 +1778,56 @@ class AnalyzeTab(AnalyzeMasksBase):
                             self.parent_window.log_output('[Analyze/Merge] Existing Colocalization sheets were removed by merge rewrite; they should be re-added by post-analysis colocalization step.\n')
                 except Exception:
                     pass
+                # Drop per-channel intermediate Excel/CSV/viz now that the merged workbook exists.
+                self._cleanup_merged_fi_intermediates(
+                    merged_path=merged_path,
+                    intermediates=[p for (p, _fp, _lbl) in group if Path(p).resolve() != merged_path.resolve()],
+                )
             except Exception:
                 get_logger().exception('Merge FI channels failed')
                 continue
+
+    def _cleanup_merged_fi_intermediates(self, *, merged_path: Path, intermediates: list[Path]) -> None:
+        """Remove per-channel analysis leftovers after a successful FI merge."""
+        merged_path = Path(merged_path)
+        removed: list[str] = []
+        for raw in intermediates:
+            excel = Path(raw)
+            if not excel.is_file():
+                continue
+            if excel.resolve() == merged_path.resolve():
+                continue
+            stem = excel.stem  # e.g. sample_analysis_Alexa647
+            siblings = [
+                excel,
+                excel.with_suffix('.csv'),
+                excel.parent / f'{stem}_summary.csv',
+                excel.parent / f'{stem}_per_cell.csv',
+                excel.parent / f'{stem}_foci.csv',
+            ]
+            # Viz may live in _analysis/ or _analysis/visualizations/
+            vis_dirs = [excel.parent]
+            vis_sub = excel.parent / 'visualizations'
+            if vis_sub.is_dir():
+                vis_dirs.append(vis_sub)
+            for folder in vis_dirs:
+                siblings.extend([
+                    folder / f'{stem}_filter_visualization.tif',
+                    folder / f'{stem}_filter_visualization.png',
+                    folder / f'{stem}_fi_contours_visualization.tif',
+                    folder / f'{stem}_fi_contours_visualization.png',
+                ])
+            for path in siblings:
+                try:
+                    if path.is_file():
+                        path.unlink()
+                        removed.append(path.name)
+                except Exception:
+                    pass
+        if removed and hasattr(self.parent_window, 'log_output'):
+            self.parent_window.log_output(
+                f'[Analyze/Merge] Removed {len(removed)} intermediate file(s) after merge into {merged_path.name}.\n'
+            )
 
     def get_session_params(self) -> dict[str, Any]:
         d = super().get_session_params()

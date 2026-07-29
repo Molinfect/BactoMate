@@ -873,8 +873,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     from bactomate.modules.image_stack_utils import coerce_stack_to_tyx
     sources: list[PreviewSource] = []
     if not bg_paths:
-        image_combo.addItem('Mask only', ('none', -1))
-        sources.append(PreviewSource(key=('none', -1), label='Mask only', kind='image', resets_lut=True))
+        image_combo.addItem('Cells (mask only)', ('none', -1))
+        sources.append(PreviewSource(key=('none', -1), label='Cells (mask only)', kind='image', resets_lut=True))
     for (i, fp) in enumerate(bg_paths):
         view_lbl = preview_view_label(Path(fp))
         image_combo.addItem(view_lbl, ('file', i))
@@ -1316,7 +1316,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     foci_overlay_available = len(foci_overlay_sources) > 0
     _foci_ch_overlay_labels: tuple[str, ...] = ()
     if foci_overlay_available:
-        _foci_ch_overlay_labels = tuple((f'Foci {short_foci_stack_label(fp)}' for fp in foci_overlay_sources))
+        _foci_ch_overlay_labels = tuple((f'Foci: {short_foci_stack_label(fp)}' for fp in foci_overlay_sources))
     nav_ctrl.set_spec(PreviewNavSpec(frame_count=int(max(1, num_frames)), image_sources=sources, show_image=True, show_channel=False, show_z=False, show_cell_overlay_toggle=True, show_foci_overlay_toggle=bool(foci_overlay_available and (not _foci_ch_overlay_labels)), cell_overlay_default=True, foci_overlay_available=bool(foci_overlay_available), foci_overlay_default=bool(foci_overlay_available), foci_channel_overlay_labels=_foci_ch_overlay_labels, foci_channel_overlay_defaults=tuple((True for _ in _foci_ch_overlay_labels)), debounce_ms=400), emit_init=False)
     try:
         nav_ctrl.set_state(PreviewNavState(source_key=image_combo.currentData(), frame_idx=int(frame_spin.value()) - 1), emit=False)

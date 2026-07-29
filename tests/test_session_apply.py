@@ -35,6 +35,33 @@ def test_build_analyze_cell_areas_args_includes_export_csv_when_checked():
         fi_path=None,
     )
     assert "--export-csv" in args
+    assert "--no-visualization" in args
+
+
+def test_build_analysis_run_manifest_records_phase_image(tmp_path: Path):
+    if not QT_AVAILABLE:
+        if pytest:
+            pytest.skip("PyQt6 or AnalyzeMasksTab not available")
+        return
+    app = QApplication.instance() or QApplication(sys.argv)
+    tab = AnalyzeTab(parent=None)
+    tab.parent_window = None
+    base = tmp_path / "Tif_files"
+    base.mkdir()
+    phase = base / "sample_phase.tif"
+    phase.write_bytes(b"x")
+    seg = base / "_segmentation_demo"
+    seg.mkdir()
+    mask = seg / "sample_phase_masks.tif"
+    mask.write_bytes(b"x")
+    out = base / "_analysis" / "sample_phase_analysis.xlsx"
+
+    manifest = tab._build_analysis_run_manifest(
+        mask_path=mask,
+        fi_path=None,
+        out_path=out,
+    )
+    assert manifest["Phase image"].endswith("sample_phase.tif")
 
 
 def test_analyze_masks_set_then_get_session_params_round_trip():
