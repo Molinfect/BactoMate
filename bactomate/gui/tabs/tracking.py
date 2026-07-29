@@ -2694,7 +2694,7 @@ class TrackingTab(QWidget):
         settings_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay = QVBoxLayout(settings_host)
         settings_lay.setContentsMargins(0, 0, 0, 0)
-        settings_lay.setSpacing(3)
+        settings_lay.setSpacing(10)
         tracking_params_section = CollapsibleSection('Tracking parameters', self._tracking_params_panel, parent=settings_host, expanded=False, compact=True)
         tracking_params_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay.addWidget(tracking_params_section)

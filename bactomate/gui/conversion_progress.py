@@ -78,4 +78,5 @@ class ConversionProgressDialog(QDialog):
         if delay_ms <= 0:
             self.close()
             return
-        QTimer.singleShot(int(delay_ms), self, self.close)
+        # PyQt6 overload is singleShot(msec, slot) — not (msec, context, slot).
+        QTimer.singleShot(int(delay_ms), self.close)
