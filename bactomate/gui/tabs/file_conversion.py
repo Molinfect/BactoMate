@@ -582,6 +582,15 @@ class ND2ConversionTab(QWidget):
         n = min(self.max_frames.value(), num_time)
         return (0, n)
 
+    def _conversion_frame_stem_suffix(self, frame_start_0based: int) -> str:
+        """``_fN`` only for explicit Single frame only; never for natural T=1 full export."""
+        from bactomate.modules.conversion_channel_names import conversion_frame_stem_suffix
+
+        return conversion_frame_stem_suffix(
+            frame_start_0based=frame_start_0based,
+            explicit_single_frame=(self.frame_extract_mode.currentIndex() == 1),
+        )
+
     def select_file(self):
         start_dir = getattr(self.parent_window, 'get_last_dir_for_tab', lambda _: '')(LAST_DIR_ND2)
         (file_path, _) = QFileDialog.getOpenFileName(self, 'Select Microscopy File', start_dir, 'Microscopy Files (*.nd2 *.ND2 *.lif *.LIF *.czi *.CZI *.tif *.tiff *.TIF *.TIFF);;ND2 Files (*.nd2 *.ND2);;LIF Files (*.lif *.LIF);;CZI Files (*.czi *.CZI);;TIFF Files (*.tif *.tiff *.TIF *.TIFF);;All Files (*)')
@@ -3427,7 +3436,7 @@ class ND2ConversionTab(QWidget):
                     except Exception:
                         pass
                     (frame_start, frame_end) = self._get_frame_range(num_time_for_range)
-                    frame_suffix = f'_f{frame_start + 1}' if frame_end - frame_start == 1 else ''
+                    frame_suffix = self._conversion_frame_stem_suffix(frame_start)
                     data = None
                     try:
                         data = bioio_load_data(Path(lif_file), frame_start=frame_start, frame_end=frame_end, use_first_z_only=True)
@@ -3526,7 +3535,7 @@ class ND2ConversionTab(QWidget):
                                 indices[t_idx] = slice(frame_start, min(frame_end, num_time))
                                 all_frames = all_frames[tuple(indices)]
                             num_time = frame_end - frame_start
-                            stem_used = lif_file.stem + (f'_f{frame_start + 1}' if num_time == 1 else '')
+                            stem_used = lif_file.stem + self._conversion_frame_stem_suffix(frame_start)
                             if num_z > 1 and 'Z' in dims_str:
                                 z_idx = dims_str.index('Z')
                                 if z_idx < len(all_frames.shape):
@@ -3685,7 +3694,7 @@ class ND2ConversionTab(QWidget):
                         if cropped is None:
                             continue
                         all_frames = cropped
-                        stem_used_rl = lif_file.stem + (f'_f{frame_start_rl + 1}' if num_time == 1 else '')
+                        stem_used_rl = lif_file.stem + self._conversion_frame_stem_suffix(frame_start_rl)
                         output_file = output_base / f'{stem_used_rl}.tif'
                         if separate_channels and n_ch > 1:
                             channel_names = self._get_effective_channel_names(n_ch)
@@ -3838,7 +3847,7 @@ class ND2ConversionTab(QWidget):
             from bactomate.modules.tiff_metadata import build_metadata_dict, read_calibration_from_path
             from bactomate.modules.conversion_channel_names import split_channel_output_name
 
-            stem_suffix_tiff = f'_f{frame_start_tiff + 1}' if n_t == 1 else ''
+            stem_suffix_tiff = self._conversion_frame_stem_suffix(frame_start_tiff)
             stem_used_tiff = file_path.stem + stem_suffix_tiff
             (file_ps, file_tp) = read_calibration_from_path(file_path)
             split_ps = self.file_info.get('pixel_size') if self.file_info and self.file_info.get('pixel_size') else file_ps
@@ -3930,7 +3939,7 @@ class ND2ConversionTab(QWidget):
                     except Exception:
                         pass
                     (frame_start_czi, frame_end_czi) = self._get_frame_range(num_time_czi)
-                    frame_suffix_czi = f'_f{frame_start_czi + 1}' if frame_end_czi - frame_start_czi == 1 else ''
+                    frame_suffix_czi = self._conversion_frame_stem_suffix(frame_start_czi)
                     data = bioio_load_data(Path(czi_file), frame_start=frame_start_czi, frame_end=frame_end_czi, use_first_z_only=not max_z_projection, max_z_projection=max_z_projection)
                     if data is not None and data.size > 0:
                         all_frames = np.ascontiguousarray(data)

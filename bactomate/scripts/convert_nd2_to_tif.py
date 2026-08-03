@@ -398,15 +398,24 @@ def convert_nd2_to_tif(
                     print(f"  Channels: {', '.join(channel_names)}")
                 
                 # Determine number of frames to extract: single frame (1-based) or first N
+                from bactomate.modules.conversion_channel_names import conversion_frame_stem_suffix
+
                 if single_frame is not None:
                     frame_idx_0 = max(0, min(single_frame - 1, num_time - 1))
                     frames_to_extract = 1
-                    frame_suffix = f"_f{single_frame}"  # e.g. _f50 for filename
+                    # Keep suffix based on requested 1-based frame (same as historical ND2 naming).
+                    frame_suffix = conversion_frame_stem_suffix(
+                        frame_start_0based=max(0, int(single_frame) - 1),
+                        explicit_single_frame=True,
+                    )
                     print(f"  Extracting single frame only: {single_frame} (1-based)")
                 else:
                     frame_idx_0 = 0
                     frames_to_extract = min(max_frames, num_time)
-                    frame_suffix = ""
+                    frame_suffix = conversion_frame_stem_suffix(
+                        frame_start_0based=0,
+                        explicit_single_frame=False,
+                    )
                     print(f"  Extracting frames 1-{frames_to_extract}")
                 
                 # Fallback: extract pixel size from ND2 metadata if still not set

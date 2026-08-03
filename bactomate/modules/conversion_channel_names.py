@@ -30,6 +30,18 @@ def sanitize_channel_name_for_filename(name: str) -> str:
     return safe
 
 
+def conversion_frame_stem_suffix(*, frame_start_0based: int, explicit_single_frame: bool) -> str:
+    """
+    Stem suffix for single-frame extracts (``_fN``, 1-based).
+
+    Only explicit \"Single frame only\" mode gets a suffix. Naturally single-timepoint
+    files exported as a full range get no ``_fN`` (aligned across ND2 / LIF / CZI / TIFF).
+    """
+    if not explicit_single_frame:
+        return ""
+    return f"_f{max(1, int(frame_start_0based) + 1)}"
+
+
 def channel_name_looks_like_phase(name: str) -> bool:
     """Best-effort: true when a free-form channel label likely denotes BF/phase/DIA."""
     raw = (name or "").strip().lower()
