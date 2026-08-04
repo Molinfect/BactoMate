@@ -4,6 +4,18 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.2 (2026-08-04)
+
+### Tracking
+
+- **Preview display resolution:** tracking preview overlay now uses the same 2048px cap and scipy zoom downsampling as Analyze filter preview (replacing the old 384px stride), so lineage/tracking previews stay sharp while Trackastra still runs at full resolution.
+
+### Conversion
+
+- **`_fN` stem suffix:** only explicit **Single frame only** mode adds `_fN` to output stems; naturally single-timepoint exports no longer get a spurious `_f1`, consistent across ND2, LIF, CZI, and TIFF.
+
+---
+
 ## v2.9.1 (2026-08-04)
 
 ### Bug fixes
