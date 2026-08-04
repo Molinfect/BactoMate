@@ -10,12 +10,48 @@ permissions:
   contents: write
 
 # GitHub rejects any single release asset >= 2 GiB (2147483648 bytes).
+# Upload assets directly to the GitHub Release (not Actions artifacts) so
+# large DMG/ZIP builds do not exhaust Actions artifact storage quota.
 env:
   GITHUB_ASSET_MAX_BYTES: 2147000000
 
 jobs:
+  prepare-release:
+    name: Prepare draft release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          append_body: true
+          body: |
+            ## Install
+
+            | Platform | Download | Steps |
+            |----------|----------|-------|
+            | **Windows** | `BactoMate-win64.zip` | Extract under your user folder → run `BactoMate.bat` |
+            | **macOS** | `BactoMate.dmg` (when attached) | Open DMG → drag to Applications |
+
+            ### macOS (when no DMG is attached)
+
+            ```bash
+            git clone https://github.com/Molinfect/BactoMate.git
+            cd BactoMate
+            git checkout ${{ github.ref_name }}
+            ./setup/macos/install.sh
+            ./launch_gui.sh
+            ```
+
+            Or build a local DMG on a Mac: `./build/macos/build_app_bundle.sh` then `./build/macos/create_dmg.sh`.
+
+            **Developers:** see [README](https://github.com/Molinfect/BactoMate/blob/main/README.md) and [`setup/`](https://github.com/Molinfect/BactoMate/tree/main/setup).
+
   build-macos:
     name: Build macOS DMG
+    needs: [prepare-release]
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -42,15 +78,24 @@ jobs:
           ./build/macos/create_dmg.sh
           ls -lh dist/BactoMate.dmg
 
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-dmg
-          path: dist/BactoMate.dmg
-          if-no-files-found: error
+      - name: Upload DMG to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DMG="dist/BactoMate.dmg"
+          test -f "$DMG"
+          SIZE=$(stat -f%z "$DMG")
+          echo "macOS DMG: $SIZE bytes"
+          if [ "$SIZE" -ge "${GITHUB_ASSET_MAX_BYTES}" ]; then
+            echo "::warning::Skipping DMG upload — exceeds GitHub's 2 GiB per-file limit."
+            exit 0
+          fi
+          gh release upload "${{ github.ref_name }}" "$DMG" --clobber
 
   build-windows:
     name: Build Windows zip
+    needs: [prepare-release]
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -78,104 +123,31 @@ jobs:
           venv\Scripts\python.exe build\windows\build_windows_bundle.py
           tar -acf dist\BactoMate-win64.zip -C dist\BactoMate .
 
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-zip
-          path: dist/BactoMate-win64.zip
-          if-no-files-found: error
+      - name: Upload Windows zip to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ZIP="dist/BactoMate-win64.zip"
+          test -f "$ZIP"
+          SIZE=$(stat -c%s "$ZIP")
+          echo "Windows zip: $SIZE bytes"
+          if [ "$SIZE" -ge "${GITHUB_ASSET_MAX_BYTES}" ]; then
+            echo "::error::Windows zip exceeds GitHub's 2 GiB asset limit."
+            exit 1
+          fi
+          gh release upload "${{ github.ref_name }}" "$ZIP" --clobber
 
-  release:
+  publish-release:
     name: Publish GitHub release
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download macOS DMG
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-dmg
-          path: release-assets
-
-      - name: Download Windows zip
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-zip
-          path: release-assets
-
-      - name: Prepare uploadable assets
-        id: assets
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          MAX="${GITHUB_ASSET_MAX_BYTES}"
-          mkdir -p release-upload
-          UPLOAD_LIST=""
-          DMG_SKIPPED="false"
-
-          if [ -f release-assets/BactoMate-win64.zip ]; then
-            WIN_SIZE=$(stat -c%s release-assets/BactoMate-win64.zip)
-            echo "Windows zip: $WIN_SIZE bytes"
-            if [ "$WIN_SIZE" -ge "$MAX" ]; then
-              echo "::error::Windows zip exceeds GitHub's 2 GiB asset limit."
-              exit 1
-            fi
-            cp release-assets/BactoMate-win64.zip release-upload/
-            UPLOAD_LIST="release-upload/BactoMate-win64.zip"
-          fi
-
-          if [ -f release-assets/BactoMate.dmg ]; then
-            DMG_SIZE=$(stat -c%s release-assets/BactoMate.dmg)
-            DMG_MB=$((DMG_SIZE / 1024 / 1024))
-            echo "macOS DMG: $DMG_SIZE bytes (${DMG_MB} MiB)"
-            if [ "$DMG_SIZE" -lt "$MAX" ]; then
-              cp release-assets/BactoMate.dmg release-upload/
-              UPLOAD_LIST="${UPLOAD_LIST} release-upload/BactoMate.dmg"
-            else
-              echo "::warning::Skipping DMG upload (${DMG_MB} MiB) — GitHub limit is 2048 MiB per file."
-              DMG_SKIPPED="true"
-            fi
-          fi
-
-          if [ -z "$(find release-upload -type f | head -1)" ]; then
-            echo "::error::No release assets under GitHub size limit."
-            exit 1
-          fi
-
-          echo "dmg_skipped=$DMG_SKIPPED" >> "$GITHUB_OUTPUT"
-          echo "upload_files<<EOF" >> "$GITHUB_OUTPUT"
-          find release-upload -type f | sort >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          ls -lh release-upload/
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-          append_body: true
-          overwrite_files: true
-          fail_on_unmatched_files: false
-          files: ${{ steps.assets.outputs.upload_files }}
-          body: |
-            ## Install
-
-            | Platform | Download | Steps |
-            |----------|----------|-------|
-            | **Windows** | `BactoMate-win64.zip` | Extract under your user folder → run `BactoMate.bat` |
-            | **macOS** | See note below | DMG may be omitted when CI build exceeds GitHub's 2 GiB per-file limit |
-
-            ### macOS (when no DMG is attached)
-
-            ```bash
-            git clone https://github.com/Molinfect/BactoMate.git
-            cd BactoMate
-            git checkout ${{ github.ref_name }}
-            ./setup/macos/install.sh
-            ./launch_gui.sh
-            ```
-
-            Or build a local DMG on a Mac: `./build/macos/build_app_bundle.sh` then `./build/macos/create_dmg.sh`.
-
-            **Developers:** see [README](https://github.com/Molinfect/BactoMate/blob/main/README.md) and [`setup/`](https://github.com/Molinfect/BactoMate/tree/main/setup).
+          gh release edit "${{ github.ref_name }}" --draft=false --repo "${{ github.repository }}"
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}"
