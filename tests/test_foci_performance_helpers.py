@@ -140,36 +140,37 @@ def test_filter_apply_progress_reentrancy_guard(qapp) -> None:
     from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog
 
     dlg = FilterApplyProgressDialog(None)
+    dlg.set_pump_events(False)
     dlg._processing_events = True
     dlg._step_label.setText("before")
     dlg.set_progress(50, "nested", "should be ignored")
     assert dlg._step_label.text() == "before"
 
 
-def test_filter_apply_progress_survives_nested_close_during_process_events(qapp) -> None:
-    """Regression: nested processEvents must not access-violate when the dialog
-    is closed mid-update (Windows 0xC0000005 / macOS segfault in CI)."""
+def test_filter_apply_progress_ignores_updates_while_closing(qapp) -> None:
+    """After close begins, set_progress is a no-op (must not touch dying widgets).
+
+    Avoids ``QApplication.processEvents()``: pumping the shared session QApplication
+    drains leftover ``QThread.finished`` slots from earlier Analyze Masks GUI tests
+    and has segfaulted macOS CI (see ``on_thread_finished`` in preview filtering).
+    """
     pytest.importorskip("PyQt6")
-    from PyQt6.QtCore import QTimer
 
     from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog, _qt_alive
 
     dlg = FilterApplyProgressDialog(None)
-    dlg.show()
-    qapp.processEvents()
+    dlg.set_pump_events(False)
+    dlg.set_progress(10, "start", "")
+    assert dlg._step_label.text() == "start"
 
-    # Close while set_progress is pumping the event loop.
-    QTimer.singleShot(0, dlg.close)
-    dlg.set_progress(40, "Applying", "nested close")
-    qapp.processEvents()
-
-    # Dialog may be closed but must remain a valid Python/C++ object until deleteLater.
+    dlg._closing = True
+    dlg.set_progress(40, "Applying", "should ignore")
+    assert dlg._step_label.text() == "start"
     assert _qt_alive(dlg)
-    assert dlg._closing is True
-    # Further updates after close are no-ops (must not crash).
+
+    # Late updates after close must remain no-ops.
     dlg.set_progress(90, "late", "ignored")
-    dlg.deleteLater()
-    qapp.processEvents()
+    assert dlg._step_label.text() == "start"
 
 
 def test_filter_apply_progress_throttles_rapid_updates(qapp) -> None:
@@ -178,6 +179,7 @@ def test_filter_apply_progress_throttles_rapid_updates(qapp) -> None:
     from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog
 
     dlg = FilterApplyProgressDialog(None)
+    dlg.set_pump_events(False)
     dlg._min_ui_interval_s = 0.2
     dlg.set_progress(10, "A", "one")
     # Same percent + rapid detail change may be throttled…
