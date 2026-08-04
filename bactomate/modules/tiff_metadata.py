@@ -1325,22 +1325,79 @@ def _search_dirs_for_original(mask_path: Path) -> list[Path]:
     return ordered
 
 
+# Windows profile junctions (e.g. "Application Data") deny listing and must not
+# abort calibration lookup when search walks up into the user home directory.
+_WINDOWS_SKIP_DIR_NAMES = frozenset(
+    {
+        "application data",
+        "local settings",
+        "cookies",
+        "nethood",
+        "printhood",
+        "recent",
+        "sendto",
+        "templates",
+        "start menu",
+        "my documents",
+        "my music",
+        "my pictures",
+        "my videos",
+        "appdata",
+    }
+)
+
+
+def _iter_dir_entries(path: Path):
+    """Yield directory entries; skip unreadable paths (WinError 5 on junctions)."""
+    try:
+        yield from path.iterdir()
+    except (PermissionError, OSError):
+        return
+
+
+def _is_skippable_search_subdir(path: Path) -> bool:
+    name = path.name
+    if not name or name.startswith("."):
+        return True
+    if name.lower() in _WINDOWS_SKIP_DIR_NAMES:
+        return True
+    try:
+        is_junction = getattr(os.path, "isjunction", None)
+        if callable(is_junction) and bool(is_junction(path)):
+            return True
+    except (TypeError, ValueError, OSError):
+        pass
+    return False
+
+
 def _find_original_in_dir(search_dir: Path, stems: list[str]) -> Optional[Path]:
     stems_lower = {s.lower() for s in stems}
     for stem in stems:
-        for f in search_dir.iterdir():
-            if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+        for f in _iter_dir_entries(search_dir):
+            try:
+                is_file = f.is_file()
+            except (PermissionError, OSError):
+                continue
+            if not is_file or f.suffix.lower() not in (".tif", ".tiff"):
                 continue
             if "_fi" in f.stem.lower() or "_masks" in f.stem.lower():
                 continue
             if f.stem == stem or f.stem.lower() in stems_lower:
                 return f
-    for sub in search_dir.iterdir():
-        if not sub.is_dir() or sub.name.startswith("."):
+    for sub in _iter_dir_entries(search_dir):
+        try:
+            is_dir = sub.is_dir()
+        except (PermissionError, OSError):
+            continue
+        if not is_dir or _is_skippable_search_subdir(sub):
             continue
         for stem in stems:
-            for f in sub.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
+            for f in _iter_dir_entries(sub):
+                try:
+                    is_file = f.is_file()
+                except (PermissionError, OSError):
+                    continue
+                if not is_file or f.suffix.lower() not in (".tif", ".tiff"):
                     continue
                 if "_fi" in f.stem.lower() or "_masks" in f.stem.lower():
                     continue
@@ -1377,26 +1434,50 @@ def _resolve_mask_from_trajectories_path(traj_path: Path) -> Optional[Path]:
     for base in search_bases:
         if not base.is_dir():
             continue
-        for f in base.iterdir():
-            if f.is_file() and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
+        for f in _iter_dir_entries(base):
+            try:
+                is_file = f.is_file()
+            except (PermissionError, OSError):
+                continue
+            if is_file and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
                 return f
         seg = base / "_segmentation"
         if seg.is_dir():
-            for f in seg.iterdir():
-                if f.is_file() and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
+            for f in _iter_dir_entries(seg):
+                try:
+                    is_file = f.is_file()
+                except (PermissionError, OSError):
+                    continue
+                if is_file and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
                     return f
-        for sub in base.iterdir():
-            if not sub.is_dir():
+        for sub in _iter_dir_entries(base):
+            try:
+                is_dir = sub.is_dir()
+            except (PermissionError, OSError):
                 continue
-            for f in sub.iterdir():
-                if f.is_file() and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
+            if not is_dir or _is_skippable_search_subdir(sub):
+                continue
+            for f in _iter_dir_entries(sub):
+                try:
+                    is_file = f.is_file()
+                except (PermissionError, OSError):
+                    continue
+                if is_file and f.suffix.lower() in (".tif", ".tiff") and f.stem == mask_stem:
                     return f
         for pattern in (f"*{mask_stem}.tif", f"*{mask_stem}.tiff"):
-            for f in base.glob(pattern):
+            try:
+                matches = list(base.glob(pattern))
+            except (PermissionError, OSError):
+                matches = []
+            for f in matches:
                 if f.is_file():
                     return f
             if seg.is_dir():
-                for f in seg.glob(pattern):
+                try:
+                    seg_matches = list(seg.glob(pattern))
+                except (PermissionError, OSError):
+                    seg_matches = []
+                for f in seg_matches:
                     if f.is_file():
                         return f
     return None
