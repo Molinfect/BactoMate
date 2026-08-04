@@ -888,14 +888,19 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     except Exception:
         pass
 
-    def _selected_source() -> tuple[str, int]:
-        sel = image_combo.currentData()
-        if not isinstance(sel, tuple) or len(sel) < 2:
+    def _normalize_source_key(sel) -> tuple[str, int]:
+        if not isinstance(sel, (tuple, list)) or len(sel) < 2:
             return ('none', -1)
         try:
             return (str(sel[0]), int(sel[1]))
         except Exception:
             return ('none', -1)
+
+    def _selected_source() -> tuple[str, int]:
+        return _normalize_source_key(image_combo.currentData())
+
+    def _source_keys_equal(a, b) -> bool:
+        return _normalize_source_key(a) == _normalize_source_key(b)
 
     def _image_path_for_source_key(source_key) -> Optional[Path]:
         try:
@@ -2032,7 +2037,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception:
             pass
 
-    def apply_current() -> None:
+    def apply_current(source_key=None) -> None:
         try:
             _ui_to_settings()
         except Exception:
@@ -2043,7 +2048,19 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception:
             fs = {}
         sig = _settings_signature_for(fs)
-        src = tuple(_selected_source())
+        # Prefer an explicit key (View switch) so we never re-apply the previous
+        # image when the hidden combo mirror failed to sync.
+        src = _normalize_source_key(source_key if source_key is not None else _selected_source())
+        try:
+            # Keep the hidden combo aligned with the View selection used for apply.
+            for ii in range(int(image_combo.count())):
+                if _source_keys_equal(image_combo.itemData(ii), src):
+                    image_combo.blockSignals(True)
+                    image_combo.setCurrentIndex(int(ii))
+                    image_combo.blockSignals(False)
+                    break
+        except Exception:
+            pass
         plan = _plan_incremental_apply(idx, dict(fs))
         try:
             if plan.get('cell_changed'):
@@ -2061,6 +2078,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             rejected = set((int(x) for x in last.get('rejected') or []))
             n_obj = last.get('n_obj')
             from bactomate.gui.filter_preview_utils import format_incremental_apply_plan
+            try:
+                dlg._preview_request_id = int(getattr(dlg, '_preview_request_id', 0) or 0) + 1
+            except Exception:
+                pass
             prog = FilterApplyProgressDialog(dlg)
             prog.set_pump_events(False)
             prog.set_progress(100, 'Complete', format_incremental_apply_plan(plan))
@@ -2577,14 +2598,14 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             finally:
                 dlg.set_extra('nav_only', False)
 
-        def _reapply_last_settings_for_preview_image() -> None:
+        def _reapply_last_settings_for_preview_image(source_key=None) -> None:
             """After a View-image switch: keep UI params, re-apply filters for the new image."""
             try:
                 _sync_filter_panels_for_view()
             except Exception:
                 pass
             try:
-                apply_current()
+                apply_current(source_key=source_key)
             except Exception:
                 pass
             if bool(w_show_foci_table.isChecked()):
@@ -2602,16 +2623,17 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 _ui_to_settings()
             except Exception:
                 pass
+            src = _selected_source()
             try:
                 dlg.set_frame_idx(int(frame_spin.value()) - 1)
-                dlg.set_source_key(_selected_source())
+                dlg.set_source_key(src)
                 dlg.state().vmin = None
                 dlg.state().vmax = None
                 dlg.lut_widget.set_lut(None, None)
             except Exception:
                 pass
             _clear_preview_base_caches(dlg)
-            _reapply_last_settings_for_preview_image()
+            _reapply_last_settings_for_preview_image(source_key=src)
         image_combo.currentIndexChanged.connect(_on_image_combo_changed)
 
         def _on_nav_changed(st: PreviewNavState, reason: str) -> None:
@@ -2626,10 +2648,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     frame_spin.setValue(int(st.frame_idx) + 1)
                     frame_spin.blockSignals(False)
                 if reason in ('source', 'init'):
-                    key = st.source_key
+                    key = _normalize_source_key(st.source_key)
                     idx = 0
                     for ii in range(int(image_combo.count())):
-                        if image_combo.itemData(ii) == key:
+                        if _source_keys_equal(image_combo.itemData(ii), key):
                             idx = int(ii)
                             break
                     image_combo.blockSignals(True)
@@ -2639,10 +2661,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 return
             try:
                 dlg.set_frame_idx(int(st.frame_idx))
-                if st.source_key is not None:
-                    dlg.set_source_key(tuple(st.source_key))
-                else:
-                    dlg.set_source_key(_selected_source())
+                nav_src = _normalize_source_key(st.source_key) if st.source_key is not None else _selected_source()
+                dlg.set_source_key(nav_src)
                 if reason == 'frame':
                     _clear_preview_layer_caches(dlg)
                 elif reason == 'source':
@@ -2656,7 +2676,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                         pass
                     # Keep last cell/foci params (no metadata overwrite, no _settings_to_ui reload)
                     # and re-apply them so the new View image shows the same filter effect.
-                    _reapply_last_settings_for_preview_image()
+                    _reapply_last_settings_for_preview_image(source_key=nav_src)
                     return
                 dlg.set_extra('nav_only', True)
                 try:

@@ -21,6 +21,7 @@ Append a new section for each release. Keep entries in release-note style (what 
 ### CI / tests
 
 - Avoid `QApplication.processEvents()` in filter-progress unit tests (draining leftover Analyze Masks `QThread.finished` slots segfaulted macOS release builds).
+- Filtering preview View-switch re-apply now passes an explicit image `source_key` (avoids stale hidden-combo races) and waits for a new apply generation in CI.
 
 ---
 

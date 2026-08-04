@@ -113,6 +113,38 @@ def _wait_for_filter_apply(dlg, timeout_s: float = 20.0) -> bool:
     )
 
 
+def _preview_thread_idle(dlg) -> bool:
+    thread = getattr(dlg, "_preview_thread", None)
+    try:
+        return thread is None or not thread.isRunning()
+    except Exception:
+        return True
+
+
+def _filter_apply_busy(dlg) -> bool:
+    try:
+        return bool((getattr(dlg.state(), "extra", None) or {}).get("filter_apply_busy"))
+    except Exception:
+        return False
+
+
+def _wait_for_apply_generation(dlg, *, rid_before: int, timeout_s: float = 20.0) -> bool:
+    """Wait until a new apply finished after ``rid_before`` (not just a stale cache hit)."""
+
+    def _done() -> bool:
+        rid = int(getattr(dlg, "_preview_request_id", 0) or 0)
+        last = getattr(dlg, "_last_preview", None) or {}
+        return (
+            rid > int(rid_before)
+            and "mask_2d" in last
+            and _preview_thread_idle(dlg)
+            and not _filter_apply_busy(dlg)
+            and not bool(getattr(dlg, "_pending_apply", False))
+        )
+
+    return _wait_until(_done, timeout_s=timeout_s)
+
+
 def _open_preview(tmp_dir: Path):
     from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
 
@@ -300,8 +332,9 @@ def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
             QCoreApplication.processEvents()
             apply_current = getattr(dlg, "_pf_apply_current", None)
             assert apply_current is not None
+            rid_before_tune = int(getattr(dlg, "_preview_request_id", 0) or 0)
             apply_current()
-            ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
+            ok = _wait_for_apply_generation(dlg, rid_before=rid_before_tune, timeout_s=20.0)
             assert ok
 
             last_before = dict(getattr(dlg, "_last_preview", {}) or {})
@@ -314,13 +347,19 @@ def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
             assert combo.count() >= 2, "Need phase + foci View entries to switch images"
 
             src_before = tuple(last_before.get("source_key") or ())
+            rid_before_switch = int(getattr(dlg, "_preview_request_id", 0) or 0)
             combo.setCurrentIndex(1 if combo.currentIndex() == 0 else 0)
             QCoreApplication.processEvents()
 
             ok = _wait_until(
-                lambda: tuple((getattr(dlg, "_last_preview", {}) or {}).get("source_key") or ())
-                != src_before
-                and "mask_2d" in (getattr(dlg, "_last_preview", {}) or {}),
+                lambda: (
+                    tuple((getattr(dlg, "_last_preview", {}) or {}).get("source_key") or ())
+                    != src_before
+                    and "mask_2d" in (getattr(dlg, "_last_preview", {}) or {})
+                    and int(getattr(dlg, "_preview_request_id", 0) or 0) > rid_before_switch
+                    and _preview_thread_idle(dlg)
+                    and not bool(getattr(dlg, "_pending_apply", False))
+                ),
                 timeout_s=20.0,
             )
             assert ok, "Switching View must re-apply last settings for the new image"
