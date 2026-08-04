@@ -13,7 +13,8 @@ import numpy as np
 
 from bactomate.modules.tiff_stack_io import read_tiff_stack
 
-TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE = 384
+# Keep in sync with ``bactomate.gui.image_utils.PREVIEW_MAX_SIZE`` (Analyze filter preview).
+TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE = 2048
 LARGE_STACK_VIS_FRAME_THRESHOLD = 150
 
 __all__ = [
@@ -481,6 +482,27 @@ def upscale_mask_stack(stack: np.ndarray, factor: int) -> np.ndarray:
     return out
 
 
+def _preview_display_geometry(
+    height: int,
+    width: int,
+    *,
+    max_size: int = TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
+) -> tuple[float, float, int, int, int, int]:
+    """Return ``scale_y, scale_x, new_h, new_w, step_y, step_x`` for preview display stacks."""
+    h = max(1, int(height))
+    w = max(1, int(width))
+    if max(h, w) <= int(max_size):
+        return 1.0, 1.0, h, w, 1, 1
+    scale = float(max_size) / float(max(h, w))
+    new_h = max(1, int(round(h * scale)))
+    new_w = max(1, int(round(w * scale)))
+    scale_y = float(new_h) / float(h)
+    scale_x = float(new_w) / float(w)
+    step_y = max(1, int(round(h / new_h)))
+    step_x = max(1, int(round(w / new_w)))
+    return scale_y, scale_x, new_h, new_w, step_y, step_x
+
+
 def downsample_stacks_for_preview(
     masks: np.ndarray,
     imgs: np.ndarray,
@@ -491,14 +513,25 @@ def downsample_stacks_for_preview(
     if masks.ndim != 3 or imgs.ndim != 3:
         return masks, imgs
     _t, h, w = masks.shape
-    if max(h, w) <= max_size:
+    scale_y, scale_x, _, _, step_y, step_x = _preview_display_geometry(h, w, max_size=max_size)
+    if step_y == 1 and step_x == 1:
         return masks, imgs
-    scale = max_size / max(h, w)
-    new_h = max(1, int(round(h * scale)))
-    new_w = max(1, int(round(w * scale)))
-    sy = max(1, h // new_h)
-    sx = max(1, w // new_w)
-    return masks[:, ::sy, ::sx], imgs[:, ::sy, ::sx]
+    try:
+        from scipy.ndimage import zoom
+
+        masks_out = zoom(
+            np.asarray(masks, dtype=np.float64),
+            (1, scale_y, scale_x),
+            order=0,
+        ).astype(masks.dtype, copy=False)
+        imgs_out = zoom(
+            np.asarray(imgs, dtype=np.float64),
+            (1, scale_y, scale_x),
+            order=1,
+        ).astype(imgs.dtype, copy=False)
+        return masks_out, imgs_out
+    except Exception:
+        return masks[:, ::step_y, ::step_x], imgs[:, ::step_y, ::step_x]
 
 
 def preview_display_scale_and_steps(
@@ -508,18 +541,9 @@ def preview_display_scale_and_steps(
     max_size: int = TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
 ) -> tuple[float, float, int, int]:
     """Return ``(scale_y, scale_x, step_y, step_x)`` for display-only preview stacks."""
-    h = max(1, int(height))
-    w = max(1, int(width))
-    if max(h, w) <= int(max_size):
-        return 1.0, 1.0, 1, 1
-    scale = float(max_size) / float(max(h, w))
-    new_h = max(1, int(round(h * scale)))
-    new_w = max(1, int(round(w * scale)))
-    step_y = max(1, h // new_h)
-    step_x = max(1, w // new_w)
-    # Integer slicing defines the real display geometry.
-    scale_y = 1.0 / float(step_y)
-    scale_x = 1.0 / float(step_x)
+    scale_y, scale_x, _, _, step_y, step_x = _preview_display_geometry(
+        height, width, max_size=max_size
+    )
     return scale_y, scale_x, step_y, step_x
 
 
@@ -534,7 +558,8 @@ def prepare_preview_display_stacks(
     Downsample image/mask stacks for GUI display only.
 
     Tracking must stay on full-resolution data; this only prepares lighter stacks for
-    the preview canvas / live overlay compose path.
+    the preview canvas / live overlay compose path. Uses the same max dimension as
+    Analyze filter preview and scipy zoom (like ``scale_for_preview``) when available.
     """
     imgs_a = np.asarray(imgs)
     masks_in_a = np.asarray(masks_input)
@@ -542,16 +567,36 @@ def prepare_preview_display_stacks(
     if imgs_a.ndim != 3 or masks_in_a.ndim != 3 or masks_tr_a.ndim != 3:
         return imgs_a, masks_in_a, masks_tr_a, 1.0, 1.0
     _t, h, w = imgs_a.shape
-    scale_y, scale_x, step_y, step_x = preview_display_scale_and_steps(h, w, max_size=max_size)
+    scale_y, scale_x, _, _, step_y, step_x = _preview_display_geometry(h, w, max_size=max_size)
     if step_y == 1 and step_x == 1:
         return imgs_a, masks_in_a, masks_tr_a, 1.0, 1.0
-    return (
-        imgs_a[:, ::step_y, ::step_x],
-        masks_in_a[:, ::step_y, ::step_x],
-        masks_tr_a[:, ::step_y, ::step_x],
-        float(scale_y),
-        float(scale_x),
-    )
+    try:
+        from scipy.ndimage import zoom
+
+        imgs_out = zoom(
+            imgs_a.astype(np.float64, copy=False),
+            (1, float(scale_y), float(scale_x)),
+            order=1,
+        ).astype(imgs_a.dtype, copy=False)
+        masks_in_out = zoom(
+            masks_in_a.astype(np.float64, copy=False),
+            (1, float(scale_y), float(scale_x)),
+            order=0,
+        ).astype(masks_in_a.dtype, copy=False)
+        masks_tr_out = zoom(
+            masks_tr_a.astype(np.float64, copy=False),
+            (1, float(scale_y), float(scale_x)),
+            order=0,
+        ).astype(masks_tr_a.dtype, copy=False)
+        return imgs_out, masks_in_out, masks_tr_out, float(scale_y), float(scale_x)
+    except Exception:
+        return (
+            imgs_a[:, ::step_y, ::step_x],
+            masks_in_a[:, ::step_y, ::step_x],
+            masks_tr_a[:, ::step_y, ::step_x],
+            float(scale_y),
+            float(scale_x),
+        )
 
 
 def scale_tracks_df_for_display(tracks_df: Any, scale_y: float, scale_x: float) -> Any:
