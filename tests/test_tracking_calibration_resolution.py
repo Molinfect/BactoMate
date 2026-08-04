@@ -34,6 +34,39 @@ def test_resolve_original_finds_phase_tiff_at_sample_root(tmp_path: Path):
     assert found == original
 
 
+def test_resolve_original_skips_windows_application_data_permission_error(tmp_path: Path, monkeypatch):
+    """Regression: walking into Windows 'Application Data' junctions must not raise."""
+    from bactomate.modules import tiff_metadata as tm
+
+    home = tmp_path / "Users" / "bio_molmicro"
+    sample = home / "data" / "swimming"
+    seg = sample / "Tif_files" / "_segmentation_bact_phase_omni"
+    seg.mkdir(parents=True)
+    original = sample / "T7_001.tif"
+    original.write_bytes(b"x")
+    mask = seg / "T7_001_masks.tif"
+    mask.write_bytes(b"x")
+    blocked = home / "Application Data"
+    blocked.mkdir()
+
+    real_iterdir = Path.iterdir
+
+    def guarded_iterdir(self: Path):
+        if self.name == "Application Data":
+            raise PermissionError(5, "Access is denied", str(self))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+    # Force a search root that lists the profile (contains Application Data).
+    monkeypatch.setattr(
+        tm,
+        "_search_dirs_for_original",
+        lambda _mask: [sample, home],
+    )
+    found = tm.resolve_original_for_mask(mask)
+    assert found == original
+
+
 def test_calibration_prefers_original_over_mask_metadata(tmp_path: Path, monkeypatch):
     swimming = tmp_path / "swimming"
     seg = swimming / "Tif_files" / "_segmentation_bact_phase_omni"

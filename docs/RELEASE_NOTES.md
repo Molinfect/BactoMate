@@ -4,6 +4,14 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.1 (2026-08-04)
+
+### Bug fixes
+
+- **Windows tracking Preview:** calibration lookup no longer crashes with `PermissionError` on the profile `Application Data` junction when walking up from a mask path under the user home directory. Unreadable / Windows special folders are skipped.
+
+---
+
 ## v2.9.0 (2026-08-04)
 
 ### Tracking
