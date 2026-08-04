@@ -4,6 +4,22 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.0 (2026-08-04)
+
+### Tracking
+
+- **Full-resolution preview linking:** Trackastra preview/Re-track uses real-resolution masks and images; only the displayed overlay is downsampled for the GUI (avoids black/empty canvas on large stacks).
+- **Max link jump:** optional hard gate on Trackastra link distance (µm or px); preview and full runs share the same filter params. Tracked masks are preserved when the gate is off or removes no edges.
+- **Stitch tracks:** post-linking proximity merge across short detection gaps (max gap / max jump), with remapped masks, lineage edges, and CTC when merges occur. Conservative defaults (gap 2, jump 2).
+- **Filter tracks UI:** compact 2-column layout, stitch controls grouped in a bordered box, no settings-strip scrollbars; redraw vs re-track clarified (filters apply on **Redraw filtered tracks**).
+- **ILP linking:** `motile>=0.3,<1.0` pin and preflight so ILP mode matches Trackastra’s expected API.
+
+### Dependencies
+
+- `requirements.txt`: pin `motile>=0.3,<1.0` for Trackastra ILP.
+
+---
+
 ## v2.8.9 (2026-07-29)
 
 ### Segmentation and Detect foci

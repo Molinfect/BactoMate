@@ -54,7 +54,11 @@ def filter_params_run_info_rows(params: dict[str, Any]) -> list[tuple[str, str]]
         ("time_per_frame_min", str(params.get("time_per_frame", 0.0))),
         ("use_physical_units", "yes" if params.get("use_physical_units") else "no"),
         ("use_speed_physical", "yes" if params.get("use_speed_physical") else "no"),
+        ("stitch_enabled", "yes" if params.get("stitch_enabled") else "no"),
     ]
+    if params.get("stitch_enabled"):
+        rows.append(("stitch_max_gap_frames", str(params.get("stitch_max_gap_frames", ""))))
+        rows.append(("stitch_max_jump", str(params.get("stitch_max_jump", ""))))
     for key in (
         "min_length",
         "max_length",

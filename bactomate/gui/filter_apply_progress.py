@@ -183,7 +183,8 @@ class FilterApplyProgressDialog(QDialog):
             self.close()
             self.deleteLater()
             return
-        QTimer.singleShot(int(delay_ms), self, self._finish_close_later)
+        # PyQt6 overload is singleShot(msec, slot) — not (msec, context, slot).
+        QTimer.singleShot(int(delay_ms), self._finish_close_later)
 
     def _finish_close_later(self) -> None:
         if not _qt_alive(self):

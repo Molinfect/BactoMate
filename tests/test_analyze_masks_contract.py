@@ -75,6 +75,43 @@ def test_update_fi_feedback_marks_filtered_mask_and_counts_only_real_fi_tasks(qt
     assert "1 mask file(s) -> 2 FI analyses".replace("->", "→") in text
     assert "sample_fi_mCherry_mask_filtered.tif (filtered; from sample_fi_mCherry_masks.tif)" in text
     assert "sample_fi_mCherry_masks.tif, " not in text
+    assert "raw" not in text.lower()
+
+
+def test_update_fi_feedback_never_says_raw_when_unfiltered(qt_parent):
+    tab = AnalyzeTab(parent=qt_parent)
+    tab.analyze_fi.setChecked(True)
+    tab.fi_mode_match_by_name.setChecked(True)
+    raw_mask = Path("/tmp/sample_fi_mCherry_masks.tif")
+    fi_path = Path("/tmp/sample_fi_mCherry.tif")
+    tab._get_mask_files_for_feedback = lambda: [raw_mask]
+    tab._resolve_effective_mask_for_analysis = lambda mask: mask
+    tab._resolve_fi_inputs_for_mask = lambda _mask: [fi_path]
+
+    tab._update_fi_feedback()
+
+    text = tab.fi_feedback.toPlainText()
+    assert "sample_fi_mCherry_masks.tif (mask)" in text
+    assert "raw" not in text.lower()
+
+
+def test_resolve_effective_mask_finds_filtered_under_tif_files_workspace(qt_parent, tmp_path: Path):
+    """Workspace folder (Tif_files/) must still resolve masks living under _segmentation_*/filtered_masks/."""
+    tab = AnalyzeTab(parent=qt_parent)
+    tab.use_filtered_masks_cb.setChecked(True)
+    tif_root = tmp_path / "Tif_files"
+    seg = tif_root / "_segmentation_cellpose_sam"
+    filt_dir = seg / "filtered_masks"
+    filt_dir.mkdir(parents=True)
+    raw_mask = seg / "EM20129_NoPhage_fi_mCherry_masks.tif"
+    filtered_mask = filt_dir / "EM20129_NoPhage_fi_mCherry_mask_filtered.tif"
+    raw_mask.write_bytes(b"raw")
+    filtered_mask.write_bytes(b"filt")
+    tab.file_path.setText(str(tif_root))
+
+    effective = tab._resolve_effective_mask_for_analysis(raw_mask)
+    assert effective.resolve() == filtered_mask.resolve()
+    assert tab._fi_feedback_mask_label(raw_mask, effective).endswith("(filtered; from EM20129_NoPhage_fi_mCherry_masks.tif)")
 
 
 def test_companions_for_analysis_mask_uses_filtered_mask_and_drops_mask_tiffs_from_fi_rows(qt_parent, tmp_path: Path):

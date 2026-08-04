@@ -1,6 +1,6 @@
 # BactoMate — Complete User Manual
 
-**Version:** 2.8.9  
+**Version:** 2.9.0  
 **Document type:** Detailed user manual (GUI reference)  
 **Approximate length:** 30–40 A4 pages when printed (body text ~12,000+ words; with headings and lists, fills 30–40 pages at normal font size).  
 **Audience:** Researchers and users who want a full, structured reference to every tab, setting, and workflow in BactoMate.  
@@ -567,7 +567,7 @@ Stored for session log: pixel_size, min/max aspect ratio, min eccentricity, min 
 **Mode**
 
 - **Combo:** “greedy”, “greedy_nodiv”, “ilp”. Default: greedy.
-- **Info (?) —** greedy: division support, fast. greedy_nodiv: no divisions, faster. ilp: Integer Linear Programming, optimal but slower, may need extra deps (e.g. Gurobi/SCIP).
+- **Info (?) —** greedy: division support, fast. greedy_nodiv: no divisions, faster. ilp: Integer Linear Programming, more global/optimal but slower. Standard BactoMate installs include the required pre-1.0 `motile` solver dependency; older custom environments may need `pip install -r requirements.txt`.
 
 **Device**
 

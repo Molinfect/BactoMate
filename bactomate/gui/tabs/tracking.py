@@ -20,19 +20,20 @@ def _is_pandas_dataframe(obj: Any) -> bool:
         return False
 TRACKING_PREVIEW_FRAME_LIMIT = 20
 TRACKING_PREVIEW_FULL_STACK_WARN_FRAMES = 80
-FILTER_CAL_SPIN_WIDTH = 80
-FILTER_CAL_TIME_SPIN_WIDTH = 118
-FILTER_METRIC_SPIN_WIDTH = 68
-FILTER_METRIC_DEC_SPIN_WIDTH = 80
+FILTER_CAL_SPIN_WIDTH = 76
+FILTER_CAL_TIME_SPIN_WIDTH = 100
+# Compact spins: 2-column layout gives each cell enough room without a horizontal scrollbar.
+FILTER_METRIC_SPIN_WIDTH = 72
+FILTER_METRIC_LABEL_MIN_WIDTH = 92
 FILTER_GRID_COLUMNS = 2
-FILTER_METRIC_CELL_MIN_HEIGHT = 34
-FILTER_GRID_H_SPACING = 10
-FILTER_GRID_V_SPACING = 6
+FILTER_METRIC_CELL_MIN_HEIGHT = 28
+FILTER_GRID_H_SPACING = 12
+FILTER_GRID_V_SPACING = 2
 METRICS_TABLE_COL_WEIGHTS = (36, 56, 72, 88, 44, 72, 72, 88, 72, 56)
 METRICS_TABLE_COL_MIN_WIDTH = 28
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
-from PyQt6.QtWidgets import QAbstractItemView, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QProgressBar, QProgressDialog, QPushButton, QRadioButton, QScrollArea, QListWidget, QListWidgetItem, QSlider, QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QProgressBar, QProgressDialog, QPushButton, QRadioButton, QScrollArea, QListWidget, QListWidgetItem, QSlider, QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 from bactomate.gui.analysis_paths import base_dir_for_mask, find_analysis_excel_for_mask, resolve_analysis_workbook_for_mask, stem_from_mask_path
 from bactomate.gui.image_canvas import ImageCanvas
 from bactomate.gui.image_utils import scale_for_preview, to_qpixmap
@@ -48,12 +49,13 @@ from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDial
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET
 from bactomate.gui.trackastra_utils import TRACKASTRA_DEFAULT_MODEL, TRACKASTRA_SAM2_MODEL, format_trackastra_model_error, trackastra_pretrained_feats_installed, validate_trackastra_model_choice
 from bactomate.gui.workers import TrackingPreviewResult, TrackingWorker
-from bactomate.gui.workers.tracking_io import overlay_label_for_track
+from bactomate.gui.workers.tracking_io import overlay_label_for_track, scale_tracks_df_for_display
 _TRACKING_PREVIEW_TIFF_CAP = 2500
 TIME_UNIT_TO_MINUTES = {'min': 1.0, 'h': 60.0, 's': 1.0 / 60.0, 'ms': 1.0 / 60000.0}
 _FILTER_TIP_DETECTIONS = 'Detections\nHow many frames have a linked detection (frame, y, x) for this track ID.\n\nExample: seen in 8 frames → detections = 8.\n\nPair with Duration and Gaps: gaps = duration − detections (missing frames inside the span).'
 _FILTER_TIP_DURATION = 'Duration (frames)\nFrame span: last_frame − first_frame + 1 (counts empty frames in between).\n\nExample: first at frame 10, last at frame 49 → duration = 40 even with missed frames inside.\n\nUse with min detections and max gaps to drop flickering or sparse tracks.'
-_FILTER_TIP_GAPS = 'Gaps (frames)\nMissing frames inside the track span: duration − detections.\n\nTrackastra kept one track ID across these gaps (linking), but the mask had no detection on those frames.\n\nExample: detections = 9, duration = 14 → gaps = 5.\n\nSet a low max gaps (e.g. 0–2) to require near-continuous presence. A cell that vanishes and reappears with a new ID is two tracks, not one track with gaps.'
+_FILTER_TIP_GAPS = 'Gaps (frames)\nMissing frames inside the track span: duration − detections.\n\nTrackastra kept one track ID across these gaps (linking), but the mask had no detection on those frames.\n\nExample: detections = 9, duration = 14 → gaps = 5.\n\nSet a low max gaps (e.g. 0–2) to require near-continuous presence. A cell that vanishes and reappears with a new ID is two tracks, not one track with gaps — use «Stitch tracks» to merge those fragments.'
+_FILTER_TIP_STITCH = 'Stitch tracks\nPost-Trackastra merge: if track A ends and track B starts within Max gap frames (missing frames) and within Max jump distance, remap B → A.\n\nMax gap and Max jump only apply when Stitch tracks is checked — they are not the Gaps filter above.\n\nDefault off. Conservative starts: max gap 2, max jump 2 px (raise if cells drift farther across a hole; use µm when Pixel size is set). Divisions: each end/start is used at most once (nearest only).'
 _FILTER_TIP_DISPLACEMENT = 'Displacement\nStraight-line distance from the first to the last position along the track.\n\nUnits: µm if Pixel (µm/px) is set; otherwise pixels.\n\nExample: a cell drifts 15 µm from birth to exit → displacement ≈ 15 µm.\n\nA cell jittering in place has low displacement even if it moved a lot along its path (see Path length).'
 _FILTER_TIP_PATH_LENGTH = 'Path length\nTotal distance travelled: sum of step lengths between consecutive positions.\n\nAlways ≥ displacement. Equal only for a perfectly straight path.\n\nExample A — wiggling in place: displacement ≈ 1 µm, path length ≈ 25 µm.\nExample B — straight swim: displacement ≈ 20 µm, path length ≈ 21 µm.\n\nFilter out “stuck” cells with low displacement but high path length, or fast swimmers with both high.'
 _FILTER_TIP_MEAN_SPEED = 'Mean speed\nAverage speed along the track: path_length ÷ elapsed time.\n\nUnits: µm/s when both pixel size and Time / frame are set; otherwise px/frame.\n\nExample: path length 30 µm over 20 frames at 3 s/frame (60 s total) → mean speed ≈ 30 / 60 = 0.5 µm/s.\n\nRequires calibration for physical speed; set Time / frame to 0 to use px/frame only.'
@@ -543,7 +545,7 @@ class TrackingTab(QWidget):
         self.preview_btn = ProgressCancelButton(self._preview_btn_idle)
         self.preview_btn.setEnabled(False)
         style_module_primary_button(self.preview_btn)
-        self.preview_btn.setToolTip(f'Opens a setup dialog: pick the mask and either a quick preview (first {TRACKING_PREVIEW_FRAME_LIMIT} frames) or the full time lapse.\n\nIn-memory only (downsampled for speed); nothing written to disk.\n\nUse Run tracking for full-sequence exports to disk.')
+        self.preview_btn.setToolTip(f'Opens a setup dialog: pick the mask and either a quick preview (first {TRACKING_PREVIEW_FRAME_LIMIT} frames) or the full time lapse.\n\nIn-memory only; nothing written to disk. Trackastra runs on the real-resolution masks/images, while the displayed preview is scaled down only for viewing.\n\nUse Run tracking for full-sequence exports to disk.')
         self.preview_btn.clicked.connect(lambda : self._run_tracking_with_action('preview'))
         self.movement_btn = ProgressCancelButton(self._movement_btn_idle)
         self.movement_btn.setEnabled(False)
@@ -590,14 +592,12 @@ class TrackingTab(QWidget):
         parent_layout.addWidget(path_panel)
 
     def _build_filter_tracks_panel(self) -> QWidget:
-        """Calibration + filter ranges (2 columns, one compact row per metric)."""
+        """Calibration + responsive filter metric rows (wrap on narrow preview panels)."""
         filter_wrap = QWidget()
-        grid = QGridLayout(filter_wrap)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(FILTER_GRID_H_SPACING)
-        grid.setVerticalSpacing(FILTER_GRID_V_SPACING)
-        for col in range(FILTER_GRID_COLUMNS):
-            grid.setColumnStretch(col, 1)
+        filter_wrap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        outer = QVBoxLayout(filter_wrap)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(FILTER_GRID_V_SPACING)
         self.filter_pixel_size = QDoubleSpinBox()
         self.filter_pixel_size.setRange(0.0, 10.0)
         self.filter_pixel_size.setDecimals(3)
@@ -605,7 +605,7 @@ class TrackingTab(QWidget):
         self.filter_pixel_size.setSingleStep(0.001)
         self.filter_pixel_size.setSpecialValueText('px only')
         self.filter_pixel_size.setMinimum(0.0)
-        flex_control(self.filter_pixel_size, FILTER_CAL_SPIN_WIDTH, combo_style=False)
+        flex_control(self.filter_pixel_size, FILTER_CAL_SPIN_WIDTH, combo_style=False, max_width=FILTER_CAL_SPIN_WIDTH)
         self.filter_time_per_frame = QDoubleSpinBox()
         self.filter_time_per_frame.setRange(0.0, 1000000.0)
         self.filter_time_per_frame.setDecimals(6)
@@ -613,18 +613,18 @@ class TrackingTab(QWidget):
         self.filter_time_per_frame.setValue(0.0)
         self.filter_time_per_frame.setSpecialValueText('frames only')
         self.filter_time_per_frame.setMinimum(0.0)
-        flex_control(self.filter_time_per_frame, FILTER_CAL_TIME_SPIN_WIDTH, combo_style=False)
+        flex_control(self.filter_time_per_frame, FILTER_CAL_TIME_SPIN_WIDTH, combo_style=False, max_width=FILTER_CAL_TIME_SPIN_WIDTH)
         self.filter_time_per_frame_unit = QComboBox()
         self.filter_time_per_frame_unit.addItems(['min', 'h', 's', 'ms'])
         self.filter_time_per_frame_unit.setCurrentText('min')
-        flex_control(self.filter_time_per_frame_unit, 76)
+        flex_control(self.filter_time_per_frame_unit, 56, max_width=56)
         self.create_vis_cb = QCheckBox('Create visualization')
         self.create_vis_cb.setChecked(True)
         self.create_vis_cb.setVisible(True)
         self.create_vis_cb.setToolTip(f'Full Run tracking only: build *_overlay_tracked.tif and *_trajectories.tif when a phase stack is found (per-frame overlay with labels — slow on long movies).\n\nUncheck to skip visualization and save only tracks CSV, tracked masks, and the report workbook.\n\nPreview tracking never writes files and uses a separate light in-memory overlay (first {TRACKING_PREVIEW_FRAME_LIMIT} frames only).')
         self.overlay_track_data_cb = QCheckBox('Metrics table')
         self.overlay_track_data_cb.setChecked(False)
-        self.overlay_track_data_cb.setToolTip('Preview only: table of whole-track metrics for every track in the preview run.\n\nOpens below Filter tracks in the preview panel (the settings area scrolls to it).\n\nPass and other columns update immediately when you change filters (no image redraw). Use «Redraw filtered tracks» under the frame slider to refresh the trajectory image.\n\nDouble-click a row to focus that track (yellow path + cell highlight).')
+        self.overlay_track_data_cb.setToolTip('Preview only: table of whole-track metrics for every track in the preview run.\n\nOpens below Filter tracks in the preview panel (the settings area scrolls to it).\n\nFilter edits do not recompute immediately. Use «Redraw filtered tracks» under the frame slider to recompute the filtered overlay and refresh the table, or «Re-track» to run Trackastra again.\n\nDouble-click a row to focus that track (yellow path + cell highlight).')
         cal_host = QWidget()
         cal_line = QHBoxLayout(cal_host)
         cal_line.setContentsMargins(0, 0, 0, 0)
@@ -638,20 +638,19 @@ class TrackingTab(QWidget):
         cal_line.addWidget(self.overlay_track_data_cb)
         cal_line.addWidget(create_info_icon('Calibration for physical filters (filled from mask/original TIFF metadata when available). Pixel 0 = «px only». Time / frame 0 = «frames only» (no µm/s). Create visualization: disk output for Run tracking. Metrics table: per-track stats in the preview panel (scrollable).', self, compact=True))
         cal_line.addStretch(1)
-        grid.addWidget(cal_host, 0, 0, 1, FILTER_GRID_COLUMNS)
+        outer.addWidget(cal_host)
 
         def _metric_spin(spin: QDoubleSpinBox | QSpinBox) -> None:
-            if isinstance(spin, QDoubleSpinBox) and spin.decimals() > 0:
-                w = FILTER_METRIC_DEC_SPIN_WIDTH
-            else:
-                w = FILTER_METRIC_SPIN_WIDTH
-            flex_control(spin, w, combo_style=False)
+            w = FILTER_METRIC_SPIN_WIDTH
+            spin.setFixedWidth(int(w))
+            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         self._filter_metric_title_labels: dict[str, QLabel] = {}
 
         def _metric_row_widget() -> tuple[QHBoxLayout, QWidget]:
             lay = QHBoxLayout()
             lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(4)
+            lay.setSpacing(3)
             w = QWidget()
             w.setLayout(lay)
             w.setMinimumHeight(FILTER_METRIC_CELL_MIN_HEIGHT)
@@ -670,17 +669,19 @@ class TrackingTab(QWidget):
             (lay, w) = _metric_row_widget()
             title_lbl = QLabel(title)
             title_lbl.setWordWrap(False)
+            title_lbl.setMinimumWidth(FILTER_METRIC_LABEL_MIN_WIDTH)
+            title_lbl.setMaximumWidth(FILTER_METRIC_LABEL_MIN_WIDTH + 24)
             if label_key:
                 self._filter_metric_title_labels[label_key] = title_lbl
             lay.addWidget(title_lbl, 0)
-            lay.addSpacing(4)
             lay.addWidget(min_spin, 0)
             dash = QLabel('–')
-            dash.setFixedWidth(10)
+            dash.setFixedWidth(8)
             dash.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lay.addWidget(dash, 0)
             lay.addWidget(max_spin, 0)
             lay.addWidget(create_info_icon(tip, self, compact=True), 0)
+            lay.addStretch(1)
             return w
 
         def _single_cell(title: str, spin: QDoubleSpinBox, default: float, tip: str, *, label_key: str | None=None) -> QWidget:
@@ -690,12 +691,14 @@ class TrackingTab(QWidget):
             _metric_spin(spin)
             (lay, w) = _metric_row_widget()
             title_lbl = QLabel(title)
+            title_lbl.setMinimumWidth(FILTER_METRIC_LABEL_MIN_WIDTH)
+            title_lbl.setMaximumWidth(FILTER_METRIC_LABEL_MIN_WIDTH + 24)
             if label_key:
                 self._filter_metric_title_labels[label_key] = title_lbl
             lay.addWidget(title_lbl, 0)
-            lay.addSpacing(4)
             lay.addWidget(spin, 0)
             lay.addWidget(create_info_icon(tip, self, compact=True), 0)
+            lay.addStretch(1)
             return w
         self.filter_min_length = QSpinBox()
         self.filter_max_length = QSpinBox()
@@ -720,10 +723,81 @@ class TrackingTab(QWidget):
         self.filter_min_straightness.setDecimals(2)
         self.filter_min_straightness.setSingleStep(0.05)
         self.filter_min_straightness.setValue(0.0)
-        cells = [_range_cell('Detections', self.filter_min_length, self.filter_max_length, 2, 100, _FILTER_TIP_DETECTIONS, label_key='detections'), _range_cell('Duration', self.filter_min_duration, self.filter_max_duration, 1, 100, _FILTER_TIP_DURATION, label_key='duration'), _range_cell('Gaps', self.filter_min_gaps, self.filter_max_gaps, 0, 9999, _FILTER_TIP_GAPS, label_key='gaps'), _range_cell('Displacement', self.filter_min_displacement, self.filter_max_displacement, 0, 100, _FILTER_TIP_DISPLACEMENT, label_key='displacement'), _range_cell('Path length', self.filter_min_path_length, self.filter_max_path_length, 0, 100, _FILTER_TIP_PATH_LENGTH, label_key='path_length'), _range_cell('Mean speed', self.filter_min_speed, self.filter_max_speed, 0, 100, _FILTER_TIP_MEAN_SPEED, label_key='mean_speed'), _single_cell('Straight. ≥', self.filter_min_straightness, 0.0, _FILTER_TIP_STRAIGHTNESS, label_key='straightness')]
-        cols = FILTER_GRID_COLUMNS
-        for (i, cell) in enumerate(cells):
-            grid.addWidget(cell, 1 + i // cols, i % cols)
+        # Short titles so a 2-column grid fits without horizontal scroll; units live in tooltips / compact suffixes.
+        range_cells = [
+            _range_cell('Detections', self.filter_min_length, self.filter_max_length, 2, 100, _FILTER_TIP_DETECTIONS, label_key='detections'),
+            _range_cell('Duration', self.filter_min_duration, self.filter_max_duration, 1, 100, _FILTER_TIP_DURATION, label_key='duration'),
+            _range_cell('Gaps', self.filter_min_gaps, self.filter_max_gaps, 0, 9999, _FILTER_TIP_GAPS, label_key='gaps'),
+            _range_cell('Displ.', self.filter_min_displacement, self.filter_max_displacement, 0, 100, _FILTER_TIP_DISPLACEMENT, label_key='displacement'),
+            _range_cell('Path', self.filter_min_path_length, self.filter_max_path_length, 0, 100, _FILTER_TIP_PATH_LENGTH, label_key='path_length'),
+            _range_cell('Speed', self.filter_min_speed, self.filter_max_speed, 0, 100, _FILTER_TIP_MEAN_SPEED, label_key='mean_speed'),
+        ]
+        straight_cell = _single_cell('Straight. ≥', self.filter_min_straightness, 0.0, _FILTER_TIP_STRAIGHTNESS, label_key='straightness')
+        self.stitch_enabled_cb = QCheckBox('Stitch')
+        self.stitch_enabled_cb.setChecked(False)
+        self.stitch_enabled_cb.setToolTip(_FILTER_TIP_STITCH)
+        self.stitch_max_gap = QSpinBox()
+        self.stitch_max_gap.setRange(1, 50)
+        self.stitch_max_gap.setValue(2)
+        _metric_spin(self.stitch_max_gap)
+        self.stitch_max_jump = QDoubleSpinBox()
+        self.stitch_max_jump.setRange(0.0, 999999.0)
+        self.stitch_max_jump.setDecimals(2)
+        self.stitch_max_jump.setSingleStep(1.0)
+        self.stitch_max_jump.setValue(2.0)
+        _metric_spin(self.stitch_max_jump)
+
+        stitch_box = QFrame()
+        stitch_box.setObjectName('StitchTracksBox')
+        stitch_box.setStyleSheet(
+            '#StitchTracksBox {'
+            '  border: 1px solid #3d4a5c;'
+            '  border-radius: 4px;'
+            '  background-color: #1a222e;'
+            '}'
+        )
+        stitch_box.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        stitch_lay = QHBoxLayout(stitch_box)
+        stitch_lay.setContentsMargins(6, 2, 6, 2)
+        stitch_lay.setSpacing(4)
+        stitch_lay.addWidget(self.stitch_enabled_cb, 0)
+        stitch_lay.addWidget(create_info_icon(_FILTER_TIP_STITCH, self, compact=True), 0)
+        self._stitch_gap_label = QLabel('Gap')
+        self._stitch_gap_label.setToolTip('Stitch only: max missing frames between end of track A and start of track B.')
+        stitch_lay.addWidget(self._stitch_gap_label, 0)
+        stitch_lay.addWidget(self.stitch_max_gap, 0)
+        self._stitch_jump_label = QLabel('Jump')
+        self._stitch_jump_label.setToolTip('Stitch only: max distance between A’s last and B’s first detection (px or µm from calibration).')
+        stitch_lay.addWidget(self._stitch_jump_label, 0)
+        stitch_lay.addWidget(self.stitch_max_jump, 0)
+
+        # 2-column grid fits typical preview widths; stitch shares the last row with straightness.
+        metrics_grid = QWidget(filter_wrap)
+        metrics_grid.setObjectName('TransparentStackedGrid')
+        metrics_grid.setStyleSheet('#TransparentStackedGrid { background: transparent; }')
+        grid = QGridLayout(metrics_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(FILTER_GRID_H_SPACING)
+        grid.setVerticalSpacing(FILTER_GRID_V_SPACING)
+        for idx, cell in enumerate(range_cells):
+            grid.addWidget(cell, idx // FILTER_GRID_COLUMNS, idx % FILTER_GRID_COLUMNS)
+        last_row = (len(range_cells) + FILTER_GRID_COLUMNS - 1) // FILTER_GRID_COLUMNS
+        grid.addWidget(straight_cell, last_row, 0)
+        grid.addWidget(stitch_box, last_row, 1, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        for col in range(FILTER_GRID_COLUMNS):
+            grid.setColumnStretch(col, 1)
+        metrics_grid.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        outer.addWidget(metrics_grid)
+
+        def _sync_stitch_controls_enabled(_checked: bool | None=None) -> None:
+            on = bool(self.stitch_enabled_cb.isChecked())
+            self.stitch_max_gap.setEnabled(on)
+            self.stitch_max_jump.setEnabled(on)
+            self._stitch_gap_label.setEnabled(on)
+            self._stitch_jump_label.setEnabled(on)
+        self.stitch_enabled_cb.toggled.connect(_sync_stitch_controls_enabled)
+        _sync_stitch_controls_enabled()
+
         self._update_filter_metric_unit_labels()
         self.filter_pixel_size.valueChanged.connect(self._update_filter_metric_unit_labels)
         self.filter_time_per_frame.valueChanged.connect(self._update_filter_metric_unit_labels)
@@ -742,11 +816,26 @@ class TrackingTab(QWidget):
             use_speed_physical = bool(params.get('use_speed_physical'))
         unit_suffix_um = 'µm' if use_um else 'px'
         speed_suffix = 'µm/s' if use_speed_physical else 'px/fr'
-        unit_map = {'detections': 'Detections (#)', 'duration': 'Duration (frames)', 'gaps': 'Gaps (frames)', 'displacement': f'Displacement ({unit_suffix_um})', 'path_length': f'Path length ({unit_suffix_um})', 'mean_speed': f'Mean speed ({speed_suffix})', 'straightness': 'Min straightness (≥)'}
+        # Keep titles short so the 2-column filter grid never needs a horizontal scrollbar.
+        unit_map = {
+            'detections': 'Detections',
+            'duration': 'Duration',
+            'gaps': 'Gaps',
+            'displacement': f'Displ. ({unit_suffix_um})',
+            'path_length': f'Path ({unit_suffix_um})',
+            'mean_speed': f'Speed ({speed_suffix})',
+            'straightness': 'Straight. ≥',
+        }
         for (key, text) in unit_map.items():
             lbl = labels.get(key)
             if lbl is not None:
                 lbl.setText(text)
+        jump_lbl = getattr(self, '_stitch_jump_label', None)
+        if jump_lbl is not None:
+            jump_lbl.setText(f'Jump ({unit_suffix_um})')
+        track_jump_lbl = getattr(self, '_track_max_jump_label', None)
+        if track_jump_lbl is not None:
+            track_jump_lbl.setText(f'Max link jump ({unit_suffix_um}):')
 
     def _get_filter_params(self) -> dict[str, Any]:
         """Current calibration and filter parameters from widgets for track filtering.
@@ -758,7 +847,7 @@ class TrackingTab(QWidget):
         time_val = float(time_.value()) if time_ is not None else 0.0
         unit_key = time_unit.currentText() if time_unit is not None else 'min'
         time_per_frame = time_val * TIME_UNIT_TO_MINUTES.get(unit_key, 1.0)
-        params = {'pixel_size': pixel_size, 'time_per_frame': time_per_frame, 'use_physical_units': pixel_size > 0, 'use_speed_physical': pixel_size > 0 and time_per_frame > 0, 'min_length': getattr(self, 'filter_min_length', None) and self.filter_min_length.value(), 'max_length': getattr(self, 'filter_max_length', None) and self.filter_max_length.value(), 'min_duration': getattr(self, 'filter_min_duration', None) and self.filter_min_duration.value(), 'max_duration': getattr(self, 'filter_max_duration', None) and self.filter_max_duration.value(), 'min_gaps': getattr(self, 'filter_min_gaps', None) and self.filter_min_gaps.value(), 'max_gaps': getattr(self, 'filter_max_gaps', None) and self.filter_max_gaps.value(), 'min_displacement': getattr(self, 'filter_min_displacement', None) and self.filter_min_displacement.value(), 'max_displacement': getattr(self, 'filter_max_displacement', None) and self.filter_max_displacement.value(), 'min_path_length': getattr(self, 'filter_min_path_length', None) and self.filter_min_path_length.value(), 'max_path_length': getattr(self, 'filter_max_path_length', None) and self.filter_max_path_length.value(), 'min_speed': getattr(self, 'filter_min_speed', None) and self.filter_min_speed.value(), 'max_speed': getattr(self, 'filter_max_speed', None) and self.filter_max_speed.value(), 'min_straightness': getattr(self, 'filter_min_straightness', None) and self.filter_min_straightness.value()}
+        params = {'pixel_size': pixel_size, 'time_per_frame': time_per_frame, 'use_physical_units': pixel_size > 0, 'use_speed_physical': pixel_size > 0 and time_per_frame > 0, 'min_length': getattr(self, 'filter_min_length', None) and self.filter_min_length.value(), 'max_length': getattr(self, 'filter_max_length', None) and self.filter_max_length.value(), 'min_duration': getattr(self, 'filter_min_duration', None) and self.filter_min_duration.value(), 'max_duration': getattr(self, 'filter_max_duration', None) and self.filter_max_duration.value(), 'min_gaps': getattr(self, 'filter_min_gaps', None) and self.filter_min_gaps.value(), 'max_gaps': getattr(self, 'filter_max_gaps', None) and self.filter_max_gaps.value(), 'min_displacement': getattr(self, 'filter_min_displacement', None) and self.filter_min_displacement.value(), 'max_displacement': getattr(self, 'filter_max_displacement', None) and self.filter_max_displacement.value(), 'min_path_length': getattr(self, 'filter_min_path_length', None) and self.filter_min_path_length.value(), 'max_path_length': getattr(self, 'filter_max_path_length', None) and self.filter_max_path_length.value(), 'min_speed': getattr(self, 'filter_min_speed', None) and self.filter_min_speed.value(), 'max_speed': getattr(self, 'filter_max_speed', None) and self.filter_max_speed.value(), 'min_straightness': getattr(self, 'filter_min_straightness', None) and self.filter_min_straightness.value(), 'track_max_jump': float(self.track_max_jump.value()) if getattr(self, 'track_max_jump', None) is not None else 0.0, 'stitch_enabled': bool(getattr(self, 'stitch_enabled_cb', None) and self.stitch_enabled_cb.isChecked()), 'stitch_max_gap_frames': int(self.stitch_max_gap.value()) if getattr(self, 'stitch_max_gap', None) is not None else 2, 'stitch_max_jump': float(self.stitch_max_jump.value()) if getattr(self, 'stitch_max_jump', None) is not None else 2.0}
         return params
 
     def _build_tracking_run_metadata(self, mask_file: Path, *, model_name: str, mode: str, device: str, track_action: str, original_file: str | None, excel_file: str | None, frame_limit: int | None) -> dict[str, Any]:
@@ -777,12 +866,12 @@ class TrackingTab(QWidget):
         return (float(x) * scale, float(y) * scale)
 
     def _build_tracking_params(self) -> QWidget:
-        """Model + mode on one row (preview uses TRACKING_PREVIEW_FRAME_LIMIT frames)."""
+        """Model, mode, and hard link-jump gate for Trackastra."""
         tracking_group = QGroupBox('')
         tracking_group.setFlat(True)
         tracking_group.setStyleSheet(FLAT_GROUPBOX_FRAME_STYLESHEET)
         row = QHBoxLayout()
-        row.setContentsMargins(10, 8, 10, 8)
+        row.setContentsMargins(10, 8, 10, 4)
         row.setSpacing(10)
         model_label = QLabel('Model:')
         model_label.setMinimumHeight(34)
@@ -810,9 +899,29 @@ class TrackingTab(QWidget):
         wrap = QWidget()
         wrap.setLayout(row)
         wrap.setMinimumHeight(54)
+        jump_row = QHBoxLayout()
+        jump_row.setContentsMargins(10, 0, 10, 8)
+        jump_row.setSpacing(8)
+        self._track_max_jump_label = QLabel('Max link jump (px):')
+        self._track_max_jump_label.setMinimumHeight(30)
+        jump_row.addWidget(self._track_max_jump_label)
+        self.track_max_jump = QDoubleSpinBox()
+        self.track_max_jump.setRange(0.0, 999999.0)
+        self.track_max_jump.setDecimals(2)
+        self.track_max_jump.setSingleStep(1.0)
+        self.track_max_jump.setValue(0.0)
+        self.track_max_jump.setSpecialValueText('no limit')
+        flex_control(self.track_max_jump, 96, combo_style=False, max_width=96)
+        jump_row.addWidget(self.track_max_jump, 0)
+        jump_row.addWidget(create_info_icon('Hard gate on one Trackastra link step: if a linked detection jumps farther than this distance, BactoMate removes that edge and splits the track there.\n\n0 = no limit (current Trackastra behavior).\n\nUnits: µm when Pixel (µm/px) is set in Filter tracks; otherwise pixels. Preview and full runs both apply this gate on full-resolution coordinates.\n\nRecommended start: 5 µm (or about 30-60 px depending on calibration).', parent_widget=self, compact=True))
+        jump_row.addStretch(1)
+        jump_wrap = QWidget()
+        jump_wrap.setLayout(jump_row)
+        jump_wrap.setMinimumHeight(42)
         outer = QVBoxLayout(tracking_group)
         outer.setContentsMargins(0, 4, 0, 4)
         outer.addWidget(wrap)
+        outer.addWidget(jump_wrap)
         self._refresh_trackastra_model_combo()
         return tracking_group
 
@@ -855,7 +964,10 @@ class TrackingTab(QWidget):
         return text.split(' (')[0].strip()
 
     def _ensure_trackastra_model_available(self, model_name: str, *, title: str='Tracking') -> bool:
-        (ok, err) = validate_trackastra_model_choice(model_name)
+        (ok, err) = validate_trackastra_model_choice(
+            model_name,
+            linking_mode=self._linking_mode_text(),
+        )
         if ok:
             return True
         show_message_dialog(self._main_window(), title, err or 'Model not available.', kind='warning')
@@ -1155,7 +1267,7 @@ class TrackingTab(QWidget):
         scope_group.addButton(radio_full)
         scope_lay.addWidget(radio_quick)
         scope_lay.addWidget(radio_full)
-        note = QLabel('Quick preview is recommended for tuning filters. Full time lapse can take several minutes and uses more memory; the preview image is downsampled either way.')
+        note = QLabel('Quick preview is recommended for tuning filters. Full time lapse can take several minutes and uses more memory. Trackastra still runs on the real-resolution data; only the displayed preview image is scaled down for viewing.')
         note.setWordWrap(True)
         note.setStyleSheet('color: #aaaaaa; font-size: 10pt;')
         scope_lay.addWidget(note)
@@ -1219,7 +1331,7 @@ class TrackingTab(QWidget):
         self._preview_prefer_full_stack = use_full
         if use_full:
             if n_total is not None and n_total > TRACKING_PREVIEW_FULL_STACK_WARN_FRAMES:
-                if not show_confirm_dialog(self._main_window(), title='Full time lapse preview', message=f'This mask has {n_total} frames. In-memory preview on the full stack can take a long time and use substantial RAM (stacks are downsampled for display, but tracking still runs on all frames).\n\nContinue with full time lapse preview?', confirm_label='Yes', cancel_label='No', default_confirm=False):
+                if not show_confirm_dialog(self._main_window(), title='Full time lapse preview', message=f'This mask has {n_total} frames. In-memory preview on the full stack can take a long time and use substantial RAM (only the displayed image is scaled down; tracking still runs on the full-resolution data for all frames).\n\nContinue with full time lapse preview?', confirm_label='Yes', cancel_label='No', default_confirm=False):
                     return None
             return (mask_path, None)
         return (mask_path, cap)
@@ -1855,7 +1967,7 @@ class TrackingTab(QWidget):
         if wb is not None:
             excel_file = str(wb)
         preview_lineage = busy_action == 'preview_lineage'
-        self.worker = TrackingWorker(mask_file, original_file, excel_file, model_name, mode, device, self, output_dir=None, track_action='preview', frame_limit=frame_limit, write_outputs=False, preview_lineage=preview_lineage)
+        self.worker = TrackingWorker(mask_file, original_file, excel_file, model_name, mode, device, self, output_dir=None, track_action='preview', frame_limit=frame_limit, write_outputs=False, preview_lineage=preview_lineage, filter_params=self._get_filter_params())
         self.worker.preview_ready.connect(self._on_tracking_preview_ready)
         self.worker.finished.connect(self.on_tracking_preview_finished)
         self.worker.progress.connect(self.on_tracking_progress)
@@ -1918,10 +2030,18 @@ class TrackingTab(QWidget):
             preview_state['founder_by_track'] = getattr(result, 'founder_by_track', None) or {}
             preview_state['lineage_tables'] = getattr(result, 'lineage_tables', None) or {}
             preview_state['is_lineage_preview'] = bool(getattr(result, 'is_lineage_preview', False))
+            preview_state['display_scale_y'] = float(getattr(result, 'display_scale_y', 1.0) or 1.0)
+            preview_state['display_scale_x'] = float(getattr(result, 'display_scale_x', 1.0) or 1.0)
             preview_state.pop('metrics_df', None)
             preview_state.pop('composed_frames', None)
             preview_state.pop('composed_hover', None)
             preview_state.pop('compose_cache_key', None)
+            preview_state.pop('overlay_track_ids', None)
+            preview_state.pop('masks_tracked_stitched', None)
+            preview_state.pop('tracks_df_stitched', None)
+            preview_state.pop('stitch_id_map', None)
+            preview_state.pop('edges_df_stitched', None)
+            preview_state.pop('founder_by_track_stitched', None)
             on_updated()
         model_name = self._selected_trackastra_model()
         if not self._ensure_trackastra_model_available(model_name, title='Re-track'):
@@ -1942,7 +2062,10 @@ class TrackingTab(QWidget):
             label = 'Preview lineage QC' if action == 'preview_lineage' else 'Preview tracking'
             self.parent_window.log_output(f'✓ {label} finished.\n')
         elif 'trackastra_pretrained_feats' in (message or '') or 'pretrained features' in (message or '').lower():
-            (_, install_msg) = validate_trackastra_model_choice(TRACKASTRA_SAM2_MODEL)
+            (_, install_msg) = validate_trackastra_model_choice(
+                TRACKASTRA_SAM2_MODEL,
+                linking_mode=self._linking_mode_text(),
+            )
             show_message_dialog(self._main_window(), 'Preview failed', install_msg or format_trackastra_model_error(ImportError(message or '')), kind='warning')
         else:
             show_message_dialog(self._main_window(), 'Preview failed', message, kind='error')
@@ -1960,7 +2083,7 @@ class TrackingTab(QWidget):
         fl = getattr(self, '_last_preview_frame_limit', TRACKING_PREVIEW_FRAME_LIMIT)
         scope = f'{n_fr} frames' if fl is None else f'{n_fr}/{fl} frames'
         label = f'{result.mask_path.name} — preview ({n_tracks} tracks, {scope})'
-        self._open_tracking_preview_dialog(frames_rgb=result.frames_rgb, tracks_df=result.tracks_df, original_path=result.original_path, display_name=label, mask_path=result.mask_path, stack_images=getattr(result, 'stack_images', None), masks_input=getattr(result, 'masks_input', None), masks_tracked=getattr(result, 'masks_tracked', None), edges_df=getattr(result, 'edges_df', None), founder_by_track=getattr(result, 'founder_by_track', None), lineage_tables=getattr(result, 'lineage_tables', None), is_lineage_preview=getattr(result, 'is_lineage_preview', False))
+        self._open_tracking_preview_dialog(frames_rgb=result.frames_rgb, tracks_df=result.tracks_df, original_path=result.original_path, display_name=label, mask_path=result.mask_path, stack_images=getattr(result, 'stack_images', None), masks_input=getattr(result, 'masks_input', None), masks_tracked=getattr(result, 'masks_tracked', None), edges_df=getattr(result, 'edges_df', None), founder_by_track=getattr(result, 'founder_by_track', None), lineage_tables=getattr(result, 'lineage_tables', None), is_lineage_preview=getattr(result, 'is_lineage_preview', False), display_scale_y=float(getattr(result, 'display_scale_y', 1.0) or 1.0), display_scale_x=float(getattr(result, 'display_scale_x', 1.0) or 1.0))
 
     def _lineage_preflight_check(self, mask_file: Path, *, title: str, always_confirm: bool = False) -> bool:
         """Warn about mask/analysis mismatch and linker before lineage jobs."""
@@ -2547,6 +2670,11 @@ class TrackingTab(QWidget):
                     errors.append(f"{traj_path.name}: CSV missing column '{col}'")
                     break
             else:
+                from bactomate.gui.track_stitch import apply_stitch_from_params
+
+                tracks_df, _masks, n_stitch, _pairs, _id_map = apply_stitch_from_params(tracks_df, None, params)
+                if n_stitch > 0 and hasattr(self, 'parent_window') and hasattr(self.parent_window, 'log_output'):
+                    self.parent_window.log_output(f'  Proximity stitch: {n_stitch} merge(s)\n')
                 metrics_df = self._compute_track_metrics(tracks_df, pixel_size, time_per_frame)
                 if metrics_df.empty:
                     errors.append(f'{traj_path.name}: no tracks in CSV')
@@ -2633,7 +2761,7 @@ class TrackingTab(QWidget):
                 self._apply_filter_time_per_frame_from_metadata(tp)
         self._open_tracking_preview_dialog(frames_rgb=frames_arr, tracks_df=tracks_df, original_path=original_path, display_name=display_name or (traj_path.name if traj_path else 'Preview'), mask_path=mask_path, traj_path=traj_path, tracks_csv=tracks_csv, initial_frame=index, stack_images=stack_images, masks_tracked=masks_tracked)
 
-    def _open_tracking_preview_dialog(self, *, frames_rgb: np.ndarray, tracks_df: Any=None, original_path: Path | None=None, display_name: str='Tracking preview', mask_path: Path | None=None, traj_path: Path | None=None, tracks_csv: Path | None=None, initial_frame: int=0, stack_images: np.ndarray | None=None, masks_input: np.ndarray | None=None, masks_tracked: np.ndarray | None=None, edges_df: Any=None, founder_by_track: dict[int, int] | None=None, lineage_tables: dict[str, Any] | None=None, is_lineage_preview: bool=False) -> None:
+    def _open_tracking_preview_dialog(self, *, frames_rgb: np.ndarray, tracks_df: Any=None, original_path: Path | None=None, display_name: str='Tracking preview', mask_path: Path | None=None, traj_path: Path | None=None, tracks_csv: Path | None=None, initial_frame: int=0, stack_images: np.ndarray | None=None, masks_input: np.ndarray | None=None, masks_tracked: np.ndarray | None=None, edges_df: Any=None, founder_by_track: dict[int, int] | None=None, lineage_tables: dict[str, Any] | None=None, is_lineage_preview: bool=False, display_scale_y: float=1.0, display_scale_x: float=1.0) -> None:
         """Embedded or floating preview: canvas + frame nav + parameters/filters + redraw overlay."""
         mount = getattr(self, '_module_preview_mount', None)
         embed = mount is not None
@@ -2643,7 +2771,7 @@ class TrackingTab(QWidget):
         tracks_full = None
         if _is_pandas_dataframe(tracks_df):
             tracks_full = tracks_df.copy()
-        preview_state: dict[str, Any] = {'frames': frames, 'tracks_df': tracks_full if tracks_full is not None else tracks_df, 'tracks_df_full': tracks_full if tracks_full is not None else tracks_df, 'original_path': original_path, 'mask_path': mask_path, 'traj_path': traj_path, 'tracks_csv': tracks_csv, 'stack_images': np.asarray(stack_images) if stack_images is not None and getattr(stack_images, 'ndim', 0) == 3 else None, 'masks_input': np.asarray(masks_input) if masks_input is not None and getattr(masks_input, 'ndim', 0) == 3 else None, 'masks_tracked': np.asarray(masks_tracked) if masks_tracked is not None and getattr(masks_tracked, 'ndim', 0) == 3 else None, 'preview_frame_limit': getattr(self, '_last_preview_frame_limit', TRACKING_PREVIEW_FRAME_LIMIT), 'edges_df': edges_df, 'founder_by_track': founder_by_track or {}, 'lineage_tables': lineage_tables or {}, 'is_lineage_preview': bool(is_lineage_preview), 'selected_lineage_track_id': None, 'overlay_layers': {'masks': True, 'paths': True, 'ids': False, 'centers': False, 'untracked': bool(is_lineage_preview)}}
+        preview_state: dict[str, Any] = {'frames': frames, 'tracks_df': tracks_full if tracks_full is not None else tracks_df, 'tracks_df_full': tracks_full if tracks_full is not None else tracks_df, 'original_path': original_path, 'mask_path': mask_path, 'traj_path': traj_path, 'tracks_csv': tracks_csv, 'stack_images': np.asarray(stack_images) if stack_images is not None and getattr(stack_images, 'ndim', 0) == 3 else None, 'masks_input': np.asarray(masks_input) if masks_input is not None and getattr(masks_input, 'ndim', 0) == 3 else None, 'masks_tracked': np.asarray(masks_tracked) if masks_tracked is not None and getattr(masks_tracked, 'ndim', 0) == 3 else None, 'preview_frame_limit': getattr(self, '_last_preview_frame_limit', TRACKING_PREVIEW_FRAME_LIMIT), 'edges_df': edges_df, 'founder_by_track': founder_by_track or {}, 'lineage_tables': lineage_tables or {}, 'is_lineage_preview': bool(is_lineage_preview), 'selected_lineage_track_id': None, 'display_scale_y': float(display_scale_y or 1.0), 'display_scale_x': float(display_scale_x or 1.0), 'overlay_layers': {'masks': True, 'paths': True, 'ids': False, 'centers': False, 'untracked': bool(is_lineage_preview)}}
         reapply_btn = QPushButton('Redraw filtered tracks')
         style_module_primary_button(reapply_btn)
         reapply_btn.setMinimumHeight(32)
@@ -2691,19 +2819,20 @@ class TrackingTab(QWidget):
             lineage_frame_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             nav_lay.addWidget(lineage_frame_label)
         settings_host = QWidget()
-        settings_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        settings_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         settings_lay = QVBoxLayout(settings_host)
-        settings_lay.setContentsMargins(0, 0, 0, 0)
-        settings_lay.setSpacing(3)
+        settings_lay.setContentsMargins(0, 2, 0, 4)
+        settings_lay.setSpacing(4)
         tracking_params_section = CollapsibleSection('Tracking parameters', self._tracking_params_panel, parent=settings_host, expanded=False, compact=True)
         tracking_params_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay.addWidget(tracking_params_section)
-        filter_tracks_section = CollapsibleSection('Filter tracks', self._filter_tracks_panel, parent=settings_host, expanded=False, compact=True)
+        # Expanded by default so the multi-row filter options are not crushed under the canvas.
+        filter_tracks_section = CollapsibleSection('Filter tracks', self._filter_tracks_panel, parent=settings_host, expanded=True, compact=True)
         filter_tracks_section.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_lay.addWidget(filter_tracks_section)
         overlay_layers_host = QWidget()
         overlay_layers_lay = QHBoxLayout(overlay_layers_host)
-        overlay_layers_lay.setContentsMargins(10, 6, 10, 6)
+        overlay_layers_lay.setContentsMargins(10, 2, 10, 2)
         overlay_layers_lay.setSpacing(12)
         overlay_layers_lay.addWidget(QLabel('Overlay:'))
         overlay_layer_checks: dict[str, QCheckBox] = {}
@@ -2728,7 +2857,7 @@ class TrackingTab(QWidget):
         metrics_table_lay = QVBoxLayout(metrics_table_host)
         metrics_table_lay.setContentsMargins(0, 0, 0, 0)
         metrics_table_lay.setSpacing(4)
-        metrics_table_hint = QLabel('Pass and metrics here update live when you change filters (the image above is not redrawn). Click «Redraw filtered tracks» under the frame slider to update the trajectory overlay.\n\nFilters apply to each full trajectory. In frame = whether that track appears on the frame you are viewing. Double-click a row to jump to that track (yellow path and cell highlight on the current overlay).')
+        metrics_table_hint = QLabel('Pass and metrics here refresh when you click «Redraw filtered tracks» (or after «Re-track»). Changing filter values alone does not recompute the image above.\n\nFilters apply to each full trajectory. In frame = whether that track appears on the frame you are viewing. Double-click a row to jump to that track (yellow path and cell highlight on the current overlay).')
         metrics_table_hint.setWordWrap(True)
         metrics_table_lay.addWidget(metrics_table_hint)
         metrics_table = QTableWidget()
@@ -2766,13 +2895,65 @@ class TrackingTab(QWidget):
         settings_scroll = QScrollArea()
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Never show scrollbars in the filter strip — layout must fit the panel width/height.
         settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        settings_scroll.setMinimumHeight(130 if embed else 180)
-        settings_scroll.setMaximumHeight(420 if embed else 520)
-        settings_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        settings_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        settings_max_h = 560 if embed else 640
+        settings_scroll.setMaximumHeight(settings_max_h)
+        settings_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         settings_scroll.setWidget(settings_host)
         preview_state['settings_scroll'] = settings_scroll
+
+        def _sync_preview_settings_height(*_a: object) -> None:
+            """Fit settings strip exactly to content (no scrollbars)."""
+            try:
+                filter_exp = bool(filter_tracks_section.is_expanded())
+                params_exp = bool(tracking_params_section.is_expanded())
+                metrics_sec = preview_state.get('metrics_table_section')
+                metrics_exp = bool(
+                    metrics_sec is not None
+                    and metrics_sec.isVisible()
+                    and metrics_sec.is_expanded()
+                )
+            except Exception:
+                filter_exp, params_exp, metrics_exp = (True, False, False)
+            try:
+                settings_host.adjustSize()
+                settings_host.updateGeometry()
+                hint = max(
+                    int(settings_host.sizeHint().height()),
+                    int(settings_host.minimumSizeHint().height()),
+                    64,
+                )
+            except Exception:
+                hint = 200 if filter_exp else 72
+            # Cap only when metrics table is open; otherwise use exact content height.
+            if metrics_exp:
+                need = min(int(settings_max_h), max(hint + 2, 280))
+            else:
+                need = min(int(settings_max_h), hint + 2)
+            settings_scroll.setFixedHeight(int(need))
+            try:
+                settings_scroll.updateGeometry()
+                parent = settings_scroll.parentWidget()
+                if parent is not None:
+                    parent.updateGeometry()
+                    lay = parent.layout()
+                    if lay is not None:
+                        lay.activate()
+            except Exception:
+                pass
+
+        def _sync_preview_settings_height_later() -> None:
+            _sync_preview_settings_height()
+            # Second pass after Qt finishes collapsing section geometry.
+            QTimer.singleShot(0, _sync_preview_settings_height)
+
+        tracking_params_section.toggled.connect(lambda _e: _sync_preview_settings_height_later())
+        filter_tracks_section.toggled.connect(lambda _e: _sync_preview_settings_height_later())
+        metrics_table_section.toggled.connect(lambda _e: _sync_preview_settings_height_later())
+        preview_state['sync_settings_height'] = _sync_preview_settings_height_later
+        _sync_preview_settings_height()
 
         def _scroll_preview_settings_to_metrics() -> None:
             """Scroll the preview settings panel so the metrics table is visible."""
@@ -2789,14 +2970,62 @@ class TrackingTab(QWidget):
         def _tracks_for_filtering() -> Any:
             full = preview_state.get('tracks_df_full')
             if _is_pandas_dataframe(full) and (not full.empty):
-                return full
-            td = preview_state.get('tracks_df')
-            if _is_pandas_dataframe(td) and (not td.empty):
-                return td
-            csv_p = preview_state.get('tracks_csv')
-            if csv_p is not None and Path(csv_p).is_file():
-                return _pd().read_csv(csv_p)
-            return _pd().DataFrame()
+                raw = full
+            else:
+                td = preview_state.get('tracks_df')
+                if _is_pandas_dataframe(td) and (not td.empty):
+                    raw = td
+                else:
+                    csv_p = preview_state.get('tracks_csv')
+                    if csv_p is not None and Path(csv_p).is_file():
+                        raw = _pd().read_csv(csv_p)
+                    else:
+                        return _pd().DataFrame()
+            from bactomate.gui.track_stitch import (
+                apply_stitch_from_params,
+                remap_founder_by_track,
+                remap_lineage_edges_df,
+            )
+
+            params = self._get_filter_params()
+            stitched, masks_st, n_merges, _pairs, id_map = apply_stitch_from_params(
+                raw,
+                preview_state.get('masks_tracked'),
+                params,
+            )
+            preview_state['tracks_df_stitched'] = stitched
+            preview_state['stitch_merge_count'] = int(n_merges)
+            preview_state['stitch_id_map'] = dict(id_map or {})
+            if n_merges > 0 and masks_st is not None:
+                preview_state['masks_tracked_stitched'] = masks_st
+            else:
+                preview_state.pop('masks_tracked_stitched', None)
+            if id_map:
+                edges = preview_state.get('edges_df')
+                remapped_edges = remap_lineage_edges_df(edges, id_map)
+                if remapped_edges is not None:
+                    preview_state['edges_df_stitched'] = remapped_edges
+                founders = preview_state.get('founder_by_track') or {}
+                preview_state['founder_by_track_stitched'] = remap_founder_by_track(founders, id_map)
+            else:
+                preview_state.pop('edges_df_stitched', None)
+                preview_state.pop('founder_by_track_stitched', None)
+            return stitched
+
+        def _tracks_for_display(tracks_df_in: Any | None = None) -> Any:
+            """Scale full-res track y/x into the downsampled display-stack coordinate system."""
+            td = tracks_df_in if tracks_df_in is not None else _tracks_for_filtering()
+            return scale_tracks_df_for_display(
+                td,
+                float(preview_state.get('display_scale_y') or 1.0),
+                float(preview_state.get('display_scale_x') or 1.0),
+            )
+
+        def _masks_tracked_for_filtering() -> Any:
+            st = preview_state.get('masks_tracked_stitched')
+            if st is not None:
+                return st
+            return preview_state.get('masks_tracked')
 
         def _track_color_map(tracks_df_in: Any) -> dict[int, tuple[int, int, int]]:
             import matplotlib.pyplot as plt
@@ -2806,7 +3035,8 @@ class TrackingTab(QWidget):
             tids = [int(t) for t in tracks_df_in['track_id'].dropna().unique()]
             if bool(preview_state.get('is_lineage_preview')) and preview_state.get('founder_by_track'):
                 cmap = plt.get_cmap('tab20')
-                founder_by = {int(k): int(v) for k, v in dict(preview_state.get('founder_by_track') or {}).items()}
+                founder_src = preview_state.get('founder_by_track_stitched') or preview_state.get('founder_by_track') or {}
+                founder_by = {int(k): int(v) for k, v in dict(founder_src).items()}
                 founders = sorted(set(founder_by.get(t, t) for t in tids))
                 founder_colors = {}
                 for i, fid in enumerate(founders):
@@ -2921,7 +3151,7 @@ class TrackingTab(QWidget):
         def _compose_preview_frame(frame_idx: int, tracks_df_in: Any) -> tuple[np.ndarray, list[tuple[float, float, str, float]]]:
             layers = preview_state.get('overlay_layers') or {}
             images = preview_state.get('stack_images')
-            masks_tr = preview_state.get('masks_tracked')
+            masks_tr = _masks_tracked_for_filtering()
             masks_in = preview_state.get('masks_input')
             if images is None or getattr(images, 'ndim', 0) != 3 or frame_idx >= int(images.shape[0]):
                 return np.asarray(preview_state['frames'][frame_idx], dtype=np.uint8), []
@@ -3040,18 +3270,40 @@ class TrackingTab(QWidget):
                 passing_ids=passing_ids,
             )
 
+        def _tracks_for_overlay() -> Any:
+            """Tracks used for canvas compose: filtered overlay after Redraw, else full/stitched."""
+            overlay_ids = preview_state.get('overlay_track_ids')
+            if overlay_ids is not None:
+                td = preview_state.get('tracks_df')
+                if _is_pandas_dataframe(td) and (not td.empty):
+                    return td
+            return _tracks_for_filtering()
+
         def _preview_compose_cache_key() -> tuple:
             layers = tuple(sorted((preview_state.get('overlay_layers') or {}).items()))
-            tracks_df_in = _tracks_for_filtering()
-            tracks_token = id(tracks_df_in)
-            if _is_pandas_dataframe(tracks_df_in) and (not tracks_df_in.empty) and 'track_id' in tracks_df_in.columns:
-                tracks_token = (
-                    int(tracks_df_in['track_id'].nunique()),
-                    int(tracks_df_in['frame'].max()) if 'frame' in tracks_df_in.columns else -1,
-                    len(tracks_df_in),
-                )
-            founder_token = tuple(sorted((preview_state.get('founder_by_track') or {}).items()))
-            return (layers, tracks_token, founder_token, bool(preview_state.get('is_lineage_preview')))
+            scale_token = (
+                round(float(preview_state.get('display_scale_y') or 1.0), 6),
+                round(float(preview_state.get('display_scale_x') or 1.0), 6),
+            )
+            overlay_ids = preview_state.get('overlay_track_ids')
+            if overlay_ids is not None:
+                # After Redraw: key matches filtered overlay so layer toggles recompose correctly.
+                tracks_token = ('filtered', frozenset(int(t) for t in overlay_ids))
+                founder_src = preview_state.get('founder_by_track_stitched') or preview_state.get('founder_by_track') or {}
+            else:
+                # Seed / worker RGB: ignore live stitch so cache matches unstitched frames_rgb.
+                full = preview_state.get('tracks_df_full')
+                tracks_token: tuple = ('full',)
+                if _is_pandas_dataframe(full) and (not full.empty) and 'track_id' in full.columns:
+                    tracks_token = (
+                        'full',
+                        int(full['track_id'].nunique()),
+                        int(full['frame'].max()) if 'frame' in full.columns else -1,
+                        len(full),
+                    )
+                founder_src = preview_state.get('founder_by_track') or {}
+            founder_token = tuple(sorted((int(k), int(v)) for k, v in dict(founder_src).items()))
+            return (layers, tracks_token, founder_token, bool(preview_state.get('is_lineage_preview')), scale_token)
 
         def _invalidate_preview_compose_cache() -> None:
             preview_state.pop('composed_frames', None)
@@ -3064,7 +3316,7 @@ class TrackingTab(QWidget):
                 _invalidate_preview_compose_cache()
                 return
             n_frames = int(images.shape[0])
-            tracks_in = _tracks_for_filtering()
+            tracks_in = _tracks_for_display(_tracks_for_overlay())
             frames_list: list[np.ndarray] = []
             hover_list: list[list[tuple[float, float, str, float]]] = []
             for fi in range(n_frames):
@@ -3088,11 +3340,15 @@ class TrackingTab(QWidget):
             images = preview_state.get('stack_images')
             if images is None or getattr(images, 'ndim', 0) != 3:
                 return np.asarray(preview_state['frames'][frame_idx], dtype=np.uint8)
-            _ensure_preview_compose_cache()
+            key = _preview_compose_cache_key()
             composed = preview_state.get('composed_frames')
-            if composed is not None and 0 <= frame_idx < int(composed.shape[0]):
+            if preview_state.get('compose_cache_key') == key and composed is not None and 0 <= frame_idx < int(composed.shape[0]):
                 return np.asarray(composed[frame_idx], dtype=np.uint8).copy()
-            frame, _hover = _compose_preview_frame(frame_idx, tracks_df_in)
+            # Lazy single-frame compose after overlay/filter changes (display-scaled track coords).
+            overlay_tracks = tracks_df_in
+            if preview_state.get('overlay_track_ids') is not None:
+                overlay_tracks = _tracks_for_overlay()
+            frame, _hover = _compose_preview_frame(frame_idx, _tracks_for_display(overlay_tracks))
             return np.asarray(frame, dtype=np.uint8)
 
         def _refresh_preview_metrics() -> None:
@@ -3143,7 +3399,9 @@ class TrackingTab(QWidget):
                 frames_arr = np.asarray(preview_state['frames'])
                 if frames_arr.ndim >= 3 and 0 <= target < frames_arr.shape[0]:
                     (y, x) = centroid
-                    (dx, dy) = TrackingTab._preview_display_xy(float(y), float(x), frames_arr[target].shape)
+                    sy = float(preview_state.get('display_scale_y') or 1.0)
+                    sx = float(preview_state.get('display_scale_x') or 1.0)
+                    (dx, dy) = TrackingTab._preview_display_xy(float(y) * sy, float(x) * sx, frames_arr[target].shape)
                     dlg.canvas.center_on_image_point(dx, dy)
 
         def _on_metrics_table_double_clicked(row: int, _col: int) -> None:
@@ -3405,17 +3663,24 @@ class TrackingTab(QWidget):
             n_show = int(preview_state['frames'].shape[0])
             if images.shape[0] > n_show:
                 images = images[:n_show]
-            masks_tr = preview_state.get('masks_tracked')
+            masks_tr = _masks_tracked_for_filtering()
             if masks_tr is not None:
                 masks_tr = np.asarray(masks_tr)
                 if masks_tr.shape[0] > n_show:
                     masks_tr = masks_tr[:n_show]
-            preview_state['frames'] = self._draw_filtered_trajectory_overlay(images, filtered_df, masks_tracked=masks_tr)
+            filtered_disp = _tracks_for_display(filtered_df)
+            preview_state['frames'] = self._draw_filtered_trajectory_overlay(images, filtered_disp, masks_tracked=masks_tr)
             preview_state['tracks_df'] = filtered_df
             preview_state['metrics_df'] = metrics_df
+            preview_state['overlay_track_ids'] = frozenset(int(t) for t in filtered_ids)
             _invalidate_preview_compose_cache()
+            # Seed compose cache from the just-drawn overlay so refresh does not recompose the stack.
+            preview_state['composed_frames'] = preview_state['frames']
+            preview_state['compose_cache_key'] = _preview_compose_cache_key()
             n_tr = filtered_df['track_id'].nunique() if not filtered_df.empty else 0
-            dlg.info_label.setText(f'{display_name} — {n_tr} tracks after filter (colored by track ID on masks)')
+            n_stitch = int(preview_state.get('stitch_merge_count') or 0)
+            stitch_note = f', {n_stitch} stitch merge(s)' if n_stitch else ''
+            dlg.info_label.setText(f'{display_name} — {n_tr} tracks after filter{stitch_note} (colored by track ID on masks)')
             nf = preview_state['frames'].shape[0]
             frame_slider.setMaximum(max(0, nf - 1))
             if frame_slider.value() >= nf:
@@ -3443,13 +3708,14 @@ class TrackingTab(QWidget):
         def _render(_state) -> RenderResult:
             fi = max(0, min(int(_state.frame_idx), preview_state['frames'].shape[0] - 1))
             _update_metrics_table(fi)
-            tracks_in = _tracks_for_filtering()
+            tracks_in = _tracks_for_overlay()
+            tracks_disp = _tracks_for_display(tracks_in)
             frame = _get_cached_preview_frame(fi, tracks_in)
-            hover_data = _preview_hover_data(fi, frame.shape, tracks_in)
+            hover_data = _preview_hover_data(fi, frame.shape, tracks_disp)
             highlight_tid = preview_state.get('highlight_track_id')
             if highlight_tid is not None:
-                masks_tr = preview_state.get('masks_tracked')
-                frame = TrackingTab._apply_selected_track_halo(frame, fi, int(highlight_tid), np.asarray(masks_tr) if masks_tr is not None else None, tracks_in)
+                masks_tr = _masks_tracked_for_filtering()
+                frame = TrackingTab._apply_selected_track_halo(frame, fi, int(highlight_tid), np.asarray(masks_tr) if masks_tr is not None else None, tracks_disp)
             (scaled, _) = scale_for_preview(frame, frame)
             pixmap = to_qpixmap(scaled)
             n_tr = 0
@@ -3506,6 +3772,9 @@ class TrackingTab(QWidget):
                 section.setVisible(bool(_checked))
                 if _checked:
                     section.set_expanded(True)
+            sync_h = preview_state.get('sync_settings_height')
+            if callable(sync_h):
+                sync_h()
             _update_metrics_table(_current_preview_frame())
             if _checked:
                 QTimer.singleShot(0, _scroll_preview_settings_to_metrics)
@@ -3515,10 +3784,11 @@ class TrackingTab(QWidget):
         def _on_filter_spin_changed() -> None:
             if not _preview_live_updates_active():
                 return
+            # Keep edits cheap: do not re-filter/redraw on every spinbox change.
+            # The explicit buttons own recomputation now.
             preview_state.pop('metrics_df', None)
-            _refresh_preview_metrics()
-            _update_metrics_table(_current_preview_frame())
-            dlg.refresh()
+            preview_state.pop('masks_tracked_stitched', None)
+            preview_state.pop('tracks_df_stitched', None)
 
         filter_spins = (
             self.filter_min_length,
@@ -3536,6 +3806,8 @@ class TrackingTab(QWidget):
             self.filter_min_straightness,
             self.filter_pixel_size,
             self.filter_time_per_frame,
+            self.stitch_max_gap,
+            self.stitch_max_jump,
         )
 
         def _disconnect_preview_filter_live_updates() -> None:
@@ -3553,6 +3825,10 @@ class TrackingTab(QWidget):
                 self.filter_time_per_frame_unit.currentTextChanged.disconnect(_on_filter_spin_changed)
             except (TypeError, RuntimeError):
                 pass
+            try:
+                self.stitch_enabled_cb.toggled.disconnect(_on_filter_spin_changed)
+            except (TypeError, RuntimeError):
+                pass
 
         self._disconnect_tracking_preview_live_updates()
         if hasattr(self, 'overlay_track_data_cb'):
@@ -3560,6 +3836,7 @@ class TrackingTab(QWidget):
         for _spin in filter_spins:
             _spin.valueChanged.connect(_on_filter_spin_changed)
         self.filter_time_per_frame_unit.currentTextChanged.connect(_on_filter_spin_changed)
+        self.stitch_enabled_cb.toggled.connect(_on_filter_spin_changed)
         self._tracking_preview_disconnect_live_updates = _disconnect_preview_filter_live_updates
         for _key, _cb in (preview_state.get('overlay_layer_checks') or {}).items():
             def _on_overlay_layer_changed(_state, key=_key, cb=_cb) -> None:
@@ -3572,6 +3849,11 @@ class TrackingTab(QWidget):
             dlg.lut_section.setVisible(False)
         except Exception:
             pass
+        # Seed compose cache from the worker-built RGB so the first paint does not recompose the stack.
+        # Key uses tracks_df_full only (no stitch/filter) so it matches the unstitched worker frames.
+        preview_state.pop('overlay_track_ids', None)
+        preview_state['composed_frames'] = np.asarray(preview_state['frames'], dtype=np.uint8)
+        preview_state['compose_cache_key'] = _preview_compose_cache_key()
         dlg.set_frame_idx(frame_slider.value())
         dlg.info_label.setText(f'{display_name} — cell outlines colored by track ID (from tracked masks, not raw mask labels)')
 
@@ -3654,7 +3936,7 @@ class TrackingTab(QWidget):
 
     def get_session_params(self) -> dict[str, Any]:
         """Return current parameter values for session log (includes path for workflow replay)."""
-        d = get_from_widgets([('model', self.model_combo), ('mode', self.mode_combo), ('create_vis', self.create_vis_cb), ('overlay_track_data', self.overlay_track_data_cb), ('filter_pixel_size', self.filter_pixel_size), ('filter_time_per_frame', self.filter_time_per_frame), ('filter_time_per_frame_unit', self.filter_time_per_frame_unit)])
+        d = get_from_widgets([('model', self.model_combo), ('mode', self.mode_combo), ('track_max_jump', self.track_max_jump), ('create_vis', self.create_vis_cb), ('overlay_track_data', self.overlay_track_data_cb), ('filter_pixel_size', self.filter_pixel_size), ('filter_time_per_frame', self.filter_time_per_frame), ('filter_time_per_frame_unit', self.filter_time_per_frame_unit), ('stitch_enabled', self.stitch_enabled_cb), ('stitch_max_gap_frames', self.stitch_max_gap), ('stitch_max_jump', self.stitch_max_jump)])
         path_txt = (self.file_path.text() or '').strip()
         if path_txt:
             d['file_path'] = path_txt
@@ -3663,8 +3945,20 @@ class TrackingTab(QWidget):
 
     def set_session_params(self, data: dict[str, Any]) -> None:
         """Apply saved parameter values (includes path for workflow replay)."""
-        apply_to_widgets(data, [('model', self.model_combo), ('mode', self.mode_combo), ('create_vis', self.create_vis_cb), ('overlay_track_data', self.overlay_track_data_cb), ('filter_pixel_size', self.filter_pixel_size), ('filter_time_per_frame', self.filter_time_per_frame), ('filter_time_per_frame_unit', self.filter_time_per_frame_unit)])
+        apply_to_widgets(data, [('model', self.model_combo), ('mode', self.mode_combo), ('track_max_jump', self.track_max_jump), ('create_vis', self.create_vis_cb), ('overlay_track_data', self.overlay_track_data_cb), ('filter_pixel_size', self.filter_pixel_size), ('filter_time_per_frame', self.filter_time_per_frame), ('filter_time_per_frame_unit', self.filter_time_per_frame_unit), ('stitch_enabled', self.stitch_enabled_cb), ('stitch_max_gap_frames', self.stitch_max_gap), ('stitch_max_jump', self.stitch_max_jump)])
         if 'file_path' in data and data.get('file_path'):
             self.file_path.setText(str(data['file_path']).strip())
         if 'performed' in data:
             self._performed_this_session = bool(data['performed'])
+        try:
+            on = bool(getattr(self, 'stitch_enabled_cb', None) and self.stitch_enabled_cb.isChecked())
+            if getattr(self, 'stitch_max_gap', None) is not None:
+                self.stitch_max_gap.setEnabled(on)
+            if getattr(self, 'stitch_max_jump', None) is not None:
+                self.stitch_max_jump.setEnabled(on)
+            if getattr(self, '_stitch_jump_label', None) is not None:
+                self._stitch_jump_label.setEnabled(on)
+            if getattr(self, '_stitch_gap_label', None) is not None:
+                self._stitch_gap_label.setEnabled(on)
+        except Exception:
+            pass
