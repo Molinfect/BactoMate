@@ -39,10 +39,11 @@ def test_prepare_preview_display_stacks_downsamples_large():
     imgs = np.arange(t * h * w, dtype=np.float32).reshape(t, h, w)
     masks_in = np.zeros((t, h, w), dtype=np.int32)
     masks_tr = np.zeros((t, h, w), dtype=np.int32)
-    sy, sx, _, _ = preview_display_scale_and_steps(h, w, max_size=max_size)
-    y0, x0 = 600, 1200
-    masks_in[0, y0, x0] = 7
-    masks_tr[0, y0, x0] = 3
+    sy, sx, step_y, step_x = preview_display_scale_and_steps(h, w, max_size=max_size)
+    # Small blob on the downsample lattice so scipy zoom (order=0) preserves labels.
+    y0, x0 = step_y * 100, step_x * 200
+    masks_in[0, y0:y0 + step_y, x0:x0 + step_x] = 7
+    masks_tr[0, y0:y0 + step_y, x0:x0 + step_x] = 3
     imgs_d, mi_d, mt_d, out_sy, out_sx = prepare_preview_display_stacks(
         imgs, masks_in, masks_tr, max_size=max_size
     )
@@ -51,12 +52,9 @@ def test_prepare_preview_display_stacks_downsamples_large():
     assert mi_d.shape == imgs_d.shape
     assert mt_d.shape == imgs_d.shape
     assert out_sy < 1.0 and out_sx < 1.0
-    ey = int(round(y0 * sy))
-    ex = int(round(x0 * sx))
-    ey = min(max(0, ey), imgs_d.shape[1] - 1)
-    ex = min(max(0, ex), imgs_d.shape[2] - 1)
-    assert int(mi_d[0, ey, ex]) == 7
-    assert int(mt_d[0, ey, ex]) == 3
+    assert out_sy == sy and out_sx == sx
+    assert int(mi_d[0, y0 // step_y, x0 // step_x]) == 7
+    assert int(mt_d[0, y0 // step_y, x0 // step_x]) == 3
 
 
 def test_scale_tracks_df_for_display():
