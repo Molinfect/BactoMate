@@ -73,6 +73,7 @@ torchvision==0.26.0
 # Cell tracking (zarr 3.x required by trackastra; bioio-ome-tiff 1.2+ is compatible)
 # [etultra]: trackastra_pretrained_feats for general_2d_w_SAM2_features model
 trackastra[etultra]>=0.5.0,<1.0.0  # 0.5+: avoids resolver probing 0.1.x–0.4.x (long backtracking + old stacks)
+motile>=0.3,<1.0  # Trackastra 0.5.x ILP still uses the pre-1.0 motile costs API (NodeSelection/EdgeSelection)
 zarr>=3.0.0
 
 # Model downloads (Trackastra; transformers via trackastra[etultra] needs hub 1.5+)

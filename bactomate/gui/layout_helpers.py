@@ -757,6 +757,8 @@ class ResponsiveRowFlow(QWidget):
             row_used += item_width + (self._h_spacing if row_used else 0)
 
         _finish_row()
+        hint_h = max(int(self.sizeHint().height()), int(self.minimumSizeHint().height()), 1)
+        self.setMinimumHeight(hint_h)
         self.updateGeometry()
 
 

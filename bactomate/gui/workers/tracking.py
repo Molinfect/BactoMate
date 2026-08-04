@@ -17,16 +17,16 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from bactomate.gui.log_config import get_logger, log_exception
 from bactomate.gui.workers.tracking_io import (
-    TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
     assign_cell_ids_to_tracks_df,
     blend_path_pixel_on_frame,
     build_track_points_by_id,
-    downsample_stacks_for_preview,
     draw_track_centroid_marker,
     draw_trajectory_paths_on_frame,
     overlay_label_for_track,
+    prepare_preview_display_stacks,
     resolve_track_at_centroid,
     scale_track_points_by_id,
+    scale_tracks_df_for_display,
     should_draw_track_id_labels,
     tracking_export_upscale_factor,
     tracking_export_viz_style,
@@ -78,7 +78,7 @@ class TrackingPreviewResult:
     tracks_df: Any
     original_path: Optional[Path] = None
     n_tracks: int = 0
-    # (T, Y, X) intensity stack used for Trackastra (may be downsampled in preview mode).
+    # (T, Y, X) intensity stack used for preview rendering (display resolution).
     stack_images: Any = None
     masks_input: Any = None
     masks_tracked: Any = None
@@ -86,6 +86,9 @@ class TrackingPreviewResult:
     founder_by_track: Optional[dict[int, int]] = None
     lineage_tables: Optional[dict[str, Any]] = None
     is_lineage_preview: bool = False
+    # Map full-resolution track coords → display-stack coords (1.0 when not scaled).
+    display_scale_y: float = 1.0
+    display_scale_x: float = 1.0
 
 
 class TrackingWorker(QThread):
@@ -108,7 +111,125 @@ class TrackingWorker(QThread):
         if max_label <= np.iinfo(np.uint16).max:
             return arr.astype(np.uint16, copy=False), True
         return arr.astype(np.uint32, copy=False), False
-    
+
+    @staticmethod
+    def _track_max_jump_px(
+        filter_params: Optional[dict],
+        *,
+        original_shape: tuple[int, ...] | None = None,
+        tracking_shape: tuple[int, ...] | None = None,
+    ) -> float:
+        """Convert configured max-link jump to tracking-space pixels."""
+        params = dict(filter_params or {})
+        jump = float(params.get("track_max_jump", 0.0) or 0.0)
+        if jump <= 0:
+            return 0.0
+        pixel_size = float(params.get("pixel_size", 0.0) or 0.0)
+        if pixel_size <= 0 or not bool(params.get("use_physical_units", True)):
+            return jump
+        scale = 1.0
+        if original_shape is not None and tracking_shape is not None and len(original_shape) >= 3 and len(tracking_shape) >= 3:
+            try:
+                orig_y, orig_x = float(original_shape[-2]), float(original_shape[-1])
+                track_y, track_x = float(tracking_shape[-2]), float(tracking_shape[-1])
+                if orig_y > 0 and orig_x > 0 and track_y > 0 and track_x > 0:
+                    scale_y = track_y / orig_y
+                    scale_x = track_x / orig_x
+                    scale = max(1e-9, 0.5 * (scale_y + scale_x))
+            except Exception:
+                scale = 1.0
+        # After spatial downsampling, each tracking-space pixel spans more microns.
+        tracking_pixel_size = pixel_size / scale
+        return float(jump) / float(tracking_pixel_size) if tracking_pixel_size > 0 else 0.0
+
+    @staticmethod
+    def _prune_long_jump_edges(
+        track_graph: Any,
+        masks_original: Any,
+        *,
+        filter_params: Optional[dict] = None,
+        original_shape: tuple[int, ...] | None = None,
+        debug_output: Optional[list[str]] = None,
+    ) -> tuple[Any, Any, int]:
+        """Remove graph edges whose step distance exceeds the configured hard cap."""
+        params = dict(filter_params or {})
+        max_jump_px = TrackingWorker._track_max_jump_px(
+            params,
+            original_shape=original_shape,
+            tracking_shape=getattr(masks_original, "shape", None),
+        )
+        if max_jump_px <= 0 or track_graph is None or masks_original is None:
+            return track_graph, masks_original, 0
+
+        removed: list[tuple[Any, Any, int, int, float]] = []
+        pruned = track_graph.copy()
+        for (src, dst) in list(pruned.edges()):
+            try:
+                src_node = pruned.nodes[src]
+                dst_node = pruned.nodes[dst]
+                src_coords = np.asarray(src_node.get("coords"), dtype=float).ravel()
+                dst_coords = np.asarray(dst_node.get("coords"), dtype=float).ravel()
+                if src_coords.size < 2 or dst_coords.size < 2:
+                    continue
+                dist_px = float(np.hypot(dst_coords[-2] - src_coords[-2], dst_coords[-1] - src_coords[-1]))
+                if dist_px <= max_jump_px:
+                    continue
+                src_t = int(src_node.get("time", src_node.get("frame", -1)))
+                dst_t = int(dst_node.get("time", dst_node.get("frame", -1)))
+                removed.append((src, dst, src_t, dst_t, dist_px))
+            except Exception:
+                continue
+
+        if not removed:
+            return track_graph, masks_original, 0
+
+        pruned.remove_edges_from([(src, dst) for (src, dst, _t1, _t2, _dist) in removed])
+        try:
+            from trackastra.tracking import graph_to_ctc
+
+            _ctc_df, masks_pruned = graph_to_ctc(pruned, masks_original, check=False)
+        except Exception as exc:
+            if debug_output is not None:
+                debug_output.append(f"⚠ Max link jump gate could not rebuild tracked masks: {exc}")
+            return track_graph, masks_original, 0
+
+        if debug_output is not None:
+            examples = ", ".join(
+                f"t{t1}->{t2}:{dist:.1f}px" for (_s, _d, t1, t2, dist) in removed[:5]
+            )
+            debug_output.append(
+                f"✓ Max link jump gate: removed {len(removed)} edge(s) above {max_jump_px:.1f} px"
+                + (f" ({examples})" if examples else "")
+            )
+        return pruned, masks_pruned, len(removed)
+
+    @staticmethod
+    def _apply_jump_prune(
+        track_graph: Any,
+        masks_tracked: Any,
+        masks_input: Any,
+        *,
+        filter_params: Optional[dict] = None,
+        original_shape: tuple[int, ...] | None = None,
+        debug_output: Optional[list[str]] = None,
+    ) -> tuple[Any, Any, int]:
+        """Prune long-jump edges; only replace ``masks_tracked`` when edges were removed.
+
+        ``_prune_long_jump_edges`` rebuilds masks from ``masks_input`` (raw segmentation)
+        via ``graph_to_ctc``. On no-op paths it returns that input stack — callers must
+        not overwrite Trackastra tracked masks unless ``n_removed > 0``.
+        """
+        pruned_graph, masks_pruned, n_removed = TrackingWorker._prune_long_jump_edges(
+            track_graph,
+            masks_input,
+            filter_params=filter_params,
+            original_shape=original_shape,
+            debug_output=debug_output,
+        )
+        if int(n_removed) > 0:
+            return pruned_graph, masks_pruned, int(n_removed)
+        return pruned_graph, masks_tracked, 0
+
     def __init__(
         self,
         mask_file,
@@ -239,14 +360,10 @@ class TrackingWorker(QThread):
                         f"Frame limit ({self.track_action}): using all {n_use} available frame(s)"
                     )
 
+            pre_downsample_mask_shape = tuple(masks.shape)
             if not self.write_outputs:
-                masks, imgs = downsample_stacks_for_preview(
-                    masks,
-                    imgs,
-                    max_size=TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
-                )
                 debug_output.append(
-                    f"Preview mode: spatial downsample for speed (shape {masks.shape})"
+                    f"Preview mode: tracking uses full resolution (shape {masks.shape}); only the displayed preview is downsampled"
                 )
             
             # Load Excel data if provided
@@ -399,6 +516,18 @@ class TrackingWorker(QThread):
                 if result_holder[2] is not None:
                     raise result_holder[2]
                 track_graph, masks_tracked = result_holder[0], result_holder[1]
+                track_graph, masks_tracked, n_pruned_jump_edges = self._apply_jump_prune(
+                    track_graph,
+                    masks_tracked,
+                    masks,
+                    filter_params=self.filter_params,
+                    original_shape=pre_downsample_mask_shape,
+                    debug_output=debug_output,
+                )
+                if n_pruned_jump_edges > 0:
+                    debug_output.append(
+                        f"  - Rebuilt tracked masks after splitting {n_pruned_jump_edges} long-jump link(s)"
+                    )
                 debug_output.append("✓ Tracking completed successfully")
                 self.progress.emit(70, "Tracking completed, processing results...")
                 
@@ -644,6 +773,38 @@ class TrackingWorker(QThread):
                 if applied is not None:
                     tracks_df, masks_tracked, precuration_edges_df = applied
 
+            # Optional proximity stitch (gap closing) before writing tracks / masks.
+            stitch_id_map: dict[int, int] = {}
+            n_stitch = 0
+            try:
+                from bactomate.gui.track_stitch import (
+                    apply_stitch_from_params,
+                    remap_napari_lineage_graph,
+                )
+
+                tracks_df, masks_tracked, n_stitch, stitch_pairs, stitch_id_map = apply_stitch_from_params(
+                    tracks_df,
+                    masks_tracked,
+                    self.filter_params,
+                )
+                if n_stitch > 0:
+                    debug_output.append(
+                        f"✓ Proximity stitch: merged {n_stitch} track fragment pair(s) "
+                        f"(e.g. {stitch_pairs[:5]})"
+                    )
+                    if stitch_id_map and napari_graph is not None:
+                        napari_graph = remap_napari_lineage_graph(napari_graph, stitch_id_map)
+                    if stitch_id_map and precuration_edges_df is not None:
+                        from bactomate.gui.track_stitch import remap_lineage_edges_df
+
+                        precuration_edges_df = remap_lineage_edges_df(
+                            precuration_edges_df, stitch_id_map
+                        )
+            except Exception as e:
+                debug_output.append(f"⚠ Proximity stitch skipped: {e}")
+                stitch_id_map = {}
+                n_stitch = 0
+
             # Save tracks as CSV: track_id, frame, y, x (and Cell_ID if analysis Excel was used).
             # y,x come from Trackastra's track graph (centroid-like node positions; napari format or node centroid_y/x).
             self.progress.emit(80, "Saving tracks...")
@@ -792,7 +953,15 @@ class TrackingWorker(QThread):
             try:
                 ctc_dir = output_dir / "ctc_format"
                 ctc_dir.mkdir(exist_ok=True)
-                graph_to_ctc(track_graph, masks_tracked, outdir=str(ctc_dir))
+                ctc_graph = track_graph
+                if n_stitch > 0:
+                    from bactomate.gui.track_stitch import track_graph_from_tracks_df
+
+                    ctc_graph = track_graph_from_tracks_df(tracks_df)
+                    debug_output.append(
+                        "  - CTC rebuilt from stitched tracks (Trackastra graph was remapped via stitch)"
+                    )
+                graph_to_ctc(ctc_graph, masks_tracked, outdir=str(ctc_dir))
             except Exception as e:
                 # CTC format is optional, don't fail if it doesn't work
                 pass
@@ -2529,6 +2698,21 @@ class TrackingWorker(QThread):
             debug_output.append(
                 "\nPreview mode: in-memory trajectories only (no disk writes; labels show Trackastra track ID)."
             )
+
+        # Tracking used full-resolution data; downsample only for the GUI overlay / compose path.
+        imgs_disp, masks_in_disp, masks_tr_disp, scale_y, scale_x = prepare_preview_display_stacks(
+            imgs,
+            masks_input,
+            masks_tracked,
+        )
+        tracks_disp = scale_tracks_df_for_display(tracks_df, scale_y, scale_x)
+        if abs(scale_y - 1.0) > 1e-12 or abs(scale_x - 1.0) > 1e-12:
+            debug_output.append(
+                f"Preview display downsampled for GUI "
+                f"({imgs.shape[1]}x{imgs.shape[2]} → {imgs_disp.shape[1]}x{imgs_disp.shape[2]}); "
+                "Trackastra still used full resolution."
+            )
+
         frames_rgb = None
         try:
             def vis_progress(pct: int, msg: str) -> None:
@@ -2551,22 +2735,22 @@ class TrackingWorker(QThread):
                 )
                 biology_label_by_track = compact_biology_label_map(bio_labels_df)
                 frames_rgb = self._create_lineage_visualization(
-                    imgs,
-                    masks_tracked,
-                    tracks_df,
+                    imgs_disp,
+                    masks_tr_disp,
+                    tracks_disp,
                     edges_df if edges_df is not None else pd.DataFrame(),
                     founder_by_track,
                     output_path=None,
                     progress_callback=vis_progress,
                     overlay_frames=None,
-                    masks_input=masks_input,
+                    masks_input=masks_in_disp,
                     biology_label_by_track=biology_label_by_track,
                 )
             else:
                 frames_rgb = self._create_trajectory_visualization(
-                    imgs,
-                    masks_tracked,
-                    tracks_df,
+                    imgs_disp,
+                    masks_tr_disp,
+                    tracks_disp,
                     output_path=None,
                     progress_callback=vis_progress,
                     overlay_frames=None,
@@ -2590,16 +2774,19 @@ class TrackingWorker(QThread):
         payload = TrackingPreviewResult(
             mask_path=mask_path,
             frames_rgb=np.asarray(frames_rgb, dtype=np.uint8),
+            # Keep full-resolution coordinates for metrics / filters; display scale is applied in the GUI.
             tracks_df=tracks_df,
             original_path=original_path if original_path and original_path.is_file() else None,
             n_tracks=n_tracks,
-            stack_images=np.asarray(imgs),
-            masks_input=np.asarray(masks_input),
-            masks_tracked=np.asarray(masks_tracked),
+            stack_images=np.asarray(imgs_disp),
+            masks_input=np.asarray(masks_in_disp),
+            masks_tracked=np.asarray(masks_tr_disp),
             edges_df=edges_df,
             founder_by_track=founder_by_track or None,
             lineage_tables=lineage_tables,
             is_lineage_preview=is_lineage,
+            display_scale_y=float(scale_y),
+            display_scale_x=float(scale_x),
         )
         self.preview_ready.emit(payload)
         self.progress.emit(100, "Preview ready")

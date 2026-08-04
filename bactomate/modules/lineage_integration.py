@@ -275,7 +275,10 @@ def preflight_lineage_run(
                 "If the run fails, switch to greedy."
             )
 
-    ok_model, model_msg = validate_trackastra_model_choice(model_name)
+    ok_model, model_msg = validate_trackastra_model_choice(
+        model_name,
+        linking_mode=mode,
+    )
     if not ok_model:
         out.ok = False
         out.errors.append(model_msg or f"Trackastra model unavailable: {model_name}")

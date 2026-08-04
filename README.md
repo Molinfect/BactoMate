@@ -45,7 +45,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.8.9
+python main.py --version    # BactoMate 2.9.0
 python main.py --smoke-test # Smoke test OK
 ```
 
@@ -94,6 +94,7 @@ For complete Windows troubleshooting, see **[docs/INSTALL_AND_LAUNCH_windows.md]
 |-------|-----|
 | macOS Qt / PyQt6 errors | Re-run `./setup/macos/install.sh` or `./setup/macos/repair_pyqt6.sh` |
 | Windows DLL / torch errors | Install VC++ Redistributable x64, use Python 3.11 64-bit, recreate `venv` |
+| ILP tracking says `No module named 'motile'` or `NodeSelection` | Re-run `pip install -r requirements.txt` in the BactoMate `venv` |
 | Cellpose segmentation errors | `python setup/apply_all_patches.py` (with venv active) |
 | GPU is optional | CPU works; CUDA PyTorch is offered during install |
 

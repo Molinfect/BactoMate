@@ -39,7 +39,9 @@ def run() -> None:
         try:
             import bactomate.gui.patches  # noqa: F401
             import numpy as np
+            import motile  # noqa: F401
             from PyQt6.QtCore import QCoreApplication
+            import trackastra  # noqa: F401
             import tifffile
             _ = np.zeros((1, 1))
             _ = QCoreApplication

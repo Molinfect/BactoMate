@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -26,9 +27,12 @@ __all__ = [
     "downsample_stacks_for_preview",
     "draw_track_centroid_marker",
     "overlay_label_for_track",
+    "prepare_preview_display_stacks",
+    "preview_display_scale_and_steps",
     "read_tiff_stack",
     "resolve_track_at_centroid",
     "scale_track_points_by_id",
+    "scale_tracks_df_for_display",
     "draw_trajectory_paths_on_frame",
     "upscale_mask_stack",
     "should_write_tracking_visualization",
@@ -495,6 +499,73 @@ def downsample_stacks_for_preview(
     sy = max(1, h // new_h)
     sx = max(1, w // new_w)
     return masks[:, ::sy, ::sx], imgs[:, ::sy, ::sx]
+
+
+def preview_display_scale_and_steps(
+    height: int,
+    width: int,
+    *,
+    max_size: int = TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
+) -> tuple[float, float, int, int]:
+    """Return ``(scale_y, scale_x, step_y, step_x)`` for display-only preview stacks."""
+    h = max(1, int(height))
+    w = max(1, int(width))
+    if max(h, w) <= int(max_size):
+        return 1.0, 1.0, 1, 1
+    scale = float(max_size) / float(max(h, w))
+    new_h = max(1, int(round(h * scale)))
+    new_w = max(1, int(round(w * scale)))
+    step_y = max(1, h // new_h)
+    step_x = max(1, w // new_w)
+    # Integer slicing defines the real display geometry.
+    scale_y = 1.0 / float(step_y)
+    scale_x = 1.0 / float(step_x)
+    return scale_y, scale_x, step_y, step_x
+
+
+def prepare_preview_display_stacks(
+    imgs: np.ndarray,
+    masks_input: np.ndarray,
+    masks_tracked: np.ndarray,
+    *,
+    max_size: int = TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """
+    Downsample image/mask stacks for GUI display only.
+
+    Tracking must stay on full-resolution data; this only prepares lighter stacks for
+    the preview canvas / live overlay compose path.
+    """
+    imgs_a = np.asarray(imgs)
+    masks_in_a = np.asarray(masks_input)
+    masks_tr_a = np.asarray(masks_tracked)
+    if imgs_a.ndim != 3 or masks_in_a.ndim != 3 or masks_tr_a.ndim != 3:
+        return imgs_a, masks_in_a, masks_tr_a, 1.0, 1.0
+    _t, h, w = imgs_a.shape
+    scale_y, scale_x, step_y, step_x = preview_display_scale_and_steps(h, w, max_size=max_size)
+    if step_y == 1 and step_x == 1:
+        return imgs_a, masks_in_a, masks_tr_a, 1.0, 1.0
+    return (
+        imgs_a[:, ::step_y, ::step_x],
+        masks_in_a[:, ::step_y, ::step_x],
+        masks_tr_a[:, ::step_y, ::step_x],
+        float(scale_y),
+        float(scale_x),
+    )
+
+
+def scale_tracks_df_for_display(tracks_df: Any, scale_y: float, scale_x: float) -> Any:
+    """Return a copy of ``tracks_df`` with y/x scaled into display-stack coordinates."""
+    if tracks_df is None or not hasattr(tracks_df, "copy"):
+        return tracks_df
+    if abs(float(scale_y) - 1.0) < 1e-12 and abs(float(scale_x) - 1.0) < 1e-12:
+        return tracks_df
+    out = tracks_df.copy()
+    if "y" in out.columns:
+        out["y"] = out["y"].astype(float) * float(scale_y)
+    if "x" in out.columns:
+        out["x"] = out["x"].astype(float) * float(scale_x)
+    return out
 
 
 def should_write_tracking_visualization(
