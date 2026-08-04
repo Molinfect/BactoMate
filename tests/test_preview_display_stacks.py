@@ -5,10 +5,15 @@ import numpy as np
 import pandas as pd
 
 from bactomate.gui.workers.tracking_io import (
+    TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE,
     prepare_preview_display_stacks,
     preview_display_scale_and_steps,
     scale_tracks_df_for_display,
 )
+
+
+def test_tracking_preview_max_size_matches_analyze_preview():
+    assert TRACKING_PREVIEW_DOWNSAMPLE_MAX_SIZE == 2048
 
 
 def test_preview_display_scale_noop_when_small():
@@ -16,24 +21,38 @@ def test_preview_display_scale_noop_when_small():
     assert (sy, sx, step_y, step_x) == (1.0, 1.0, 1, 1)
 
 
+def test_prepare_preview_display_stacks_noop_under_default_cap():
+    t, h, w = 2, 800, 800
+    imgs = np.zeros((t, h, w), dtype=np.float32)
+    masks_in = np.zeros((t, h, w), dtype=np.int32)
+    masks_tr = np.zeros((t, h, w), dtype=np.int32)
+    imgs_d, mi_d, mt_d, sy, sx = prepare_preview_display_stacks(imgs, masks_in, masks_tr)
+    assert imgs_d.shape == (t, h, w)
+    assert mi_d.shape == imgs_d.shape
+    assert mt_d.shape == imgs_d.shape
+    assert sy == 1.0 and sx == 1.0
+
+
 def test_prepare_preview_display_stacks_downsamples_large():
     t, h, w = 3, 2304, 2304
+    max_size = 384
     imgs = np.arange(t * h * w, dtype=np.float32).reshape(t, h, w)
     masks_in = np.zeros((t, h, w), dtype=np.int32)
     masks_tr = np.zeros((t, h, w), dtype=np.int32)
-    _, _, step_y, step_x = preview_display_scale_and_steps(h, w, max_size=384)
-    # Place labels on the integer-slice lattice so they survive ::step downsampling.
-    y0, x0 = step_y * 10, step_x * 20
-    masks_in[0, y0, x0] = 7
-    masks_tr[0, y0, x0] = 3
-    imgs_d, mi_d, mt_d, sy, sx = prepare_preview_display_stacks(
-        imgs, masks_in, masks_tr, max_size=384
+    sy, sx, step_y, step_x = preview_display_scale_and_steps(h, w, max_size=max_size)
+    # Small blob on the downsample lattice so scipy zoom (order=0) preserves labels.
+    y0, x0 = step_y * 100, step_x * 200
+    masks_in[0, y0:y0 + step_y, x0:x0 + step_x] = 7
+    masks_tr[0, y0:y0 + step_y, x0:x0 + step_x] = 3
+    imgs_d, mi_d, mt_d, out_sy, out_sx = prepare_preview_display_stacks(
+        imgs, masks_in, masks_tr, max_size=max_size
     )
     assert imgs_d.shape[0] == t
-    assert max(imgs_d.shape[1], imgs_d.shape[2]) <= 384
+    assert max(imgs_d.shape[1], imgs_d.shape[2]) <= max_size
     assert mi_d.shape == imgs_d.shape
     assert mt_d.shape == imgs_d.shape
-    assert sy < 1.0 and sx < 1.0
+    assert out_sy < 1.0 and out_sx < 1.0
+    assert out_sy == sy and out_sx == sx
     assert int(mi_d[0, y0 // step_y, x0 // step_x]) == 7
     assert int(mt_d[0, y0 // step_y, x0 // step_x]) == 3
 

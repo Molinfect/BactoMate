@@ -12,6 +12,7 @@ from bactomate.gui.artifact_paths import (
 )
 from bactomate.modules.conversion_channel_names import (
     channel_name_looks_like_phase,
+    conversion_frame_stem_suffix,
     default_fi_indices_for_channels,
     guess_phase_channel_index,
     split_channel_output_name,
@@ -25,6 +26,14 @@ def test_split_never_emits_bare_free_name():
     fi, used2 = split_channel_output_name("EM20285_003", "TRITC", in_fi=False, in_foci=False, phase_used=True)
     assert fi == "EM20285_003_fi_TRITC.tif"
     assert used2 is True
+
+
+def test_conversion_frame_stem_suffix_only_for_explicit_single_frame():
+    assert conversion_frame_stem_suffix(frame_start_0based=0, explicit_single_frame=False) == ""
+    assert conversion_frame_stem_suffix(frame_start_0based=0, explicit_single_frame=True) == "_f1"
+    assert conversion_frame_stem_suffix(frame_start_0based=49, explicit_single_frame=True) == "_f50"
+    # Natural T=1 full export is not explicit single-frame → no suffix.
+    assert conversion_frame_stem_suffix(frame_start_0based=0, explicit_single_frame=False) == ""
 
 
 def test_split_respects_explicit_foci_and_fi():
