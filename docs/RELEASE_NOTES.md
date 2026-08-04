@@ -18,6 +18,10 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 - `requirements.txt`: pin `motile>=0.3,<1.0` for Trackastra ILP.
 
+### CI / tests
+
+- Avoid `QApplication.processEvents()` in filter-progress unit tests (draining leftover Analyze Masks `QThread.finished` slots segfaulted macOS release builds).
+
 ---
 
 ## v2.8.9 (2026-07-29)
