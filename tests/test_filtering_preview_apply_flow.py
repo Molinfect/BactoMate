@@ -172,11 +172,26 @@ def _shutdown(tab, parent):
     try:
         dlg = getattr(tab, "_filter_preview_dialog", None)
         if dlg is not None:
-            dlg._close_pending = True
-            dlg.close()
+            guard = getattr(dlg, "_worker_guard", None)
+            try:
+                if guard is not None and guard.is_running():
+                    guard.request_stop()
+                    guard.wait(10000)
+                if guard is not None:
+                    guard.disconnect()
+            except Exception:
+                pass
+            try:
+                dlg._close_pending = True
+                dlg.close()
+            except Exception:
+                pass
+            try:
+                tab._filter_preview_dialog = None
+            except Exception:
+                pass
     except Exception:
         pass
-    QCoreApplication.processEvents()
     try:
         parent.close()
         parent.deleteLater()
