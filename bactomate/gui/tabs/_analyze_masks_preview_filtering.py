@@ -6,7 +6,7 @@ import numpy as np
 from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSpinBox, QTableWidget, QVBoxLayout, QWidget
 from bactomate.gui.analyze_masks_preview_worker import AnalyzeMasksPreviewWorker
-from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog
+from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog, _qt_alive
 from bactomate.gui.image_utils import scale_for_preview, to_qpixmap
 from bactomate.gui.log_config import write_gui_log_line
 from bactomate.gui.utils import safe_imread
@@ -1803,6 +1803,14 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             _commit_filter_apply_result(frame_idx=int(fid), accepted=accepted, rejected=rejected, n_obj=int(n_obj) if n_obj is not None else None, foci_channels_last=foci_channels_last, request_settings_sig=request_settings_sig, cell_settings_sig=cell_sig, foci_channel_sigs=_foci_channel_sigs_for_sources(), request_source_key=source_key, foci_txt=foci_txt)
 
         def on_thread_finished() -> None:
+            if not _qt_alive(dlg):
+                return
+            thread_ref = getattr(dlg, '_preview_thread', None)
+            try:
+                if thread_ref is not None:
+                    thread_ref.finished.disconnect(on_thread_finished)
+            except Exception:
+                pass
             try:
                 if getattr(dlg, '_progress_dialog', None) is prog:
                     _safely_dismiss_progress()
@@ -1821,7 +1829,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     dlg._progress_dialog = None
             except Exception:
                 pass
+            if not _qt_alive(dlg):
+                return
             _safe_release_preview_worker(dlg)
+            if not _qt_alive(dlg):
+                return
             _set_primary_idle()
             try:
                 dlg._preview_worker_slot = None
