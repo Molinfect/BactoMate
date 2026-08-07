@@ -75,7 +75,7 @@ venv\Scripts\python.exe main.py --version
 venv\Scripts\python.exe main.py --smoke-test
 ```
 
-You should see `BactoMate 2.9.2` and `Smoke test OK`.
+You should see `BactoMate 2.9.3` and `Smoke test OK`.
 
 ## Logs
 
@@ -162,6 +162,35 @@ Re-apply patches:
 venv\Scripts\python.exe setup\apply_all_patches.py
 ```
 
+### Spotiflow foci: `cannot import name 'Imports' from 'wandb.proto...'`
+
+Spotiflow loads `wandb` at import time. An older `wandb` with a newer `protobuf` (often after unrelated `pip install -U` on the lab PC) breaks Analyze Masks → Spotiflow with no peaks and a log line like:
+
+```text
+ImportError: cannot import name 'Imports' from 'wandb.proto.wandb_telemetry_pb2'
+```
+
+Do **not** install the latest wandb/protobuf unbounded — that pulls `protobuf` 5–7 and breaks TensorFlow / U-Net (`tensorflow-intel` needs `protobuf<5` and `tensorboard<2.17`).
+
+Repair (does not require a full reinstall):
+
+```bat
+venv\Scripts\python.exe setup\windows\ensure_spotiflow_deps.py
+venv\Scripts\python.exe main.py --smoke-test
+```
+
+Or manually (TF-safe band):
+
+```bat
+venv\Scripts\python.exe -m pip install "wandb>=0.22.0,!=0.23.1,<0.28.0" "protobuf>=4.25.0,<5.0.0" "tensorboard>=2.12.0,<2.17.0"
+```
+
+Fresh installs pin these via `requirements.txt` and `setup\windows\constraints.txt`; the installer also runs `ensure_spotiflow_deps.py` before the smoke test.
+
+### TensorFlow: `protobuf` / `tensorboard` conflict after upgrading wandb
+
+If pip warns that `tensorflow-intel` wants `protobuf<5` / `tensorboard<2.17` but you have protobuf 5–7 or tensorboard 2.17+, run the same repair command above. U-Net Segment will fail until those are downgraded.
+
 ### CUDA / GPU not detected
 
 CPU mode works for most workflows. To add GPU later:
@@ -187,5 +216,6 @@ venv\Scripts\python.exe -m pip install "dbscan==0.0.10" --only-binary dbscan
 venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\windows\constraints.txt
 venv\Scripts\python.exe -m pip install -e .
 venv\Scripts\python.exe setup\apply_all_patches.py
+venv\Scripts\python.exe setup\windows\ensure_spotiflow_deps.py
 venv\Scripts\python.exe main.py --smoke-test
 ```

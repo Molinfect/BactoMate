@@ -116,6 +116,8 @@ jobs:
           venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\windows\constraints.txt
           venv\Scripts\python.exe -m pip install -e .
           venv\Scripts\python.exe setup\apply_all_patches.py
+          venv\Scripts\python.exe setup\windows\ensure_spotiflow_deps.py
+          venv\Scripts\python.exe main.py --smoke-test
 
       - name: Build portable bundle and zip
         shell: cmd

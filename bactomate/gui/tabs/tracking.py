@@ -49,7 +49,7 @@ from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDial
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET
 from bactomate.gui.trackastra_utils import TRACKASTRA_DEFAULT_MODEL, TRACKASTRA_SAM2_MODEL, format_trackastra_model_error, trackastra_pretrained_feats_installed, validate_trackastra_model_choice
 from bactomate.gui.workers import TrackingPreviewResult, TrackingWorker
-from bactomate.gui.workers.tracking_io import overlay_label_for_track, scale_tracks_df_for_display
+from bactomate.gui.workers.tracking_io import compact_tracking_label, overlay_label_for_track, scale_tracks_df_for_display
 _TRACKING_PREVIEW_TIFF_CAP = 2500
 TIME_UNIT_TO_MINUTES = {'min': 1.0, 'h': 60.0, 's': 1.0 / 60.0, 'ms': 1.0 / 60000.0}
 _FILTER_TIP_DETECTIONS = 'Detections\nHow many frames have a linked detection (frame, y, x) for this track ID.\n\nExample: seen in 8 frames → detections = 8.\n\nPair with Duration and Gaps: gaps = duration − detections (missing frames inside the span).'
@@ -1668,9 +1668,11 @@ class TrackingTab(QWidget):
         lineage_meta: dict[str, Any] | None = None,
         preview_n_frames: int | None = None,
         cell_id: int | None = None,
+        cell_id_source: str | None = None,
     ) -> str:
         """Multi-line hover text for a tracked cell in the preview overlay."""
-        if cell_id is not None:
+        source = str(cell_id_source or "").strip().lower()
+        if cell_id is not None and source not in {"", "track"}:
             lines = [
                 f'Cell ID: {int(cell_id)} (analysis ID — matches Excel & export overlays)',
                 f'Track ID: {int(track_id)} (Trackastra link; can differ between preview and full run)',
@@ -2687,8 +2689,28 @@ class TrackingTab(QWidget):
                     cell_id_per_track = filtered_metrics['track_id'].map(first_cell)
                 export_df = _pd().DataFrame()
                 if not filtered_metrics.empty:
-                    export_df['Cell_ID'] = cell_id_per_track if cell_id_per_track is not None else filtered_metrics['track_id']
-                    export_df['TrackID'] = filtered_metrics['track_id'].values
+                    track_ids = filtered_metrics['track_id'].astype(int)
+                    if cell_id_per_track is not None:
+                        cell_ids = cell_id_per_track.fillna(track_ids).astype(int)
+                    else:
+                        cell_ids = track_ids
+                    if 'Cell_ID_Source' in tracks_df.columns:
+                        first_source = tracks_df.groupby('track_id')['Cell_ID_Source'].first()
+                        id_source = track_ids.map(first_source).fillna('track').astype(str)
+                    else:
+                        id_source = _pd().Series(['track'] * len(track_ids), index=filtered_metrics.index, dtype='object')
+                    export_df['DisplayID'] = [
+                        compact_tracking_label(
+                            int(tid),
+                            int(cid),
+                            cell_id_source=str(src),
+                            region_label=int(tid),
+                        )
+                        for tid, cid, src in zip(track_ids.tolist(), cell_ids.tolist(), id_source.tolist())
+                    ]
+                    export_df['ID_Source'] = id_source.values
+                    export_df['Cell_ID'] = cell_ids.values
+                    export_df['TrackID'] = track_ids.values
                     export_df['trajectory_length'] = filtered_metrics['trajectory_length'].values.astype(int)
                     export_df['duration_frames'] = filtered_metrics['duration_frames'].values.astype(int)
                     export_df['gap_frames'] = filtered_metrics['gap_frames'].values.astype(int)
@@ -2709,7 +2731,7 @@ class TrackingTab(QWidget):
                     export_df['straight_line_speed_um_min'] = np.round(straight_um_s * 60.0, 2)
                     export_df['straightness'] = np.round(filtered_metrics['straightness'].values, 2)
                 else:
-                    export_df = _pd().DataFrame(columns=['Cell_ID', 'TrackID', 'trajectory_length', 'duration_frames', 'gap_frames', 'duration_min', 'first_frame', 'last_frame', 'displacement_px', 'displacement_um', 'path_length_px', 'path_length_um', 'mean_speed_px_frame', 'mean_speed_um_s', 'mean_speed_um_min', 'straight_line_speed_px_frame', 'straight_line_speed_um_s', 'straight_line_speed_um_min', 'straightness'])
+                    export_df = _pd().DataFrame(columns=['DisplayID', 'ID_Source', 'Cell_ID', 'TrackID', 'trajectory_length', 'duration_frames', 'gap_frames', 'duration_min', 'first_frame', 'last_frame', 'displacement_px', 'displacement_um', 'path_length_px', 'path_length_um', 'mean_speed_px_frame', 'mean_speed_um_s', 'mean_speed_um_min', 'straight_line_speed_px_frame', 'straight_line_speed_um_s', 'straight_line_speed_um_min', 'straightness'])
                 out_excel = out_dir / f'{stem}_filtered_tracks.xlsx'
                 try:
                     with _pd().ExcelWriter(out_excel, engine='openpyxl') as writer:
@@ -3091,11 +3113,17 @@ class TrackingTab(QWidget):
                     x = float(getattr(row, 'x'))
                     dx, dy = TrackingTab._preview_display_xy(y, x, frame_shape)
                     cell_id = None
+                    cell_id_source = "track"
                     if hasattr(row, 'Cell_ID'):
                         try:
                             cell_id = int(getattr(row, 'Cell_ID'))
                         except (TypeError, ValueError):
                             cell_id = None
+                    if hasattr(row, 'Cell_ID_Source'):
+                        try:
+                            cell_id_source = str(getattr(row, 'Cell_ID_Source') or 'track')
+                        except Exception:
+                            cell_id_source = "track"
                     passes = None
                     if passing_ids is not None:
                         passes = tid in passing_ids
@@ -3111,6 +3139,7 @@ class TrackingTab(QWidget):
                         lineage_meta=_lineage_meta_for_track(tid) or None,
                         preview_n_frames=preview_n_frames,
                         cell_id=cell_id,
+                        cell_id_source=cell_id_source,
                     )
                     hover.append((float(dx), float(dy), tooltip, 18.0))
             layers = preview_state.get('overlay_layers') or {}
@@ -3232,13 +3261,28 @@ class TrackingTab(QWidget):
                     if bool(layers.get('ids', False)):
                         label_tid = tid
                         label_cid = None
+                        label_src = "track"
                         if hasattr(row, 'Cell_ID'):
                             try:
                                 label_cid = int(getattr(row, 'Cell_ID'))
                             except (TypeError, ValueError):
                                 label_cid = None
+                        if hasattr(row, 'Cell_ID_Source'):
+                            try:
+                                label_src = str(getattr(row, 'Cell_ID_Source') or 'track')
+                            except Exception:
+                                label_src = "track"
                         labels_to_draw.append(
-                            (overlay_label_for_track(label_tid, label_cid, tid), x + 5, y - 5)
+                            (
+                                compact_tracking_label(
+                                    label_tid,
+                                    label_cid,
+                                    cell_id_source=label_src,
+                                    region_label=tid,
+                                ),
+                                x + 5,
+                                y - 5,
+                            )
                         )
             if labels_to_draw:
                 try:
@@ -3680,7 +3724,10 @@ class TrackingTab(QWidget):
             n_tr = filtered_df['track_id'].nunique() if not filtered_df.empty else 0
             n_stitch = int(preview_state.get('stitch_merge_count') or 0)
             stitch_note = f', {n_stitch} stitch merge(s)' if n_stitch else ''
-            dlg.info_label.setText(f'{display_name} — {n_tr} tracks after filter{stitch_note} (colored by track ID on masks)')
+            dlg.info_label.setText(
+                f'{display_name} — {n_tr} tracks after filter{stitch_note} '
+                '(labels: T=track ID, C=carried-over Cell ID)'
+            )
             nf = preview_state['frames'].shape[0]
             frame_slider.setMaximum(max(0, nf - 1))
             if frame_slider.value() >= nf:

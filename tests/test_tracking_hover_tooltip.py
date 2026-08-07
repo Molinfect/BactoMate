@@ -52,6 +52,7 @@ def test_format_track_hover_tooltip_uses_physical_units() -> None:
         passes_filter=False,
         preview_n_frames=20,
         cell_id=42,
+        cell_id_source="analysis",
     )
     assert "Cell ID: 42" in tip
     assert "Track ID: 3" in tip

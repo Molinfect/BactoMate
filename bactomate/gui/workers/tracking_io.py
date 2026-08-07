@@ -25,6 +25,7 @@ __all__ = [
     "blend_path_pixel_on_frame",
     "build_excel_frame_label_to_cell_id",
     "build_track_points_by_id",
+    "compact_tracking_label",
     "downsample_stacks_for_preview",
     "draw_track_centroid_marker",
     "overlay_label_for_track",
@@ -209,9 +210,11 @@ def assign_cell_ids_to_tracks_df(
     has_xy = "y" in out.columns and "x" in out.columns
     has_mask = masks_input is not None and getattr(masks_input, "ndim", 0) == 3
     cell_ids: list[int] = []
+    cell_id_sources: list[str] = []
     for row in out.itertuples(index=False):
         tid = int(row.track_id)
         cell_id: int | None = None
+        cell_id_source = "track"
         if has_mask and has_xy and "frame" in out.columns:
             frame_idx = int(row.frame)
             y = int(round(float(row.y)))
@@ -222,13 +225,19 @@ def assign_cell_ids_to_tracks_df(
                 xi = int(np.clip(x, 0, w - 1))
                 label = int(masks_input[frame_idx, yi, xi])
                 if label > 0 and excel_map:
-                    cell_id = excel_map.get((frame_idx, label))
+                    mapped = excel_map.get((frame_idx, label))
+                    if mapped is not None:
+                        cell_id = int(mapped)
+                        cell_id_source = "analysis"
         if cell_id is None and tid in track_map:
-            cell_id = track_map[tid]
+            cell_id = int(track_map[tid])
+            cell_id_source = "analysis"
         if cell_id is None:
             cell_id = tid
         cell_ids.append(int(cell_id))
+        cell_id_sources.append(str(cell_id_source))
     out["Cell_ID"] = cell_ids
+    out["Cell_ID_Source"] = cell_id_sources
     return out
 
 
@@ -280,6 +289,28 @@ def overlay_label_for_track(track_id: int | None, cell_id: int | None, region_la
     if track_id is not None:
         return str(int(track_id))
     return str(int(region_label))
+
+
+def compact_tracking_label(
+    track_id: int | None,
+    cell_id: int | None,
+    *,
+    cell_id_source: str | None = None,
+    region_label: int | None = None,
+) -> str:
+    """Compact overlay label that makes the ID namespace explicit.
+
+    ``C`` = carried-over analysis/persistent Cell_ID
+    ``T`` = Trackastra/global track_id
+    """
+    source = str(cell_id_source or "").strip().lower()
+    if cell_id is not None and source not in {"", "track"}:
+        return f"C{int(cell_id)}"
+    if track_id is not None:
+        return f"T{int(track_id)}"
+    if region_label is not None:
+        return f"R{int(region_label)}"
+    return "?"
 
 
 def draw_track_centroid_marker(

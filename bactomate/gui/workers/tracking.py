@@ -20,6 +20,7 @@ from bactomate.gui.workers.tracking_io import (
     assign_cell_ids_to_tracks_df,
     blend_path_pixel_on_frame,
     build_track_points_by_id,
+    compact_tracking_label,
     draw_track_centroid_marker,
     draw_trajectory_paths_on_frame,
     overlay_label_for_track,
@@ -1639,6 +1640,8 @@ class TrackingWorker(QThread):
         import pandas as pd
 
         cols = [
+            "DisplayID",
+            "ID_Source",
             "Cell_ID",
             "TrackID",
             "trajectory_length",
@@ -1662,12 +1665,34 @@ class TrackingWorker(QThread):
         if metrics_df is None or len(metrics_df) == 0:
             return pd.DataFrame(columns=cols)
         out = pd.DataFrame()
+        cell_source = None
+        if "Cell_ID_Source" in tracks_df.columns:
+            cell_source = tracks_df.groupby("track_id")["Cell_ID_Source"].first()
         if "Cell_ID" in tracks_df.columns:
             first_cell = tracks_df.groupby("track_id")["Cell_ID"].first()
             out["Cell_ID"] = metrics_df["track_id"].map(first_cell).fillna(metrics_df["track_id"]).astype(int)
         else:
             out["Cell_ID"] = metrics_df["track_id"].astype(int)
         out["TrackID"] = metrics_df["track_id"].astype(int)
+        if cell_source is not None:
+            out["ID_Source"] = (
+                metrics_df["track_id"].map(cell_source).fillna("track").astype(str)
+            )
+        else:
+            out["ID_Source"] = "track"
+        out["DisplayID"] = [
+            compact_tracking_label(
+                int(tid),
+                int(cid),
+                cell_id_source=str(src),
+                region_label=int(tid),
+            )
+            for tid, cid, src in zip(
+                out["TrackID"].tolist(),
+                out["Cell_ID"].tolist(),
+                out["ID_Source"].tolist(),
+            )
+        ]
         out["trajectory_length"] = metrics_df["trajectory_length"].astype(int)
         out["duration_frames"] = metrics_df["duration_frames"].astype(int)
         out["gap_frames"] = metrics_df["gap_frames"].astype(int)
@@ -1882,6 +1907,8 @@ class TrackingWorker(QThread):
             track_points_df["cell_id"] = track_points_df["Cell_ID"]
         elif "track_id" in track_points_df.columns:
             track_points_df["cell_id"] = track_points_df["track_id"]
+        if "Cell_ID_Source" in track_points_df.columns:
+            track_points_df["cell_id_source"] = track_points_df["Cell_ID_Source"].astype(str)
         if "track_id" in track_points_df.columns and "frame" in track_points_df.columns:
             track_points_df = track_points_df.sort_values(["track_id", "frame"])
 
@@ -1908,7 +1935,6 @@ class TrackingWorker(QThread):
             LINEAGE_SCHEMA_VERSION,
             canonical_lineage_tables,
             enrich_lineage_tables,
-            export_lineage_artifacts,
             lineage_run_info_rows,
             load_per_cell_table,
             preflight_lineage_run,
@@ -1961,12 +1987,12 @@ class TrackingWorker(QThread):
             report_path = Path(output_dir) / f"{stem}_lineage_report.xlsx"
             write_lineage_report_workbook(report_path, full, run_info_rows=run_info)
             get_logger().info("Wrote lineage report: %s", report_path)
-            try:
-                fig_paths = export_lineage_artifacts(output_dir, full, stem=stem)
-                for fp in fig_paths:
-                    get_logger().info("Wrote lineage figure: %s", fp)
-            except Exception:
-                get_logger().debug("Lineage figure export failed", exc_info=True)
+            # macOS can overflow the QThread stack while Matplotlib renders lineage
+            # trees from this worker thread. Write the workbook here and let the
+            # dedicated GUI export action render PNG figures on demand.
+            get_logger().info(
+                "Skipped automatic lineage figure export in TrackingWorker; use the lineage export action to write PNG figures."
+            )
         except Exception:
             get_logger().debug("Lineage report workbook write failed", exc_info=True)
         return canonical_lineage_tables(full)
@@ -2549,6 +2575,7 @@ class TrackingWorker(QThread):
                                     draw_track_centroid_marker(vis_frame, y, x, color, export_style)
                                     if draw_track_labels:
                                         cell_id = None
+                                        cell_id_source = "track"
                                         if hasattr(tracks_df, "columns") and "Cell_ID" in tracks_df.columns:
                                             sub = tracks_df[
                                                 (tracks_df["track_id"].astype(int) == int(track_id_int))
@@ -2560,12 +2587,18 @@ class TrackingWorker(QThread):
                                                     val = sub.iloc[0]["Cell_ID"]
                                                     if val is not None and not pd.isna(val):
                                                         cid = int(val)
-                                                        if cid != int(track_id_int):
-                                                            cell_id = cid
+                                                        cell_id = cid
+                                                    if "Cell_ID_Source" in sub.columns:
+                                                        src_val = sub.iloc[0]["Cell_ID_Source"]
+                                                        if src_val is not None and not pd.isna(src_val):
+                                                            cell_id_source = str(src_val)
                                                 except Exception:
                                                     pass
-                                        label_text = overlay_label_for_track(
-                                            int(track_id_int), cell_id, int(track_id_int)
+                                        label_text = compact_tracking_label(
+                                            int(track_id_int),
+                                            cell_id,
+                                            cell_id_source=cell_id_source,
+                                            region_label=int(track_id_int),
                                         )
                                         labels_to_draw.append(
                                             (

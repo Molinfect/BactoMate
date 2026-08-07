@@ -49,6 +49,45 @@ def clear_spotiflow_model_cache() -> None:
     clear_spotiflow_detect_cache()
 
 
+# Keep install strings aligned with requirements.txt / setup/windows/ensure_spotiflow_deps.py.
+# Cap wandb/protobuf so TensorFlow (<2.17 → protobuf<5) stays installable alongside Spotiflow.
+SPOTIFLOW_COMPAT_PIP_SPECS = (
+    "wandb>=0.22.0,!=0.23.1,<0.28.0",
+    "protobuf>=4.25.0,<5.0.0",
+    "tensorboard>=2.12.0,<2.17.0",
+)
+
+
+def is_spotiflow_wandb_protobuf_error(exc: BaseException) -> bool:
+    """True when Spotiflow failed because wandb and protobuf are mismatched."""
+    msg = str(exc)
+    if "wandb_telemetry_pb2" in msg or (
+        "Imports" in msg and ("wandb" in msg.lower() or "protobuf" in msg.lower())
+    ):
+        return True
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if cause is not None and cause is not exc:
+        return is_spotiflow_wandb_protobuf_error(cause)
+    return False
+
+
+def format_spotiflow_import_error(exc: BaseException) -> str:
+    """User-facing message for Spotiflow import / dependency failures."""
+    if is_spotiflow_wandb_protobuf_error(exc):
+        specs = " ".join(f'"{s}"' for s in SPOTIFLOW_COMPAT_PIP_SPECS)
+        return (
+            "Spotiflow failed because wandb and protobuf are incompatible "
+            "(common after unrelated pip upgrades on Windows). "
+            f"Fix in the BactoMate venv: python -m pip install -U {specs} "
+            "Then verify: python main.py --smoke-test"
+        )
+    return (
+        f"Spotiflow import failed: {exc}. "
+        "Install spotiflow in the active environment "
+        "(see requirements.txt / docs/INSTALL_AND_LAUNCH_windows.md)."
+    )
+
+
 def load_spotiflow_model(model_name: str = "general", model_path: Optional[str] = None) -> Any:
     """
     Load and cache a Spotiflow model by name or folder path.
@@ -59,13 +98,21 @@ def load_spotiflow_model(model_name: str = "general", model_path: Optional[str] 
     key = _spotiflow_cache_key(model_name=model_name, model_path=model_path)
     if key in _SPOTIFLOW_MODEL_CACHE:
         return _SPOTIFLOW_MODEL_CACHE[key]
-    from spotiflow.model import Spotiflow
+    try:
+        from spotiflow.model import Spotiflow
+    except Exception as exc:
+        raise RuntimeError(format_spotiflow_import_error(exc)) from exc
 
     _model_name, mp = key
-    if mp:
-        model = Spotiflow.from_folder(mp, map_location="auto")
-    else:
-        model = Spotiflow.from_pretrained(_model_name, map_location="auto")
+    try:
+        if mp:
+            model = Spotiflow.from_folder(mp, map_location="auto")
+        else:
+            model = Spotiflow.from_pretrained(_model_name, map_location="auto")
+    except Exception as exc:
+        if is_spotiflow_wandb_protobuf_error(exc):
+            raise RuntimeError(format_spotiflow_import_error(exc)) from exc
+        raise
     _SPOTIFLOW_MODEL_CACHE[key] = model
     return model
 
@@ -996,9 +1043,9 @@ def detect_peaks_spotiflow(
     if normalize:
         try:
             from spotiflow.utils import normalize as sf_normalize
-        except ImportError:
+        except ImportError as e:
             if raise_on_error:
-                raise RuntimeError("Spotiflow import failed. Install spotiflow in the active environment.")
+                raise RuntimeError(format_spotiflow_import_error(e)) from e
             return None
     raw = np.asarray(coerce_plane_to_2d(image), dtype=np.float64)
     if raw.ndim != 2 or raw.size == 0:
@@ -1050,10 +1097,12 @@ def detect_peaks_spotiflow(
         )
     except ImportError as e:
         if raise_on_error:
-            raise RuntimeError("Spotiflow import failed. Install spotiflow in the active environment.") from e
+            raise RuntimeError(format_spotiflow_import_error(e)) from e
         return None
     except Exception as e:
         if raise_on_error:
+            if is_spotiflow_wandb_protobuf_error(e):
+                raise RuntimeError(format_spotiflow_import_error(e)) from e
             raise RuntimeError(f"Spotiflow prediction failed: {e}") from e
         return None
     if spots is None or getattr(spots, "size", 0) == 0:

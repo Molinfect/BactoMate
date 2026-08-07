@@ -314,6 +314,7 @@ def test_plot_lineage_cell_cycle_area_uses_integer_frame_ticks() -> None:
 
 def test_export_lineage_figures_writes_png(tmp_path) -> None:
     import pandas as pd
+    from PIL import Image
 
     from bactomate.modules.lineage_viz import export_lineage_analysis_figures, export_lineage_figures
 
@@ -349,7 +350,13 @@ def test_export_lineage_figures_writes_png(tmp_path) -> None:
             {"area_asymmetry": [0.5, 0.6]},
         ),
     }
-    written = export_lineage_figures(Path(tmp_path), tables, stem="sample")
+    written = export_lineage_figures(Path(tmp_path), tables, stem="sample", dpi=120)
     assert any(p.suffix == ".png" for p in written)
-    analysis = export_lineage_analysis_figures(Path(tmp_path), tables, stem="sample", lineage_ids=[1, 2])
+    tree_png = next(p for p in written if p.name == "sample_lineage_tree.png")
+    with Image.open(tree_png) as img:
+        dpi = img.info.get("dpi") or (0, 0)
+        assert float(dpi[0]) >= 599.0
+        assert float(dpi[1]) >= 599.0
+        assert img.size[0] >= 3000
+    analysis = export_lineage_analysis_figures(Path(tmp_path), tables, stem="sample", lineage_ids=[1, 2], dpi=120)
     assert any("analysis" in str(p) for p in analysis)

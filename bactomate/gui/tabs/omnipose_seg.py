@@ -2766,7 +2766,10 @@ class OmniposeSegTab(QWidget):
                 preview_dialog._foci_peaks_for_current = list(cache.get(cur_key) or [])
                 if not spotiflow_available:
                     try:
-                        status_label.setText('Foci: Spotiflow unavailable — install spotiflow or check logs. No peaks drawn.')
+                        status_label.setText(
+                            'Foci: Spotiflow unavailable — check logs '
+                            '(often wandb/protobuf mismatch on Windows). No peaks drawn.'
+                        )
                     except Exception:
                         pass
                 elif status_parts:

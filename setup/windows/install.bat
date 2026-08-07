@@ -256,6 +256,14 @@ echo.
 
 :: Step 7.9: verify install
 echo [Step 7.9] Verifying install...
+"%PYEXE%" "%WIN_DIR%ensure_spotiflow_deps.py"
+if errorlevel 1 (
+    echo [BREAK] Spotiflow dependency check failed ^(wandb/protobuf^).
+    echo   Fix: "%PYEXE%" setup\windows\ensure_spotiflow_deps.py
+    echo   See docs/INSTALL_AND_LAUNCH_windows.md
+    pause
+    exit /b 1
+)
 "%PYEXE%" "%ROOT%\main.py" --version
 if errorlevel 1 (
     echo [BREAK] main.py --version failed.
