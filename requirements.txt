@@ -84,4 +84,12 @@ tensorflow>=2.12.0,<2.17.0
 
 # Spotiflow: deep-learning foci detection (Analyze Masks → Run foci → Detection: Spotiflow). Uses PyTorch; GPU recommended for speed.
 spotiflow>=0.6.0,<1.0.0
+# Spotiflow imports wandb at package load. Keep wandb/protobuf/tensorboard in the
+# overlap that also satisfies tensorflow (<2.17 needs protobuf<5 and tensorboard<2.17).
+# Too-new wandb (0.28+) wants protobuf>=5 and breaks U-Net; too-old wandb + protobuf 7
+# breaks Spotiflow with: cannot import name 'Imports' from 'wandb.proto.wandb_telemetry_pb2'
+# Keep in sync with setup/windows/constraints.txt and ensure_spotiflow_deps.py.
+wandb>=0.22.0,!=0.23.1,<0.28.0
+protobuf>=4.25.0,<5.0.0
+tensorboard>=2.12.0,<2.17.0
 

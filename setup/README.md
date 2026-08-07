@@ -33,7 +33,8 @@ setup/
 | `install.bat` | One-shot install: venv, pip, dbscan wheel, requirements, patches, smoke test |
 | `launch_strict.bat` | Template copied to `launch_windows.bat` at project root |
 | `launch_bundle.bat` | Launcher for portable `dist\BactoMate\` bundles |
-| `constraints.txt` | Pip constraints (dbscan wheel pin) |
+| `constraints.txt` | Pip constraints (dbscan wheel pin; wandb/protobuf for Spotiflow) |
+| `ensure_spotiflow_deps.py` | Repair wandb↔protobuf mismatch that breaks Spotiflow foci |
 | `verify_python.py` | Rejects Conda / Store / non-3.11 Python |
 | `create_launcher_assets.py` | Creates `BactoMate.lnk` and desktop shortcut |
 | `minimize_console.ps1` | Minimizes console when GUI starts |

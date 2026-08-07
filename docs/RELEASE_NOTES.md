@@ -4,6 +4,24 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.3 (2026-08-07)
+
+### Dependencies
+
+- **Spotiflow + TensorFlow on Windows:** pin `wandb` / `protobuf` / `tensorboard` in the overlap that satisfies both Spotiflow and U-Net (`wandb>=0.22,<0.28`, `protobuf>=4.25,<5`, `tensorboard>=2.12,<2.17`). Installer runs `setup/windows/ensure_spotiflow_deps.py` before smoke test; smoke fails if `protobuf` is ≥5. Fixes Spotiflow foci failing with `cannot import name 'Imports' from 'wandb.proto...'` without breaking TensorFlow via a unbounded wandb upgrade.
+
+### Tracking
+
+- **Clearer track vs analysis IDs:** overlays and exports distinguish analysis `Cell_ID` (`C…`) from Trackastra track IDs (`T…`) via `Cell_ID_Source`, `DisplayID`, and compact labels — avoids confusing segmentation labels with trajectory IDs.
+- **Lineage PNG quality:** figure export floors at **600 DPI**.
+- **Lineage figure export safety:** tracking worker no longer auto-writes lineage PNGs on a background thread (could crash on macOS with Matplotlib/OpenBLAS stack overflow); workbook still writes; use the lineage UI **Export figures** action for PNGs.
+
+### Docs / install
+
+- Windows install guide documents Spotiflow wandb/protobuf repair and the TensorFlow conflict after upgrading wandb.
+
+---
+
 ## v2.9.2 (2026-08-04)
 
 ### Tracking

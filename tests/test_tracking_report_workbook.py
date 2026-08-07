@@ -23,6 +23,8 @@ def test_report_workbook_raw_and_filtered_sheets(tmp_path):
     )
     track_info = pd.DataFrame(
         {
+            "DisplayID": ["C10", "T2"],
+            "ID_Source": ["analysis", "track"],
             "Cell_ID": [10, 20],
             "TrackID": [1, 2],
             "trajectory_length": [5, 1],
@@ -57,4 +59,6 @@ def test_report_workbook_raw_and_filtered_sheets(tmp_path):
     assert "filtered" in sheets
     assert list(sheets["raw"]["Pass"]) == ["Yes", "No"]
     assert len(sheets["filtered"]) == 1
+    assert str(sheets["raw"].iloc[0]["DisplayID"]) == "C10"
+    assert str(sheets["filtered"].iloc[0]["ID_Source"]) == "analysis"
     assert int(sheets["filtered"].iloc[0]["TrackID"]) == 1

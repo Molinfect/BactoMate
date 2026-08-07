@@ -2,3 +2,9 @@
 # dbscan 1.0.0 is sdist-only on Windows and requires MSVC Build Tools to compile.
 # 0.0.10 ships prebuilt win_amd64 wheels and satisfies omnipose's dbscan dependency.
 dbscan==0.0.10
+
+# Spotiflow + TensorFlow shared band (see requirements.txt / ensure_spotiflow_deps.py).
+# protobuf 5–7 breaks tensorflow-intel <2.17; wandb 0.28+ wants protobuf>=5.
+wandb>=0.22.0,!=0.23.1,<0.28.0
+protobuf>=4.25.0,<5.0.0
+tensorboard>=2.12.0,<2.17.0

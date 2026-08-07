@@ -95,6 +95,14 @@ def test_overlay_label_prefers_cell_id_when_mapped() -> None:
     assert overlay_label_for_track(6, 6, 3) == "6"
 
 
+def test_compact_tracking_label_makes_namespace_explicit() -> None:
+    from bactomate.gui.workers.tracking_io import compact_tracking_label
+
+    assert compact_tracking_label(6, 3, cell_id_source="analysis", region_label=3) == "C3"
+    assert compact_tracking_label(6, 6, cell_id_source="track", region_label=3) == "T6"
+    assert compact_tracking_label(6, None, cell_id_source=None, region_label=3) == "T6"
+
+
 def test_assign_cell_ids_uses_track_map_fallback() -> None:
     import pandas as pd
 
@@ -103,6 +111,7 @@ def test_assign_cell_ids_uses_track_map_fallback() -> None:
     tracks = pd.DataFrame({"track_id": [6], "frame": [0], "y": [5.0], "x": [5.0]})
     out = assign_cell_ids_to_tracks_df(tracks, None, trackid_to_cellid={6: 10})
     assert int(out.iloc[0]["Cell_ID"]) == 10
+    assert str(out.iloc[0]["Cell_ID_Source"]) == "analysis"
 
 
 def test_assign_cell_ids_from_mask_label_excel_map() -> None:
@@ -123,6 +132,18 @@ def test_assign_cell_ids_from_mask_label_excel_map() -> None:
     finally:
         tio.build_excel_frame_label_to_cell_id = orig
     assert int(out.iloc[0]["Cell_ID"]) == 10
+    assert str(out.iloc[0]["Cell_ID_Source"]) == "analysis"
+
+
+def test_assign_cell_ids_marks_track_fallback_source() -> None:
+    import pandas as pd
+
+    from bactomate.gui.workers.tracking_io import assign_cell_ids_to_tracks_df
+
+    tracks = pd.DataFrame({"track_id": [6], "frame": [0], "y": [5.0], "x": [5.0]})
+    out = assign_cell_ids_to_tracks_df(tracks, None)
+    assert int(out.iloc[0]["Cell_ID"]) == 6
+    assert str(out.iloc[0]["Cell_ID_Source"]) == "track"
 
 
 def test_resolve_track_at_centroid_matches_nearest_row() -> None:

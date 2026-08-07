@@ -15,6 +15,24 @@ LINEAGE_TREE_NODE_COLS = ("track_id", "lineage_id", "generation", "x", "y", "par
 LINEAGE_TREE_EDGE_COLS = ("parent_track_id", "daughter_track_id", "division_frame")
 LINEAGE_TREE_FAMILY_GAP = 1.5
 MAX_COMBINED_TREE_LINEAGES = 6
+MIN_LINEAGE_EXPORT_DPI = 600
+def _lineage_export_dpi(dpi: int | float | None) -> int:
+    """Clamp lineage PNG export DPI to a publication-quality minimum."""
+    try:
+        requested = int(round(float(dpi))) if dpi is not None else MIN_LINEAGE_EXPORT_DPI
+    except (TypeError, ValueError):
+        requested = MIN_LINEAGE_EXPORT_DPI
+    return max(MIN_LINEAGE_EXPORT_DPI, requested)
+def _save_lineage_figure(fig: Any, path: Path, *, dpi: int) -> None:
+    """Save a lineage figure and release its memory promptly."""
+    try:
+        fig.savefig(path, dpi=dpi)
+    finally:
+        try:
+            fig.clear()
+        except Exception:
+            pass
+
 
 LINEAGE_REPORT_SHEET_TO_KEY: dict[str, str] = {
     "Lineage Summary": "lineage_summary",
@@ -1104,7 +1122,7 @@ def export_lineage_analysis_figures(
     stem: str,
     lineage_ids: Optional[list[int]] = None,
     metric_columns: Optional[list[str]] = None,
-    dpi: int = 120,
+    dpi: int = MIN_LINEAGE_EXPORT_DPI,
 ) -> list[Path]:
     """Write per-lineage and overlay comparison figures under figures/analysis/."""
     from matplotlib.figure import Figure
@@ -1114,6 +1132,7 @@ def export_lineage_analysis_figures(
     analysis_dir = output_dir / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    export_dpi = _lineage_export_dpi(dpi)
 
     lids = [int(x) for x in (lineage_ids or lineage_ids_from_tables(tables))]
     if not lids:
@@ -1140,7 +1159,7 @@ def export_lineage_analysis_figures(
                 ax = fig.add_subplot(111)
                 plot_lineage_tree(ax, nodes, tree_edges, track_labels=label_map, title=f"Lineage {lid} — family tree")
                 p = analysis_dir / f"lineage_{lid}_tree.png"
-                fig.savefig(p, dpi=dpi)
+                _save_lineage_figure(fig, p, dpi=export_dpi)
                 written.append(p)
 
         if growth_ts is not None and isinstance(growth_ts, pd.DataFrame) and len(growth_ts) > 0:
@@ -1149,7 +1168,7 @@ def export_lineage_analysis_figures(
             plot_lineage_growth(axes[0], growth_ts, lineage_id=int(lid), title=f"Growth — lineage {lid}", events_df=events)
             plot_lineage_growth(axes[1], growth_ts, lineage_id=int(lid), log_scale=True, title=f"Log growth — lineage {lid}", events_df=events)
             p = analysis_dir / f"lineage_{lid}_growth.png"
-            fig.savefig(p, dpi=dpi)
+            _save_lineage_figure(fig, p, dpi=export_dpi)
             written.append(p)
 
         for metric_col in metrics:
@@ -1168,7 +1187,7 @@ def export_lineage_analysis_figures(
                 events_df=events,
             )
             p = analysis_dir / f"lineage_{lid}_{_safe_metric_stem(metric_col)}.png"
-            fig.savefig(p, dpi=dpi)
+            _save_lineage_figure(fig, p, dpi=export_dpi)
             written.append(p)
 
     if lids and growth_ts is not None and isinstance(growth_ts, pd.DataFrame) and len(growth_ts) > 0:
@@ -1177,7 +1196,7 @@ def export_lineage_analysis_figures(
         plot_lineage_growth_overlay(axes[0], growth_ts, lids, title="All lineages — growth", events_df=events)
         plot_lineage_growth_overlay(axes[1], growth_ts, lids, log_scale=True, title="All lineages — log growth", events_df=events)
         p = analysis_dir / f"{stem}_growth_overlay.png"
-        fig.savefig(p, dpi=dpi)
+        _save_lineage_figure(fig, p, dpi=export_dpi)
         written.append(p)
 
     if lids and area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
@@ -1193,7 +1212,7 @@ def export_lineage_analysis_figures(
             title="Cell-cycle area — all lineages",
         )
         p = analysis_dir / f"{stem}_cell_cycle_area.png"
-        fig.savefig(p, dpi=dpi)
+        _save_lineage_figure(fig, p, dpi=export_dpi)
         written.append(p)
 
     if lids and pts is not None and metrics:
@@ -1212,7 +1231,7 @@ def export_lineage_analysis_figures(
                 title=f"Overlay — {metric_col}",
             )
             p = analysis_dir / f"{stem}_overlay_{_safe_metric_stem(metric_col)}.png"
-            fig.savefig(p, dpi=dpi)
+            _save_lineage_figure(fig, p, dpi=export_dpi)
             written.append(p)
 
     if len(lids) > 1 and len(lids) <= MAX_COMBINED_TREE_LINEAGES and meta is not None:
@@ -1222,7 +1241,7 @@ def export_lineage_analysis_figures(
             ax = fig.add_subplot(111)
             plot_lineage_tree(ax, nodes, tree_edges, track_labels=label_map, title=f"{stem} — families 1–{len(lids)}")
             p = analysis_dir / f"{stem}_lineage_tree_combined.png"
-            fig.savefig(p, dpi=dpi)
+            _save_lineage_figure(fig, p, dpi=export_dpi)
             written.append(p)
 
     return written
@@ -1233,7 +1252,7 @@ def export_lineage_figures(
     tables: dict[str, Any],
     *,
     stem: str,
-    dpi: int = 120,
+    dpi: int = MIN_LINEAGE_EXPORT_DPI,
 ) -> list[Path]:
     """Write PNG overview figures: tree, growth overlays, division events, and analysis/."""
     from matplotlib.figure import Figure
@@ -1242,6 +1261,7 @@ def export_lineage_figures(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    export_dpi = _lineage_export_dpi(dpi)
 
     meta = tables.get("lineage_tracks_meta")
     edges = tables.get("lineage_edges")
@@ -1273,7 +1293,7 @@ def export_lineage_figures(
         ax = fig.add_subplot(111)
         plot_lineage_tree(ax, nodes, tree_edges, track_labels=label_map, title=tree_title)
         p = output_dir / f"{stem}_lineage_tree.png"
-        fig.savefig(p, dpi=dpi)
+        _save_lineage_figure(fig, p, dpi=export_dpi)
         written.append(p)
 
     if growth_ts is not None and isinstance(growth_ts, pd.DataFrame) and len(growth_ts) > 0:
@@ -1286,7 +1306,7 @@ def export_lineage_figures(
             plot_lineage_growth(axes[0], growth_ts, title="Lineage growth")
             plot_lineage_growth(axes[1], growth_ts, log_scale=True, title="Log growth")
         p = output_dir / f"{stem}_lineage_growth.png"
-        fig.savefig(p, dpi=dpi)
+        _save_lineage_figure(fig, p, dpi=export_dpi)
         written.append(p)
 
     if area_df is not None and isinstance(area_df, pd.DataFrame) and len(area_df) > 0:
@@ -1312,7 +1332,7 @@ def export_lineage_figures(
                 title="Cell-cycle area trace",
             )
         p = output_dir / f"{stem}_cell_cycle_area.png"
-        fig.savefig(p, dpi=dpi)
+        _save_lineage_figure(fig, p, dpi=export_dpi)
         written.append(p)
 
     if events is not None and isinstance(events, pd.DataFrame) and len(events) > 0:
@@ -1326,11 +1346,11 @@ def export_lineage_figures(
                 ax.set_ylabel("Count")
                 ax.set_title(f"{stem} — division asymmetry")
         p = output_dir / f"{stem}_division_events.png"
-        fig.savefig(p, dpi=dpi)
+        _save_lineage_figure(fig, p, dpi=export_dpi)
         written.append(p)
 
     try:
-        written.extend(export_lineage_analysis_figures(output_dir, tables, stem=stem, lineage_ids=lids, dpi=dpi))
+        written.extend(export_lineage_analysis_figures(output_dir, tables, stem=stem, lineage_ids=lids, dpi=export_dpi))
     except Exception:
         pass
 

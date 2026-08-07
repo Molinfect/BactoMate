@@ -43,12 +43,30 @@ def run() -> None:
             from PyQt6.QtCore import QCoreApplication
             import trackastra  # noqa: F401
             import tifffile
+            # Spotiflow imports wandb at load; keep protobuf in the TensorFlow-safe band.
+            import wandb  # noqa: F401
+            import importlib.metadata as _md
+            _pb = _md.version("protobuf")
+            if int(_pb.split(".")[0]) >= 5:
+                raise RuntimeError(
+                    f"protobuf {_pb} is too new for tensorflow<2.17 (need <5.0.0). "
+                    "Run: python setup/windows/ensure_spotiflow_deps.py"
+                )
             _ = np.zeros((1, 1))
             _ = QCoreApplication
             print("Smoke test OK")
             sys.exit(0)
         except Exception as e:
             print(f"Smoke test failed: {e}", file=sys.stderr)
+            try:
+                from bactomate.modules.foci_utils import (
+                    format_spotiflow_import_error,
+                    is_spotiflow_wandb_protobuf_error,
+                )
+                if is_spotiflow_wandb_protobuf_error(e):
+                    print(format_spotiflow_import_error(e), file=sys.stderr)
+            except Exception:
+                pass
             traceback.print_exc()
             sys.exit(1)
 
