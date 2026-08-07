@@ -1,0 +1,15 @@
+---
+description: Never attribute commits or PRs to Cursor Agent
+alwaysApply: true
+---
+
+# No Cursor commit attribution
+
+Never add any of the following to git commits, commit messages, PRs, or code comments:
+
+- `Co-authored-by: Cursor <cursoragent@cursor.com>`
+- `Co-authored-by: Cursor`
+- `Made with Cursor`
+- `Made-with: Cursor`
+
+Commits must be authored only as the human developer (Philipp / Lasse). Do not list Cursor as a co-author or contributor.

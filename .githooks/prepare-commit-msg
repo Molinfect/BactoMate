@@ -1,0 +1,10 @@
+#!/bin/sh
+# Strip Cursor Agent co-author / Made-with trailers so GitHub contributors stay human-only.
+# Enabled via: git config core.hooksPath .githooks
+msg_file=$1
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+tmp="${msg_file}.tmp.$$"
+# portable: no GNU sed -i required
+grep -v -E '^(Co-authored-by:[[:space:]]*Cursor([[:space:]]*<cursoragent@cursor\.com>)?[[:space:]]*|Made-with:[[:space:]]*Cursor[[:space:]]*|Made with Cursor[[:space:]]*)$' "$msg_file" >"$tmp" || true
+mv "$tmp" "$msg_file"
+exit 0
