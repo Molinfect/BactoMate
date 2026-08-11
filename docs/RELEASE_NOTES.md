@@ -4,6 +4,27 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.4 (2026-08-11)
+
+### Segmentation and Filtering
+
+- **Preview folder:** new QC button between single-file Preview and Segment/Filter File/Folder. When the source folder has more than one eligible file, runs current settings on up to 48 candidates and shows a zoomable thumbnail grid in the right panel; double-click a tile to open the existing single-file preview. Segmentation uses Omnipose/Cellpose-SAM at preview quality; Filtering applies current morphology/size/focus filters with accept/reject coloring.
+- **Foci preview overlays:** exclusive blob assignment for close foci; hollow outlines with peak markers; clearer pass/fail hover tooltips.
+- **Foci hover metrics:** rename misleading `Rel. intens.` to **Frame-rel. intens.** (peak / frame median) and show **Per-cell ratio** (blob mean / rest-of-cell mean) — the same quantity used by the Per-cell ratio filter.
+- **Filter preview View sync:** fix Apply/View desync when Qt returns source keys as lists vs tuples (View no longer snaps to the wrong stack while filters stay on Phase).
+
+### Tracking
+
+- **Re-track applies filters:** change Model/Mode/filters, then hit **Re-track** — Trackastra re-runs and current filters/stitch are applied to the overlay and metrics table. Removed the separate **Redraw filtered tracks** step.
+- **Metrics table:** header double-click sort; unchecking Metrics table clears selection/highlight.
+- **Report workbook:** Excel keeps **Run info**, **raw** (all tracks + Pass), and **filtered** only — dropped redundant unfiltered `track_summary` sheet (canonical `tables/track_summary.parquet` remains for pipelines).
+
+### Docs
+
+- README paper link points to the bioRxiv preprint.
+
+---
+
 ## v2.9.3 (2026-08-07)
 
 ### Dependencies

@@ -26,6 +26,7 @@ def test_foci_peak_tooltip_includes_metrics() -> None:
             "area_px": 12,
             "mean_intensity": 1400.0,
             "rel_intensity": 2.3,
+            "per_cell_ratio": 3.1,
             "cell_id": 5,
         },
         status="pass",
@@ -33,6 +34,8 @@ def test_foci_peak_tooltip_includes_metrics() -> None:
     assert "pass" in tip.lower()
     assert "y=10" in tip
     assert "Area (px): 12" in tip
+    assert "Frame-rel. intens.: 2.30" in tip
+    assert "Per-cell ratio: 3.10" in tip
     assert "Cell ID: 5" in tip
 
 

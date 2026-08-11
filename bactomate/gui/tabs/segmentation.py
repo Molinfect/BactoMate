@@ -761,30 +761,83 @@ class SegmentationTab(QWidget):
         try:
             if backend in ("omnipose", "cellpose"):
                 owner = self.omnipose_tab if backend == "omnipose" else self._cellpose_owner
+                folder_name = owner.get_segmentation_output_folder_name()
+
+                # Prefer the directory the run actually wrote (folder mode may scan into Tif_*/).
+                last = getattr(owner, "_last_output_dir", None)
+                if last is not None:
+                    last_p = Path(last)
+                    if last_p.is_dir():
+                        return last_p
+
                 raw = (owner.file_path.text() or "").strip()
                 if not raw:
                     return None
                 p = Path(raw)
-                folder_name = owner.get_segmentation_output_folder_name()
-                if p.is_dir():
-                    return p / folder_name
+                found = self._find_existing_segmentation_output(p, folder_name)
+                if found is not None:
+                    return found
+                # Fall back to the expected location for a direct Tif_* / file pick.
                 if p.is_file():
-                    # Best-effort: Omnipose writes next to file; if it lives in a Tif_* folder, output folder is inside that.
-                    return p.parent / folder_name
+                    expected = owner.resolve_segmentation_output_dir_for_tiff(p, folder_name)
+                    return expected
+                if p.is_dir() and p.name.startswith("Tif_"):
+                    return p / folder_name
                 return None
             if backend == "unet":
-                raw = (self.unet_tab.file_path.text() or "").strip()
+                owner = self.unet_tab
+                last = getattr(owner, "_last_output_dir", None)
+                if last is not None and Path(last).is_dir():
+                    return Path(last)
+                raw = (owner.file_path.text() or "").strip()
                 if not raw:
                     return None
                 p = Path(raw)
                 if p.is_dir():
-                    return p / "_segmentation_unet"
+                    found = self._find_existing_segmentation_output(p, "_segmentation_unet")
+                    if found is not None:
+                        return found
+                    if p.name.startswith("Tif_"):
+                        return p / "_segmentation_unet"
+                    return None
                 if _path_is_file_input(p):
                     if p.parent.name.startswith("Tif_"):
                         return p.parent / "_segmentation_unet"
                     return p.parent / f"{p.stem}_unet_segmentation"
         except Exception:
             return None
+        return None
+
+    @staticmethod
+    def _find_existing_segmentation_output(root: Path, folder_name: str) -> Optional[Path]:
+        """Locate a real mask output folder near the segmentation input path."""
+        root = Path(root)
+        if root.is_file():
+            root = root.parent
+        if not root.is_dir():
+            return None
+        direct = root / folder_name
+        if direct.is_dir():
+            return direct
+        try:
+            for sub in sorted(root.iterdir()):
+                if not sub.is_dir():
+                    continue
+                if sub.name.startswith("Tif_"):
+                    cand = sub / folder_name
+                    if cand.is_dir():
+                        return cand
+                if sub.name == folder_name or sub.name.endswith("_omnipose_segmentation") or sub.name.endswith(
+                    "_unet_segmentation"
+                ):
+                    return sub
+        except OSError:
+            pass
+        try:
+            if any(root.glob("*_masks.tif")):
+                return root
+        except OSError:
+            pass
         return None
 
     def _update_stage_gates(self) -> None:

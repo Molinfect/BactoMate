@@ -57,6 +57,7 @@ def test_report_workbook_raw_and_filtered_sheets(tmp_path):
     assert "Run info" in sheets
     assert "raw" in sheets
     assert "filtered" in sheets
+    assert "track_summary" not in sheets
     assert list(sheets["raw"]["Pass"]) == ["Yes", "No"]
     assert len(sheets["filtered"]) == 1
     assert str(sheets["raw"].iloc[0]["DisplayID"]) == "C10"

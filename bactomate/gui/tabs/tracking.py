@@ -48,6 +48,7 @@ from bactomate.gui.module_shell import PreviewSurface, mount_embedded_preview
 from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, RenderResult
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET
 from bactomate.gui.trackastra_utils import TRACKASTRA_DEFAULT_MODEL, TRACKASTRA_SAM2_MODEL, format_trackastra_model_error, trackastra_pretrained_feats_installed, validate_trackastra_model_choice
+from bactomate.gui.foci_filter_pipeline import apply_foci_table_header_sort, restore_foci_table_sort
 from bactomate.gui.workers import TrackingPreviewResult, TrackingWorker
 from bactomate.gui.workers.tracking_io import compact_tracking_label, overlay_label_for_track, scale_tracks_df_for_display
 _TRACKING_PREVIEW_TIFF_CAP = 2500
@@ -624,7 +625,7 @@ class TrackingTab(QWidget):
         self.create_vis_cb.setToolTip(f'Full Run tracking only: build *_overlay_tracked.tif and *_trajectories.tif when a phase stack is found (per-frame overlay with labels — slow on long movies).\n\nUncheck to skip visualization and save only tracks CSV, tracked masks, and the report workbook.\n\nPreview tracking never writes files and uses a separate light in-memory overlay (first {TRACKING_PREVIEW_FRAME_LIMIT} frames only).')
         self.overlay_track_data_cb = QCheckBox('Metrics table')
         self.overlay_track_data_cb.setChecked(False)
-        self.overlay_track_data_cb.setToolTip('Preview only: table of whole-track metrics for every track in the preview run.\n\nOpens below Filter tracks in the preview panel (the settings area scrolls to it).\n\nFilter edits do not recompute immediately. Use «Redraw filtered tracks» under the frame slider to recompute the filtered overlay and refresh the table, or «Re-track» to run Trackastra again.\n\nDouble-click a row to focus that track (yellow path + cell highlight).')
+        self.overlay_track_data_cb.setToolTip('Preview only: table of whole-track metrics for every track in the preview run.\n\nOpens below Filter tracks in the preview panel (the settings area scrolls to it).\n\nFilter edits do not recompute immediately — change filters (and Model/Mode if needed), then hit «Re-track». That re-runs Trackastra and applies the current filters to the overlay and table.\n\nDouble-click a row to focus that track (yellow path + cell highlight).')
         cal_host = QWidget()
         cal_line = QHBoxLayout(cal_host)
         cal_line.setContentsMargins(0, 0, 0, 0)
@@ -749,11 +750,38 @@ class TrackingTab(QWidget):
 
         stitch_box = QFrame()
         stitch_box.setObjectName('StitchTracksBox')
+        # Labels/checkbox must be transparent — otherwise Qt paints opaque chips that
+        # look like floating overlays on top of the outlined stitch group.
         stitch_box.setStyleSheet(
             '#StitchTracksBox {'
             '  border: 1px solid #3d4a5c;'
             '  border-radius: 4px;'
             '  background-color: #1a222e;'
+            '}'
+            '#StitchTracksBox QLabel,'
+            '#StitchTracksBox QCheckBox {'
+            '  background: transparent;'
+            '  border: none;'
+            '  color: #dce4ee;'
+            '}'
+            '#StitchTracksBox QSpinBox,'
+            '#StitchTracksBox QDoubleSpinBox {'
+            '  background-color: #121820;'
+            '  border: 1px solid #4a5a6e;'
+            '  border-radius: 3px;'
+            '  color: #e8eef6;'
+            '  padding: 1px 4px;'
+            '}'
+            '#StitchTracksBox QSpinBox:focus,'
+            '#StitchTracksBox QDoubleSpinBox:focus,'
+            '#StitchTracksBox QSpinBox:enabled:hover,'
+            '#StitchTracksBox QDoubleSpinBox:enabled:hover {'
+            '  border: 1px solid #6a8aac;'
+            '}'
+            '#StitchTracksBox QSpinBox:disabled,'
+            '#StitchTracksBox QDoubleSpinBox:disabled {'
+            '  color: #7a8490;'
+            '  border: 1px solid #2e3846;'
             '}'
         )
         stitch_box.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -761,7 +789,28 @@ class TrackingTab(QWidget):
         stitch_lay.setContentsMargins(6, 2, 6, 2)
         stitch_lay.setSpacing(4)
         stitch_lay.addWidget(self.stitch_enabled_cb, 0)
-        stitch_lay.addWidget(create_info_icon(_FILTER_TIP_STITCH, self, compact=True), 0)
+        stitch_info = create_info_icon(_FILTER_TIP_STITCH, self, compact=True)
+        # Keep the (?) chip, but don't let a dark fill fight the stitch group fill.
+        stitch_info.setStyleSheet(
+            'QLabel {'
+            '  color: #8a96a4;'
+            '  font-size: 7pt;'
+            '  font-weight: 600;'
+            '  background: transparent;'
+            '  border: 1px solid #4a5a6e;'
+            '  border-radius: 4px;'
+            '  padding: 0px 2px;'
+            '  min-width: 11px;'
+            '  min-height: 11px;'
+            '  max-width: 11px;'
+            '  max-height: 11px;'
+            '}'
+            'QLabel:hover {'
+            '  color: #4a9eff;'
+            '  border: 1px solid #4a9eff;'
+            '}'
+        )
+        stitch_lay.addWidget(stitch_info, 0)
         self._stitch_gap_label = QLabel('Gap')
         self._stitch_gap_label.setToolTip('Stitch only: max missing frames between end of track A and start of track B.')
         stitch_lay.addWidget(self._stitch_gap_label, 0)
@@ -770,6 +819,12 @@ class TrackingTab(QWidget):
         self._stitch_jump_label.setToolTip('Stitch only: max distance between A’s last and B’s first detection (px or µm from calibration).')
         stitch_lay.addWidget(self._stitch_jump_label, 0)
         stitch_lay.addWidget(self.stitch_max_jump, 0)
+        for _w in (self.stitch_enabled_cb, self._stitch_gap_label, self._stitch_jump_label, stitch_info):
+            try:
+                _w.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+                _w.setAutoFillBackground(False)
+            except Exception:
+                pass
 
         # 2-column grid fits typical preview widths; stitch shares the last row with straightness.
         metrics_grid = QWidget(filter_wrap)
@@ -1842,18 +1897,24 @@ class TrackingTab(QWidget):
         path_hdr = 'Path length (µm)' if use_um else 'Path length (px)'
         speed_hdr = 'Mean speed (µm/s)' if use_speed_physical else 'Mean speed (px/frame)'
         headers = ['Pass', 'Track ID', 'Detections', 'Duration (frames)', 'Gaps', disp_hdr, path_hdr, speed_hdr, 'Straightness', 'In frame']
+        was_sorting = bool(table.isSortingEnabled())
+        table.setSortingEnabled(False)
         table.clear()
         table.setColumnCount(len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setRowCount(0)
         if not _is_pandas_dataframe(metrics_df) or metrics_df.empty:
+            table.clearSelection()
+            table.setSortingEnabled(was_sorting)
             return
         in_frame_ids: set[int] = set()
         if _is_pandas_dataframe(tracks_df) and (not tracks_df.empty) and ('frame' in tracks_df.columns):
             in_frame_ids = {int(tid) for tid in tracks_df.loc[tracks_df['frame'] == frame_idx, 'track_id'].unique()}
         subset = metrics_df.copy()
-        subset['_pass_order'] = subset['track_id'].map(lambda tid: 0 if int(tid) in passing_ids else 1)
-        subset = subset.sort_values(['_pass_order', 'track_id']).drop(columns=['_pass_order'])
+        # Default order before any user header sort: pass first, then track id.
+        if getattr(table, '_foci_sort_col', None) is None:
+            subset['_pass_order'] = subset['track_id'].map(lambda tid: 0 if int(tid) in passing_ids else 1)
+            subset = subset.sort_values(['_pass_order', 'track_id']).drop(columns=['_pass_order'])
         pass_brush = QBrush(QColor(40, 90, 55))
         fail_brush = QBrush(QColor(55, 45, 45))
         table.setRowCount(len(subset))
@@ -1866,20 +1927,63 @@ class TrackingTab(QWidget):
             disp = float(m['displacement_um'] if use_um else m['displacement_px'])
             path = float(m['path_length_um'] if use_um else m['path_length_px'])
             spd = float(m['mean_speed_um_s'] if use_speed_physical else m['mean_speed_px_frame'])
-            values = ['Yes' if passes else 'No', str(tid), str(int(m['trajectory_length'])), str(int(m['duration_frames'])), str(int(m['gap_frames'])), f'{disp:.2f}' if use_um else f'{disp:.0f}', f'{path:.2f}' if use_um else f'{path:.0f}', f'{spd:.3f}' if use_speed_physical else f'{spd:.2f}', f"{float(m['straightness']):.2f}", 'Yes' if tid in in_frame_ids else 'No']
+            raw_values: list[Any] = [
+                1 if passes else 0,
+                tid,
+                int(m['trajectory_length']),
+                int(m['duration_frames']),
+                int(m['gap_frames']),
+                disp,
+                path,
+                spd,
+                float(m['straightness']),
+                1 if tid in in_frame_ids else 0,
+            ]
+            display_values = [
+                'Yes' if passes else 'No',
+                str(tid),
+                str(int(m['trajectory_length'])),
+                str(int(m['duration_frames'])),
+                str(int(m['gap_frames'])),
+                f'{disp:.2f}' if use_um else f'{disp:.0f}',
+                f'{path:.2f}' if use_um else f'{path:.0f}',
+                f'{spd:.3f}' if use_speed_physical else f'{spd:.2f}',
+                f"{float(m['straightness']):.2f}",
+                'Yes' if tid in in_frame_ids else 'No',
+            ]
             brush = pass_brush if passes else fail_brush
-            for (col_i, text) in enumerate(values):
-                item = QTableWidgetItem(text)
+            for (col_i, (raw, text)) in enumerate(zip(raw_values, display_values)):
+                item = SortableTrackingTableItem(raw)
+                item.setText(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setBackground(brush)
                 if col_i == 1:
                     item.setData(Qt.ItemDataRole.UserRole, tid)
                 table.setItem(row_i, col_i, item)
+        restore_foci_table_sort(table)
         if select_row >= 0:
-            table.selectRow(select_row)
-            id_item = table.item(select_row, 1)
-            if id_item is not None:
-                table.scrollToItem(id_item)
+            # Row may have moved after restore_foci_table_sort — re-find by track id.
+            if getattr(table, '_foci_sort_col', None) is not None and selected_track_id is not None:
+                select_row = -1
+                for r in range(table.rowCount()):
+                    id_item = table.item(r, 1)
+                    if id_item is None:
+                        continue
+                    tid_v = id_item.data(Qt.ItemDataRole.UserRole)
+                    try:
+                        if tid_v is not None and int(tid_v) == int(selected_track_id):
+                            select_row = r
+                            break
+                    except (TypeError, ValueError):
+                        pass
+            if select_row >= 0:
+                table.selectRow(select_row)
+                id_item = table.item(select_row, 1)
+                if id_item is not None:
+                    table.scrollToItem(id_item)
+        else:
+            table.clearSelection()
+        table.setSortingEnabled(was_sorting)
         _fit_preview_metrics_table_columns(table)
         QTimer.singleShot(0, lambda t=table: _fit_preview_metrics_table_columns(t))
 
@@ -2003,8 +2107,20 @@ class TrackingTab(QWidget):
 
     def _run_preview_retrack(self, preview_state: dict[str, Any], *, on_updated: Callable[[], None]) -> None:
         """Re-run Trackastra in memory for the open preview (model/mode from UI)."""
+
+        def _restore_preview_retrack_buttons() -> None:
+            retrack_btn = getattr(self, '_preview_retrack_btn', None)
+            if retrack_btn is not None and self._qt_widget_alive(retrack_btn):
+                try:
+                    retrack_btn.setEnabled(True)
+                    retrack_btn.setText('Re-track')
+                except RuntimeError:
+                    pass
+            self._preview_retrack_btn = None
+
         mask_path = preview_state.get('mask_path')
         if mask_path is None:
+            _restore_preview_retrack_buttons()
             show_message_dialog(self._main_window(), 'Re-track', 'No mask path for this preview.', kind='warning')
             return
         mask_file = Path(mask_path)
@@ -2047,6 +2163,7 @@ class TrackingTab(QWidget):
             on_updated()
         model_name = self._selected_trackastra_model()
         if not self._ensure_trackastra_model_available(model_name, title='Re-track'):
+            _restore_preview_retrack_buttons()
             return
         frame_limit = preview_state.get('preview_frame_limit', TRACKING_PREVIEW_FRAME_LIMIT)
         self._preview_state_updater = lambda p: _apply_payload(p) if isinstance(p, TrackingPreviewResult) else None
@@ -2072,11 +2189,25 @@ class TrackingTab(QWidget):
         else:
             show_message_dialog(self._main_window(), 'Preview failed', message, kind='error')
         self._preview_state_updater = None
+        retrack_btn = getattr(self, '_preview_retrack_btn', None)
+        if retrack_btn is not None and self._qt_widget_alive(retrack_btn):
+            try:
+                retrack_btn.setEnabled(True)
+                retrack_btn.setText('Re-track')
+            except RuntimeError:
+                pass
+        self._preview_retrack_btn = None
         if hasattr(self, 'worker') and self.worker is not None:
-            self.worker.wait()
+            # finished already fired — do not block the GUI with wait().
+            try:
+                if self.worker.isRunning():
+                    self.worker.wait(50)
+            except Exception:
+                pass
             self.worker = None
         QTimer.singleShot(2000, lambda : self.parent_window.progress_bar.setVisible(False))
         self._set_run_buttons_busy(False)
+        self._last_tracking_progress_log_pct = -999
 
     def _show_tracking_preview_result(self, result: TrackingPreviewResult) -> None:
         """Embed trajectory preview with parameters/filters in the right pane (segmentation-style)."""
@@ -2483,8 +2614,29 @@ class TrackingTab(QWidget):
         self.parent_window.progress_bar.setValue(value)
         if getattr(self, '_tracking_busy_action', None):
             self._update_busy_action_progress(value, message=str(message or ''))
+        # Keep the preview Re-track button responsive without a beachball wait cursor.
+        retrack_btn = getattr(self, '_preview_retrack_btn', None)
+        if retrack_btn is not None and self._qt_widget_alive(retrack_btn):
+            try:
+                retrack_btn.setText(f'Re-tracking… {max(0, min(100, int(value)))}%')
+            except RuntimeError:
+                pass
         if message:
-            self.parent_window.log_output(f'[{value}%] {message}\n')
+            # Logging every Trackastra tick floods the GUI and freezes the event loop on macOS.
+            last = int(getattr(self, '_last_tracking_progress_log_pct', -999) or -999)
+            pct = int(value)
+            msg_l = str(message).lower()
+            notable = (
+                pct >= 100
+                or pct - last >= 10
+                or 'error' in msg_l
+                or 'fail' in msg_l
+                or 'warning' in msg_l
+                or pct in (0, 35, 50, 70, 85, 100)
+            )
+            if notable:
+                self._last_tracking_progress_log_pct = pct
+                self.parent_window.log_output(f'[{pct}%] {message}\n')
 
     def _maybe_auto_open_preview_window(self, out_path: Path) -> None:
         """After a successful Preview run, open the trajectory viewer if a TIFF was written."""
@@ -2794,14 +2946,10 @@ class TrackingTab(QWidget):
         if _is_pandas_dataframe(tracks_df):
             tracks_full = tracks_df.copy()
         preview_state: dict[str, Any] = {'frames': frames, 'tracks_df': tracks_full if tracks_full is not None else tracks_df, 'tracks_df_full': tracks_full if tracks_full is not None else tracks_df, 'original_path': original_path, 'mask_path': mask_path, 'traj_path': traj_path, 'tracks_csv': tracks_csv, 'stack_images': np.asarray(stack_images) if stack_images is not None and getattr(stack_images, 'ndim', 0) == 3 else None, 'masks_input': np.asarray(masks_input) if masks_input is not None and getattr(masks_input, 'ndim', 0) == 3 else None, 'masks_tracked': np.asarray(masks_tracked) if masks_tracked is not None and getattr(masks_tracked, 'ndim', 0) == 3 else None, 'preview_frame_limit': getattr(self, '_last_preview_frame_limit', TRACKING_PREVIEW_FRAME_LIMIT), 'edges_df': edges_df, 'founder_by_track': founder_by_track or {}, 'lineage_tables': lineage_tables or {}, 'is_lineage_preview': bool(is_lineage_preview), 'selected_lineage_track_id': None, 'display_scale_y': float(display_scale_y or 1.0), 'display_scale_x': float(display_scale_x or 1.0), 'overlay_layers': {'masks': True, 'paths': True, 'ids': False, 'centers': False, 'untracked': bool(is_lineage_preview)}}
-        reapply_btn = QPushButton('Redraw filtered tracks')
-        style_module_primary_button(reapply_btn)
-        reapply_btn.setMinimumHeight(32)
-        reapply_btn.setToolTip('Redraw the trajectory image so only tracks that pass the current filters are shown (colored masks and paths).\n\nChanging filter spins updates the metrics table immediately but does not redraw the image — use this when you are happy with the filter settings.\n\nCan take a few seconds on long previews; tune filters via the table first, then redraw.\n\nDoes not re-run Trackastra — use Re-track after changing Model or Mode.')
         retrack_btn = QPushButton('Re-track')
         style_module_primary_button(retrack_btn)
         retrack_btn.setMinimumHeight(32)
-        retrack_btn.setToolTip('Re-run Trackastra with the current Model and Mode on this mask (in memory, no files written).\n\nAfter re-tracking, click «Redraw filtered tracks» to refresh the image with your filters.')
+        retrack_btn.setToolTip('Re-run Trackastra with the current Model and Mode, then apply Filter tracks (and stitch) to the overlay and metrics table.\n\nChange filters / Model / Mode, then hit Re-track — one action. In memory only; no files written.')
         open_inspector_btn: QPushButton | None = None
         lineage_frame_label: QLabel | None = None
         if bool(is_lineage_preview):
@@ -2831,7 +2979,6 @@ class TrackingTab(QWidget):
         nav_lay.addWidget(frame_label)
         nav_lay.addWidget(loop_btn)
         nav_lay.addWidget(retrack_btn)
-        nav_lay.addWidget(reapply_btn)
         if open_inspector_btn is not None:
             nav_lay.addWidget(open_inspector_btn)
         if bool(is_lineage_preview):
@@ -2879,7 +3026,7 @@ class TrackingTab(QWidget):
         metrics_table_lay = QVBoxLayout(metrics_table_host)
         metrics_table_lay.setContentsMargins(0, 0, 0, 0)
         metrics_table_lay.setSpacing(4)
-        metrics_table_hint = QLabel('Pass and metrics here refresh when you click «Redraw filtered tracks» (or after «Re-track»). Changing filter values alone does not recompute the image above.\n\nFilters apply to each full trajectory. In frame = whether that track appears on the frame you are viewing. Double-click a row to jump to that track (yellow path and cell highlight on the current overlay).')
+        metrics_table_hint = QLabel('Pass and metrics refresh after «Re-track» (filters + stitch applied with the new tracks). Changing filter values alone does not update the image or table — hit Re-track when ready.\n\nFilters apply to each full trajectory. In frame = whether that track appears on the frame you are viewing. Double-click a row to jump to that track (yellow path and cell highlight on the current overlay).\n\nDouble-click a column header to sort ascending / descending. Uncheck «Metrics table» to clear the highlight.')
         metrics_table_hint.setWordWrap(True)
         metrics_table_lay.addWidget(metrics_table_hint)
         metrics_table = QTableWidget()
@@ -2888,10 +3035,19 @@ class TrackingTab(QWidget):
         metrics_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         metrics_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         metrics_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        metrics_table.setSortingEnabled(False)
         metrics_table.setMinimumHeight(100)
         metrics_table.setMaximumHeight(180)
         metrics_table.setMinimumWidth(0)
         metrics_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        try:
+            hh = metrics_table.horizontalHeader()
+            if hh is not None:
+                hh.setSectionsClickable(True)
+                hh.setSortIndicatorShown(False)
+                hh.setToolTip('Double-click a column header to sort ascending / descending.')
+        except Exception:
+            pass
         preview_state['metrics_table_column_fit_filter'] = _MetricsTableColumnFitFilter(metrics_table, host=metrics_table_host)
         _col_fit = preview_state['metrics_table_column_fit_filter']
         metrics_table.installEventFilter(_col_fit)
@@ -3315,7 +3471,7 @@ class TrackingTab(QWidget):
             )
 
         def _tracks_for_overlay() -> Any:
-            """Tracks used for canvas compose: filtered overlay after Redraw, else full/stitched."""
+            """Tracks used for canvas compose: filtered overlay after Re-track, else full/stitched."""
             overlay_ids = preview_state.get('overlay_track_ids')
             if overlay_ids is not None:
                 td = preview_state.get('tracks_df')
@@ -3331,7 +3487,7 @@ class TrackingTab(QWidget):
             )
             overlay_ids = preview_state.get('overlay_track_ids')
             if overlay_ids is not None:
-                # After Redraw: key matches filtered overlay so layer toggles recompose correctly.
+                # After filters applied (via Re-track): key matches filtered overlay so layer toggles recompose correctly.
                 tracks_token = ('filtered', frozenset(int(t) for t in overlay_ids))
                 founder_src = preview_state.get('founder_by_track_stitched') or preview_state.get('founder_by_track') or {}
             else:
@@ -3465,6 +3621,29 @@ class TrackingTab(QWidget):
             _focus_track_in_preview(int(tid))
             _refresh_lineage_plot()
         metrics_table.cellDoubleClicked.connect(_on_metrics_table_double_clicked)
+
+        def _on_metrics_header_double_clicked(logical_index: int) -> None:
+            apply_foci_table_header_sort(metrics_table, int(logical_index))
+
+        try:
+            hh = metrics_table.horizontalHeader()
+            if hh is not None:
+                hh.sectionDoubleClicked.connect(_on_metrics_header_double_clicked)
+        except Exception:
+            pass
+
+        def _clear_metrics_table_selection_and_highlight() -> None:
+            preview_state['highlight_track_id'] = None
+            preview_state['selected_lineage_track_id'] = None
+            table = preview_state.get('metrics_table')
+            if table is not None:
+                try:
+                    table.clearSelection()
+                except RuntimeError:
+                    pass
+            if _preview_live_updates_active():
+                dlg.refresh()
+
         lineage_side_panel: QWidget | None = None
         lineage_table: QTableWidget | None = None
         lineage_metric_combo: QComboBox | None = None
@@ -3671,16 +3850,11 @@ class TrackingTab(QWidget):
                 open_inspector_btn.clicked.connect(_open_full_lineage_inspector)
 
         def apply_filters() -> None:
+            """Apply stitch + Pass/Fail filters to overlay and metrics (lazy per-frame compose — no full-stack redraw)."""
             tracks_in = _tracks_for_filtering()
             if not _is_pandas_dataframe(tracks_in) or tracks_in.empty:
-                show_message_dialog(self._main_window(), 'Redraw filtered tracks', 'No track data to filter.', kind='warning')
+                show_message_dialog(self._main_window(), 'Re-track', 'No track data to filter.', kind='warning')
                 return
-            orig = preview_state.get('original_path')
-            if orig is None or not Path(orig).is_file():
-                mp = preview_state.get('mask_path')
-                if mp is not None:
-                    orig = self._resolve_original_for_mask(Path(mp))
-                    preview_state['original_path'] = orig
             for col in ('track_id', 'frame', 'y', 'x'):
                 if col not in tracks_in.columns:
                     show_message_dialog(self._main_window(), 'Invalid tracks', f'Missing column: {col}', kind='warning')
@@ -3694,33 +3868,10 @@ class TrackingTab(QWidget):
                 return
             filtered_ids = self._apply_track_filters(metrics_df, params)
             filtered_df = tracks_in[tracks_in['track_id'].isin(filtered_ids)].copy()
-            images = preview_state.get('stack_images')
-            if images is None or getattr(images, 'ndim', 0) != 3:
-                if orig is None or not Path(orig).is_file():
-                    show_message_dialog(self._main_window(), 'Redraw filtered tracks', 'Original phase/stack image not found — needed to redraw filtered trajectories.', kind='warning')
-                    return
-                images = safe_imread(str(orig))
-            else:
-                images = np.asarray(images)
-            if getattr(images, 'ndim', 0) != 3:
-                return
-            n_show = int(preview_state['frames'].shape[0])
-            if images.shape[0] > n_show:
-                images = images[:n_show]
-            masks_tr = _masks_tracked_for_filtering()
-            if masks_tr is not None:
-                masks_tr = np.asarray(masks_tr)
-                if masks_tr.shape[0] > n_show:
-                    masks_tr = masks_tr[:n_show]
-            filtered_disp = _tracks_for_display(filtered_df)
-            preview_state['frames'] = self._draw_filtered_trajectory_overlay(images, filtered_disp, masks_tracked=masks_tr)
             preview_state['tracks_df'] = filtered_df
             preview_state['metrics_df'] = metrics_df
             preview_state['overlay_track_ids'] = frozenset(int(t) for t in filtered_ids)
             _invalidate_preview_compose_cache()
-            # Seed compose cache from the just-drawn overlay so refresh does not recompose the stack.
-            preview_state['composed_frames'] = preview_state['frames']
-            preview_state['compose_cache_key'] = _preview_compose_cache_key()
             n_tr = filtered_df['track_id'].nunique() if not filtered_df.empty else 0
             n_stitch = int(preview_state.get('stitch_merge_count') or 0)
             stitch_note = f', {n_stitch} stitch merge(s)' if n_stitch else ''
@@ -3741,15 +3892,25 @@ class TrackingTab(QWidget):
                 return
 
             def _after_retrack() -> None:
+                # Trackastra built frames_rgb on the worker. Apply current filters via lazy
+                # compose (overlay_track_ids) — do not redraw the full stack on the GUI thread.
                 nf = int(preview_state['frames'].shape[0])
                 frame_slider.setMaximum(max(0, nf - 1))
                 if frame_slider.value() >= nf:
                     frame_slider.setValue(max(0, nf - 1))
-                if lineage_table is not None:
-                    _populate_lineage_side_panel(lineage_table)
-                    _update_lineage_panel_frame(frame_slider.value())
-                    _refresh_lineage_plot()
                 apply_filters()
+
+                def _refresh_lineage_ui() -> None:
+                    if lineage_table is not None and self._qt_widget_alive(lineage_table):
+                        _populate_lineage_side_panel(lineage_table)
+                        _update_lineage_panel_frame(frame_slider.value())
+                        _refresh_lineage_plot()
+                QTimer.singleShot(0, _refresh_lineage_ui)
+
+            self._preview_retrack_btn = retrack_btn
+            retrack_btn.setEnabled(False)
+            retrack_btn.setText('Re-tracking…')
+            self._last_tracking_progress_log_pct = -999
             self._run_preview_retrack(preview_state, on_updated=_after_retrack)
 
         def _render(_state) -> RenderResult:
@@ -3794,10 +3955,9 @@ class TrackingTab(QWidget):
                 info += ' · preview resolution (downsampled)'
             return RenderResult(pixmap=pixmap, image_size=(int(scaled.shape[1]), int(scaled.shape[0])), title_text=f"{display_name} — frame {fi + 1}/{preview_state['frames'].shape[0]}", info_text=info, foci_hover_data=hover_data)
 
-        reapply_btn.clicked.connect(apply_filters)
         retrack_btn.clicked.connect(retrack_and_filter)
         dlg_parent = mount if embed else self._main_window()
-        dlg = PreviewDialogBase(dlg_parent, title=display_name, post_canvas_controls=nav, navigation_controls=None, top_controls=settings_scroll, top_controls_title='', top_controls_expanded=False, lut_expanded=False, primary_action_label='Redraw filtered tracks', primary_action_callback=apply_filters, render_callback=_render, minimum_size=(200, 200) if embed else (900, 700), side_controls=None, embedded=embed, show_close_button=not embed, hide_title_and_builtin_info=embed, info_row_above_navigation=False)
+        dlg = PreviewDialogBase(dlg_parent, title=display_name, post_canvas_controls=nav, navigation_controls=None, top_controls=settings_scroll, top_controls_title='', top_controls_expanded=False, lut_expanded=False, primary_action_label='Re-track', primary_action_callback=retrack_and_filter, render_callback=_render, minimum_size=(200, 200) if embed else (900, 700), side_controls=None, embedded=embed, show_close_button=not embed, hide_title_and_builtin_info=embed, info_row_above_navigation=False)
 
         def _preview_live_updates_active() -> bool:
             return self._qt_widget_alive(dlg) and self._qt_widget_alive(frame_slider)
@@ -3819,6 +3979,9 @@ class TrackingTab(QWidget):
                 section.setVisible(bool(_checked))
                 if _checked:
                     section.set_expanded(True)
+            if not _checked:
+                # Hide table → drop track highlight so selection is not sticky when reopened.
+                _clear_metrics_table_selection_and_highlight()
             sync_h = preview_state.get('sync_settings_height')
             if callable(sync_h):
                 sync_h()
@@ -3832,7 +3995,7 @@ class TrackingTab(QWidget):
             if not _preview_live_updates_active():
                 return
             # Keep edits cheap: do not re-filter/redraw on every spinbox change.
-            # The explicit buttons own recomputation now.
+            # Hit «Re-track» to re-run Trackastra and apply the current filters.
             preview_state.pop('metrics_df', None)
             preview_state.pop('masks_tracked_stitched', None)
             preview_state.pop('tracks_df_stitched', None)
@@ -3891,7 +4054,7 @@ class TrackingTab(QWidget):
                 _invalidate_preview_compose_cache()
                 dlg.refresh()
             _cb.stateChanged.connect(_on_overlay_layer_changed)
-        dlg.set_primary_action(apply_filters, label='Redraw filtered tracks', visible=False)
+        dlg.set_primary_action(retrack_and_filter, label='Re-track', visible=False)
         try:
             dlg.lut_section.setVisible(False)
         except Exception:

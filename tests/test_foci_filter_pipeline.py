@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import csv
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from bactomate.gui.foci_filter_pipeline import (
     accepted_cell_labels_for_foci,
@@ -21,6 +25,20 @@ from bactomate.gui.foci_filter_pipeline import (
     refine_foci_rows_with_blob,
     write_filtered_foci_csv,
 )
+
+try:
+    from PyQt6.QtWidgets import QApplication
+except Exception:  # pragma: no cover
+    QApplication = None  # type: ignore[misc, assignment]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _qapp_module():
+    if QApplication is None:
+        yield None
+        return
+    app = QApplication.instance() or QApplication(sys.argv)
+    yield app
 
 
 def test_filter_foci_csv_rows_probability_and_intensity():
@@ -50,6 +68,18 @@ def test_refine_foci_rows_adds_blob_metrics():
     assert len(out) == 1
     assert int(out[0].get("area_px", 0)) >= 1
     assert float(out[0].get("mean_intensity", 0)) > 0
+
+
+def test_refine_foci_rows_adds_per_cell_ratio():
+    foci = np.full((7, 7), 10.0, dtype=np.float64)
+    foci[3, 3] = 100.0
+    foci[3, 2] = 90.0
+    mask = np.ones((7, 7), dtype=np.int32)
+    rows = [{"y": 3, "x": 3, "intensity": 100.0, "probability": 0.9}]
+    settings = {"foci_blob_threshold_frac": 0.8, "foci_blob_max_radius": 5}
+    out = refine_foci_rows_with_blob(rows, foci, label_plane=mask, settings=settings)
+    assert len(out) == 1
+    assert float(out[0].get("per_cell_ratio", 0.0)) > 1.0
 
 
 def test_write_filtered_foci_csv_columns(tmp_path: Path):
@@ -101,9 +131,7 @@ def test_filter_foci_rows_by_min_area_px():
 
 def test_populate_foci_table_uses_fail_peak_metrics():
     pytest.importorskip("PyQt6")
-    from PyQt6.QtWidgets import QApplication, QTableWidget
-
-    QApplication.instance() or QApplication([])
+    from PyQt6.QtWidgets import QTableWidget
 
     table = QTableWidget()
     frame_rows = [
@@ -151,6 +179,44 @@ def test_populate_foci_table_uses_fail_peak_metrics():
     assert table.item(fail_row, 6).text() == "3"
     assert table.item(fail_row, 7).text() == "6"
     assert table.item(fail_row, 8).text() == "0.80"
+
+
+def test_foci_table_header_double_click_sorts_numerically():
+    pytest.importorskip("PyQt6")
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QTableWidget
+
+    from bactomate.gui.foci_filter_pipeline import (
+        apply_foci_table_header_sort,
+        populate_foci_preview_table,
+    )
+
+    table = QTableWidget()
+    frame_rows = [
+        {"y": 1, "x": 1, "intensity": 9.0, "probability": 0.2},
+        {"y": 2, "x": 2, "intensity": 100.0, "probability": 0.9},
+        {"y": 3, "x": 3, "intensity": 50.0, "probability": 0.5},
+    ]
+    pass_peaks = [{"y": r["y"], "x": r["x"], "intensity": r["intensity"], "probability": r["probability"]} for r in frame_rows]
+    populate_foci_preview_table(table, frame_rows=frame_rows, pass_peaks=pass_peaks, fail_peaks=[])
+
+    # Int. column = 4
+    apply_foci_table_header_sort(table, 4)
+    ints = [float(table.item(r, 4).text()) for r in range(table.rowCount())]
+    assert ints == sorted(ints)
+
+    apply_foci_table_header_sort(table, 4)
+    ints_desc = [float(table.item(r, 4).text()) for r in range(table.rowCount())]
+    assert ints_desc == sorted(ints, reverse=True)
+
+    # Persists across rebuild
+    populate_foci_preview_table(table, frame_rows=frame_rows, pass_peaks=pass_peaks, fail_peaks=[])
+    ints_again = [float(table.item(r, 4).text()) for r in range(table.rowCount())]
+    assert ints_again == sorted(ints, reverse=True)
+    hdr = table.horizontalHeader()
+    assert hdr is not None and hdr.isSortIndicatorShown()
+    assert int(hdr.sortIndicatorSection()) == 4
+    assert hdr.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
 
 
 def test_cell_filters_active_for_foci_only_size_and_border() -> None:
@@ -516,3 +582,136 @@ def test_foci_failure_reason_lists_multiple_causes() -> None:
     assert "probability" in joined
     assert "intensity" in joined
     assert len(reasons) >= 3
+
+
+def test_exclusive_blob_metrics_disjoint_for_tight_cluster():
+    """Close peaks on one bright patch must not share pixels; areas stay disjoint."""
+    from bactomate.modules.foci_utils import (
+        exclusive_focus_blob_masks,
+        exclusive_focus_blob_metrics,
+        get_focus_blob_mask,
+    )
+
+    foci = np.full((24, 24), 10.0, dtype=np.float64)
+    # Flat bright island so independent growth claims the same pixels.
+    foci[8:16, 8:16] = 100.0
+    foci[11, 10] = 120.0
+    foci[11, 13] = 119.0
+    label = np.ones((24, 24), dtype=np.int32)
+    peaks = [
+        {"y": 11, "x": 10, "intensity": 120.0},
+        {"y": 11, "x": 13, "intensity": 119.0},
+    ]
+    # Independent growth overlaps on this patch.
+    independent = [
+        get_focus_blob_mask(
+            foci, int(p["y"]), int(p["x"]), threshold_frac=0.7, max_radius=6, labeled_mask=label
+        )
+        for p in peaks
+    ]
+    overlap = independent[0] & independent[1]
+    assert int(np.sum(overlap)) > 0
+
+    masks = exclusive_focus_blob_masks(
+        foci, peaks, threshold_frac=0.7, max_radius=6, labeled_mask=label
+    )
+    assert len(masks) == 2
+    assert int(np.sum(masks[0] & masks[1])) == 0
+
+    measured = exclusive_focus_blob_metrics(
+        foci, peaks, threshold_frac=0.7, max_radius=6, labeled_mask=label
+    )
+    areas = [int(size) for _p, _m, size, _mean in measured]
+    assert all(a >= 1 for a in areas)
+    assert sum(areas) == int(np.sum(masks[0] | masks[1]))
+
+    settings = {"foci_blob_threshold_frac": 0.7, "foci_blob_max_radius": 6}
+    refined = refine_foci_rows_with_blob(peaks, foci, label_plane=label, settings=settings)
+    assert len(refined) == 2
+    refined_areas = [int(r.get("area_px", 0)) for r in refined]
+    assert sum(refined_areas) == sum(areas)
+
+
+def test_exclusive_overlay_draws_n_peak_markers_in_cluster():
+    """After exclusive contour draw, N peak rings remain for N clustered peaks."""
+    from bactomate.gui.foci_overlay_draw import (
+        draw_foci_blob_contours_on_rgb,
+        draw_peak_rings_on_rgb,
+    )
+
+    h, w = 40, 40
+    plane = np.zeros((h, w), dtype=np.float64)
+    plane[15:22, 15:25] = 90.0
+    coords = [(17, 17), (17, 20), (17, 23), (20, 18), (20, 21)]
+    for y, x in coords:
+        plane[y, x] = 130.0
+    mask = np.ones((h, w), dtype=np.int32)
+    peaks = [{"y": y, "x": x, "intensity": 130.0} for y, x in coords]
+    settings = {"foci_blob_threshold_frac": 0.8, "foci_blob_max_radius": 5}
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    draw_foci_blob_contours_on_rgb(rgb, mask, peaks, plane, settings, (255, 165, 0))
+    draw_peak_rings_on_rgb(
+        rgb, peaks, (255, 165, 0), mask_shape=(h, w), radius=3, inner_gap=2
+    )
+    visible = 0
+    for y, x in coords:
+        patch = rgb[max(0, y - 3) : y + 4, max(0, x - 3) : x + 4]
+        if np.any(patch > 0):
+            visible += 1
+    assert visible == len(coords)
+
+    metrics = measure_foci_rows_metrics(peaks, plane, label_plane=mask, settings=settings)
+    assert len(metrics) == len(coords)
+    areas = [int(metrics[(y, x)]["area_px"]) for y, x in coords]
+    assert all(a >= 1 for a in areas)
+    assert max(areas) < int(np.sum(plane >= 90))
+
+
+def test_exclusive_overlay_draws_variable_contours_not_only_rings():
+    """Exclusive overlay must paint irregular blob edges, not only identical peak rings."""
+    from bactomate.gui.foci_overlay_draw import draw_foci_blob_contours_on_rgb
+
+    h, w = 48, 48
+    plane = np.full((h, w), 15.0, dtype=np.float64)
+    yy, xx = np.ogrid[:h, :w]
+    coords = [(20, 18), (20, 24), (26, 21)]
+    for y, x in coords:
+        plane += 110.0 * np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / (2 * 2.2**2))
+    mask = np.ones((h, w), dtype=np.int32)
+    peaks = [{"y": y, "x": x, "intensity": float(plane[y, x])} for y, x in coords]
+    settings = {"foci_blob_threshold_frac": 0.75, "foci_blob_max_radius": 6}
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    draw_foci_blob_contours_on_rgb(rgb, mask, peaks, plane, settings, (255, 200, 120))
+    orange = (rgb[:, :, 0] > 200) & (rgb[:, :, 1] > 100) & (rgb[:, :, 1] < 220)
+    assert int(np.sum(orange)) > len(coords) * 4
+    away = 0
+    for y, x in coords:
+        ring = orange.copy()
+        ring[max(0, y - 1) : y + 2, max(0, x - 1) : x + 2] = False
+        away += int(np.sum(ring[max(0, y - 6) : y + 7, max(0, x - 6) : x + 7]))
+    assert away > 0
+
+
+def test_draw_peak_pixels_marks_each_spotiflow_center():
+    """Red peak pixels remain distinct even when exclusive outlines touch."""
+    from bactomate.gui.foci_overlay_draw import (
+        draw_foci_blob_contours_on_rgb,
+        draw_peak_pixels_on_rgb,
+    )
+
+    h, w = 32, 32
+    plane = np.full((h, w), 10.0, dtype=np.float64)
+    yy, xx = np.ogrid[:h, :w]
+    coords = [(12, 12), (12, 15), (15, 13)]
+    for y, x in coords:
+        plane += 100.0 * np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / (2 * 1.6**2))
+    mask = np.ones((h, w), dtype=np.int32)
+    peaks = [{"y": y, "x": x, "intensity": float(plane[y, x])} for y, x in coords]
+    settings = {"foci_blob_threshold_frac": 0.8, "foci_blob_max_radius": 5}
+    rgb = np.zeros((h, w, 3), dtype=np.uint8)
+    draw_foci_blob_contours_on_rgb(rgb, mask, peaks, plane, settings, (255, 200, 120))
+    draw_peak_pixels_on_rgb(rgb, peaks, (255, 30, 30), mask_shape=(h, w))
+    for y, x in coords:
+        assert int(rgb[y, x, 0]) == 255
+        assert int(rgb[y, x, 1]) == 30
+        assert int(rgb[y, x, 2]) == 30

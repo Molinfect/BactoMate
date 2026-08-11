@@ -814,7 +814,7 @@ def show_linked_mask_selection_dialog(
   Show a two-column file picker: masks (left) and linked analysis inputs (right).
 
   ``companion_for_mask`` returns lists under keys like ``mask``, ``phase``, ``foci``, and ``fi``.
-  Unchecking a mask unchecks and disables its linked rows on the right.
+  Unchecking a left-side file hides its linked group on the right (not merely greyed out).
   Falls back to :func:`show_file_selection_dialog` when no companions exist for any mask.
     """
     masks = [Path(m) for m in mask_files]
@@ -966,15 +966,19 @@ def show_linked_mask_selection_dialog(
         row.setFlags(flags)
 
     def _sync_companions_for_mask(mask_path: Path, checked: bool) -> None:
+        """Show linked rows only for checked left-side files; hide the rest."""
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         companion_list.blockSignals(True)
         for row in companion_rows:
-            if row.data(_COMPANION_PATH_ROLE) is None:
-                continue
             if Path(row.data(_MASK_PATH_ROLE)) != Path(mask_path):
                 continue
+            is_header = row.data(_COMPANION_PATH_ROLE) is None
+            row.setHidden(not checked)
+            if is_header:
+                continue
             row.setCheckState(state)
-            _set_companion_row_active(row, checked)
+            # Visible rows are always interactive; hidden rows need no greyed state.
+            _set_companion_row_active(row, True)
         companion_list.blockSignals(False)
 
     def _on_mask_changed(item: QListWidgetItem) -> None:

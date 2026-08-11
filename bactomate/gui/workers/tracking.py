@@ -2345,11 +2345,12 @@ class TrackingWorker(QThread):
         track_info = trajectory_tables["track_information"]
         raw_df, filtered_df = self._tracks_with_pass_column(track_info, fp)
 
+        # Excel stays lean: Run info + all tracks (raw/Pass) + filtered only.
+        # track_summary lives in tables/ (parquet) for pipelines; it duplicated metrics here.
         sheets: list[tuple[str, Any]] = [
             ("Run info", run_info_df),
             ("raw", raw_df),
             ("filtered", filtered_df),
-            ("track_summary", trajectory_tables["track_summary"]),
         ]
         if lineage_tables is not None:
             sheets.append(("lineage_summary", lineage_tables["lineage_summary"]))

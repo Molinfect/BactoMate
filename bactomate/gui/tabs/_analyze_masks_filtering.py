@@ -82,8 +82,98 @@ class FilteringTab(AnalyzeMasksBase):
         self._filtering_in_progress = False
         self._cancel_filtering_requested = False
         self._filter_filename_filter = ''
+        self._folder_preview_controller = None
         self.preview_action_btn.clicked.connect(self.preview_filter_effects)
+        if hasattr(self, 'folder_preview_btn'):
+            self.folder_preview_btn.clicked.connect(self.preview_folder_filters)
         self.primary_action_btn.clicked.connect(self._on_filter_or_cancel_clicked)
+
+    def _folder_preview_filter_params(self) -> dict:
+        fs = dict(self.get_filter_settings())
+        # Map UI filter settings into analyze_cell_areas-style keys used by compute.
+        out = {
+            'pixel_size': float(self.pixel_size.value()) if hasattr(self, 'pixel_size') else float(fs.get('pixel_size') or 0.108),
+            'min_area': fs.get('min_area_um2'),
+            'max_area': fs.get('max_area_um2'),
+            'min_width': fs.get('min_width_um'),
+            'max_width': fs.get('max_width_um'),
+            'min_length': fs.get('min_length_um'),
+            'max_length': fs.get('max_length_um'),
+            'min_aspect_ratio': float(fs.get('min_aspect_ratio') or 0.0),
+            'max_aspect_ratio': fs.get('max_aspect_ratio'),
+            'min_eccentricity': float(fs.get('min_eccentricity') or 0.0),
+            'min_solidity': float(fs.get('min_solidity') or 0.0),
+            'exclude_border': bool(fs.get('exclude_border', False)),
+            'remove_small': True,
+            'min_size_pixels': 10,
+            'focus_filter_enabled': bool(fs.get('focus_filter_enabled', False)),
+            'focus_modality': fs.get('focus_modality', 'phase'),
+            'focus_min_fraction_of_median': float(fs.get('focus_min_fraction_of_median') or 0.5),
+            '_filter_settings': fs,
+        }
+        return out
+
+    def preview_folder_filters(self) -> None:
+        """Closer-to-batch QC grid for up to 48 masks in the folder."""
+        from bactomate.gui.folder_preview.constants import folder_preview_enabled
+        from bactomate.gui.folder_preview.controller import FolderPreviewController
+        from bactomate.gui.folder_preview.filter_compute import compute_filter_tile
+
+        if not self.file_path.text():
+            show_message_dialog(self, 'No Selection', 'Please select a mask file or folder first.', kind='warning')
+            return
+        masks = self._get_mask_files_for_feedback()
+        if not folder_preview_enabled(len(masks)):
+            show_message_dialog(
+                self,
+                'Preview folder',
+                'Need more than one mask in the source location for folder preview.\n'
+                'Use Preview filters for a single mask.',
+                kind='warning',
+            )
+            return
+        mount = getattr(self, '_module_preview_mount', None) or getattr(self, '_preview_mount', None)
+        surf = getattr(self, '_preview_surface', None)
+        if mount is None:
+            # Filtering is embedded in SegmentationTab — ask segmentation for mount.
+            seg = self._segmentation_tab() if hasattr(self, '_segmentation_tab') else None
+            if seg is not None:
+                mount = getattr(seg, '_module_preview_mount', None)
+                surf = getattr(seg, '_preview_surface', None) or surf
+        if mount is None:
+            show_message_dialog(
+                self,
+                'Preview folder',
+                'Folder preview needs the module right panel.',
+                kind='warning',
+            )
+            return
+        dlg = getattr(self, '_filter_preview_dialog', None)
+        if dlg is not None:
+            try:
+                dlg.close()
+            except Exception:
+                pass
+            self._filter_preview_dialog = None
+        params = self._folder_preview_filter_params()
+
+        def compute_fn(path, _idx):
+            return compute_filter_tile(path, params)
+
+        ctrl = getattr(self, '_folder_preview_controller', None)
+        if ctrl is None:
+            ctrl = FolderPreviewController(
+                self,
+                preview_surface=surf,
+                mount=mount,
+                on_tile_open=None,
+                parent=self,
+            )
+            self._folder_preview_controller = ctrl
+        try:
+            ctrl.start(masks, params, compute_fn)
+        except Exception as e:
+            show_message_dialog(self, 'Preview folder', f'Could not start folder preview:\n{e}', kind='error')
 
     def _on_filter_or_cancel_clicked(self) -> None:
         if bool(getattr(self, '_filtering_in_progress', False)):
@@ -187,6 +277,13 @@ class FilteringTab(AnalyzeMasksBase):
         return p if p.is_file() else None
 
     def preview_filter_effects(self) -> None:
+        ctrl = getattr(self, '_folder_preview_controller', None)
+        if ctrl is not None:
+            try:
+                ctrl.close()
+            except Exception:
+                pass
+            self._folder_preview_controller = None
         if not self.file_path.text():
             show_message_dialog(self, 'No Selection', 'Please select a mask file or folder first.', kind='warning')
             return

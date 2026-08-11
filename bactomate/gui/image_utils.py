@@ -177,8 +177,16 @@ def scale_for_preview(
     """
     Scale image and mask so the longest side is at most max_size.
     Returns (scaled_image, scaled_mask). Speeds up overlay and painting for large images.
+
+    Mask is always resized to the image's spatial shape first so a View plane that
+    does not match the mask resolution cannot crash the overlay (which previously
+    left the filtering preview on a black canvas after Apply).
     """
+    image = np.asarray(image)
+    mask = np.asarray(mask)
     h, w = image.shape[:2]
+    if mask.shape[:2] != (h, w):
+        mask = upsample_mask_to_shape(mask, h, w)
     if max(h, w) <= max_size:
         return image, mask
     scale = max_size / max(h, w)

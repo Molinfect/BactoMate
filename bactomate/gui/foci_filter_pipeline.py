@@ -59,6 +59,7 @@ def draw_foci_blob_contours_on_rgb(
     contour_rgb: tuple[int, int, int],
     *,
     cap: Optional[int] = None,
+    ownership_peaks: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Draw intensity-grown focus boundaries on *target_rgb*; return peaks with no blob."""
     from bactomate.gui.foci_overlay_draw import (
@@ -73,6 +74,7 @@ def draw_foci_blob_contours_on_rgb(
         settings,
         contour_rgb,
         cap=cap,
+        ownership_peaks=ownership_peaks,
     )
 
 
@@ -393,7 +395,7 @@ def refine_foci_rows_with_blob(
     """Add area_px, mean_intensity, rel_intensity, cell_id via intensity-linked blob growth."""
     if not rows:
         return []
-    from bactomate.modules.foci_utils import refine_spotiflow_peaks
+    from bactomate.modules.foci_utils import get_focus_blob_mask, refine_spotiflow_peaks
 
     per_cell_ratio = (
         float(settings.get("foci_per_cell_ratio", 2.0))
@@ -409,6 +411,7 @@ def refine_foci_rows_with_blob(
         per_cell_ratio=per_cell_ratio,
         exclude_outside=False,
     )
+    raw = np.asarray(foci_plane, dtype=np.float64)
     label = np.asarray(label_plane, dtype=np.int32) if label_plane is not None else None
     out: list[dict[str, Any]] = []
     for r in refined:
@@ -420,6 +423,24 @@ def refine_foci_rows_with_blob(
         else:
             row["cell_id"] = int(row.get("cell_id", 0) or 0)
         row.setdefault("area_px", int(row.get("size_px", 1) or 1))
+        if label is not None and label.ndim == 2:
+            blob_mask = get_focus_blob_mask(
+                raw,
+                y,
+                x,
+                threshold_frac=foci_blob_threshold_frac(settings),
+                max_radius=foci_blob_max_radius(settings),
+                labeled_mask=label,
+            )
+            ratio = _compute_per_cell_ratio(
+                raw,
+                label=label,
+                cell_id=int(row["cell_id"]),
+                blob_mask=blob_mask,
+                mean_intensity=float(row.get("mean_intensity", row.get("intensity", 0)) or 0.0),
+            )
+            if ratio is not None:
+                row["per_cell_ratio"] = ratio
         out.append(row)
     return out
 
@@ -432,8 +453,11 @@ def measure_foci_rows_metrics(
     settings: Optional[dict[str, Any]] = None,
     progress_callback: Optional[FociProgressCallback] = None,
 ) -> dict[tuple[int, int], dict[str, Any]]:
-    """Blob metrics for every peak (display only; never drops rows)."""
-    from bactomate.modules.foci_utils import coerce_plane_to_2d, focus_size_and_mean_at_peak
+    """Blob metrics for every peak (display only; never drops rows).
+
+    Uses exclusive multi-peak assignment so close foci do not share pixels.
+    """
+    from bactomate.modules.foci_utils import coerce_plane_to_2d, exclusive_focus_blob_metrics
 
     settings = dict(settings or {})
     raw = np.asarray(coerce_plane_to_2d(foci_plane), dtype=np.float64)
@@ -446,55 +470,123 @@ def measure_foci_rows_metrics(
     label = np.asarray(label_plane, dtype=np.int32) if label_plane is not None else None
     thresh = foci_blob_threshold_frac(settings)
     max_r = foci_blob_max_radius(settings)
-    out: dict[tuple[int, int], dict[str, Any]] = {}
     rows_list = list(rows)
     total = len(rows_list)
-    report_every = max(1, min(15, total // 80)) if total > 0 else 1
-    for idx, row in enumerate(rows_list):
+    if progress_callback is not None and total > 0:
+        try:
+            progress_callback(0, total, "Measuring foci metrics")
+        except Exception:
+            pass
+    measured = exclusive_focus_blob_metrics(
+        raw,
+        rows_list,
+        threshold_frac=thresh,
+        max_radius=max_r,
+        labeled_mask=label,
+    )
+    out: dict[tuple[int, int], dict[str, Any]] = {}
+    for idx, (peak, _mask, size_px, mean_int) in enumerate(measured):
         if progress_callback is not None and (
-            idx == 0 or idx == total - 1 or idx % report_every == 0
+            idx == 0 or idx == len(measured) - 1 or idx % max(1, min(15, total // 80 or 1)) == 0
         ):
             try:
                 progress_callback(idx + 1, total, "Measuring foci metrics")
             except Exception:
                 pass
         try:
-            y = int(float(row.get("y", 0) or 0))
-            x = int(float(row.get("x", 0) or 0))
+            y = int(float(peak.get("y", 0) or 0))
+            x = int(float(peak.get("x", 0) or 0))
         except Exception:
             continue
+        if not (0 <= y < h and 0 <= x < w):
+            continue
         key = (y, x)
-        base = dict(row)
+        base = dict(peak)
         base["y"] = y
         base["x"] = x
-        if 0 <= y < h and 0 <= x < w:
-            intensity = row.get("intensity")
-            if intensity is None or intensity == "":
-                intensity = float(raw[y, x])
-            else:
-                try:
-                    intensity = float(intensity)
-                except (TypeError, ValueError):
-                    intensity = float(raw[y, x])
-            size_px, mean_int = focus_size_and_mean_at_peak(
+        intensity = peak.get("intensity")
+        try:
+            intensity_f = float(intensity) if intensity is not None and intensity != "" else float(raw[y, x])
+        except (TypeError, ValueError):
+            intensity_f = float(raw[y, x])
+        base["intensity"] = float(intensity_f)
+        base["size_px"] = int(size_px)
+        base["area_px"] = int(max(1, int(size_px)))
+        base["mean_intensity"] = float(mean_int)
+        base["rel_intensity"] = float(intensity_f) / raw_median
+        if label is not None and label.ndim == 2:
+            base["cell_id"] = resolve_foci_cell_id_at_peak(label, y, x)
+            ratio = _compute_per_cell_ratio(
                 raw,
-                y,
-                x,
-                threshold_frac=thresh,
-                max_radius=max_r,
-                labeled_mask=label,
+                label=label,
+                cell_id=int(base["cell_id"]),
+                blob_mask=np.asarray(_mask, dtype=bool),
+                mean_intensity=float(mean_int),
             )
-            base["intensity"] = float(intensity)
-            base["size_px"] = int(size_px)
-            base["area_px"] = int(max(1, int(size_px)))
-            base["mean_intensity"] = float(mean_int)
-            base["rel_intensity"] = float(intensity) / raw_median
-            if label is not None and label.ndim == 2:
-                base["cell_id"] = resolve_foci_cell_id_at_peak(label, y, x)
-            else:
-                base["cell_id"] = int(base.get("cell_id", 0) or 0)
+            if ratio is not None:
+                base["per_cell_ratio"] = ratio
+        else:
+            base["cell_id"] = int(base.get("cell_id", 0) or 0)
         out[key] = base
+    # Preserve rows that exclusive growth skipped (out of bounds already filtered).
+    for row in rows_list:
+        try:
+            key = (int(float(row.get("y", 0) or 0)), int(float(row.get("x", 0) or 0)))
+        except Exception:
+            continue
+        if key in out:
+            continue
+        if not (0 <= key[0] < h and 0 <= key[1] < w):
+            continue
+        base = dict(row)
+        base["y"], base["x"] = key
+        intensity = float(raw[key[0], key[1]])
+        base["intensity"] = intensity
+        base["size_px"] = 1
+        base["area_px"] = 1
+        base["mean_intensity"] = intensity
+        base["rel_intensity"] = intensity / raw_median
+        if label is not None and label.ndim == 2:
+            base["cell_id"] = resolve_foci_cell_id_at_peak(label, key[0], key[1])
+            blob_mask = np.zeros(raw.shape[:2], dtype=bool)
+            blob_mask[key[0], key[1]] = True
+            ratio = _compute_per_cell_ratio(
+                raw,
+                label=label,
+                cell_id=int(base["cell_id"]),
+                blob_mask=blob_mask,
+                mean_intensity=float(intensity),
+            )
+            if ratio is not None:
+                base["per_cell_ratio"] = ratio
+        out[key] = base
+    if progress_callback is not None and total > 0:
+        try:
+            progress_callback(total, total, "Measuring foci metrics")
+        except Exception:
+            pass
     return out
+
+
+def _compute_per_cell_ratio(
+    raw: np.ndarray,
+    *,
+    label: Optional[np.ndarray],
+    cell_id: int,
+    blob_mask: np.ndarray,
+    mean_intensity: float,
+) -> float | None:
+    """Mean(blob) / mean(rest of same cell), or None when undefined."""
+    if label is None or label.ndim != 2 or cell_id <= 0:
+        return None
+    rest = (label == int(cell_id)) & ~np.asarray(blob_mask, dtype=bool)
+    n_rest = int(np.sum(rest))
+    if n_rest <= 0:
+        return None
+    rest_mean = float(np.mean(raw[rest]))
+    if not np.isfinite(rest_mean) or rest_mean <= 0 or not np.isfinite(mean_intensity):
+        return None
+    return float(mean_intensity) / rest_mean
 
 
 def _merge_foci_row_metrics(target: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -507,6 +599,7 @@ def _merge_foci_row_metrics(target: dict[str, Any], source: dict[str, Any]) -> d
         "size_px",
         "mean_intensity",
         "rel_intensity",
+        "per_cell_ratio",
         "cell_id",
         "frame",
         "fail_reasons",
@@ -532,6 +625,7 @@ def foci_filter_failure_reasons(
     accepted_cell_labels: Optional[set[int]] = None,
     metrics: Optional[dict[str, Any]] = None,
     foci_plane: Optional[np.ndarray] = None,
+    sibling_peaks: Optional[list[dict[str, Any]]] = None,
 ) -> list[str]:
     """Human-readable reasons this focus did not pass current filters."""
     m = dict(metrics if metrics is not None else row)
@@ -608,29 +702,47 @@ def foci_filter_failure_reasons(
         try:
             ratio_thresh = float(settings.get("foci_per_cell_ratio", 2.0))
             if ratio_thresh > 0 and cell_id > 0 and label is not None:
-                from bactomate.modules.foci_utils import coerce_plane_to_2d, get_focus_blob_mask
+                from bactomate.modules.foci_utils import (
+                    coerce_plane_to_2d,
+                    exclusive_focus_blob_metrics,
+                )
 
                 raw = np.asarray(coerce_plane_to_2d(foci_plane), dtype=np.float64)
                 if raw.ndim == 2 and 0 <= y < raw.shape[0] and 0 <= x < raw.shape[1]:
-                    blob_mask = get_focus_blob_mask(
+                    peers = list(sibling_peaks) if sibling_peaks else [dict(m)]
+                    measured = exclusive_focus_blob_metrics(
                         raw,
-                        y,
-                        x,
+                        peers,
                         threshold_frac=foci_blob_threshold_frac(settings),
                         max_radius=foci_blob_max_radius(settings),
                         labeled_mask=label,
                     )
-                    rest = (label == cell_id) & ~blob_mask
-                    n_rest = int(np.sum(rest))
-                    if n_rest > 0:
-                        rest_mean = float(np.mean(raw[rest]))
-                        mean_int = float(m.get("mean_intensity", 0) or 0)
-                        if np.isfinite(rest_mean) and rest_mean > 0 and np.isfinite(mean_int):
-                            ratio = mean_int / rest_mean
-                            if ratio < ratio_thresh:
-                                reasons.append(
-                                    f"Per-cell ratio {ratio:.2f} < {ratio_thresh:.2f}"
-                                )
+                    blob_mask = None
+                    mean_int = float(m.get("mean_intensity", 0) or 0)
+                    for peak, mask, _size, mean_ex in measured:
+                        try:
+                            py = int(float(peak.get("y", -1)))
+                            px = int(float(peak.get("x", -1)))
+                        except (TypeError, ValueError):
+                            continue
+                        if py == y and px == x:
+                            blob_mask = mask
+                            mean_int = float(mean_ex)
+                            break
+                    if blob_mask is None:
+                        blob_mask = np.zeros(raw.shape[:2], dtype=bool)
+                        blob_mask[y, x] = True
+                    ratio = _compute_per_cell_ratio(
+                        raw,
+                        label=label,
+                        cell_id=cell_id,
+                        blob_mask=np.asarray(blob_mask, dtype=bool),
+                        mean_intensity=mean_int,
+                    )
+                    if ratio is not None and ratio < ratio_thresh:
+                        reasons.append(
+                            f"Per-cell ratio {ratio:.2f} < {ratio_thresh:.2f}"
+                        )
         except Exception:
             pass
 
@@ -778,6 +890,7 @@ def compute_foci_pass_fail_for_frame(
             accepted_cell_labels=accepted_cell_labels,
             metrics=peak,
             foci_plane=foci_plane,
+            sibling_peaks=[dict(row) for row in frame_rows],
         )
         failing.append(peak)
     return passing, failing
@@ -985,6 +1098,134 @@ def _foci_table_metric_text(
     return "—"
 
 
+def _foci_table_metric_sort_value(row: dict[str, Any], *keys) -> Any:
+    for key in keys:
+        if key not in row:
+            continue
+        raw = row.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(val):
+            return val
+    return None
+
+
+_SORTABLE_FOCI_ITEM_CLS = None
+
+
+def _sortable_foci_table_item_class():
+    """Return a single QTableWidgetItem subclass shared by all foci-table cells."""
+    global _SORTABLE_FOCI_ITEM_CLS
+    if _SORTABLE_FOCI_ITEM_CLS is not None:
+        return _SORTABLE_FOCI_ITEM_CLS
+    from PyQt6.QtWidgets import QTableWidgetItem
+
+    class _SortableFociTableItem(QTableWidgetItem):
+        def __init__(self, display: str, value: Any) -> None:
+            super().__init__(display)
+            self._sort_value = self._coerce_sort_value(value if value is not None else display)
+
+        @staticmethod
+        def _coerce_sort_value(value: Any) -> tuple[int, Any]:
+            try:
+                if value is None:
+                    return (2, "")
+                if isinstance(value, float) and np.isnan(value):
+                    return (2, "")
+                return (0, float(value))
+            except (TypeError, ValueError):
+                text = "" if value is None else str(value).lower()
+                if text in ("", "—", "-"):
+                    return (2, "")
+                return (1, text)
+
+        def __lt__(self, other: QTableWidgetItem) -> bool:
+            if isinstance(other, _SortableFociTableItem):
+                return self._sort_value < other._sort_value
+            return super().__lt__(other)
+
+    _SORTABLE_FOCI_ITEM_CLS = _SortableFociTableItem
+    return _SORTABLE_FOCI_ITEM_CLS
+
+
+def make_sortable_foci_table_item(text: str, sort_value: Any = None, *, yx: tuple[int, int] | None = None):
+    """Create a numeric-aware QTableWidgetItem for the filtering foci table."""
+    from PyQt6.QtCore import Qt
+
+    cls = _sortable_foci_table_item_class()
+    item = cls(str(text), sort_value)
+    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    item.setToolTip(str(text))
+    if yx is not None:
+        item.setData(Qt.ItemDataRole.UserRole, (int(yx[0]), int(yx[1])))
+    return item
+
+
+def apply_foci_table_header_sort(table, logical_index: int) -> tuple[int, int]:
+    """Toggle ascending/descending sort for ``logical_index``; return (col, order)."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QTableWidget
+
+    if not isinstance(table, QTableWidget):
+        return (int(logical_index), 0)
+    col = int(logical_index)
+    if col < 0 or col >= int(table.columnCount()):
+        return (col, 0)
+    hdr = table.horizontalHeader()
+    ascending = Qt.SortOrder.AscendingOrder
+    descending = Qt.SortOrder.DescendingOrder
+    if hdr is not None and hdr.isSortIndicatorShown() and int(hdr.sortIndicatorSection()) == col:
+        order = descending if hdr.sortIndicatorOrder() == ascending else ascending
+    else:
+        order = ascending
+    was_sorting = bool(table.isSortingEnabled())
+    table.setSortingEnabled(False)
+    table.sortItems(col, order)
+    table.setSortingEnabled(was_sorting)
+    if hdr is not None:
+        hdr.setSortIndicatorShown(True)
+        hdr.setSortIndicator(col, order)
+    try:
+        table._foci_sort_col = col
+        table._foci_sort_order = int(order.value if hasattr(order, "value") else int(order))
+    except Exception:
+        pass
+    return (col, int(order.value if hasattr(order, "value") else int(order)))
+
+
+def restore_foci_table_sort(table) -> None:
+    """Re-apply a previously chosen header sort after the table is rebuilt."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QTableWidget
+
+    if not isinstance(table, QTableWidget):
+        return
+    col = getattr(table, "_foci_sort_col", None)
+    order_i = getattr(table, "_foci_sort_order", None)
+    if col is None or order_i is None:
+        return
+    try:
+        col_i = int(col)
+        order = Qt.SortOrder(int(order_i))
+    except Exception:
+        return
+    if col_i < 0 or col_i >= int(table.columnCount()):
+        return
+    was_sorting = bool(table.isSortingEnabled())
+    table.setSortingEnabled(False)
+    table.sortItems(col_i, order)
+    table.setSortingEnabled(was_sorting)
+    hdr = table.horizontalHeader()
+    if hdr is not None:
+        hdr.setSortIndicatorShown(True)
+        hdr.setSortIndicator(col_i, order)
+
+
 def populate_foci_preview_table(
     table,
     *,
@@ -999,7 +1240,7 @@ def populate_foci_preview_table(
     """Fill the preview foci table (all CSV rows on frame; Pass from current filters)."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QBrush, QColor
-    from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem
+    from PyQt6.QtWidgets import QTableWidget
 
     if not isinstance(table, QTableWidget):
         return
@@ -1015,12 +1256,18 @@ def populate_foci_preview_table(
         "Rel.",
         "Cell",
     ]
+    table.setSortingEnabled(False)
     table.clear()
     table.setColumnCount(len(headers))
     table.setHorizontalHeaderLabels(headers)
     loc_hdr = table.horizontalHeaderItem(1)
     if loc_hdr is not None:
         loc_hdr.setToolTip(FOCI_TABLE_LOCATION_TOOLTIP)
+    hdr = table.horizontalHeader()
+    if hdr is not None:
+        hdr.setSectionsClickable(True)
+        hdr.setSortIndicatorShown(bool(getattr(table, "_foci_sort_col", None) is not None))
+        hdr.setToolTip("Double-click a column header to sort ascending / descending.")
     pass_keys = {(int(p.get("y", 0)), int(p.get("x", 0))) for p in pass_peaks}
     pass_by_key = {(int(p.get("y", 0)), int(p.get("x", 0))): dict(p) for p in pass_peaks}
     fail_by_key = {(int(p.get("y", 0)), int(p.get("x", 0))): dict(p) for p in fail_peaks}
@@ -1058,6 +1305,7 @@ def populate_foci_preview_table(
             continue
         seen.add(key)
         rows_out.append((key in pass_keys, dict(r)))
+    # Default order before any user header sort: pass first, then y/x.
     rows_out.sort(key=lambda t: (0 if t[0] else 1, int(t[1].get("y", 0)), int(t[1].get("x", 0))))
     pass_brush = QBrush(QColor(32, 72, 48))
     fail_brush = QBrush(QColor(72, 38, 42))
@@ -1075,42 +1323,75 @@ def populate_foci_preview_table(
             enriched = _merge_foci_row_metrics(dict(r), metrics_by_key.get(key, {}))
         prob_raw = enriched.get("probability", r.get("probability", None))
         prob_txt = "—"
+        prob_sort: Any = None
         if prob_raw not in (None, "", "None"):
             try:
-                prob_txt = f"{float(prob_raw):.3f}"
+                prob_sort = float(prob_raw)
+                prob_txt = f"{prob_sort:.3f}"
             except (TypeError, ValueError):
                 prob_txt = "—"
+                prob_sort = None
         if mask_2d is not None:
             rel = classify_foci_cell_relation(np.asarray(mask_2d, dtype=np.int32), key[0], key[1])
         else:
             rel = "inside"
-        values = [
-            "Yes" if passes else "No",
-            foci_outside_relation_label(rel),
-            str(key[0]),
-            str(key[1]),
-            _foci_table_metric_text(enriched, "intensity", decimals=0),
-            prob_txt,
-            _foci_table_metric_text(enriched, "area_px", "size_px", as_int=True),
-            _foci_table_metric_text(enriched, "mean_intensity", decimals=0),
-            _foci_table_metric_text(enriched, "rel_intensity", decimals=2),
-            _foci_table_cell_id(enriched, mask_2d),
+        loc_txt = foci_outside_relation_label(rel)
+        cell_txt = _foci_table_cell_id(enriched, mask_2d)
+        try:
+            cell_sort = float(cell_txt) if cell_txt not in ("", "—", "-") else None
+        except (TypeError, ValueError):
+            cell_sort = cell_txt
+        display_and_sort: list[tuple[str, Any]] = [
+            ("Yes" if passes else "No", 1 if passes else 0),
+            (loc_txt, loc_txt),
+            (str(key[0]), key[0]),
+            (str(key[1]), key[1]),
+            (
+                _foci_table_metric_text(enriched, "intensity", decimals=0),
+                _foci_table_metric_sort_value(enriched, "intensity"),
+            ),
+            (prob_txt, prob_sort),
+            (
+                _foci_table_metric_text(enriched, "area_px", "size_px", as_int=True),
+                _foci_table_metric_sort_value(enriched, "area_px", "size_px"),
+            ),
+            (
+                _foci_table_metric_text(enriched, "mean_intensity", decimals=0),
+                _foci_table_metric_sort_value(enriched, "mean_intensity"),
+            ),
+            (
+                _foci_table_metric_text(enriched, "rel_intensity", decimals=2),
+                _foci_table_metric_sort_value(enriched, "rel_intensity"),
+            ),
+            (cell_txt, cell_sort),
         ]
         brush = pass_brush if passes else fail_brush
-        for col_i, text in enumerate(values):
-            item = QTableWidgetItem(text)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        for col_i, (text, sort_val) in enumerate(display_and_sort):
+            item = make_sortable_foci_table_item(
+                text,
+                sort_val,
+                yx=key if col_i == 2 else None,
+            )
             item.setBackground(brush)
-            item.setToolTip(str(text))
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if col_i == 2:
-                item.setData(Qt.ItemDataRole.UserRole, (key[0], key[1]))
             table.setItem(row_i, col_i, item)
+    restore_foci_table_sort(table)
     if select_row >= 0:
-        table.selectRow(select_row)
-        id_item = table.item(select_row, 2)
-        if id_item is not None:
-            table.scrollToItem(id_item)
+        # Selection index may have moved after restore_foci_table_sort.
+        if getattr(table, "_foci_sort_col", None) is not None:
+            select_row = -1
+            for row_i in range(int(table.rowCount())):
+                y_item = table.item(row_i, 2)
+                if y_item is None:
+                    continue
+                data = y_item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(data, (tuple, list)) and len(data) >= 2 and tuple(data[:2]) == tuple(selected_yx or ()):
+                    select_row = row_i
+                    break
+        if select_row >= 0:
+            table.selectRow(select_row)
+            id_item = table.item(select_row, 2)
+            if id_item is not None:
+                table.scrollToItem(id_item)
     fit_foci_table_columns(table)
 
 

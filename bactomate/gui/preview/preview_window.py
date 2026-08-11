@@ -482,10 +482,20 @@ class PreviewDialogBase(QDialog):
         actions.addStretch()
         self.primary_button = QPushButton(str(primary_action_label))
         self.primary_button.clicked.connect(self._on_primary_clicked)
+        try:
+            self.primary_button.setAutoDefault(False)
+            self.primary_button.setDefault(False)
+        except Exception:
+            pass
         actions.addWidget(self.primary_button)
         if show_close_button:
             close_btn = QPushButton('Close')
             close_btn.clicked.connect(self.close)
+            try:
+                close_btn.setAutoDefault(False)
+                close_btn.setDefault(False)
+            except Exception:
+                pass
             actions.addWidget(close_btn)
         self._layout.addLayout(actions)
 
@@ -543,7 +553,13 @@ class PreviewDialogBase(QDialog):
         self._state.channel_idx = max(0, int(idx))
 
     def set_source_key(self, key: Any) -> None:
-        self._state.source_key = key
+        try:
+            from bactomate.gui.preview.navigation_controls import normalize_preview_source_key
+
+            norm = normalize_preview_source_key(key)
+            self._state.source_key = norm if norm is not None else key
+        except Exception:
+            self._state.source_key = key
 
     def set_extra(self, key: str, value: Any) -> None:
         self._state.extra[str(key)] = value

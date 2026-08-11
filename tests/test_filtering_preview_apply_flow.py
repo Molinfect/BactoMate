@@ -91,9 +91,14 @@ def _write_mask_tif(tmp_dir: Path) -> Path:
     return mask_path
 
 
-def _write_phase_tif(tmp_dir: Path, *, pixel_size_um: float) -> Path:
+def _write_phase_tif(tmp_dir: Path, *, pixel_size_um: float, nonzero: bool = False) -> Path:
     phase_path = tmp_dir / "sample.tif"
-    stack = np.zeros((1, 64, 64), dtype=np.uint16)
+    # Match the synthetic mask size (256x256) so preview overlay compositing is valid.
+    if nonzero:
+        yy, xx = np.mgrid[0:256, 0:256]
+        stack = (1200 + (yy + xx) * 10).astype(np.uint16)[None, ...]
+    else:
+        stack = np.zeros((1, 256, 256), dtype=np.uint16)
     tifffile.imwrite(
         str(phase_path),
         stack,
@@ -318,7 +323,7 @@ def _write_foci_tif(tmp_dir: Path, *, pixel_size_um: float) -> Path:
 
 
 def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
-    """Switching View must keep last filter params and re-apply them (not metadata-overwrite)."""
+    """Switching View must keep last filter params and applied overlays (no metadata overwrite)."""
 
     _qapp()
     with tempfile.TemporaryDirectory() as td:
@@ -361,23 +366,14 @@ def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
             combo = nav._image_combo
             assert combo.count() >= 2, "Need phase + foci View entries to switch images"
 
-            src_before = tuple(last_before.get("source_key") or ())
-            rid_before_switch = int(getattr(dlg, "_preview_request_id", 0) or 0)
+            dlg_src_before = tuple(dlg.state().source_key or ())
             combo.setCurrentIndex(1 if combo.currentIndex() == 0 else 0)
             QCoreApplication.processEvents()
-
             ok = _wait_until(
-                lambda: (
-                    tuple((getattr(dlg, "_last_preview", {}) or {}).get("source_key") or ())
-                    != src_before
-                    and "mask_2d" in (getattr(dlg, "_last_preview", {}) or {})
-                    and int(getattr(dlg, "_preview_request_id", 0) or 0) > rid_before_switch
-                    and _preview_thread_idle(dlg)
-                    and not bool(getattr(dlg, "_pending_apply", False))
-                ),
-                timeout_s=20.0,
+                lambda: tuple(dlg.state().source_key or ()) != dlg_src_before,
+                timeout_s=5.0,
             )
-            assert ok, "Switching View must re-apply last settings for the new image"
+            assert ok, "Switching View must update the dialog source_key"
 
             assert spinboxes["pixel_size"].value() == pytest.approx(0.33, abs=0.001), (
                 "Pixel size must stay locked when switching preview images "
@@ -389,7 +385,8 @@ def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
             last_after = dict(getattr(dlg, "_last_preview", {}) or {})
             rejected_after = set(int(x) for x in (last_after.get("rejected") or []))
             assert rejected_after == rejected_before, (
-                "Re-apply on image switch should keep the same last cell-filter outcome"
+                "View switch should keep the last applied cell-filter outcome "
+                "(background swap only; no silent unfilter)"
             )
         finally:
             _shutdown(tab, parent)
@@ -444,5 +441,131 @@ def test_progress_dialog_close_does_not_bump_request_id():
                 )
             finally:
                 type(dlg).__setattr__ = real_setattr
+        finally:
+            _shutdown(tab, parent)
+
+
+def test_apply_keeps_phase_visible_after_crushed_lut() -> None:
+    """Apply must not leave Phase/input as a solid black canvas under a stale LUT."""
+
+    _qapp()
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        _write_phase_tif(tmp_dir, pixel_size_um=0.108, nonzero=True)
+        mask_path = _write_mask_tif(tmp_dir)
+        tab, parent = _build_tab(tmp_dir)
+        from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+        show_filter_preview(tab, str(mask_path))
+        QCoreApplication.processEvents()
+        dlg = getattr(tab, "_filter_preview_dialog", None)
+        try:
+            assert dlg is not None
+            assert _wait_for_filter_apply(dlg, timeout_s=20.0)
+
+            # Simulate a leftover high-gain LUT from a previous foci View.
+            dlg.state().vmin = 20000.0
+            dlg.state().vmax = 34000.0
+            apply_current = getattr(dlg, "_pf_apply_current", None)
+            assert callable(apply_current)
+            apply_current()
+            assert _wait_for_filter_apply(dlg, timeout_s=20.0)
+            assert _wait_until(
+                lambda: _preview_thread_idle(dlg) and not _filter_apply_busy(dlg),
+                timeout_s=10.0,
+            )
+            dlg.refresh()
+            QCoreApplication.processEvents()
+
+            base = np.asarray(getattr(dlg, "_preview_overlay_base", None))
+            assert isinstance(base, np.ndarray) and base.ndim == 3 and base.shape[-1] == 3
+            dark = float(((base[..., 0] < 8) & (base[..., 1] < 8) & (base[..., 2] < 8)).mean())
+            assert dark < 0.5, (
+                f"Phase background should remain visible after Apply; "
+                f"frac near-black={dark:.3f} vmin={dlg.state().vmin} vmax={dlg.state().vmax}"
+            )
+            assert int(base.max()) >= 40
+        finally:
+            _shutdown(tab, parent)
+
+
+def test_nav_sync_keeps_list_phase_key_not_first_entry() -> None:
+    """Qt list keys must match tuple PreviewSource keys (no snap to index 0)."""
+    _qapp()
+    from bactomate.gui.preview.navigation_controls import (
+        PreviewNavSpec,
+        PreviewNavState,
+        PreviewNavigationControls,
+        PreviewSource,
+    )
+
+    sources = [
+        PreviewSource(key=("file", 0), label="Foci: mNG"),
+        PreviewSource(key=("file", 1), label="FI: mNG"),
+        PreviewSource(key=("file", 2), label="Phase / input"),
+    ]
+    nav = PreviewNavigationControls(
+        spec=PreviewNavSpec(frame_count=1, image_sources=sources, show_image=True),
+    )
+    nav.set_state(PreviewNavState(source_key=["file", 2], frame_idx=0), emit=False)
+    assert nav.state().source_key == ("file", 2)
+    assert nav._image_combo.currentText() == "Phase / input"
+
+
+def test_view_foci_not_painted_as_phase_when_dialog_state_desynced() -> None:
+    """Regression: Qt list keys must not leave View=Foci while painting Phase."""
+
+    _qapp()
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        _write_phase_tif(tmp_dir, pixel_size_um=0.108, nonzero=True)
+        # Bright-on-black foci plane, same geometry as the mask (256x256).
+        foci = np.zeros((1, 256, 256), dtype=np.uint16)
+        foci[0, 40:48, 40:48] = 50000
+        tifffile.imwrite(str(tmp_dir / "sample_foci_mNG.tif"), foci)
+        mask_path = _write_mask_tif(tmp_dir)
+        tab, parent = _build_tab(tmp_dir)
+        from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+        from bactomate.gui.preview.navigation_controls import PreviewNavState
+
+        show_filter_preview(tab, str(mask_path))
+        QCoreApplication.processEvents()
+        dlg = getattr(tab, "_filter_preview_dialog", None)
+        try:
+            assert dlg is not None
+            assert _wait_for_filter_apply(dlg, timeout_s=20.0)
+            bg_paths = list(getattr(dlg, "_bg_paths", []) or [])
+            foci_i = next(i for i, p in enumerate(bg_paths) if "_foci" in Path(p).name.lower())
+            phase_i = next(
+                i
+                for i, p in enumerate(bg_paths)
+                if "_foci" not in Path(p).name.lower()
+            )
+            nav = dlg._nav_ctrl
+            # Historic bug path: Phase key as a Qt list failed nav equality when Foci
+            # was first in the dropdown, snapping the label to Foci while dlg stayed Phase.
+            dlg.set_source_key(["file", phase_i])
+            nav.set_state(PreviewNavState(source_key=["file", phase_i], frame_idx=0), emit=False)
+            # With the fix, list Phase keys stay on Phase (not snapped to index 0 / Foci).
+            assert nav.state().source_key == ("file", phase_i)
+            assert nav.state().source_key != ("file", foci_i)
+            assert "Foci" not in str(nav._image_combo.currentText())
+
+            # Switch View to Foci via list key (as Qt may supply) and confirm paint.
+            nav.set_state(PreviewNavState(source_key=["file", foci_i], frame_idx=0), emit=True)
+            for _ in range(25):
+                QCoreApplication.processEvents()
+                time.sleep(0.02)
+            assert nav.state().source_key == ("file", foci_i)
+            assert dlg.state().source_key == ("file", foci_i)
+            assert "Foci" in str(nav._image_combo.currentText())
+            dlg.refresh()
+            QCoreApplication.processEvents()
+            base = np.asarray(getattr(dlg, "_preview_overlay_base", None))
+            assert isinstance(base, np.ndarray)
+            # Foci plane is mostly zeros → dark canvas; Phase ramp mean is much higher.
+            assert float(base.mean()) < 40.0, (
+                f"Foci View must not paint Phase background; mean={float(base.mean()):.1f}"
+            )
         finally:
             _shutdown(tab, parent)
