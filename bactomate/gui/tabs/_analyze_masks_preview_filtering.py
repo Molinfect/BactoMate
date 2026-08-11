@@ -13,14 +13,24 @@ from bactomate.gui.utils import safe_imread
 from bactomate.gui.layout_helpers import PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT, build_settings_card, build_preview_settings_scroll, checkbox_with_control, flex_control, setting_cell, setting_field, style_module_primary_button
 from bactomate.gui.widgets import create_info_icon, show_message_dialog
 from bactomate.gui.styles import filter_preview_card_stylesheet, preview_table_stylesheet
-from bactomate.gui.foci_filter_pipeline import FOCI_BLOB_SIZE_PRESETS, FociPassFailCache, accepted_cell_labels_cache_key, accepted_cell_labels_for_foci, sync_foci_peaks_with_accepted_cells, compute_foci_pass_fail_for_frame, draw_foci_blob_contours_on_rgb, filter_foci_csv_rows, fit_foci_table_columns, foci_blob_max_radius, foci_blob_threshold_frac, foci_pass_fail_cache_key, format_foci_cell_id_display, populate_foci_preview_table
-from bactomate.gui.foci_overlay_draw import DEFAULT_FOCI_PREVIEW_RENDER_CAP, draw_peak_rings_on_rgb
+from bactomate.gui.foci_filter_pipeline import FOCI_BLOB_SIZE_PRESETS, FociPassFailCache, accepted_cell_labels_cache_key, accepted_cell_labels_for_foci, sync_foci_peaks_with_accepted_cells, compute_foci_pass_fail_for_frame, draw_foci_blob_contours_on_rgb, filter_foci_csv_rows, fit_foci_table_columns, foci_blob_max_radius, foci_blob_threshold_frac, foci_pass_fail_cache_key, format_foci_cell_id_display, populate_foci_preview_table, apply_foci_table_header_sort
+from bactomate.gui.foci_overlay_draw import (
+    FOCI_BLOB_OUTLINE_RGB,
+    FOCI_FAIL_OUTLINE_RGB,
+    FOCI_PEAK_PIXEL_RGB,
+    draw_exclusive_foci_preview_on_rgb,
+    draw_peak_pixels_on_rgb,
+    draw_peak_rings_on_rgb,
+)
 from bactomate.gui.filter_preview_utils import cell_filter_settings_signature, foci_channel_key_for_path, foci_channel_settings_signature, resolve_foci_settings_for_source, seed_foci_channel_settings, evaluate_cell_filter_details, build_cell_hover_data
 from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, WorkerGuard, RenderResult
 from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
 _FOCI_PASS_RGB = (255, 165, 0)
+_FOCI_BLOB_OUTLINE_RGB = FOCI_BLOB_OUTLINE_RGB
+_FOCI_PEAK_PIXEL_RGB = FOCI_PEAK_PIXEL_RGB
 _FOCI_RAW_PEAK_RGB = (255, 200, 80)
 _FOCI_FAIL_RGB = (255, 55, 55)
+_FOCI_FAIL_OUTLINE_RGB = FOCI_FAIL_OUTLINE_RGB
 _FOCI_HIGHLIGHT_RGB = (255, 35, 35)
 _FOCI_HIGHLIGHT_OUTLINE_RGB = (255, 255, 255)
 _FOCI_HIGHLIGHT_RING_RADIUS = 8
@@ -109,7 +119,7 @@ def _format_foci_metric_value(peak: dict, key: str, *, alt_key: str | None=None)
             return str(int(float(val)))
         except (TypeError, ValueError):
             return str(val)
-    if key in ('intensity', 'mean_intensity', 'rel_intensity'):
+    if key in ('intensity', 'mean_intensity', 'rel_intensity', 'per_cell_ratio'):
         try:
             return f'{float(val):.2f}'
         except (TypeError, ValueError):
@@ -127,7 +137,7 @@ def _format_foci_peak_tooltip(peak: dict, *, status: str, mask_2d: Optional[np.n
     ch = str(peak.get('_foci_channel') or '').strip()
     ch_prefix = f'{ch} — ' if ch else ''
     title = f'{ch_prefix}Focus — FAIL' if is_fail else f'{ch_prefix}Focus — pass'
-    metric_lines = [('Intensity', 'intensity', None), ('Probability', 'probability', None), ('Area (px)', 'area_px', 'size_px'), ('Mean intens.', 'mean_intensity', None), ('Rel. intens.', 'rel_intensity', None), ('Cell ID', 'cell_id', None)]
+    metric_lines = [('Intensity', 'intensity', None), ('Probability', 'probability', None), ('Area (px)', 'area_px', 'size_px'), ('Mean intens.', 'mean_intensity', None), ('Frame-rel. intens.', 'rel_intensity', None), ('Per-cell ratio', 'per_cell_ratio', None), ('Cell ID', 'cell_id', None)]
     reasons = peak.get('fail_reasons')
     if not isinstance(reasons, list):
         reasons = []
@@ -391,13 +401,124 @@ def _effective_show_foci(dlg, state, *, foci_overlay_available: bool) -> bool:
     return bool(getattr(state, 'extra', {}).get('show_foci', bool(foci_overlay_available)))
 
 def _source_key_from_state(state, fallback) -> tuple:
-    sk = getattr(state, 'source_key', None)
-    if isinstance(sk, tuple) and len(sk) >= 2:
-        return tuple(sk)
+    """Resolve View source for painting.
+
+    ``fallback`` may be a key or a zero-arg callable (typically the visible nav
+    View). When dialog state and the visible View disagree — common after Qt
+    returns list keys that failed nav equality — prefer the visible View.
+    """
+    def _norm(sel) -> tuple:
+        if not isinstance(sel, (tuple, list)) or len(sel) < 2:
+            return ('none', -1)
+        try:
+            return (str(sel[0]), int(sel[1]))
+        except Exception:
+            return ('none', -1)
+
     try:
-        return tuple(fallback())
+        fb = _norm(fallback() if callable(fallback) else fallback)
     except Exception:
-        return ('none', -1)
+        fb = ('none', -1)
+    sk = getattr(state, 'source_key', None)
+    if sk is None:
+        return fb
+    skn = _norm(sk)
+    if skn == ('none', -1):
+        return fb
+    if fb != ('none', -1) and skn != fb:
+        return fb
+    return skn
+
+
+def _lut_window_spans_frame(vmin: object, vmax: object, frame: np.ndarray) -> bool:
+    """True when [vmin, vmax] yields a visibly stretched display of ``frame``.
+
+    Intersection alone is not enough: a foci-scale window (e.g. 0..65535) still
+    intersects 16-bit phase (~1k..4k) but maps that plane to near-black.
+    """
+    try:
+        lo = float(vmin)  # type: ignore[arg-type]
+        hi = float(vmax)  # type: ignore[arg-type]
+    except Exception:
+        return False
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return False
+    arr = np.asarray(frame, dtype=np.float64)
+    if arr.size == 0:
+        return False
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return False
+    fmin = float(finite.min())
+    fmax = float(finite.max())
+    if not (hi > fmin and lo < fmax):
+        return False
+    try:
+        p_hi = float(np.percentile(finite, 99.5))
+    except Exception:
+        p_hi = fmax
+    mapped_hi = (p_hi - lo) / (hi - lo) * 255.0
+    # Below ~40/255 the canvas reads as solid black next to green cell overlays.
+    return float(mapped_hi) >= 40.0
+
+
+def stretch_plane_to_uint8(
+    bg_2d: Optional[np.ndarray],
+    vmin: Optional[float],
+    vmax: Optional[float],
+    *,
+    fallback_shape: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Map a 2D View plane to uint8, auto-correcting crushed LUT windows.
+
+    Used by the filtering preview so a leftover foci-scale LUT cannot paint
+    Phase / input as a solid black canvas after Apply.
+    """
+    if bg_2d is None:
+        if fallback_shape is None:
+            return np.zeros((1, 1), dtype=np.uint8)
+        return np.zeros(fallback_shape, dtype=np.uint8)
+    bg_f = np.asarray(bg_2d, dtype=np.float64)
+    if bg_f.ndim != 2:
+        bg_f = np.asarray(bg_f.squeeze())
+        if bg_f.ndim != 2:
+            if fallback_shape is None:
+                return np.zeros((1, 1), dtype=np.uint8)
+            return np.zeros(fallback_shape, dtype=np.uint8)
+    finite = bg_f[np.isfinite(bg_f)]
+    if finite.size == 0:
+        return np.zeros(bg_f.shape[:2], dtype=np.uint8)
+    mn = float(finite.min())
+    mx = float(finite.max())
+
+    def _autoscale() -> tuple[float, float]:
+        try:
+            lo = float(np.percentile(finite, 1.0))
+            hi = float(np.percentile(finite, 99.8))
+        except Exception:
+            (lo, hi) = (mn, mx)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            (lo, hi) = (mn, mx if mx > mn else mn + 1.0)
+        return (lo, hi)
+
+    use_vmin = vmin
+    use_vmax = vmax
+    if (
+        use_vmin is None
+        or use_vmax is None
+        or (not np.isfinite(use_vmin))
+        or (not np.isfinite(use_vmax))
+        or float(use_vmax) <= float(use_vmin)
+        or (not _lut_window_spans_frame(use_vmin, use_vmax, bg_f))
+    ):
+        (use_vmin, use_vmax) = _autoscale()
+    vrange = max(float(use_vmax) - float(use_vmin), 1e-06)
+    out = ((bg_f - float(use_vmin)) / vrange * 255.0).clip(0, 255).astype(np.uint8)
+    if int(out.max()) < 40 and mx > mn:
+        (use_vmin, use_vmax) = _autoscale()
+        vrange = max(float(use_vmax) - float(use_vmin), 1e-06)
+        out = ((bg_f - float(use_vmin)) / vrange * 255.0).clip(0, 255).astype(np.uint8)
+    return out
 
 def _peaks_from_csv_rows(rows: list[dict]) -> list[dict]:
     out: list[dict] = []
@@ -746,12 +867,22 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     foci_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
     foci_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
     foci_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    foci_table.setSortingEnabled(False)
     try:
         vhdr = foci_table.verticalHeader()
-        vhdr.setVisible(True)
-        vhdr.setDefaultSectionSize(20)
-        vhdr.setMinimumSectionSize(18)
-        vhdr.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        if vhdr is not None:
+            vhdr.setVisible(True)
+            vhdr.setDefaultSectionSize(20)
+            vhdr.setMinimumSectionSize(18)
+            vhdr.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+    except Exception:
+        pass
+    try:
+        hh = foci_table.horizontalHeader()
+        if hh is not None:
+            hh.setSectionsClickable(True)
+            hh.setSortIndicatorShown(False)
+            hh.setToolTip('Double-click a column header to sort ascending / descending.')
     except Exception:
         pass
     foci_table.setStyleSheet(preview_table_stylesheet())
@@ -882,11 +1013,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     default_idx = default_background_index(tab, mask_path, bg_paths)
     if bg_paths:
         image_combo.setCurrentIndex(default_idx)
-    nav_ctrl.set_spec(PreviewNavSpec(frame_count=int(max(1, num_frames)), image_sources=sources, show_image=True, show_channel=False, show_z=False, show_cell_overlay_toggle=True, show_foci_overlay_toggle=True, cell_overlay_default=True, debounce_ms=400), emit_init=False)
-    try:
-        nav_ctrl.set_state(PreviewNavState(source_key=image_combo.currentData(), frame_idx=int(frame_spin.value()) - 1), emit=False)
-    except Exception:
-        pass
 
     def _normalize_source_key(sel) -> tuple[str, int]:
         if not isinstance(sel, (tuple, list)) or len(sel) < 2:
@@ -896,7 +1022,27 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception:
             return ('none', -1)
 
+    nav_ctrl.set_spec(PreviewNavSpec(frame_count=int(max(1, num_frames)), image_sources=sources, show_image=True, show_channel=False, show_z=False, show_cell_overlay_toggle=True, show_foci_overlay_toggle=True, cell_overlay_default=True, debounce_ms=400), emit_init=False)
+    try:
+        nav_ctrl.set_state(PreviewNavState(source_key=_normalize_source_key(image_combo.currentData()), frame_idx=int(frame_spin.value()) - 1), emit=False)
+    except Exception:
+        pass
+
     def _selected_source() -> tuple[str, int]:
+        # Prefer the visible View control — the hidden image_combo can lag behind and
+        # made Apply reset Foci:mNG → Phase.
+        try:
+            nav_key = nav_ctrl.state().source_key
+            if nav_key is not None:
+                return _normalize_source_key(nav_key)
+        except Exception:
+            pass
+        try:
+            st_key = getattr(dlg.state(), 'source_key', None)
+            if st_key is not None:
+                return _normalize_source_key(st_key)
+        except Exception:
+            pass
         return _normalize_source_key(image_combo.currentData())
 
     def _source_keys_equal(a, b) -> bool:
@@ -1115,22 +1261,65 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         raw_n = len(frame_rows)
         mask_arr = np.asarray(_preview_mask_stack()[int(frame_idx)], dtype=np.int32)
         filter_settings = dict(tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {})
-        phase_plane = _get_bg_frame(int(frame_idx), source_key)
+        # Cell focus scoring must use Phase/BF — never the currently viewed foci channel.
+        phase_for_cells = _phase_plane_for_focus(int(frame_idx))
+        view_bg = _get_bg_frame(int(frame_idx), source_key)
         cell_details = evaluate_cell_filter_details(
             mask_arr,
             filter_settings,
             accepted=accepted,
             rejected=rejected,
-            phase_plane=phase_plane,
+            phase_plane=phase_for_cells,
         )
-        dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': mask_arr, 'accepted': accepted, 'rejected': rejected, 'cell_details': cell_details, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': phase_plane, 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}'}
+        dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': mask_arr, 'accepted': accepted, 'rejected': rejected, 'cell_details': cell_details, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': view_bg, 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}'}
         _store_foci_pass_fail_cache(int(frame_idx), foci_channels_last, accepted=accepted, request_settings=dict(tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}))
         _clear_preview_layer_caches(dlg)
         try:
             _update_foci_table_live()
         except Exception:
             pass
+        try:
+            cancel_lut = getattr(dlg, '_pf_cancel_pending_lut', None)
+            if callable(cancel_lut):
+                cancel_lut()
+        except Exception:
+            pass
+        try:
+            dlg.set_source_key(source_key)
+            try:
+                nav_ctrl.set_state(
+                    PreviewNavState(
+                        source_key=source_key,
+                        frame_idx=int(frame_idx),
+                        channel_idx=int(nav_ctrl.state().channel_idx),
+                        z_idx=int(nav_ctrl.state().z_idx),
+                    ),
+                    emit=False,
+                )
+            except Exception:
+                pass
+            dlg.set_extra('lut_only', False)
+            dlg.set_extra('overlay_only', False)
+            dlg.set_extra('nav_only', False)
+            # Drop any previous View's display window before the first post-Apply paint.
+            # Otherwise Phase can render solid black under a leftover foci-scale LUT.
+            dlg.state().vmin = None
+            dlg.state().vmax = None
+            try:
+                dlg.lut_widget.set_lut(None, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
         dlg.refresh()
+        try:
+            ensure_bg = getattr(dlg, '_pf_ensure_view_bg_visible', None)
+            if callable(ensure_bg):
+                # Always re-check after Apply: stale foci-scale LUTs can "intersect"
+                # phase data yet still paint a black background.
+                ensure_bg(int(frame_idx), source_key, force=True)
+        except Exception:
+            pass
         try:
             _prewarm_after_apply(int(frame_idx))
         except Exception:
@@ -1324,7 +1513,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         _foci_ch_overlay_labels = tuple((f'Foci: {short_foci_stack_label(fp)}' for fp in foci_overlay_sources))
     nav_ctrl.set_spec(PreviewNavSpec(frame_count=int(max(1, num_frames)), image_sources=sources, show_image=True, show_channel=False, show_z=False, show_cell_overlay_toggle=True, show_foci_overlay_toggle=bool(foci_overlay_available and (not _foci_ch_overlay_labels)), cell_overlay_default=True, foci_overlay_available=bool(foci_overlay_available), foci_overlay_default=bool(foci_overlay_available), foci_channel_overlay_labels=_foci_ch_overlay_labels, foci_channel_overlay_defaults=tuple((True for _ in _foci_ch_overlay_labels)), debounce_ms=400), emit_init=False)
     try:
-        nav_ctrl.set_state(PreviewNavState(source_key=image_combo.currentData(), frame_idx=int(frame_spin.value()) - 1), emit=False)
+        nav_ctrl.set_state(PreviewNavState(source_key=_normalize_source_key(image_combo.currentData()), frame_idx=int(frame_spin.value()) - 1), emit=False)
     except Exception:
         pass
 
@@ -1340,35 +1529,68 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         return out
 
     def _apply_lut_to_bg(bg_2d: Optional[np.ndarray], vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
-        if bg_2d is None:
-            return np.zeros(masks.shape[1:3], dtype=np.uint8)
-        bg_f = np.asarray(bg_2d, dtype=np.float64)
-        if bg_f.ndim != 2:
-            bg_f = np.asarray(bg_f.squeeze())
-            if bg_f.ndim != 2:
-                return np.zeros(masks.shape[1:3], dtype=np.uint8)
-        mn = float(np.nanmin(bg_f)) if bg_f.size else 0.0
-        mx = float(np.nanmax(bg_f)) if bg_f.size else mn + 1.0
-        if vmin is None or vmax is None or (not np.isfinite(vmin)) or (not np.isfinite(vmax)) or (vmax <= vmin):
-            vmin = mn
-            vmax = mx if mx > mn else mn + 1.0
-        vrange = max(float(vmax) - float(vmin), 1e-06)
-        return ((bg_f - float(vmin)) / vrange * 255.0).clip(0, 255).astype(np.uint8)
+        return stretch_plane_to_uint8(bg_2d, vmin, vmax, fallback_shape=tuple(masks.shape[1:3]))
+
+    def _sync_state_lut_to_bg(bg_2d: Optional[np.ndarray], state) -> None:
+        """Keep PreviewState LUT aligned with the plane actually being painted."""
+        if bg_2d is None or state is None:
+            return
+        arr = np.asarray(bg_2d)
+        if _lut_window_spans_frame(getattr(state, 'vmin', None), getattr(state, 'vmax', None), arr):
+            return
+        try:
+            finite = np.asarray(arr, dtype=np.float64)
+            finite = finite[np.isfinite(finite)]
+            if finite.size == 0:
+                return
+            lo = float(np.percentile(finite, 1.0))
+            hi = float(np.percentile(finite, 99.8))
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                return
+            state.vmin = lo
+            state.vmax = hi
+        except Exception:
+            try:
+                state.vmin = None
+                state.vmax = None
+            except Exception:
+                pass
 
     def _get_bg_frame(frame_idx: int, source_key=None) -> Optional[np.ndarray]:
-        sel = source_key if source_key is not None else image_combo.currentData()
-        if not isinstance(sel, tuple) or len(sel) < 2:
-            return None
-        (kind, idx) = (sel[0], int(sel[1]))
-        if kind != 'file' or idx < 0:
-            return None
-        paths = getattr(dlg, '_bg_paths', []) or []
-        if idx >= len(paths):
-            return None
+        sel = source_key if source_key is not None else _selected_source()
+        sel = _normalize_source_key(sel)
+        (kind, idx) = (str(sel[0]), int(sel[1]))
         cache = getattr(dlg, '_bg_cache', None)
         if not isinstance(cache, dict):
-            return None
-        return _load_preview_plane(Path(paths[idx]), int(frame_idx), cache)
+            cache = {}
+            try:
+                dlg._bg_cache = cache
+            except Exception:
+                cache = {}
+        paths = list(getattr(dlg, '_bg_paths', None) or bg_paths or [])
+        if kind == 'file' and 0 <= idx < len(paths):
+            target = Path(paths[idx])
+            plane = _load_preview_plane(target, int(frame_idx), cache)
+            if plane is not None:
+                return plane
+            # Retry via resolve / alternate cache key — never substitute Phase/BF here.
+            # Silent modality fallback made View stay on "Foci: mNG" while painting Phase.
+            try:
+                plane = _load_preview_plane(Path(target.resolve()), int(frame_idx), cache)
+            except Exception:
+                plane = None
+            return plane
+        # Mask-only view: optional phase canvas so the preview is not empty.
+        if kind == 'none':
+            try:
+                from bactomate.gui.filter_preview_utils import phase_stack_candidates_for_mask
+                for cand in phase_stack_candidates_for_mask(Path(mask_path)):
+                    plane = _load_preview_plane(Path(cand), int(frame_idx), cache)
+                    if plane is not None:
+                        return plane
+            except Exception:
+                pass
+        return None
 
     def _get_foci_plane(frame_idx: int, foci_src: Optional[Path]=None) -> Optional[np.ndarray]:
         src = foci_src
@@ -1393,7 +1615,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 rgb[am, 1] = (rgb[am, 1].astype(np.float32) * (1 - alpha) + 255 * alpha).astype(np.uint8)
                 rgb[am, 2] = (rgb[am, 2].astype(np.float32) * (1 - alpha)).astype(np.uint8)
                 mask_acc = np.where(am, scaled_mask, 0).astype(np.int32)
-                b = find_boundaries(mask_acc, mode='outer')
+                # 1 px hairline on the cell side (inner) — thinner / cleaner than outer.
+                b = find_boundaries(mask_acc, mode='inner')
+                if not np.any(b):
+                    b = find_boundaries(mask_acc, mode='outer')
                 rgb[b] = 0
         if show_cells and rejected:
             rm = np.isin(scaled_mask, np.array(list(rejected), dtype=np.int32))
@@ -1452,24 +1677,74 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                                 rgb[y2, x2, 1] = int(color[1])
                                 rgb[y2, x2, 2] = int(color[2])
 
-        def _draw_foci_contours(peaks: list[dict], plane: np.ndarray, settings: dict, contour_rgb: tuple[int, int, int]) -> list[dict]:
-            return draw_foci_blob_contours_on_rgb(rgb, mask_2d, peaks, np.asarray(plane), settings, contour_rgb)
+        def _draw_foci_contours(
+            peaks: list[dict],
+            plane: np.ndarray,
+            settings: dict,
+            contour_rgb: tuple[int, int, int],
+            *,
+            ownership_peaks: Optional[list[dict]] = None,
+        ) -> list[dict]:
+            return draw_foci_blob_contours_on_rgb(
+                rgb,
+                mask_2d,
+                peaks,
+                np.asarray(plane),
+                settings,
+                contour_rgb,
+                ownership_peaks=ownership_peaks,
+            )
         if show_foci and (not skip_foci):
             try:
                 fs_draw = dict(foci_settings or {})
                 plane_draw = foci_plane
                 foci_after_apply = bool(draw_pass_foci_as_blobs)
                 if foci_after_apply and plane_draw is not None:
+                    ownership = list(pass_peaks or []) + list(fail_peaks or [])
                     if pass_peaks:
-                        missed = _draw_foci_contours(pass_peaks, np.asarray(plane_draw), fs_draw, _FOCI_PASS_RGB)
-                        if missed:
-                            _draw_peak_marker_rings(missed, _FOCI_PASS_RGB, radius=3)
+                        draw_exclusive_foci_preview_on_rgb(
+                            rgb,
+                            mask_2d,
+                            pass_peaks,
+                            np.asarray(plane_draw),
+                            settings=fs_draw,
+                            outline_rgb=_FOCI_BLOB_OUTLINE_RGB,
+                            peak_rgb=_FOCI_PEAK_PIXEL_RGB,
+                            ownership_peaks=ownership,
+                        )
                     if fail_peaks:
-                        missed = _draw_foci_contours(fail_peaks, np.asarray(plane_draw), fs_draw, _FOCI_FAIL_RGB)
-                        if missed:
-                            _draw_peak_marker_rings(missed, _FOCI_FAIL_RGB, radius=3)
+                        draw_foci_blob_contours_on_rgb(
+                            rgb,
+                            mask_2d,
+                            fail_peaks,
+                            np.asarray(plane_draw),
+                            fs_draw,
+                            _FOCI_FAIL_OUTLINE_RGB,
+                            ownership_peaks=ownership,
+                        )
+                        draw_peak_pixels_on_rgb(
+                            rgb,
+                            fail_peaks,
+                            _FOCI_PEAK_PIXEL_RGB,
+                            mask_shape=tuple(mask_2d.shape[:2]),
+                        )
+                elif pass_peaks and plane_draw is not None:
+                    draw_exclusive_foci_preview_on_rgb(
+                        rgb,
+                        mask_2d,
+                        pass_peaks,
+                        np.asarray(plane_draw),
+                        settings=fs_draw,
+                        outline_rgb=_FOCI_BLOB_OUTLINE_RGB,
+                        peak_rgb=_FOCI_PEAK_PIXEL_RGB,
+                    )
                 elif pass_peaks:
-                    _draw_peak_rings(pass_peaks, _FOCI_RAW_PEAK_RGB, radius=4)
+                    draw_peak_pixels_on_rgb(
+                        rgb,
+                        pass_peaks,
+                        _FOCI_PEAK_PIXEL_RGB,
+                        mask_shape=tuple(mask_2d.shape[:2]),
+                    )
             except Exception:
                 pass
         return rgb
@@ -1613,7 +1888,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         params = get_current_parameters(request_settings)
         if bool(params.get('focus_filter_enabled')):
             try:
-                params['focus_phase_plane'] = _phase_plane_for_focus(int(frame_idx))
+                phase = _phase_plane_for_focus(int(frame_idx))
+                params['focus_phase_plane'] = (
+                    np.asarray(phase, dtype=np.float64).copy() if phase is not None else None
+                )
             except Exception:
                 params['focus_phase_plane'] = None
         display_params = {'do_fi_contour': False, 'fi_contour_thickness_val': 1, 'run_foci': False, 'foci_snapshot': None}
@@ -1787,7 +2065,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     foci_txt = f'  |  Foci CSV: {int(_n_foci_total)} raw → {int(_n_foci_drawn)} pass'
             except Exception:
                 foci_txt = ''
-            bg = _get_bg_frame(int(fid), request_source_key)
             source_key = tuple(request_source_key)
             frame_rows = list(frame_rows_apply)
             foci_plane = foci_plane_work
@@ -2054,6 +2331,12 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             _ui_to_settings()
         except Exception:
             pass
+        try:
+            cancel_lut = getattr(dlg, '_pf_cancel_pending_lut', None)
+            if callable(cancel_lut):
+                cancel_lut()
+        except Exception:
+            pass
         idx = int(frame_spin.value()) - 1
         try:
             fs = tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}
@@ -2064,13 +2347,22 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         # image when the hidden combo mirror failed to sync.
         src = _normalize_source_key(source_key if source_key is not None else _selected_source())
         try:
-            # Keep the hidden combo aligned with the View selection used for apply.
+            # Keep hidden combo + nav View aligned with the source used for apply.
             for ii in range(int(image_combo.count())):
                 if _source_keys_equal(image_combo.itemData(ii), src):
                     image_combo.blockSignals(True)
                     image_combo.setCurrentIndex(int(ii))
                     image_combo.blockSignals(False)
                     break
+            nav_ctrl.set_state(
+                PreviewNavState(
+                    source_key=src,
+                    frame_idx=int(idx),
+                    channel_idx=int(nav_ctrl.state().channel_idx),
+                    z_idx=int(nav_ctrl.state().z_idx),
+                ),
+                emit=False,
+            )
         except Exception:
             pass
         plan = _plan_incremental_apply(idx, dict(fs))
@@ -2128,6 +2420,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         mask_path_key = getattr(dlg, '_preview_mask_path_key', None)
         current_source_key = _source_key_from_state(state, _selected_source)
         bg = _get_bg_frame(state.frame_idx, current_source_key)
+        _sync_state_lut_to_bg(bg, state)
         lut_frame = np.asarray(bg) if bg is not None else np.zeros(mask_stack.shape[1:3], dtype=np.float32)
         bg_u8 = _apply_lut_to_bg(bg, state.vmin, state.vmax)
         apply_busy = bool(state.extra.get('filter_apply_busy'))
@@ -2205,9 +2498,9 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             (pass_peaks, fail_peaks) = sync_foci_peaks_with_accepted_cells(pass_peaks, fail_peaks, mask_2d=mask_2d, accepted_cell_labels=accepted_for_foci_gating, settings=dict(foci_fs or {}))
         if show_foci and (pass_peaks or fail_peaks):
             preview_total = len(pass_peaks) + len(fail_peaks)
-            preview_cap = max(0, int(DEFAULT_FOCI_PREVIEW_RENDER_CAP))
-            if preview_cap > 0 and preview_total > preview_cap:
-                info_text = f'{info_text}  |  Foci preview: {preview_cap} / {preview_total} drawn'.strip()
+            # Keep status informative; do not truncate the drawn set (see _foci_preview_draw_cap).
+            if preview_total > 0:
+                info_text = f'{info_text}  |  Foci preview: {preview_total} drawn'.strip()
         highlight_yx = getattr(dlg, '_highlight_foci_yx', None)
         foci_after_apply = bool(cell_filter_applied)
         foci_sig = _settings_signature_for(dict(foci_fs or {}))
@@ -2216,15 +2509,17 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         def _draw_peaks_on_rgb(target_rgb: np.ndarray, peaks: list[dict], color: tuple[int, int, int], *, radius: int=4, cap: Optional[int]=None) -> None:
             draw_peak_rings_on_rgb(target_rgb, peaks, color, mask_shape=tuple(mask_2d.shape[:2]), radius=radius, cap=cap)
 
-        def _foci_preview_draw_cap() -> int:
-            return max(0, int(DEFAULT_FOCI_PREVIEW_RENDER_CAP))
+        def _foci_preview_draw_cap() -> Optional[int]:
+            # Spotiflow CSVs are ordered by detection scan, not space-filling. Capping to the
+            # first N therefore blanked whole regions that segmentation preview still showed.
+            return None
 
         def _cap_peaks_for_preview(peaks: list[dict]) -> tuple[list[dict], int, int]:
             total = len(peaks or [])
             cap = _foci_preview_draw_cap()
-            if cap <= 0 or total <= cap:
+            if cap is None or int(cap) <= 0 or total <= int(cap):
                 return (list(peaks or []), total, total)
-            return (list(peaks[:cap]), cap, total)
+            return (list(peaks[: int(cap)]), int(cap), total)
 
         def _foci_channel_should_draw(si: int, fp: Path) -> bool:
             nav = getattr(dlg, '_nav_ctrl', None)
@@ -2278,18 +2573,107 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     ch_plane_arr = np.asarray(ch_plane)
                     (pass_draw, pass_drawn, pass_total) = _cap_peaks_for_preview(ch_pass)
                     (fail_draw, fail_drawn, fail_total) = _cap_peaks_for_preview(ch_fail)
-                    missed_pass = draw_foci_blob_contours_on_rgb(ch_layer_rgb, mask_2d, pass_draw, ch_plane_arr, dict(ch_fs), ch_color, cap=_foci_preview_draw_cap())
-                    if missed_pass:
-                        _draw_peaks_on_rgb(ch_layer_rgb, missed_pass, ch_color, radius=3)
-                    missed_fail = draw_foci_blob_contours_on_rgb(ch_layer_rgb, mask_2d, fail_draw, ch_plane_arr, dict(ch_fs), _FOCI_FAIL_RGB, cap=_foci_preview_draw_cap())
-                    if missed_fail:
-                        _draw_peaks_on_rgb(ch_layer_rgb, missed_fail, _FOCI_FAIL_RGB, radius=3)
+                    ownership = list(pass_draw) + list(fail_draw)
+                    _outline_budget = 1200
+                    if ownership and len(ownership) <= _outline_budget:
+                        from bactomate.gui.foci_overlay_draw import (
+                            _exclusive_blob_outline_mask,
+                            _peak_hollow_ring_mask,
+                        )
+                        from bactomate.modules.foci_utils import exclusive_focus_blob_metrics
+
+                        measured = exclusive_focus_blob_metrics(
+                            ch_plane_arr,
+                            ownership,
+                            threshold_frac=foci_blob_threshold_frac(dict(ch_fs)),
+                            max_radius=foci_blob_max_radius(dict(ch_fs)),
+                            labeled_mask=np.asarray(mask_2d, dtype=np.int32),
+                        )
+                        pass_keys = {
+                            (int(float(p.get('y', 0) or 0)), int(float(p.get('x', 0) or 0)))
+                            for p in pass_draw
+                        }
+                        fail_keys = {
+                            (int(float(p.get('y', 0) or 0)), int(float(p.get('x', 0) or 0)))
+                            for p in fail_draw
+                        }
+                        (h0, w0) = (int(mask_2d.shape[0]), int(mask_2d.shape[1]))
+                        (h1, w1) = (int(ch_layer_rgb.shape[0]), int(ch_layer_rgb.shape[1]))
+                        sx = (w1 / w0) if w0 else 1.0
+                        sy = (h1 / h0) if h0 else 1.0
+                        edge_pass = np.zeros((h1, w1), dtype=bool)
+                        edge_fail = np.zeros((h1, w1), dtype=bool)
+                        for peak, blob, _size, _mean in measured:
+                            try:
+                                key = (int(peak.get('y', 0)), int(peak.get('x', 0)))
+                            except Exception:
+                                continue
+                            if blob is None or not np.any(blob):
+                                continue
+                            area = int(np.sum(blob))
+                            ring = (
+                                _exclusive_blob_outline_mask(blob)
+                                if area >= 6
+                                else _peak_hollow_ring_mask(blob.shape[:2], key[0], key[1], radius=2)
+                            )
+                            if not np.any(ring):
+                                continue
+                            ys, xs = np.nonzero(ring)
+                            y2 = np.clip(np.round(ys.astype(np.float64) * sy).astype(np.int32), 0, h1 - 1)
+                            x2 = np.clip(np.round(xs.astype(np.float64) * sx).astype(np.int32), 0, w1 - 1)
+                            if key in pass_keys:
+                                edge_pass[y2, x2] = True
+                            elif key in fail_keys:
+                                edge_fail[y2, x2] = True
+                        outline = _FOCI_BLOB_OUTLINE_RGB if si == 0 else tuple(min(255, int(c * 0.45 + 140)) for c in ch_color)
+                        if np.any(edge_pass):
+                            ch_layer_rgb[edge_pass] = outline
+                        if np.any(edge_fail):
+                            ch_layer_rgb[edge_fail] = _FOCI_FAIL_OUTLINE_RGB
+                    peak_draw = list(pass_draw) + list(fail_draw)
+                    if peak_draw:
+                        draw_peak_pixels_on_rgb(
+                            ch_layer_rgb,
+                            peak_draw,
+                            _FOCI_PEAK_PIXEL_RGB,
+                            mask_shape=tuple(mask_2d.shape[:2]),
+                            cap=_foci_preview_draw_cap(),
+                        )
                     ch_mask = np.any(np.asarray(ch_layer_rgb) > 12, axis=-1)
-                    channels_store[ch_key] = {'layer': ch_layer_rgb, 'mask': ch_mask, 'drawn': int(pass_drawn + fail_drawn), 'total': int(pass_total + fail_total)}
+                    channels_store[ch_key] = {
+                        'layer': ch_layer_rgb,
+                        'mask': ch_mask,
+                        'drawn': int(pass_drawn + fail_drawn),
+                        'total': int(pass_total + fail_total),
+                    }
                     continue
+                # Before Apply: same red peak + light outline language when plane is available.
                 raw_peaks = _peaks_from_csv_rows(ch_rows)
                 (draw_peaks, drawn_n, total_n) = _cap_peaks_for_preview(raw_peaks)
-                _draw_peaks_on_rgb(ch_layer_rgb, draw_peaks, ch_color, radius=4, cap=_foci_preview_draw_cap())
+                ch_plane = _get_foci_plane(fid, fp)
+                # Heavy exclusive growth on huge peak sets freezes the UI — peaks only above this.
+                _outline_budget = 1200
+                if ch_plane is not None and draw_peaks and len(draw_peaks) <= _outline_budget:
+                    draw_exclusive_foci_preview_on_rgb(
+                        ch_layer_rgb,
+                        mask_2d,
+                        draw_peaks,
+                        np.asarray(ch_plane),
+                        settings=dict(ch_fs),
+                        outline_rgb=_FOCI_BLOB_OUTLINE_RGB if si == 0 else tuple(
+                            min(255, int(c * 0.45 + 140)) for c in ch_color
+                        ),
+                        peak_rgb=_FOCI_PEAK_PIXEL_RGB,
+                        cap=_foci_preview_draw_cap(),
+                    )
+                elif draw_peaks:
+                    draw_peak_pixels_on_rgb(
+                        ch_layer_rgb,
+                        draw_peaks,
+                        _FOCI_PEAK_PIXEL_RGB,
+                        mask_shape=tuple(mask_2d.shape[:2]),
+                        cap=_foci_preview_draw_cap(),
+                    )
                 ch_mask = np.any(np.asarray(ch_layer_rgb) > 12, axis=-1)
                 channels_store[ch_key] = {'layer': ch_layer_rgb, 'mask': ch_mask, 'drawn': int(drawn_n), 'total': int(total_n)}
             for (si, fp) in enumerate(overlay_sources):
@@ -2570,12 +2954,66 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         _lut_debounce.setSingleShot(True)
         _lut_pending: dict[str, float] = {'vmin': float('nan'), 'vmax': float('nan')}
 
+        def _cancel_pending_lut_refresh() -> None:
+            """Drop queued LUT commits so a stale View cannot crush the next Apply paint."""
+            try:
+                _lut_debounce.stop()
+            except Exception:
+                pass
+            _lut_pending['vmin'] = float('nan')
+            _lut_pending['vmax'] = float('nan')
+
+        def _ensure_view_background_visible(frame_idx: int, source_key, *, force: bool=False) -> None:
+            """If the current LUT window no longer spans the View plane, re-autoscale and redraw.
+
+            Symptom we fix: after Apply, a deferred LUT commit from a previous View (often
+            foci-scale) leaves vmin/vmax so wide or high that phase paints solid black
+            until the user toggles View.
+            """
+            _cancel_pending_lut_refresh()
+            bg = _get_bg_frame(int(frame_idx), source_key)
+            if bg is None:
+                return
+            arr = np.asarray(bg, dtype=np.float64)
+            needs_reset = bool(force) or (not _lut_window_spans_frame(getattr(dlg.state(), 'vmin', None), getattr(dlg.state(), 'vmax', None), arr))
+            if not needs_reset:
+                return
+            try:
+                dlg.state().vmin = None
+                dlg.state().vmax = None
+                dlg.lut_widget.set_lut(None, None)
+                dlg.lut_widget.set_frame(arr, preserve_user_lut=False)
+                (lo, hi) = dlg.lut_widget.current_lut()
+                if lo is not None and hi is not None and float(hi) > float(lo):
+                    dlg.state().vmin = float(lo)
+                    dlg.state().vmax = float(hi)
+            except Exception:
+                pass
+            try:
+                _clear_preview_base_caches(dlg)
+                dlg.set_extra('lut_only', False)
+                dlg.set_extra('overlay_only', False)
+                dlg.set_extra('nav_only', False)
+                dlg.refresh()
+            except Exception:
+                pass
+
         def _commit_lut_refresh() -> None:
             try:
-                dlg.state().vmin = float(_lut_pending.get('vmin'))
-                dlg.state().vmax = float(_lut_pending.get('vmax'))
+                vmin = float(_lut_pending.get('vmin'))
+                vmax = float(_lut_pending.get('vmax'))
             except Exception:
                 return
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                return
+            try:
+                bg = _get_bg_frame(int(getattr(dlg.state(), 'frame_idx', 0) or 0), _source_key_from_state(dlg.state(), _selected_source))
+                if bg is not None and (not _lut_window_spans_frame(vmin, vmax, bg)):
+                    return
+            except Exception:
+                pass
+            dlg.state().vmin = float(vmin)
+            dlg.state().vmax = float(vmax)
             dlg.set_extra('lut_only', True)
             try:
                 dlg.refresh()
@@ -2592,12 +3030,18 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception:
             pass
         dlg.lut_widget.lut_changed.connect(_on_filter_lut_changed)
+        try:
+            dlg._pf_cancel_pending_lut = _cancel_pending_lut_refresh
+            dlg._pf_ensure_view_bg_visible = _ensure_view_background_visible
+        except Exception:
+            pass
 
         def _sync_nav_state_only(*, reset_lut: bool=False) -> None:
             dlg.set_frame_idx(int(frame_spin.value()) - 1)
             dlg.set_source_key(_selected_source())
             if reset_lut:
                 try:
+                    _cancel_pending_lut_refresh()
                     dlg.state().vmin = None
                     dlg.state().vmax = None
                     dlg.lut_widget.set_lut(None, None)
@@ -2611,15 +3055,32 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 dlg.set_extra('nav_only', False)
 
         def _reapply_last_settings_for_preview_image(source_key=None) -> None:
-            """After a View-image switch: keep UI params, re-apply filters for the new image."""
+            """After a View-image switch: swap background only — do not re-run Apply."""
             try:
                 _sync_filter_panels_for_view()
             except Exception:
                 pass
+            src = _normalize_source_key(source_key if source_key is not None else _selected_source())
             try:
-                apply_current(source_key=source_key)
+                dlg.set_source_key(src)
+                _cancel_pending_lut_refresh()
+                dlg.state().vmin = None
+                dlg.state().vmax = None
+                dlg.lut_widget.set_lut(None, None)
             except Exception:
                 pass
+            # Keep foci channel rasters; only the phase/FI background must rebuild.
+            _clear_preview_base_caches(dlg)
+            try:
+                dlg.set_extra('lut_only', False)
+                dlg.set_extra('overlay_only', False)
+                dlg.set_extra('nav_only', True)
+                dlg.refresh()
+            finally:
+                try:
+                    dlg.set_extra('nav_only', False)
+                except Exception:
+                    pass
             if bool(w_show_foci_table.isChecked()):
                 try:
                     _schedule_foci_table_refresh()
@@ -2630,21 +3091,12 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         frame_spin.valueChanged.connect(lambda _v: _sync_nav_state_only(reset_lut=False))
 
         def _on_image_combo_changed(*_) -> None:
-            # Hidden combo mirror: do not overwrite pixel size; re-apply last settings.
+            # Hidden combo mirror: swap View background only (no Apply).
             try:
                 _ui_to_settings()
             except Exception:
                 pass
             src = _selected_source()
-            try:
-                dlg.set_frame_idx(int(frame_spin.value()) - 1)
-                dlg.set_source_key(src)
-                dlg.state().vmin = None
-                dlg.state().vmax = None
-                dlg.lut_widget.set_lut(None, None)
-            except Exception:
-                pass
-            _clear_preview_base_caches(dlg)
             _reapply_last_settings_for_preview_image(source_key=src)
         image_combo.currentIndexChanged.connect(_on_image_combo_changed)
 
@@ -2681,13 +3133,13 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     _clear_preview_base_caches(dlg)
                 if reason == 'source':
                     try:
+                        _cancel_pending_lut_refresh()
                         dlg.state().vmin = None
                         dlg.state().vmax = None
                         dlg.lut_widget.set_lut(None, None)
                     except Exception:
                         pass
-                    # Keep last cell/foci params (no metadata overwrite, no _settings_to_ui reload)
-                    # and re-apply them so the new View image shows the same filter effect.
+                    # Background swap only — do not re-run Apply (that made View changes crawl).
                     _reapply_last_settings_for_preview_image(source_key=nav_src)
                     return
                 dlg.set_extra('nav_only', True)
@@ -2723,10 +3175,18 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg.set_extra(str(key), bool(checked))
             if str(key) == 'show_cells':
                 _sync_overlay_extras_from_nav()
-                _clear_preview_layer_caches(dlg)
-                dlg.set_extra('overlay_only', False)
-                dlg.set_extra('nav_only', False)
-                dlg.refresh()
+                # Base already caches with_cells/no_cells; only drop composited paste.
+                try:
+                    dlg._foci_composited_cache = {}
+                except Exception:
+                    pass
+                dlg.set_extra('overlay_only', True)
+                dlg.set_extra('nav_only', True)
+                try:
+                    dlg.refresh()
+                finally:
+                    dlg.set_extra('overlay_only', False)
+                    dlg.set_extra('nav_only', False)
                 return
             _sync_overlay_extras_from_nav()
             _clear_preview_base_caches(dlg)
@@ -2882,6 +3342,23 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     dlg._foci_table_fitted_once = False
                 except Exception:
                     pass
+                if not _checked:
+                    # Hide table → clear focus highlight so it is not sticky when reopened.
+                    try:
+                        dlg._highlight_foci_yx = None
+                    except Exception:
+                        pass
+                    try:
+                        foci_table.clearSelection()
+                    except Exception:
+                        pass
+                    try:
+                        _refresh_foci_highlight_only()
+                    except Exception:
+                        try:
+                            dlg.refresh()
+                        except Exception:
+                            pass
                 _update_foci_table_live()
                 _sync_filter_settings_panel_height()
                 if _checked:
@@ -2891,6 +3368,16 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             pass
         try:
             foci_table.cellDoubleClicked.connect(_focus_foci_from_table)
+        except Exception:
+            pass
+        try:
+
+            def _on_foci_header_double_clicked(logical_index: int) -> None:
+                apply_foci_table_header_sort(foci_table, int(logical_index))
+
+            hh = foci_table.horizontalHeader()
+            if hh is not None:
+                hh.sectionDoubleClicked.connect(_on_foci_header_double_clicked)
         except Exception:
             pass
         try:

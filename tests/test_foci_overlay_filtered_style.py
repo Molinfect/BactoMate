@@ -1,4 +1,4 @@
-"""Tests for distinct filtered vs segmentation foci overlay artifacts."""
+"""Tests for uniform filtered vs segmentation foci overlay artifacts."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,7 +7,7 @@ import numpy as np
 import tifffile
 
 
-def test_filtered_overlay_uses_orange_blob_style(tmp_path: Path) -> None:
+def test_filtered_and_segmentation_overlays_use_red_peak_light_outline(tmp_path: Path) -> None:
     from bactomate.gui.foci_overlay_artifacts import (
         FociOverlayStyle,
         write_filtered_foci_overlay_for_csv,
@@ -15,6 +15,7 @@ def test_filtered_overlay_uses_orange_blob_style(tmp_path: Path) -> None:
     )
 
     foci = np.zeros((32, 32), dtype=np.float32)
+    foci[8:16, 8:16] = 80.0
     foci[10, 12] = 200.0
     foci[10, 13] = 150.0
     foci_path = tmp_path / "sample_foci.tif"
@@ -38,10 +39,17 @@ def test_filtered_overlay_uses_orange_blob_style(tmp_path: Path) -> None:
     assert ok
     assert out_path.name.endswith("_filtered_overlay.tif")
     arr = tifffile.imread(out_path)
-    # Orange blob region (not pure grayscale background).
-    assert int(arr[0, 10, 12, 0]) > 50
-    assert int(arr[0, 10, 12, 1]) > 50
-    assert int(arr[0, 10, 12, 2]) < 200
+    # Spotiflow peak pixel is red on top.
+    assert tuple(int(x) for x in arr[0, 10, 12, :]) == (255, 30, 30)
+    # Light-orange outline exists somewhere near the peak.
+    near = arr[0, 7:14, 9:16]
+    orangeish = (
+        (near[:, :, 0] > 200)
+        & (near[:, :, 1] > 150)
+        & (near[:, :, 1] < 230)
+        & (near[:, :, 2] < 160)
+    )
+    assert int(np.sum(orangeish)) > 0
 
     seg_path = tmp_path / "sample_foci_overlay.tif"
     ok_seg = write_foci_overlay_tif(
@@ -50,8 +58,8 @@ def test_filtered_overlay_uses_orange_blob_style(tmp_path: Path) -> None:
         rows=[{"frame": 0, "y": 10, "x": 12, "intensity": 200.0}],
         mask_path=mask_path,
         style=FociOverlayStyle.segmentation(),
+        blob_settings={"foci_blob_threshold_frac": 0.8, "foci_blob_max_radius": 5},
     )
     assert ok_seg
     seg = tifffile.imread(seg_path)
-    # Segmentation uses yellow dot at peak.
-    assert tuple(int(x) for x in seg[0, 10, 12, :]) == (255, 255, 0)
+    assert tuple(int(x) for x in seg[0, 10, 12, :]) == (255, 30, 30)

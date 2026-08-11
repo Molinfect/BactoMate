@@ -18,6 +18,32 @@ from PyQt6.QtWidgets import (
 )
 
 
+def normalize_preview_source_key(sel: Any) -> Optional[tuple[str, int]]:
+    """Coerce Qt/list/tuple source keys to ``(kind, idx)``.
+
+    ``QComboBox.itemData`` often returns a ``list`` for a stored ``tuple``, and
+    ``list == tuple`` is False — that made View sync snap to the first entry
+    while dialog state kept the intended channel.
+    """
+    if sel is None:
+        return None
+    if not isinstance(sel, (tuple, list)) or len(sel) < 2:
+        return None
+    try:
+        return (str(sel[0]), int(sel[1]))
+    except Exception:
+        return None
+
+
+def preview_source_keys_equal(a: Any, b: Any) -> bool:
+    """True when two View source keys refer to the same plane."""
+    na = normalize_preview_source_key(a)
+    nb = normalize_preview_source_key(b)
+    if na is not None and nb is not None:
+        return na == nb
+    return a == b
+
+
 @dataclass(frozen=True)
 class PreviewSource:
     """Stable identity + label for the Image: dropdown."""
@@ -99,7 +125,7 @@ class PreviewNavigationControls(QWidget):
         self._source_widgets: list[QWidget] = []
         self._overlay_widgets: list[QWidget] = []
         self._action_widgets: list[QWidget] = []
-        self._last_nav_narrow: Optional[bool] = None
+        self._last_nav_narrow: Optional[object] = None
         self._nav_layout_dirty = True
 
         self._root = QVBoxLayout(self)
@@ -127,6 +153,14 @@ class PreviewNavigationControls(QWidget):
             pass
         self._image_combo.setMinimumWidth(180)
         self._image_combo.setFixedHeight(38)
+        # When Reset/Re-detect (+ cache) share the nav, don't let View steal the whole row.
+        if inline_trailer is not None:
+            self._image_combo.setMinimumWidth(120)
+            self._image_combo.setMaximumWidth(220)
+            self._image_combo.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Fixed,
+            )
         self._frame_label = QLabel("Frame:")
         self._frame_spin = QSpinBox()
         # Prevent intermediate jumps while typing (e.g. '55' briefly becoming '5').
@@ -394,14 +428,39 @@ class PreviewNavigationControls(QWidget):
         wrap.setLayout(row)
         self._rows_layout.addWidget(wrap)
 
+    def _nav_widgets_min_width(self, widgets: list[QWidget], *, spacing: int = 8) -> int:
+        if not widgets:
+            return 0
+        total = 0
+        for widget in widgets:
+            # Prefer minimums — sizeHint for Expanding combos is often "want lots of space".
+            hint = max(int(widget.minimumWidth() or 0), int(widget.minimumSizeHint().width()))
+            total += max(0, hint)
+        return total + spacing * max(0, len(widgets) - 1)
+
     def _reflow_nav_rows(self) -> None:
         if not self._source_widgets and not self._overlay_widgets and not self._action_widgets:
             return
         width = self.width()
         if width <= 0:
             width = self._nav_breakpoint + 1
-        narrow = width < self._nav_breakpoint
-        if not self._nav_layout_dirty and self._last_nav_narrow == narrow:
+
+        end_widgets: list[QWidget] = []
+        if self._inline_end is not None:
+            end_widgets.append(self._inline_end)
+        if self._trailing_end is not None:
+            end_widgets.append(self._trailing_end)
+        main_actions = [w for w in self._action_widgets if w not in end_widgets]
+
+        # One row when it fits; stack only when minimum widths would clip Reset/Re-detect.
+        one_row_needed = self._nav_widgets_min_width(
+            [*self._source_widgets, *self._overlay_widgets, *main_actions, *end_widgets]
+        )
+        narrow = width < self._nav_breakpoint or (one_row_needed > 0 and width < one_row_needed)
+        split_end_row = False
+
+        layout_key = (narrow, split_end_row, int(one_row_needed))
+        if not self._nav_layout_dirty and self._last_nav_narrow == layout_key:
             return
 
         for widget in (*self._source_widgets, *self._overlay_widgets, *self._action_widgets):
@@ -415,15 +474,14 @@ class PreviewNavigationControls(QWidget):
                 row.addWidget(widget, 0)
             for widget in self._overlay_widgets:
                 row.addWidget(widget, 0)
-            for widget in self._action_widgets:
-                if widget is self._inline_end:
-                    row.addWidget(widget, 1)
-                else:
-                    row.addWidget(widget, 0)
-            if self._inline_end is None:
-                row.addStretch(1)
+            for widget in main_actions:
+                row.addWidget(widget, 0)
+            # Prefer shrinking View / cache over crushing fixed action buttons.
+            row.addStretch(1)
+            for widget in end_widgets:
+                row.addWidget(widget, 0)
             self._add_nav_row(row)
-            self._last_nav_narrow = narrow
+            self._last_nav_narrow = layout_key
             self._nav_layout_dirty = False
             return
 
@@ -433,25 +491,18 @@ class PreviewNavigationControls(QWidget):
         source_row.addStretch(1)
         self._add_nav_row(source_row)
 
-        if self._overlay_widgets:
+        if self._overlay_widgets or main_actions or end_widgets:
             overlay_row = self._new_nav_row()
             for widget in self._overlay_widgets:
                 overlay_row.addWidget(widget, 0)
+            for widget in main_actions:
+                overlay_row.addWidget(widget, 0)
             overlay_row.addStretch(1)
+            for widget in end_widgets:
+                overlay_row.addWidget(widget, 0)
             self._add_nav_row(overlay_row)
 
-        if self._action_widgets:
-            action_row = self._new_nav_row()
-            for widget in self._action_widgets:
-                if widget is self._inline_end:
-                    action_row.addWidget(widget, 1)
-                else:
-                    action_row.addWidget(widget, 0)
-            if self._inline_end is None:
-                action_row.addStretch(1)
-            self._add_nav_row(action_row)
-
-        self._last_nav_narrow = narrow
+        self._last_nav_narrow = layout_key
         self._nav_layout_dirty = False
         self.updateGeometry()
 
@@ -583,12 +634,21 @@ class PreviewNavigationControls(QWidget):
             idx = 0
             if spec.image_sources:
                 if st.source_key is not None:
+                    want = normalize_preview_source_key(st.source_key)
+                    matched = False
                     for i, s in enumerate(spec.image_sources):
-                        if s.key == st.source_key:
+                        if want is not None and normalize_preview_source_key(s.key) == want:
                             idx = i
-                            resolved_key = st.source_key
+                            # Canonical tuple from the spec — never keep a Qt list key.
+                            resolved_key = s.key
+                            matched = True
                             break
-                    else:
+                        if want is None and s.key == st.source_key:
+                            idx = i
+                            resolved_key = s.key
+                            matched = True
+                            break
+                    if not matched:
                         resolved_key = spec.image_sources[0].key
                         idx = 0
                 else:
@@ -616,7 +676,7 @@ class PreviewNavigationControls(QWidget):
             self._channel_spin.blockSignals(False)
             self._z_spin.blockSignals(False)
 
-        rk = resolved_key
+        rk = normalize_preview_source_key(resolved_key) or resolved_key
         self._state = PreviewNavState(source_key=rk, frame_idx=fi, channel_idx=ci, z_idx=zi)
 
     def _commit_combo(self) -> None:

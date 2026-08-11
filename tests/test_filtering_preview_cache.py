@@ -80,6 +80,63 @@ def test_cache_miss_when_frame_differs():
     assert is_preview_cache_hit(last, 3, ("img", 0)) is False
 
 
+def test_lut_window_spans_frame_detects_crushed_display() -> None:
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import _lut_window_spans_frame
+
+    bg = np.linspace(0.0, 100.0, 64, dtype=np.float64).reshape(8, 8)
+    assert _lut_window_spans_frame(5.0, 95.0, bg) is True
+    # Stale high-gain LUT from a previous View → solid black on phase.
+    assert _lut_window_spans_frame(500.0, 800.0, bg) is False
+    assert _lut_window_spans_frame(float("nan"), 10.0, bg) is False
+    # Foci-scale window still intersects phase intensities but crushes them.
+    phase = np.linspace(800.0, 4000.0, 100, dtype=np.float64).reshape(10, 10)
+    assert _lut_window_spans_frame(0.0, 65535.0, phase) is False
+    assert _lut_window_spans_frame(700.0, 4200.0, phase) is True
+
+
+def test_stretch_plane_to_uint8_recovers_from_crushed_foci_lut() -> None:
+    """Regression: Phase must stay visible even when state still holds a foci LUT."""
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import stretch_plane_to_uint8
+
+    phase = np.linspace(800.0, 4000.0, 1024, dtype=np.float64).reshape(32, 32)
+    crushed = stretch_plane_to_uint8(phase, 20000.0, 34000.0)
+    assert int(crushed.max()) >= 40
+    assert float(crushed.mean()) > 10.0
+    # Naive mapping with the crushed window is nearly black — helper must not.
+    naive = ((phase - 20000.0) / (34000.0 - 20000.0) * 255.0).clip(0, 255)
+    assert float(naive.mean()) < 1.0
+
+
+def test_source_key_from_state_accepts_list() -> None:
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import _source_key_from_state
+
+    class _State:
+        source_key = ["file", 3]
+
+    assert _source_key_from_state(_State(), lambda: ("none", -1)) == ("file", 3)
+
+
+def test_source_key_from_state_prefers_visible_view_on_desync() -> None:
+    """When dialog state and View disagree, paint the visible View channel."""
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import _source_key_from_state
+
+    class _State:
+        source_key = ["file", 2]  # Phase stuck in dialog state
+
+    assert _source_key_from_state(_State(), lambda: ("file", 0)) == ("file", 0)
+
+
+def test_preview_source_key_list_tuple_equality() -> None:
+    from bactomate.gui.preview.navigation_controls import (
+        normalize_preview_source_key,
+        preview_source_keys_equal,
+    )
+
+    assert normalize_preview_source_key(["file", 2]) == ("file", 2)
+    assert preview_source_keys_equal(("file", 2), ["file", 2])
+    assert not preview_source_keys_equal(("file", 0), ["file", 2])
+
+
 def test_filter_apply_cache_hit_when_only_view_source_differs():
     """Changing background View must not drop applied cell/foci overlays."""
     last = _cached_entry(frame_idx=0, source_key=("img", 0))

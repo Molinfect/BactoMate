@@ -257,6 +257,15 @@ class AnalyzeMasksBase(QWidget):
         else:
             self.preview_action_btn.setVisible(False)
 
+        self.folder_preview_btn = QPushButton(self._folder_preview_button_label())
+        self.folder_preview_btn.setToolTip(self._folder_preview_button_tooltip())
+        self.folder_preview_btn.setEnabled(False)
+        style_module_primary_button(self.folder_preview_btn)
+        if self._stage_key() == "filtering" and self._show_preview_action_in_combined_group():
+            run_layout.addWidget(self.folder_preview_btn)
+        else:
+            self.folder_preview_btn.setVisible(False)
+
         if self._stage_key() in ("analyze", "filtering"):
             from bactomate.gui.widgets import ProgressCancelButton
 
@@ -269,6 +278,15 @@ class AnalyzeMasksBase(QWidget):
         run_layout.addWidget(self.primary_action_btn)
         self.preview_btn = self.preview_action_btn
         self.analyze_btn = self.primary_action_btn
+
+    def _folder_preview_button_label(self) -> str:
+        return "Preview folder"
+
+    def _folder_preview_button_tooltip(self) -> str:
+        return (
+            "Run current filter settings on up to 48 masks in the folder "
+            "and show a QC grid. Double-click a tile for the full filter preview."
+        )
 
     def _run_actions_layout(self) -> QHBoxLayout | QVBoxLayout:
         try:
@@ -614,6 +632,16 @@ class AnalyzeMasksBase(QWidget):
             self.primary_action_btn.setEnabled(has_path)
         if hasattr(self, "preview_action_btn"):
             self.preview_action_btn.setEnabled(has_path)
+        if hasattr(self, "folder_preview_btn"):
+            try:
+                from bactomate.gui.folder_preview.constants import folder_preview_enabled
+
+                n = len(self._get_mask_files_for_feedback()) if has_path else 0
+                self.folder_preview_btn.setEnabled(
+                    has_path and self._stage_key() == "filtering" and folder_preview_enabled(n)
+                )
+            except Exception:
+                self.folder_preview_btn.setEnabled(False)
 
     # Backward-compatible method alias.
     def _update_analyze_button_state(self) -> None:

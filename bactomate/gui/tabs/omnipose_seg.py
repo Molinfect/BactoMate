@@ -22,7 +22,7 @@ from bactomate.gui.paths import get_omnipose_user_models_dir, get_python_executa
 from bactomate.gui.patches import _patch_omnipose_get_masks
 from bactomate.gui.preferences import LAST_DIR_SEGMENTATION
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
-from bactomate.gui.layout_helpers import ResponsivePanel, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
+from bactomate.gui.layout_helpers import ResponsivePanel, build_preview_settings_scroll, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET, UI_THEME
 from bactomate.gui.mask_utils import OMNIPOSE_MASKS_SUBDIR, OMNIPOSE_MASKS_TILED_SUBDIR, ensure_omnipose_masks_has_images, ensure_training_images_nchan, get_training_pairs, infer_training_filters, prepare_omnipose_masks_from_pairs, tile_training_data
 from bactomate.gui.omnipose_utils import eval_uses_affinity_segmentation, omnipose_eval_first_mask, inspect_omnipose_checkpoint, is_affinity_builtin_model, load_bact_phase_affinity_model, load_cellpose_segmentation_model, prepare_user_pretrained_loader_path
@@ -185,6 +185,7 @@ class OmniposeSegTab(QWidget):
         self._preview_surface: Optional[Any] = None
         self._embedded_segmentation_preview: Optional[QDialog] = None
         self._folder_preview_pick: Optional[str] = None
+        self._folder_preview_controller: Optional[Any] = None
         self._trained_models_this_session: list[str] = []
         self._performed_this_session = False
         self._segment_filename_filter = ''
@@ -359,10 +360,10 @@ class OmniposeSegTab(QWidget):
         preview_spin.valueChanged.connect(_preview_changed)
         main_spin.valueChanged.connect(_main_changed)
 
-    def _build_embedded_cell_model_params_scroll(self, parent: QWidget, *, redetect_btn: Optional[QPushButton]=None) -> QWidget:
-        """Omnipose / Cellpose-SAM cell segmentation parameters (adaptive preview card).
+    def _build_embedded_cell_model_params_scroll(self, parent: QWidget, *, preview_dialog: Optional[Any]=None) -> tuple[QWidget, QPushButton]:
+        """Omnipose / Cellpose-SAM cell parameters card + Reset button (not embedded in the card).
 
-        Spotiflow foci lives in a separate strip — different pipeline from cell masks.
+        Reset/Re-detect live in the nav action bar so they clearly apply to cell + Spotiflow.
         """
 
         def linked_preview_spin(main_spin: QDoubleSpinBox) -> QDoubleSpinBox:
@@ -380,7 +381,10 @@ class OmniposeSegTab(QWidget):
         pv_cluster.setToolTip('Use DBSCAN clustering for thin/elongated cells.')
         self._link_checkboxes(pv_cluster, self.cluster)
         reset_btn = QPushButton('Reset')
-        reset_btn.setToolTip('Reset cell segmentation parameters to defaults for the current model.')
+        reset_btn.setToolTip(
+            'Reset cell segmentation and Spotiflow parameters to module defaults.\n'
+            'Does not re-run detection — click Re-detect after Reset to refresh the preview.'
+        )
 
         def _reset_preview_tuning() -> None:
             self.reset_segmentation_defaults()
@@ -391,17 +395,59 @@ class OmniposeSegTab(QWidget):
             pv_cluster.setChecked(self.cluster.isChecked())
             self.use_gpu.setChecked(True)
             self.create_overlay.setChecked(True)
+            if preview_dialog is not None:
+                try:
+                    key = self._active_spotiflow_channel_key(preview_dialog)
+                    self._load_spotiflow_widgets_for_channel(preview_dialog, key)
+                except Exception:
+                    pass
         reset_btn.clicked.connect(_reset_preview_tuning)
-        style_compact_action_button(reset_btn, horizontal_padding=22, dense=True)
-        if redetect_btn is not None:
-            style_compact_action_button(redetect_btn, horizontal_padding=22, dense=True)
-        fields = [setting_field('Diameter', pv_diameter, min_width=74, max_width=96), setting_field('Flow', pv_flow, min_width=74, max_width=96), setting_field('Mask', pv_mask, min_width=74, max_width=96), setting_cell(pv_cluster), setting_cell(reset_btn)]
-        if redetect_btn is not None:
-            fields.append(setting_cell(redetect_btn))
-        return build_settings_card('Cell segmentation', object_name='EmbeddedCellSegmentationControls', parent=parent, min_cell_width=150, label_min_width=70, control_max_width=96, h_spacing=12, fields=fields)
+        fields = [
+            setting_field('Diameter', pv_diameter, min_width=74, max_width=96),
+            setting_field('Flow', pv_flow, min_width=74, max_width=96),
+            setting_field('Mask', pv_mask, min_width=74, max_width=96),
+            setting_cell(pv_cluster),
+        ]
+        card = build_settings_card(
+            'Cell segmentation',
+            object_name='EmbeddedCellSegmentationControls',
+            parent=parent,
+            min_cell_width=150,
+            label_min_width=70,
+            control_max_width=96,
+            h_spacing=12,
+            fields=fields,
+        )
+        return card, reset_btn
+
+    def _build_embedded_preview_action_bar(self, parent: QWidget, *, reset_btn: QPushButton, redetect_btn: QPushButton) -> QWidget:
+        """Primary Reset + Re-detect actions for the embedded preview nav (filter-style Apply chrome)."""
+        bar = QWidget(parent)
+        bar.setObjectName('EmbeddedSegPreviewActions')
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        for btn in (reset_btn, redetect_btn):
+            style_module_primary_button(btn)
+            # Enter in pHigh/pLow must not click Reset (QDialog promotes the first
+            # autoDefault button — that was snapping perc_high back to 99.8).
+            try:
+                btn.setAutoDefault(False)
+                btn.setDefault(False)
+            except Exception:
+                pass
+            # Fixed width from text — Minimum/Expanding lets Qt crush "Re-detect" when the nav is crowded.
+            fm = btn.fontMetrics()
+            text = btn.text() or ''
+            text_w = max(int(fm.horizontalAdvance(text)), int(fm.boundingRect(text).width()))
+            btn.setFixedWidth(max(108, text_w + 36))
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            lay.addWidget(btn, 0)
+        bar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        return bar
 
     def _build_embedded_spotiflow_foci_strip(self, parent: QWidget, preview_dialog: Optional[Any]=None) -> QWidget:
-        """Spotiflow foci — visually separate from Omnipose/Cellpose cell parameters."""
+        """Spotiflow foci enable strip — sits with cell params above the canvas."""
         frame = QFrame(parent)
         frame.setFrameShape(QFrame.Shape.NoFrame)
         frame.setObjectName('SpotiflowFociStrip')
@@ -1270,6 +1316,15 @@ class OmniposeSegTab(QWidget):
                     self._update_button_states()
         self.preview_btn.clicked.connect(safe_preview_segmentation)
         actions_layout.addWidget(self.preview_btn)
+        self.folder_preview_btn = QPushButton('Preview folder')
+        self.folder_preview_btn.setEnabled(False)
+        self.folder_preview_btn.setToolTip(
+            'Run current segmentation (+ Spotiflow foci if enabled) on up to 48 files '
+            'and show a QC grid. Double-click a tile to enlarge; results are cached until settings change.'
+        )
+        style_module_primary_button(self.folder_preview_btn)
+        self.folder_preview_btn.clicked.connect(self.preview_folder_segmentation)
+        actions_layout.addWidget(self.folder_preview_btn)
         self.process_btn = ProgressCancelButton('Segment File/Folder')
         self.process_btn.setEnabled(False)
         style_module_primary_button(self.process_btn)
@@ -1425,6 +1480,21 @@ class OmniposeSegTab(QWidget):
         options_panel.reflow()
         self._inference_options_panel = options_panel
         main_layout.addWidget(options_panel)
+
+        for _w in (self.diameter, self.flow_threshold, self.mask_threshold):
+            try:
+                _w.valueChanged.connect(self._mark_folder_preview_stale_if_needed)
+            except Exception:
+                pass
+        for _w in (self.cluster, self.detect_foci):
+            try:
+                _w.toggled.connect(self._mark_folder_preview_stale_if_needed)
+            except Exception:
+                pass
+        try:
+            self.model_combo.currentIndexChanged.connect(self._mark_folder_preview_stale_if_needed)
+        except Exception:
+            pass
 
         def check_model_availability():
             try:
@@ -1853,6 +1923,11 @@ class OmniposeSegTab(QWidget):
         if hasattr(self, 'preview_btn'):
             if not getattr(self, '_segmentation_in_progress', False) and (not getattr(self, '_segmentation_busy_action', None)):
                 self.preview_btn.setEnabled(has_path)
+        if hasattr(self, 'folder_preview_btn'):
+            if not getattr(self, '_segmentation_in_progress', False) and (not getattr(self, '_segmentation_busy_action', None)):
+                n = len(self._list_folder_preview_candidates()) if has_path else 0
+                from bactomate.gui.folder_preview.constants import folder_preview_enabled
+                self.folder_preview_btn.setEnabled(has_path and folder_preview_enabled(n))
         if hasattr(self, 'process_btn'):
             if not getattr(self, '_segmentation_in_progress', False) and (not getattr(self, '_segmentation_busy_action', None)):
                 self.process_btn.setEnabled(has_path)
@@ -2018,6 +2093,15 @@ class OmniposeSegTab(QWidget):
         """Public: return folder name for Re-run / main window (e.g. _segmentation_bact_phase_omni)."""
         return self._get_omnipose_segmentation_folder_name()
 
+    @staticmethod
+    def resolve_segmentation_output_dir_for_tiff(tiff_path: Path, folder_name: str) -> Path:
+        """Return the output directory used for one TIFF (must match batch script invocation)."""
+        tiff_path = Path(tiff_path)
+        base_dir = tiff_path.parent
+        if base_dir.name.startswith('Tif_'):
+            return base_dir / str(folder_name)
+        return base_dir / f'{tiff_path.stem}_omnipose_segmentation'
+
     def _get_spotiflow_detection_params(self, channel_key: str | None=None) -> dict[str, Any]:
         """Return Spotiflow parameters (defaults + global + optional per-channel overrides)."""
         merged = dict(SPOTIFLOW_DETECTION_DEFAULTS)
@@ -2172,8 +2256,15 @@ class OmniposeSegTab(QWidget):
 
     def _load_spotiflow_widgets_for_channel(self, dlg: QWidget, channel_key: str) -> None:
         sf = self._get_spotiflow_detection_params(channel_key=channel_key)
-        widgets: list[tuple[Any, str]] = [(getattr(dlg, '_sf_normalize_cb', None), 'cb'), (getattr(dlg, '_sf_use_optimized', None), 'cb')]
-        for (w, _kind) in widgets:
+        widgets: list[Any] = [
+            getattr(dlg, '_sf_normalize_cb', None),
+            getattr(dlg, '_sf_use_optimized', None),
+            getattr(dlg, '_sf_perc_low', None),
+            getattr(dlg, '_sf_perc_high', None),
+            getattr(dlg, '_sf_prob_thresh', None),
+            getattr(dlg, '_sf_min_distance', None),
+        ]
+        for w in widgets:
             if w is None:
                 continue
             try:
@@ -2184,9 +2275,11 @@ class OmniposeSegTab(QWidget):
             if getattr(dlg, '_sf_normalize_cb', None) is not None:
                 dlg._sf_normalize_cb.setChecked(bool(sf.get('normalize', True)))
             if getattr(dlg, '_sf_perc_low', None) is not None:
-                dlg._sf_perc_low.setValue(float(sf.get('perc_low', 1.0) or 1.0))
+                plow = sf.get('perc_low', 1.0)
+                dlg._sf_perc_low.setValue(float(1.0 if plow is None else plow))
             if getattr(dlg, '_sf_perc_high', None) is not None:
-                dlg._sf_perc_high.setValue(float(sf.get('perc_high', 99.8) or 99.8))
+                phigh = sf.get('perc_high', 99.8)
+                dlg._sf_perc_high.setValue(float(99.8 if phigh is None else phigh))
             if getattr(dlg, '_sf_use_optimized', None) is not None:
                 dlg._sf_use_optimized.setChecked(bool(sf.get('use_optimized_threshold', True)))
             if getattr(dlg, '_sf_prob_thresh', None) is not None:
@@ -2195,10 +2288,18 @@ class OmniposeSegTab(QWidget):
                 dlg._sf_prob_thresh.setEnabled(not dlg._sf_use_optimized.isChecked())
             if getattr(dlg, '_sf_min_distance', None) is not None:
                 dlg._sf_min_distance.setValue(int(sf.get('min_distance', 1) or 1))
+            # Keep pLow/pHigh enabled only when Normalize is on.
+            try:
+                norm_on = bool(getattr(dlg, '_sf_normalize_cb', None) and dlg._sf_normalize_cb.isChecked())
+                for _spin in (getattr(dlg, '_sf_perc_low', None), getattr(dlg, '_sf_perc_high', None)):
+                    if _spin is not None:
+                        _spin.setEnabled(norm_on)
+            except Exception:
+                pass
         except Exception:
             get_logger().debug('load spotiflow widgets failed', exc_info=True)
         finally:
-            for (w, _kind) in widgets:
+            for w in widgets:
                 if w is None:
                     continue
                 try:
@@ -2246,9 +2347,24 @@ class OmniposeSegTab(QWidget):
     def _sync_spotiflow_from_preview_dialog(self, dlg: QWidget) -> None:
         """Persist Spotiflow knobs from the preview into the active foci channel entry."""
         try:
+            self._commit_spotiflow_preview_spins(dlg)
             self._save_spotiflow_widgets_to_channel(dlg, self._active_spotiflow_channel_key(dlg))
         except Exception:
             get_logger().debug('sync spotiflow from preview failed', exc_info=True)
+
+    def _commit_spotiflow_preview_spins(self, dlg: Optional[QWidget]=None) -> None:
+        """Apply in-progress Spotiflow spinbox text before reading values."""
+        target = dlg if dlg is not None else getattr(self, '_embedded_segmentation_preview', None)
+        if target is None:
+            return
+        for name in ('_sf_perc_low', '_sf_perc_high', '_sf_prob_thresh', '_sf_min_distance'):
+            w = getattr(target, name, None)
+            if w is None:
+                continue
+            try:
+                w.interpretText()
+            except Exception:
+                pass
 
     def _get_segmentation_run_params(self, *, selected_files: list[Path] | None=None) -> dict[str, Any]:
         """Return the effective segmentation/foci parameters for the run about to start."""
@@ -2355,8 +2471,182 @@ class OmniposeSegTab(QWidget):
             except Exception:
                 pass
 
+    def _list_folder_preview_candidates(self) -> list[Path]:
+        """TIFF inputs eligible for folder-wide segmentation QC preview."""
+        raw = (self.file_path.text() or '').strip()
+        if not raw:
+            return []
+        path = Path(raw)
+        if path.is_file() and self._is_segmentation_input_file(path):
+            return [path]
+        if not path.is_dir():
+            return []
+        tiff_files = sorted(
+            [f for f in list_tiff_files(path, max_files=5000) if self._is_segmentation_input_file(f)],
+            key=lambda x: x.name.lower(),
+        )
+        pred = self._default_segmentation_selection_predicate(tiff_files)
+        if pred is None:
+            return tiff_files
+        preferred = [p for p in tiff_files if pred(p)]
+        return preferred or tiff_files
+
+    def _folder_preview_seg_params(self) -> dict[str, Any]:
+        self._commit_segmentation_parameter_spins()
+        import sys
+        is_frozen = getattr(sys, 'frozen', False) or hasattr(sys, '__compiled__')
+        diameter_value = self._get_effective_diameter_pixels()
+        display = self.model_combo.currentText()
+        (model_type, pretrained_path) = self._resolve_model_selection(display)
+        try:
+            flow_val = float(self.flow_threshold.value())
+        except Exception:
+            flow_val = 0.4
+        try:
+            cluster_on = bool(self.cluster.isChecked())
+        except Exception:
+            cluster_on = False
+        use_gpu = True
+        try:
+            use_gpu = bool(self.use_gpu.isChecked())
+        except Exception:
+            pass
+        return {
+            'diameter': float(diameter_value) if diameter_value and diameter_value > 0 else 0.0,
+            'flow_threshold': flow_val,
+            'mask_threshold': float(self._get_effective_mask_threshold()),
+            'cluster': cluster_on,
+            'model_type': model_type,
+            'pretrained_model': str(pretrained_path) if pretrained_path else None,
+            'use_gpu': use_gpu,
+            'is_cellpose_sam': model_type == CELLPOSE_SAM_MODEL,
+            'affinity_seg': bool(
+                eval_uses_affinity_segmentation(model_type=model_type, pretrained_path=pretrained_path)
+            ),
+            'is_frozen': bool(is_frozen),
+            'detect_foci': bool(getattr(self, 'detect_foci', None) and self.detect_foci.isChecked()),
+            'spotiflow': self._get_spotiflow_detection_params(),
+            'spotiflow_channels': dict(getattr(self, '_spotiflow_channel_params', None) or {}),
+            'foci_csv_min_probability': float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0),
+        }
+
+    def _mark_folder_preview_stale_if_needed(self, *_args) -> None:
+        ctrl = getattr(self, '_folder_preview_controller', None)
+        if ctrl is None or getattr(ctrl, 'grid', None) is None:
+            return
+        try:
+            ctrl.mark_stale_if_params_changed(self._folder_preview_seg_params())
+        except Exception:
+            pass
+
+    def _load_model_for_folder_preview(self, params: dict[str, Any]):
+        """Load Omnipose / Cellpose-SAM model for folder preview (main thread)."""
+        import os
+        model_type = params.get('model_type')
+        pretrained_path = params.get('pretrained_model')
+        use_gpu = bool(params.get('use_gpu', True))
+        if model_type == CELLPOSE_SAM_MODEL:
+            from cellpose import models as cellpose_models
+            return cellpose_models.CellposeModel(pretrained_model='cpsam', gpu=use_gpu)
+        if pretrained_path and os.path.isfile(str(pretrained_path)):
+            return load_cellpose_segmentation_model(
+                gpu=use_gpu, loader_path=str(pretrained_path), pretrained_path=str(pretrained_path)
+            )
+        from bactomate.gui.omnipose_pretrained_cache import ensure_builtin_in_bactomate_cache
+        bcp = ensure_builtin_in_bactomate_cache(model_type)
+        model_file = str(bcp)
+        if is_affinity_builtin_model(model_type):
+            return load_bact_phase_affinity_model(gpu=use_gpu, checkpoint_path=model_file)
+        return load_cellpose_segmentation_model(
+            gpu=use_gpu, loader_path=model_file, model_type=model_type
+        )
+
+    def preview_folder_segmentation(self) -> None:
+        """Closer-to-batch QC grid for up to 48 folder inputs."""
+        from bactomate.gui.folder_preview.constants import folder_preview_enabled
+        from bactomate.gui.folder_preview.controller import FolderPreviewController
+        from bactomate.gui.folder_preview.seg_compute import compute_segmentation_tile
+
+        candidates = self._list_folder_preview_candidates()
+        if not folder_preview_enabled(len(candidates)):
+            show_message_dialog(
+                self,
+                'Preview folder',
+                'Need more than one TIFF in the source folder for folder preview.\n'
+                'Use Preview segmentation for a single file.',
+                kind='warning',
+            )
+            return
+        mount = getattr(self, '_module_preview_mount', None)
+        if mount is None:
+            show_message_dialog(
+                self,
+                'Preview folder',
+                'Folder preview needs the module right panel (open Segmentation from the main window).',
+                kind='warning',
+            )
+            return
+        # Dismiss single-file embedded preview if open.
+        prev = getattr(self, '_embedded_segmentation_preview', None)
+        if prev is not None:
+            try:
+                prev.close()
+            except Exception:
+                pass
+            self._embedded_segmentation_preview = None
+        params = self._folder_preview_seg_params()
+        try:
+            model = self._load_model_for_folder_preview(params)
+        except Exception as e:
+            show_message_dialog(self, 'Model load failed', f'Could not load model for folder preview:\n{e}', kind='error')
+            return
+
+        spotiflow_model = None
+        if bool(params.get('detect_foci')):
+            try:
+                from bactomate.modules.foci_utils import load_spotiflow_model
+                sf0 = dict(params.get('spotiflow') or {})
+                spotiflow_model = load_spotiflow_model(
+                    model_name=str(sf0.get('model_name') or 'general'),
+                    model_path=str(sf0.get('model_path') or '').strip() or None,
+                )
+            except Exception as e:
+                get_logger().warning('Folder preview: Spotiflow model load failed (%s); tiles will show cells only.', e)
+
+        def compute_fn(path: Path, _idx: int):
+            return compute_segmentation_tile(
+                path,
+                model,
+                params,
+                spotiflow_model=spotiflow_model,
+                find_foci_sources=self._find_foci_sources_for_input,
+            )
+
+        ctrl = getattr(self, '_folder_preview_controller', None)
+        if ctrl is None:
+            ctrl = FolderPreviewController(
+                self,
+                preview_surface=getattr(self, '_preview_surface', None),
+                mount=mount,
+                on_tile_open=None,
+                parent=self,
+            )
+            self._folder_preview_controller = ctrl
+        try:
+            ctrl.start(candidates, params, compute_fn)
+        except Exception as e:
+            show_message_dialog(self, 'Preview folder', f'Could not start folder preview:\n{e}', kind='error')
+
     def preview_segmentation(self):
         """Preview segmentation on a single frame or file from folder"""
+        # If a folder grid is open, close it before single-file preview.
+        ctrl = getattr(self, '_folder_preview_controller', None)
+        if ctrl is not None and getattr(ctrl, 'grid', None) is not None:
+            try:
+                ctrl.close()
+            except Exception:
+                pass
+            self._folder_preview_controller = None
         if not self.file_path.text():
             show_message_dialog(self, 'No Selection', 'Please select a TIFF file or folder first.', kind='warning')
             return
@@ -3851,10 +4141,15 @@ class OmniposeSegTab(QWidget):
             cached_runs_combo = QComboBox()
             cached_runs_combo.setToolTip('Compare segmentation runs for this frame.\n• Current parameters — matches sliders/checkboxes now.\n• Other entries — earlier previews cached with different settings.')
             if embed_seg:
-                cached_runs_combo.setMinimumWidth(160)
-                cached_runs_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                # Keep cache combo compact so Reset/Re-detect stay fully visible on one nav row.
+                cached_runs_combo.setMinimumWidth(120)
+                cached_runs_combo.setMaximumWidth(200)
+                cached_runs_combo.setMinimumContentsLength(12)
+                cached_runs_combo.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
                 try:
-                    cached_runs_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+                    cached_runs_combo.setSizeAdjustPolicy(
+                        QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+                    )
                 except Exception:
                     pass
             else:
@@ -3911,10 +4206,12 @@ class OmniposeSegTab(QWidget):
             clear_cache_btn.clicked.connect(on_clear_cache)
             cached_runs_combo.currentIndexChanged.connect(on_cached_run_selected)
             redetect_btn = QPushButton('Re-detect')
-            redetect_btn.setToolTip('Re-run cell segmentation (active backend/model) and Spotiflow foci detection\non the current frame using the current parameters from the main window.\nSegmentation results are cached per parameter set; foci are cached per (source, frame, Spotiflow params).')
-            if embed_seg:
-                style_compact_action_button(redetect_btn, horizontal_padding=22, dense=True)
-            else:
+            redetect_btn.setToolTip(
+                'Re-run cell segmentation and Spotiflow foci detection on the current frame\n'
+                'using the parameters above (cell + Spotiflow). Segmentation is cached per\n'
+                'parameter set; foci are cached per (source, frame, Spotiflow params).'
+            )
+            if not embed_seg:
                 style_compact_action_button(redetect_btn, horizontal_padding=28)
 
             def on_redetect():
@@ -3934,6 +4231,35 @@ class OmniposeSegTab(QWidget):
                 preview_dialog._on_redetect = on_redetect
             except Exception:
                 pass
+
+            embed_settings_scroll: Optional[QWidget] = None
+            embed_action_trailer: Optional[QWidget] = None
+            if embed_seg:
+                settings_host = QWidget(preview_dialog)
+                settings_outer = QVBoxLayout(settings_host)
+                settings_outer.setContentsMargins(0, 0, 0, 0)
+                settings_outer.setSpacing(8)
+                (cell_card, embed_reset_btn) = self._build_embedded_cell_model_params_scroll(
+                    settings_host, preview_dialog=preview_dialog
+                )
+                foci_strip = self._build_embedded_spotiflow_foci_strip(settings_host, preview_dialog=preview_dialog)
+                sf_mount = QWidget(settings_host)
+                sf_mount.setObjectName('EmbeddedSpotiflowParamsMount')
+                sf_mount_lay = QVBoxLayout(sf_mount)
+                sf_mount_lay.setContentsMargins(0, 0, 0, 0)
+                sf_mount_lay.setSpacing(0)
+                settings_outer.addWidget(cell_card)
+                settings_outer.addWidget(foci_strip)
+                settings_outer.addWidget(sf_mount)
+                try:
+                    preview_dialog._sf_settings_mount = sf_mount
+                    preview_dialog._sf_settings_mount_lay = sf_mount_lay
+                except Exception:
+                    pass
+                embed_settings_scroll = build_preview_settings_scroll(settings_host, embedded=True)
+                embed_action_trailer = self._build_embedded_preview_action_bar(
+                    preview_dialog, reset_btn=embed_reset_btn, redetect_btn=redetect_btn
+                )
 
             def _on_preview_cell_params_changed(*_args) -> None:
                 """Keep Pending parameters in sync when diameter/flow/mask change."""
@@ -4022,31 +4348,25 @@ class OmniposeSegTab(QWidget):
                     use_per_channel = bool(foci_ch_labels)
                     return PreviewNavSpec(frame_count=int(max(1, num_frames)), image_sources=srcs, show_image=True, show_channel=False, show_z=False, show_cell_overlay_toggle=True, show_foci_overlay_toggle=bool(include_foci_items and fps_nav and (not use_per_channel)), cell_overlay_default=True, foci_overlay_available=bool(include_foci_items and fps_nav), foci_overlay_default=bool(include_foci_items and fps_nav), foci_channel_overlay_labels=foci_ch_labels, foci_channel_overlay_defaults=tuple((True for _ in foci_ch_labels)), debounce_ms=400)
                 nav_preview_spec_builder = _nav_preview_spec
-                cache_nav_foci_placeholder: Optional[QWidget] = None
                 cache_nav_inline = None
                 if embed_seg:
                     cache_nav_inline = QWidget()
-                    cache_nav_inline.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+                    cache_nav_inline.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
                     cnl = QHBoxLayout(cache_nav_inline)
                     cnl.setContentsMargins(0, 0, 0, 2)
                     cnl.setSpacing(6)
                     cnl.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-                    _foci_nav = getattr(preview_dialog, '_foci_source_paths', None) or []
-                    if _foci_nav and (not detect_foci_on):
-                        cache_nav_foci_placeholder = QWidget()
-                        cache_nav_foci_placeholder.setFixedWidth(178)
-                        cache_nav_foci_placeholder.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
-                        cnl.addWidget(cache_nav_foci_placeholder, 0)
                     pipe_lbl = QLabel('|')
                     pipe_lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                     pipe_lbl.setStyleSheet('color: #6a7a90; font-size: 12pt; font-weight: 300; padding: 0 4px;')
                     cnl.addWidget(pipe_lbl, 0)
-                    cnl.addWidget(cached_runs_combo, 1)
-                try:
-                    preview_dialog._cache_nav_foci_placeholder = cache_nav_foci_placeholder
-                except Exception:
-                    pass
-                nav_ctrl = PreviewNavigationControls(spec=_nav_preview_spec(detect_foci_on), inline_trailer=None, inline_end=cache_nav_inline, trailing_end=clear_cache_btn if embed_seg else None)
+                    cnl.addWidget(cached_runs_combo, 0)
+                nav_ctrl = PreviewNavigationControls(
+                    spec=_nav_preview_spec(detect_foci_on),
+                    inline_trailer=embed_action_trailer,
+                    inline_end=cache_nav_inline,
+                    trailing_end=clear_cache_btn if embed_seg else None,
+                )
                 try:
                     nav_ctrl.set_state(PreviewNavState(source_key=image_combo.currentData(), frame_idx=int(getattr(preview_dialog, 'current_frame', 0) or 0)), emit=False)
                 except Exception:
@@ -4109,7 +4429,10 @@ class OmniposeSegTab(QWidget):
                 sf_params_row.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
                 sf_norm_cb = QCheckBox('Normalize')
                 sf_norm_cb.setChecked(bool(p_sf.get('normalize', True)))
-                sf_norm_cb.setToolTip('Apply percentile normalization before Spotiflow inference.')
+                sf_norm_cb.setToolTip(
+                    'Percentile-normalize the foci plane before Spotiflow.\n'
+                    'pLow / pHigh are only used when this is on — editing them no longer force-enables Normalize.'
+                )
                 sf_norm_cb.setStyleSheet(_sf_cb_style)
                 sf_params_row.addWidget(sf_norm_cb)
                 sf_params_row.addWidget(_spot_param_label('pLow'))
@@ -4119,7 +4442,12 @@ class OmniposeSegTab(QWidget):
                 sf_plow.setSingleStep(0.5)
                 sf_plow.setValue(float(p_sf.get('perc_low', 1.0) or 1.0))
                 sf_plow.setFixedWidth(70)
+                try:
+                    sf_plow.setKeyboardTracking(False)
+                except Exception:
+                    pass
                 style_preview_nav_spinbox(sf_plow)
+                sf_plow.setToolTip('Lower percentile for Spotiflow normalization (used only when Normalize is on).')
                 sf_params_row.addWidget(sf_plow)
                 sf_params_row.addWidget(_spot_param_label('pHigh'))
                 sf_phigh = QDoubleSpinBox()
@@ -4128,7 +4456,12 @@ class OmniposeSegTab(QWidget):
                 sf_phigh.setSingleStep(0.5)
                 sf_phigh.setValue(float(p_sf.get('perc_high', 99.8) or 99.8))
                 sf_phigh.setFixedWidth(74)
+                try:
+                    sf_phigh.setKeyboardTracking(False)
+                except Exception:
+                    pass
                 style_preview_nav_spinbox(sf_phigh)
+                sf_phigh.setToolTip('Upper percentile for Spotiflow normalization (used only when Normalize is on).')
                 sf_params_row.addWidget(sf_phigh)
                 sf_params_row.addWidget(_spot_col_sep())
                 sf_use_opt = QCheckBox('Optimized threshold')
@@ -4161,7 +4494,7 @@ class OmniposeSegTab(QWidget):
                 sf_params_row.addWidget(sf_channel_lbl, 0, _sf_v)
                 sf_params_row.addWidget(sf_channel_combo, 0, _sf_v)
                 sf_params_row.addStretch(1)
-                _sf_hint = QLabel('Each foci channel has its own Spotiflow settings (prob thr, optimized threshold, …). View in the nav bar only changes the background image. Click Re-detect after edits.')
+                _sf_hint = QLabel('Each foci channel has its own Spotiflow settings (prob thr, optimized threshold, …). View in the nav bar only changes the background image. Click Re-detect (below the image) after edits.')
                 _sf_hint.setWordWrap(True)
                 _sf_hint.setStyleSheet(f"QLabel {{ color: {UI_THEME['muted_text']}; font-size: 9pt; padding: 0 2px 4px 2px; }}")
                 nav_layout.addWidget(_sf_hint)
@@ -4318,8 +4651,6 @@ class OmniposeSegTab(QWidget):
                     pass
             image_combo.currentIndexChanged.connect(_on_image_changed)
             if foci_sources:
-                from bactomate.gui.layout_helpers import wire_spin_activates_checkbox
-
                 def _sf_ui_changed(*_a):
                     try:
                         self._sync_spotiflow_from_preview_dialog(preview_dialog)
@@ -4368,9 +4699,25 @@ class OmniposeSegTab(QWidget):
                         pass
                 _sync_sf_channel_combo_tooltip()
                 sf_channel_combo.currentIndexChanged.connect(_on_sf_channel_combo_changed)
-                sf_norm_cb.toggled.connect(_sf_ui_changed)
-                wire_spin_activates_checkbox(sf_plow, sf_norm_cb, on_changed=_sf_ui_changed)
-                wire_spin_activates_checkbox(sf_phigh, sf_norm_cb, on_changed=_sf_ui_changed)
+
+                def _sync_normalize_spin_enabled(*_a) -> None:
+                    on = bool(sf_norm_cb.isChecked())
+                    for w in (sf_plow, sf_phigh):
+                        try:
+                            w.setEnabled(on)
+                        except Exception:
+                            pass
+
+                def _on_sf_normalize_toggled(*_a) -> None:
+                    _sync_normalize_spin_enabled()
+                    _sf_ui_changed()
+
+                _sync_normalize_spin_enabled()
+                sf_norm_cb.toggled.connect(_on_sf_normalize_toggled)
+                # Do not auto-check Normalize when editing percentiles — that fought the user
+                # (uncheck → edit pHigh → Normalize snapped back on).
+                sf_plow.valueChanged.connect(_sf_ui_changed)
+                sf_phigh.valueChanged.connect(_sf_ui_changed)
                 sf_use_opt.toggled.connect(_sf_ui_changed)
                 sf_prob.valueChanged.connect(_sf_prob_spin_changed)
                 sf_min_dist.valueChanged.connect(_sf_ui_changed)
@@ -4415,11 +4762,31 @@ class OmniposeSegTab(QWidget):
                 except Exception:
                     preview_dialog.top_section = None
                     sec = top_widget
-                try:
-                    layout.insertWidget(1, sec)
-                except Exception:
-                    layout.addWidget(sec)
+                embed_mount_lay = getattr(preview_dialog, '_sf_settings_mount_lay', None) if embed_seg else None
+                if embed_mount_lay is not None:
+                    try:
+                        embed_mount_lay.addWidget(sec)
+                    except Exception:
+                        try:
+                            layout.insertWidget(1, sec)
+                        except Exception:
+                            layout.addWidget(sec)
+                else:
+                    try:
+                        layout.insertWidget(1, sec)
+                    except Exception:
+                        layout.addWidget(sec)
                 preview_dialog._spotiflow_section_mounted = True
+            if embed_seg and embed_settings_scroll is not None:
+                try:
+                    # Match Filtering: settings above canvas (after optional title).
+                    insert_at = 1 if layout.indexOf(preview_dialog.title_label) >= 0 else 0
+                    layout.insertWidget(insert_at, embed_settings_scroll)
+                except Exception:
+                    try:
+                        layout.insertWidget(0, embed_settings_scroll)
+                    except Exception:
+                        pass
             if foci_sources and detect_foci_on:
                 _mount_spotiflow_section_if_needed()
             elif getattr(preview_dialog, 'top_section', None) is not None:
@@ -4444,8 +4811,6 @@ class OmniposeSegTab(QWidget):
                 if nav_ctrl is not None:
                     nav_wrap_lay.addWidget(nav_ctrl, 1)
                 bottom_outer.addWidget(nav_wrap)
-                bottom_outer.addWidget(self._build_embedded_cell_model_params_scroll(bottom_widget, redetect_btn=redetect_btn))
-                bottom_outer.addWidget(self._build_embedded_spotiflow_foci_strip(bottom_widget, preview_dialog=preview_dialog))
             else:
                 bottom_outer.addLayout(bottom_layout)
                 bottom_outer.addLayout(toolbar_layout)
@@ -4573,12 +4938,6 @@ class OmniposeSegTab(QWidget):
                             finally:
                                 image_combo.blockSignals(False)
                             _on_image_changed()
-                    ph = getattr(preview_dialog, '_cache_nav_foci_placeholder', None)
-                    if ph is not None:
-                        try:
-                            ph.setVisible(not bool(checked) and bool(fps_t))
-                        except Exception:
-                            pass
                     try:
                         nav_ctrl.nav_changed.emit(nav_ctrl.state(), 'source')
                     except Exception:
@@ -5110,6 +5469,7 @@ class OmniposeSegTab(QWidget):
                     w.interpretText()
             except RuntimeError:
                 pass
+        self._commit_spotiflow_preview_spins()
 
     def _get_effective_diameter_pixels(self) -> float:
         """Return diameter in pixels (the single Diameter field)."""
@@ -5232,7 +5592,7 @@ class OmniposeSegTab(QWidget):
                     'Plain "*_fi_*" fluorescence files stay available for fluor models, '
                     'but "*_foci*" / "*_fi_foci*" stacks are omitted (Spotiflow companions, not cell inputs). '
                     'When a phase TIFF is present, "*_fi_*" files are not pre-selected.\n\n'
-                    'The right side previews the segmentation input plus any matching Spotiflow companion TIFFs.'
+                    'The right side shows only currently selected inputs plus their Spotiflow companion TIFFs.'
                 )
             else:
                 seg_message = f'Select files to process (all {len(tiff_files)} files selected by default):'
@@ -5281,7 +5641,14 @@ class OmniposeSegTab(QWidget):
             self._update_segmentation_button_progress(3, f'file 1/{n_files}')
             self.parent_window.log_output(f'Starting batch folder processing: {len(selected_files)} file(s) selected from {self.file_path.text()}\n')
             self._log_segmentation_run_params(selected_files=list(selected_files))
-            self._last_output_dir = folder / self._get_omnipose_segmentation_folder_name() if folder.name.startswith('Tif_') else folder
+            # Match where masks are actually written (TIFF parent, often Tif_files/ under a parent pick).
+            try:
+                first_tiff = Path(selected_files[0])
+                self._last_output_dir = self.resolve_segmentation_output_dir_for_tiff(
+                    first_tiff, self._get_omnipose_segmentation_folder_name()
+                )
+            except Exception:
+                self._last_output_dir = folder / self._get_omnipose_segmentation_folder_name() if folder.name.startswith('Tif_') else folder
             self._process_next_segmentation_file(script_path)
             return
         self.parent_window.progress_bar.setVisible(True)
@@ -5319,6 +5686,7 @@ class OmniposeSegTab(QWidget):
             output_dir = base_dir / self._get_omnipose_segmentation_folder_name()
         else:
             output_dir = base_dir / f'{tiff_file.stem}_omnipose_segmentation'
+        self._last_output_dir = output_dir
         (_mt, _path) = self._resolve_model_selection(self.model_combo.currentText())
         if _path is not None:
             model_arg = prepare_user_pretrained_loader_path(_path)

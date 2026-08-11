@@ -254,6 +254,252 @@ def get_focus_blob_mask(
     return out
 
 
+def _peak_yx_intensity(
+    peaks: List[Dict[str, Any]],
+    image: np.ndarray,
+) -> list[tuple[int, int, float, dict[str, Any]]]:
+    """Normalize peak dicts to (y, x, intensity, original) within image bounds."""
+    h, w = int(image.shape[0]), int(image.shape[1])
+    out: list[tuple[int, int, float, dict[str, Any]]] = []
+    for p in peaks or []:
+        try:
+            y = int(float(p.get("y", -1)))
+            x = int(float(p.get("x", -1)))
+        except (TypeError, ValueError):
+            continue
+        if y < 0 or y >= h or x < 0 or x >= w:
+            continue
+        intensity = p.get("intensity")
+        try:
+            intensity_f = float(intensity) if intensity is not None and intensity != "" else float(image[y, x])
+        except (TypeError, ValueError):
+            intensity_f = float(image[y, x])
+        if not np.isfinite(intensity_f):
+            intensity_f = float(image[y, x]) if np.isfinite(float(image[y, x])) else 0.0
+        out.append((y, x, float(intensity_f), dict(p)))
+    return out
+
+
+def _neighbor_capped_radii(
+    peaks_yx: list[tuple[int, int, float, dict[str, Any]]],
+    max_radius: int,
+    *,
+    labeled_mask: Optional[np.ndarray] = None,
+) -> list[int]:
+    """Per-peak growth radius.
+
+    Exclusive nearest-peak assignment already prevents shared pixels, so we do **not**
+    hard-cap to half the neighbor distance (that collapses tight clusters to 1 px and
+    leaves only identical peak markers). Keep the configured max_radius for real outlines.
+    """
+    max_r = max(1, int(max_radius))
+    return [max_r] * len(peaks_yx)
+
+
+def exclusive_focus_blob_masks(
+    image: np.ndarray,
+    peaks: List[Dict[str, Any]],
+    *,
+    threshold_frac: float = 0.8,
+    max_radius: int = 5,
+    labeled_mask: Optional[np.ndarray] = None,
+) -> list[np.ndarray]:
+    """Grow focus blobs at ``max_radius``, then assign pixels exclusively.
+
+    Contested pixels go to the nearest peak center; ties prefer higher peak intensity.
+    Returns one boolean mask per in-bounds peak. Prefer
+    ``exclusive_focus_blob_metrics`` when you also need size/mean.
+    """
+    raw = np.asarray(image, dtype=np.float64)
+    if raw.ndim != 2 or raw.size == 0:
+        return []
+    try:
+        frac = float(np.clip(float(threshold_frac), 0.05, 1.0))
+    except (TypeError, ValueError):
+        frac = 0.8
+    peaks_yx = _peak_yx_intensity(peaks, raw)
+    if not peaks_yx:
+        return []
+    radii = _neighbor_capped_radii(peaks_yx, max_radius, labeled_mask=labeled_mask)
+    h, w = int(raw.shape[0]), int(raw.shape[1])
+    candidates: list[np.ndarray] = []
+    for (y, x, _intensity, _p), rad in zip(peaks_yx, radii):
+        blob = get_focus_blob_mask(
+            raw,
+            y,
+            x,
+            threshold_frac=frac,
+            max_radius=int(rad),
+            labeled_mask=labeled_mask,
+        )
+        if blob is None or not np.any(blob):
+            m = np.zeros((h, w), dtype=bool)
+            m[y, x] = True
+            candidates.append(m)
+        else:
+            candidates.append(np.asarray(blob, dtype=bool))
+
+    # Ownership: assign every claimed pixel to the nearest claiming peak (KD-tree).
+    owner = np.full((h, w), -1, dtype=np.int32)
+    claim_count = np.zeros((h, w), dtype=np.int16)
+    for m in candidates:
+        claim_count[m] += 1
+    claimed = claim_count > 0
+    if np.any(claimed):
+        ys, xs = np.nonzero(claimed)
+        peak_y = np.array([p[0] for p in peaks_yx], dtype=np.float64)
+        peak_x = np.array([p[1] for p in peaks_yx], dtype=np.float64)
+        peak_int = np.array([p[2] for p in peaks_yx], dtype=np.float64)
+        n = len(peaks_yx)
+        if n == 1:
+            owner[claimed] = 0
+        else:
+            try:
+                from scipy.spatial import cKDTree
+
+                tree = cKDTree(np.column_stack((peak_y, peak_x)))
+                query = np.column_stack((ys.astype(np.float64), xs.astype(np.float64)))
+                k = int(min(n, 16))
+                dists, idxs = tree.query(query, k=k)
+                if k == 1:
+                    dists = np.asarray(dists, dtype=np.float64).reshape(-1, 1)
+                    idxs = np.asarray(idxs, dtype=np.int64).reshape(-1, 1)
+                else:
+                    dists = np.asarray(dists, dtype=np.float64)
+                    idxs = np.asarray(idxs, dtype=np.int64)
+                # Fast path: nearest peak that actually claimed the pixel.
+                assigned = np.zeros(ys.shape[0], dtype=bool)
+                nearest = idxs[:, 0].astype(np.int64)
+                for i in range(n):
+                    sel = nearest == i
+                    if not np.any(sel):
+                        continue
+                    yy = ys[sel]
+                    xx = xs[sel]
+                    ok = candidates[i][yy, xx]
+                    if np.any(ok):
+                        owner[yy[ok], xx[ok]] = i
+                        assigned[np.flatnonzero(sel)[ok]] = True
+                # Slow path only for pixels whose nearest peak did not claim them.
+                todo = np.flatnonzero(~assigned)
+                for t in todo.tolist():
+                    y = int(ys[t])
+                    x = int(xs[t])
+                    best_i = None
+                    best_d = None
+                    best_int = None
+                    for j in range(idxs.shape[1]):
+                        i = int(idxs[t, j])
+                        if i < 0 or i >= n or not candidates[i][y, x]:
+                            continue
+                        d = float(dists[t, j])
+                        inten = float(peak_int[i])
+                        if (
+                            best_i is None
+                            or d < best_d - 1e-9
+                            or (abs(d - best_d) <= 1e-9 and inten > best_int)
+                        ):
+                            best_i = i
+                            best_d = d
+                            best_int = inten
+                    if best_i is not None:
+                        owner[y, x] = int(best_i)
+            except Exception:
+                # Slow fallback: only contested pixels.
+                for i, m in enumerate(candidates):
+                    sole = m & (claim_count == 1)
+                    owner[sole] = i
+                contested = claim_count > 1
+                if np.any(contested):
+                    cys, cxs = np.nonzero(contested)
+                    for y, x in zip(cys.tolist(), cxs.tolist()):
+                        claimants = [i for i, m in enumerate(candidates) if m[y, x]]
+                        if not claimants:
+                            continue
+                        best_i = claimants[0]
+                        best_d = float(np.hypot(float(y) - peak_y[best_i], float(x) - peak_x[best_i]))
+                        best_int = float(peak_int[best_i])
+                        for i in claimants[1:]:
+                            d = float(np.hypot(float(y) - peak_y[i], float(x) - peak_x[i]))
+                            inten = float(peak_int[i])
+                            if d < best_d - 1e-9 or (abs(d - best_d) <= 1e-9 and inten > best_int):
+                                best_i = i
+                                best_d = d
+                                best_int = inten
+                        owner[y, x] = best_i
+
+    exclusive: list[np.ndarray] = []
+    for i, (y, x, _intensity, _p) in enumerate(peaks_yx):
+        m = owner == i
+        if not np.any(m):
+            m = np.zeros((h, w), dtype=bool)
+            m[y, x] = True
+        exclusive.append(m)
+    return exclusive
+
+
+def exclusive_focus_blob_metrics(
+    image: np.ndarray,
+    peaks: List[Dict[str, Any]],
+    *,
+    threshold_frac: float = 0.8,
+    max_radius: int = 5,
+    labeled_mask: Optional[np.ndarray] = None,
+) -> list[tuple[dict[str, Any], np.ndarray, int, float]]:
+    """Exclusive blobs + (size_px, mean_intensity) for each in-bounds peak.
+
+    Returns list of ``(peak_dict, exclusive_mask, size_px, mean_intensity)``.
+    """
+    raw = np.asarray(image, dtype=np.float64)
+    peaks_yx = _peak_yx_intensity(peaks, raw)
+    masks = exclusive_focus_blob_masks(
+        raw,
+        peaks,
+        threshold_frac=threshold_frac,
+        max_radius=max_radius,
+        labeled_mask=labeled_mask,
+    )
+    out: list[tuple[dict[str, Any], np.ndarray, int, float]] = []
+    if len(masks) != len(peaks_yx):
+        # Defensive: fall back to independent growth.
+        for y, x, intensity, p in peaks_yx:
+            size_px, mean_int = focus_size_and_mean_at_peak(
+                raw,
+                y,
+                x,
+                threshold_frac=threshold_frac,
+                max_radius=max_radius,
+                labeled_mask=labeled_mask,
+            )
+            blob = get_focus_blob_mask(
+                raw,
+                y,
+                x,
+                threshold_frac=threshold_frac,
+                max_radius=max_radius,
+                labeled_mask=labeled_mask,
+            )
+            q = dict(p)
+            q["intensity"] = float(intensity)
+            out.append((q, blob, int(size_px), float(mean_int)))
+        return out
+    for (y, x, intensity, p), mask in zip(peaks_yx, masks):
+        size_px = int(np.sum(mask))
+        if size_px <= 0:
+            size_px = 1
+            mean_int = float(intensity)
+            mask = np.zeros(raw.shape[:2], dtype=bool)
+            mask[y, x] = True
+        else:
+            mean_int = float(np.mean(raw[mask]))
+            if not np.isfinite(mean_int):
+                mean_int = float(intensity)
+        q = dict(p)
+        q["intensity"] = float(intensity)
+        out.append((q, mask, size_px, mean_int))
+    return out
+
+
 def detect_peaks_skimage(
     image: np.ndarray,
     min_rel: Optional[float] = 2.0,
@@ -1156,8 +1402,9 @@ def refine_spotiflow_peaks(
     exclude_outside: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    Refine Spotiflow point detections with blob metrics and optional post-filters.
+    Refine Spotiflow point detections with exclusive blob metrics and optional post-filters.
 
+    Close peaks share no pixels: each bright pixel belongs to at most one focus.
     All thresholds operate on the raw image.
     """
     if not peaks:
@@ -1182,7 +1429,9 @@ def refine_spotiflow_peaks(
         threshold_frac = 0.8
     threshold_frac = float(np.clip(threshold_frac, 0.05, 1.0))
 
-    out: List[Dict[str, Any]] = []
+    # Pre-filter by bounds / exclude_outside / min intensity before exclusive growth
+    # so dropped peaks do not steal pixels from kept neighbors.
+    candidates: List[Dict[str, Any]] = []
     for p in peaks:
         yi, xi = int(p.get("y", -1)), int(p.get("x", -1))
         if yi < 0 or yi >= h or xi < 0 or xi >= w:
@@ -1193,22 +1442,29 @@ def refine_spotiflow_peaks(
                 continue
             if accepted_set is not None and cell_id not in accepted_set:
                 continue
-
         intensity = p.get("intensity")
         if intensity is None or not np.isfinite(float(intensity)):
             intensity = float(raw[yi, xi])
         intensity = float(intensity)
         if min_peak_raw is not None and float(min_peak_raw) > 0 and intensity < float(min_peak_raw):
             continue
+        q = dict(p)
+        q["intensity"] = intensity
+        candidates.append(q)
 
-        size_px, mean_int = focus_size_and_mean_at_peak(
-            raw,
-            yi,
-            xi,
-            threshold_frac=threshold_frac,
-            max_radius=max_radius,
-            labeled_mask=label_img,
-        )
+    measured = exclusive_focus_blob_metrics(
+        raw,
+        candidates,
+        threshold_frac=threshold_frac,
+        max_radius=max_radius,
+        labeled_mask=label_img,
+    )
+
+    out: List[Dict[str, Any]] = []
+    for q, blob_mask, size_px, mean_int in measured:
+        yi, xi = int(q.get("y", -1)), int(q.get("x", -1))
+        cell_id = int(label_img[yi, xi]) if label_img is not None else 0
+        intensity = float(q.get("intensity", raw[yi, xi]))
         if min_size is not None and int(min_size) > 0 and size_px < int(min_size):
             continue
         if max_size is not None and int(max_size) > 0 and size_px > int(max_size):
@@ -1217,15 +1473,7 @@ def refine_spotiflow_peaks(
             continue
 
         if per_cell_ratio is not None and float(per_cell_ratio) > 0 and label_img is not None and cell_id > 0:
-            blob_mask = get_focus_blob_mask(
-                raw,
-                yi,
-                xi,
-                threshold_frac=threshold_frac,
-                max_radius=max_radius,
-                labeled_mask=label_img,
-            )
-            rest_of_cell = (label_img == cell_id) & ~blob_mask
+            rest_of_cell = (label_img == cell_id) & ~np.asarray(blob_mask, dtype=bool)
             n_rest = int(np.sum(rest_of_cell))
             if n_rest == 0:
                 continue
@@ -1236,10 +1484,11 @@ def refine_spotiflow_peaks(
             if ratio < float(per_cell_ratio):
                 continue
 
-        q = dict(p)
-        q["intensity"] = intensity
-        q["size_px"] = int(size_px)
-        q["mean_intensity"] = float(mean_int)
-        q["rel_intensity"] = float(intensity) / raw_median
-        out.append(q)
+        row = dict(q)
+        row["intensity"] = intensity
+        row["size_px"] = int(size_px)
+        row["area_px"] = int(max(1, int(size_px)))
+        row["mean_intensity"] = float(mean_int)
+        row["rel_intensity"] = float(intensity) / raw_median
+        out.append(row)
     return out

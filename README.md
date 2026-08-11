@@ -10,7 +10,7 @@
 
 **BactoMate** is an integrated microscopy analysis platform for file conversion, segmentation ([Omnipose](https://github.com/kevinjohncutler/omnipose), [Cellpose-SAM](https://github.com/MouseLand/cellpose), U-Net), mask analysis, [tracking](https://github.com/weigertlab/trackastra), **lineage quality control and export**, training, and reporting.
 
-To learn more, check out the [paper](https://www.biorxiv.org/) or watch our [tutorials](https://www.youtube.com/watch?v=Vwot_dErn6g&list=PLYQZb_PwGpYw). For questions or support, please open an [issue](https://github.com/Molinfect/BactoMate) or [contact us](https://www.molinfect.hu-berlin.de).
+To learn more, check out the [paper](https://www.biorxiv.org/content/10.64898/2026.08.06.743177v1) or watch our [tutorials](https://www.youtube.com/watch?v=Vwot_dErn6g&list=PLYQZb_PwGpYw). For questions or support, please open an [issue](https://github.com/Molinfect/BactoMate) or [contact us](https://www.molinfect.hu-berlin.de).
 
 ### Demo
 <div align="center"><p align="center">
@@ -45,7 +45,7 @@ Verify:
 
 ```bash
 source venv/bin/activate
-python main.py --version    # BactoMate 2.9.3
+python main.py --version    # BactoMate 2.9.4
 python main.py --smoke-test # Smoke test OK
 ```
 

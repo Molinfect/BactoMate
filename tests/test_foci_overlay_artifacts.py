@@ -45,8 +45,8 @@ def test_write_foci_overlay_snapshot(tmp_path: Path) -> None:
     assert ok
     arr = tifffile.imread(out_path)
     assert arr.shape == (1, 64, 64, 3)
-    # Marker pixel should be yellow (255,255,0) at (10,11).
-    assert tuple(int(x) for x in arr[0, 10, 11, :]) == (255, 255, 0)
+    # Spotiflow peak pixel is red (255,30,30) at (10,11).
+    assert tuple(int(x) for x in arr[0, 10, 11, :]) == (255, 30, 30)
 
 
 def test_write_foci_overlay_time_sequence_frames(tmp_path: Path) -> None:
@@ -79,8 +79,8 @@ def test_write_foci_overlay_time_sequence_frames(tmp_path: Path) -> None:
     assert ok
     arr = tifffile.imread(out_path)
     assert arr.shape == (3, 32, 32, 3)
-    assert tuple(int(x) for x in arr[0, 1, 1, :]) == (255, 255, 0)
-    assert tuple(int(x) for x in arr[2, 3, 3, :]) == (255, 255, 0)
+    assert tuple(int(x) for x in arr[0, 1, 1, :]) == (255, 30, 30)
+    assert tuple(int(x) for x in arr[2, 3, 3, :]) == (255, 30, 30)
     # Frame 1 should not have a marker at (2,2) since no row for frame 1.
-    assert tuple(int(x) for x in arr[1, 2, 2, :]) != (255, 255, 0)
+    assert tuple(int(x) for x in arr[1, 2, 2, :]) != (255, 30, 30)
 

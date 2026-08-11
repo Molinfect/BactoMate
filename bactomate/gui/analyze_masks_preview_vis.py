@@ -15,17 +15,19 @@ from bactomate.modules.image_stack_utils import coerce_plane_to_2d
 
 from bactomate.gui.foci_overlay_draw import (
     DEFAULT_FOCI_PREVIEW_RENDER_CAP,
-    draw_foci_blob_fill_and_edges_on_rgb,
+    FOCI_BLOB_OUTLINE_RGB,
+    FOCI_PEAK_PIXEL_RGB,
+    draw_exclusive_foci_preview_on_rgb,
 )
 
 FOCI_CAP = DEFAULT_FOCI_PREVIEW_RENDER_CAP
 
 FOCI_MULTI_COLORS = [
-    np.array([255, 165, 0], dtype=np.uint8),
-    np.array([255, 0, 255], dtype=np.uint8),
-    np.array([0, 255, 255], dtype=np.uint8),
-    np.array([255, 255, 0], dtype=np.uint8),
-    np.array([0, 255, 128], dtype=np.uint8),
+    np.array(FOCI_BLOB_OUTLINE_RGB, dtype=np.uint8),
+    np.array([180, 230, 255], dtype=np.uint8),
+    np.array([255, 180, 230], dtype=np.uint8),
+    np.array([200, 255, 180], dtype=np.uint8),
+    np.array([255, 230, 160], dtype=np.uint8),
 ]
 
 # Contour-FI preview ring on filter preview (high contrast on phase / foci backgrounds).
@@ -263,14 +265,16 @@ def _foci_detect_draw_channel(
         if peak_cap > 0 and len(peaks_to_draw) > peak_cap:
             peaks_to_draw = peaks_to_draw[: int(peak_cap)]
         if peaks_to_draw:
-            draw_foci_blob_fill_and_edges_on_rgb(
+            outline = tuple(int(x) for x in np.asarray(draw_color).tolist()[:3])
+            draw_exclusive_foci_preview_on_rgb(
                 vis,
-                fi_work,
                 mask,
                 peaks_to_draw,
-                draw_color,
+                fi_work,
                 threshold_frac=blob_thresh,
                 max_radius=5,
+                outline_rgb=outline if outline != (0, 0, 0) else FOCI_BLOB_OUTLINE_RGB,
+                peak_rgb=FOCI_PEAK_PIXEL_RGB,
                 cap=int(peak_cap) if peak_cap > 0 else None,
             )
         n_drawn = min(n_foci, max(0, int(peak_cap)))
@@ -363,7 +367,9 @@ def build_preview_vis(
                 if progress_callback:
                     progress_callback(87, "Overlay · Cell boundaries", "")
                 mask_accepted = np.where(np.isin(mask, np.array(list(accepted_labels))), mask, 0).astype(np.int32)
-                boundaries = find_boundaries(mask_accepted, mode="outer")
+                boundaries = find_boundaries(mask_accepted, mode="inner")
+                if not np.any(boundaries):
+                    boundaries = find_boundaries(mask_accepted, mode="outer")
                 if np.any(boundaries):
                     vis_fi[boundaries, 0] = 0
                     vis_fi[boundaries, 1] = 0

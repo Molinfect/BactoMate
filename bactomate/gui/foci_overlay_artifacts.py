@@ -17,26 +17,24 @@ class FociOverlayStyle:
 
     pmin: float = 5.0
     pmax: float = 99.0
-    marker_radius_px: int = 2
-    marker_rgb: tuple[int, int, int] = (255, 255, 0)  # yellow
-    boundary_rgb: tuple[int, int, int] = (0, 255, 255)  # cyan
+    marker_radius_px: int = 1
+    marker_rgb: tuple[int, int, int] = (255, 30, 30)  # Spotiflow peak pixel (red)
+    outline_rgb: tuple[int, int, int] = (255, 200, 120)  # exclusive blob outline
+    boundary_rgb: tuple[int, int, int] = (0, 255, 255)  # cyan cell boundaries
     draw_boundaries: bool = True
-    draw_blob_regions: bool = False
-    blob_alpha: float = 0.55
+    draw_blob_regions: bool = True
+    draw_blob_fill: bool = False
+    blob_alpha: float = 0.35
 
     @classmethod
     def segmentation(cls) -> FociOverlayStyle:
+        """Same language as filtering: light outline + red peak."""
         return cls()
 
     @classmethod
     def filtered(cls) -> FociOverlayStyle:
-        """Distinct from segmentation: orange blobs + slightly larger fallback dots."""
-        return cls(
-            marker_rgb=(255, 165, 0),
-            marker_radius_px=2,
-            draw_blob_regions=True,
-            blob_alpha=0.55,
-        )
+        """Same language as segmentation (kept as a named style for callers)."""
+        return cls()
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -228,6 +226,7 @@ def _paint_blob_on_rgb(
     max_radius: int,
     fill_rgb: tuple[int, int, int],
     alpha: float,
+    blob_mask: np.ndarray | None = None,
 ) -> None:
     from bactomate.modules.foci_utils import get_focus_blob_mask
 
@@ -237,14 +236,17 @@ def _paint_blob_on_rgb(
     if y < 0 or y >= h or x < 0 or x >= w:
         return
     label = np.asarray(mask_2d, dtype=np.int32) if mask_2d is not None else None
-    blob = get_focus_blob_mask(
-        np.asarray(plane, dtype=np.float64),
-        y,
-        x,
-        threshold_frac=float(threshold_frac),
-        max_radius=int(max_radius),
-        labeled_mask=label,
-    )
+    if blob_mask is not None:
+        blob = np.asarray(blob_mask, dtype=bool)
+    else:
+        blob = get_focus_blob_mask(
+            np.asarray(plane, dtype=np.float64),
+            y,
+            x,
+            threshold_frac=float(threshold_frac),
+            max_radius=int(max_radius),
+            labeled_mask=label,
+        )
     if blob is None or not np.any(blob):
         return
     if blob.shape != (h, w):
@@ -347,26 +349,78 @@ def write_foci_overlay_tif(
                 max_r = int(bs.get("foci_blob_max_radius", 5) or 5)
             except (TypeError, ValueError):
                 max_r = 5
+            try:
+                from skimage.segmentation import find_boundaries
+
+                from bactomate.modules.foci_utils import exclusive_focus_blob_metrics
+
+                measured = exclusive_focus_blob_metrics(
+                    plane,
+                    rr,
+                    threshold_frac=frac,
+                    max_radius=max_r,
+                    labeled_mask=mask_2d,
+                )
+                labeled = np.zeros((h, w), dtype=np.int32)
+                for i, (peak, blob, _size, _mean) in enumerate(measured):
+                    if blob is None or not np.any(blob):
+                        continue
+                    if bool(style.draw_blob_fill):
+                        try:
+                            _paint_blob_on_rgb(
+                                rgb,
+                                plane,
+                                mask_2d,
+                                peak,
+                                threshold_frac=frac,
+                                max_radius=max_r,
+                                fill_rgb=style.outline_rgb,
+                                alpha=float(style.blob_alpha),
+                                blob_mask=blob,
+                            )
+                        except Exception:
+                            pass
+                    labeled[np.asarray(blob, dtype=bool)] = i + 1
+                if np.any(labeled):
+                    try:
+                        edge = find_boundaries(labeled, mode="outer")
+                        if np.any(edge):
+                            rgb[edge, 0] = style.outline_rgb[0]
+                            rgb[edge, 1] = style.outline_rgb[1]
+                            rgb[edge, 2] = style.outline_rgb[2]
+                    except Exception:
+                        pass
+            except Exception:
+                for r in rr:
+                    try:
+                        _paint_blob_on_rgb(
+                            rgb,
+                            plane,
+                            mask_2d,
+                            r,
+                            threshold_frac=frac,
+                            max_radius=max_r,
+                            fill_rgb=style.outline_rgb,
+                            alpha=float(style.blob_alpha),
+                        )
+                    except Exception:
+                        continue
+            # Spotiflow peak pixels on top (red).
             for r in rr:
-                try:
-                    _paint_blob_on_rgb(
-                        rgb,
-                        plane,
-                        mask_2d,
-                        r,
-                        threshold_frac=frac,
-                        max_radius=max_r,
-                        fill_rgb=style.marker_rgb,
-                        alpha=float(style.blob_alpha),
-                    )
-                except Exception:
-                    continue
+                y = _safe_int(r.get("y", 0), 0)
+                x = _safe_int(r.get("x", 0), 0)
+                if 0 <= y < h and 0 <= x < w:
+                    rgb[y, x, 0] = style.marker_rgb[0]
+                    rgb[y, x, 1] = style.marker_rgb[1]
+                    rgb[y, x, 2] = style.marker_rgb[2]
         elif rr:
-            ys = [_safe_int(r.get("y", 0), 0) for r in rr]
-            xs = [_safe_int(r.get("x", 0), 0) for r in rr]
-            _draw_circles_rgb(
-                rgb, ys=ys, xs=xs, radius=int(style.marker_radius_px), rgb=style.marker_rgb
-            )
+            for r in rr:
+                y = _safe_int(r.get("y", 0), 0)
+                x = _safe_int(r.get("x", 0), 0)
+                if 0 <= y < h and 0 <= x < w:
+                    rgb[y, x, 0] = style.marker_rgb[0]
+                    rgb[y, x, 1] = style.marker_rgb[1]
+                    rgb[y, x, 2] = style.marker_rgb[2]
 
         out[fi] = rgb
 

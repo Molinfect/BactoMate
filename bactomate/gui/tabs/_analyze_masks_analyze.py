@@ -826,7 +826,7 @@ class AnalyzeTab(AnalyzeMasksBase):
             if use_linked_picker:
                 picker_message = (
                     f'Select mask files to analyze ({len(mask_files)} listed). '
-                    'The right side shows the effective mask plus every linked analysis input '
+                    'The right side shows only currently selected masks plus their linked analysis inputs '
                     '(phase, FI TIFFs, and foci CSV/TIFF artifacts when found).'
                 )
                 right_header = 'Linked analysis inputs'
