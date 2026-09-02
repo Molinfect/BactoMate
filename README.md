@@ -23,6 +23,8 @@ To learn more, check out the [paper](https://www.biorxiv.org/content/10.64898/20
 
 Hallenga, L., Fornoff, S., Pesch, M., Kohlheyer, D., Ahmada, S., Hör, J., Erhardt, M., Popp, P. F. (2026). BactoMate: an integrated platform for reproducible bacterial microscopy analysis. <em>bioRxiv</em>.
 
+Paper raw microscopy data: [`paper-data` branch](https://github.com/Molinfect/BactoMate/tree/paper-data) ([docs/PAPER_DATA.md](docs/PAPER_DATA.md)).
+
 
 ## Installation
 

@@ -31,6 +31,7 @@ build/*
 !build/README.md
 !build/public_packaging.py
 !build/strip_dev_tree_for_main.sh
+!build/publish_paper_data_branch.sh
 !build/macos/**
 !build/windows/**
 !build/macos/*.sh
@@ -86,6 +87,9 @@ Logs/*
 *.bak
 *.backup
 nohup.out
+
+# Paper raw data (local staging only — published via build/publish_paper_data_branch.sh)
+paper_data/
 
 # Compiled files
 *.pyc

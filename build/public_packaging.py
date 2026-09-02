@@ -20,6 +20,7 @@ PUBLIC_SKIP_DIR_NAMES: frozenset[str] = frozenset(
         "dist",
         "venv.old",
         "Logs",
+        "paper_data",
     }
 )
 
