@@ -162,6 +162,45 @@ def mask_sample_identity_key(mask_path: Path) -> str:
     return _base_id_stem_from_mask(Path(mask_path)).strip().lower()
 
 
+def _token_looks_like_channel(token: str) -> bool:
+    """True for known dye/channel tokens (``GFP``, ``TRITC``, ``mScarlet``, …)."""
+    t = (token or "").strip("_").lower()
+    if not t:
+        return False
+    if t in _CHANNEL_SUFFIX_TOKENS:
+        return True
+    if t in ("tritc", "fitc", "texasred", "alexa488", "alexa594"):
+        return True
+    # Vendor labels like Channel_2 / Ch3 — not bare replicate numbers (001, 002, …).
+    if re.fullmatch(r"ch(annel)?_?\d+", t):
+        return True
+    if t.endswith("red") or t.endswith("green") or t.startswith("cy"):
+        return True
+    return False
+
+
+def foci_acquisition_ids_align(base_id: str, candidate_id: str) -> bool:
+    """
+    True when two role-stripped acquisition IDs refer to the same sample/replicate.
+
+    Exact match, or ``candidate_id`` is ``base_id`` plus one optional channel token
+    (e.g. ``sample_001`` ↔ ``sample_001_GFP`` for ``sample_001_GFP_fi_foci``).
+    """
+    base = (base_id or "").strip("_")
+    cand = (candidate_id or "").strip("_")
+    if not base or not cand:
+        return False
+    if base.casefold() == cand.casefold():
+        return True
+    bl, cl = base.casefold(), cand.casefold()
+    if not cl.startswith(bl + "_"):
+        return False
+    extra = cand[len(base) :].lstrip("_")
+    if not extra or "_" in extra:
+        return False
+    return _token_looks_like_channel(extra)
+
+
 def sample_identity_stem(stem: str) -> str:
     """
     Canonical sample/replicate stem shared by phase/FI/foci/mask exports.
@@ -220,16 +259,16 @@ def foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
 
     inp_id = sample_identity_stem(inp)
     foc_id = sample_identity_stem(foc)
-    if inp_id and foc_id and inp_id.casefold() == foc_id.casefold():
+    if inp_id and foc_id and foci_acquisition_ids_align(inp_id, foc_id):
         return True
 
-    # Legacy free-form phase names (DIA, etc.): LCP only when input lacks role tags.
+    # Free-form phase names (DIA, Phase60X, …): LCP when input lacks role tags.
     if stem_has_role_marker(inp):
         return False
     if not foc_id:
         return False
     lcp = longest_common_underscore_prefix(inp, foc)
-    if not lcp or lcp.casefold() != foc_id.casefold():
+    if not lcp or not foci_acquisition_ids_align(lcp, foc_id):
         return False
     if not foci_tiff_stem_matches_prefix(foc, lcp):
         return False
