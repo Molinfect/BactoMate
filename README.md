@@ -30,7 +30,7 @@ Paper raw microscopy data: [`paper-data` branch](https://github.com/Molinfect/Ba
 
 **Prefer a ready-made app?** Download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from the [latest GitHub Release](https://github.com/Molinfect/BactoMate/releases/latest) — no Python or Terminal needed.
 
-**Install from source:** Clone this repository, or download and extract its ZIP archive, then follow the instructions for your operating system below. No build step is required.
+**Install from source:** Clone this repository, or download and extract its ZIP archive, then follow the instructions for your operating system below. No build step is required. The GitHub **Source code (zip)** on a release is the same repository archive; for lab use, prefer the release DMG or Windows zip — see [INSTALL.txt](INSTALL.txt).
 
 ## macOS — install and launch
 

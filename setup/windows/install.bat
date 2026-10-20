@@ -134,14 +134,10 @@ echo.
 echo [Step 4/8] Installing dbscan 0.0.10 ^(prebuilt Windows wheel^)...
 "%PYEXE%" -m pip install "dbscan==0.0.10" --only-binary dbscan
 if errorlevel 1 (
-    echo [WARNING] dbscan wheel install failed; trying without --only-binary...
-    "%PYEXE%" -m pip install "dbscan==0.0.10"
-    if errorlevel 1 (
-        echo [BREAK] dbscan install failed. Omnipose segmentation will not work.
-        echo   See docs/INSTALL_AND_LAUNCH_windows.md
-        pause
-        exit /b 1
-    )
+    echo [BREAK] dbscan prebuilt wheel install failed.
+    echo   See docs/INSTALL_AND_LAUNCH_windows.md — Troubleshooting: Microsoft Visual C++ 14 / Failed building wheel for dbscan
+    pause
+    exit /b 1
 )
 echo.
 
