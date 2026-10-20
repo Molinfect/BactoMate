@@ -12,7 +12,8 @@ if not exist "%RUNTIME_PY%" (
     exit /b 1
 )
 
-"%RUNTIME_PY%" "%ROOT%setup\windows\patch_bundle_pyvenv.py" "%ROOT%" >nul 2>&1
+:: A trailing backslash before a quote escapes the quote in Python's argv parser.
+"%RUNTIME_PY%" "%ROOT%setup\windows\patch_bundle_pyvenv.py" "%ROOT%."
 if errorlevel 1 (
     echo [ERROR] Failed to configure bundled virtual environment.
     pause

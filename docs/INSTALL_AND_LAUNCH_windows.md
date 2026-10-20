@@ -1,8 +1,20 @@
 # BactoMate — Install and launch on Windows
 
-This guide is for **source install** from a Git clone or ZIP download.
+## Recommended: ready-to-run Windows download
 
-**Most Windows users:** download **BactoMate-win64.zip** from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest), extract it, and run `BactoMate.bat` — no Python install required.
+1. Download **BactoMate-win64.zip** from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest).
+2. Extract the entire ZIP with **7-Zip** into a folder you can write to, such as your Downloads folder. Open the extracted folder.
+3. Double-click **BactoMate.bat**. The first launch can take a couple of minutes; wait for the main window to appear.
+
+Python and the required packages are included. You do not need to install or uninstall Python, run `install_windows.bat`, or run as Administrator. Keep the extracted folder together; do not move `BactoMate.bat` out of it.
+
+### Older download: "Failed to configure bundled virtual environment"
+
+This can be caused by a launcher path-quoting bug, even when all folders were extracted correctly. Installing Python or extracting to a different folder does not fix that bug. Replace `BactoMate.bat` with the corrected launcher supplied by the maintainer, then double-click it again.
+
+## Source installation (advanced)
+
+The remaining instructions are for a Git clone or source ZIP, rather than the ready-to-run Windows download.
 
 For a portable folder built from source (maintainers), see **Windows bundle** below.
 
