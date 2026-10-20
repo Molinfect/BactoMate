@@ -1,8 +1,8 @@
 #!/bin/bash
 # Setup a completely fresh virtual environment for BactoMate (macOS source install).
 #
-# Requires plain CPython 3.11 (not Conda). Native packages (numpy, scipy, scikit-image)
-# are installed from wheels only, so no compiler is ever needed.
+# Requires plain CPython 3.11 (not Conda). requirements.txt and the editable install
+# take numpy, scipy, and scikit-image from wheels only, so they never need a compiler.
 # An existing venv is kept as venv.previous until the smoke test passes.
 
 set -e  # Exit on error
@@ -17,7 +17,8 @@ if [ -z "${BACTOMATE_INSTALL_LOGGED:-}" ]; then
     mkdir -p Logs
     export BACTOMATE_INSTALL_LOGGED=1
     set +e
-    bash "$SCRIPT_DIR/setup_fresh_env.sh" "$@" 2>&1 | tee Logs/install.log
+    # tee -i survives Ctrl-C so the inner script's failure summary still reaches screen and log.
+    bash "$SCRIPT_DIR/setup_fresh_env.sh" "$@" 2>&1 | tee -i Logs/install.log
     exit "${PIPESTATUS[0]}"
 fi
 
@@ -74,20 +75,30 @@ try_candidate() {
     return 1
 }
 
-PATH_311="$(command -v python3.11 2>/dev/null || true)"
-PATH_3="$(command -v python3 2>/dev/null || true)"
+already_checked() {
+    local candidate_path="$1" checked
+    for checked in ${CHECKED_PATHS[@]+"${CHECKED_PATHS[@]}"}; do
+        [ "$candidate_path" -ef "$checked" ] && return 0
+    done
+    return 1
+}
 
-if [ -n "$PATH_311" ]; then
-    CHECKED_PATHS+=("$PATH_311")
-    try_candidate "$PATH_311" || true
-fi
-if [ -z "$PYTHON_CMD" ] && [ -n "$PATH_3" ]; then
-    # Only try python3 when it is a different file than python3.11.
-    if [ -z "$PATH_311" ] || [ ! "$PATH_3" -ef "$PATH_311" ]; then
-        CHECKED_PATHS+=("$PATH_3")
-        try_candidate "$PATH_3" || true
-    fi
-fi
+# PATH first (respects the user's choice), then standard install locations so an
+# active Conda env on PATH does not hide a python.org or Homebrew 3.11.
+CANDIDATES=(
+    "$(command -v python3.11 2>/dev/null || true)"
+    "$(command -v python3 2>/dev/null || true)"
+    /Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11
+    /opt/homebrew/bin/python3.11
+    /usr/local/bin/python3.11
+)
+for candidate in "${CANDIDATES[@]}"; do
+    [ -n "$PYTHON_CMD" ] && break
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    already_checked "$candidate" && continue
+    CHECKED_PATHS+=("$candidate")
+    try_candidate "$candidate" || true
+done
 
 if [ -z "$PYTHON_CMD" ]; then
     echo "✗ No acceptable Python found."
@@ -95,11 +106,11 @@ if [ -z "$PYTHON_CMD" ]; then
         printf '%s' "$ALL_VERIFY_ERRORS"
         REASON="$(printf '%s\n' "$FIRST_VERIFY_ERROR" | head -n 1) (checked: ${CHECKED_PATHS[*]})"
     else
-        echo "Python 3.11 was not found on PATH (no python3.11 or python3)."
+        echo "Python 3.11 was not found on PATH or in the python.org / Homebrew install locations."
         echo "  Fix: Install plain Python 3.11 from https://www.python.org/downloads/"
         echo "       or run: brew install python@3.11"
         echo "  Lab users can instead download BactoMate.dmg from the GitHub release."
-        REASON="Python 3.11 was not found on PATH"
+        REASON="Python 3.11 was not found"
     fi
     exit 1
 fi
@@ -291,10 +302,13 @@ INSTALL_OK=1
 # Smoke test passed: the previous environment is no longer needed.
 # rm -rf on a large venv can take 10+ min, so delete in the background with nohup
 # (survives script exit; output detached so the log pipe can close).
+# Rename first: a half-deleted venv.previous would look like a restorable backup to a rerun.
 if [ -d "venv.previous" ]; then
-    nohup rm -rf venv.previous >/dev/null 2>&1 </dev/null &
+    TRASH_DIR="venv.deleting.$$"
+    mv venv.previous "$TRASH_DIR"
+    nohup rm -rf "$TRASH_DIR" >/dev/null 2>&1 </dev/null &
     disown 2>/dev/null || true
-    echo "✓ Previous venv deleting in background (if venv.previous remains, run: rm -rf venv.previous)"
+    echo "✓ Previous venv deleting in background (if $TRASH_DIR remains, run: rm -rf $TRASH_DIR)"
 fi
 
 mkdir -p Logs

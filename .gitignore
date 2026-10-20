@@ -22,6 +22,8 @@ wheels/
 # Virtual environments
 venv/
 venv_*/
+venv.previous/
+venv.deleting.*/
 env/
 ENV/
 .venv

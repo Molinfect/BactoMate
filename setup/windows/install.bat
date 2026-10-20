@@ -135,7 +135,7 @@ echo [Step 4/8] Installing dbscan 0.0.10 ^(prebuilt Windows wheel^)...
 "%PYEXE%" -m pip install "dbscan==0.0.10" --only-binary dbscan
 if errorlevel 1 (
     echo [BREAK] dbscan prebuilt wheel install failed.
-    echo   See docs/INSTALL_AND_LAUNCH_windows.md — Troubleshooting: Microsoft Visual C++ 14 / Failed building wheel for dbscan
+    echo   See docs/INSTALL_AND_LAUNCH_windows.md - Troubleshooting: Microsoft Visual C++ 14 / Failed building wheel for dbscan
     pause
     exit /b 1
 )
@@ -285,7 +285,7 @@ if exist "%ROOT%\launch_windows.bat" (
 )
 "%PYEXE%" "%WIN_DIR%create_launcher_assets.py"
 if exist "%ROOT%\BactoMate.lnk" (
-    echo   Created: %ROOT%\BactoMate.lnk ^(BactoMate logo — use this to launch^)
+    echo   Created: %ROOT%\BactoMate.lnk ^(BactoMate logo - use this to launch^)
 ) else (
     echo [WARNING] Could not create BactoMate.lnk shortcut. Use launch_windows.bat to start.
 )

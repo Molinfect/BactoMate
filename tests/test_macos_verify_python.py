@@ -1,8 +1,9 @@
 """Tests for the macOS source-install Python gate (setup/macos/verify_python.py)."""
 import importlib.util
-import subprocess
+import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,14 +61,44 @@ def test_rejects_conda_meta_directory(tmp_path):
     assert "Conda" in error
 
 
-def test_main_prints_executable_and_exits_zero_or_one():
-    result = subprocess.run(
-        [sys.executable, str(VERIFY_PATH)], capture_output=True, text=True
+def _fake_sys(version, executable, prefix, base_prefix):
+    return SimpleNamespace(
+        version_info=SimpleNamespace(major=version[0], minor=version[1]),
+        executable=executable,
+        prefix=prefix,
+        base_prefix=base_prefix,
+        stderr=sys.stderr,
     )
-    if result.returncode == 0:
-        assert result.stdout.strip() == str(Path(sys.executable).absolute())
-        assert result.stderr == ""
-        return
-    assert result.returncode == 1
-    assert result.stdout == ""
-    assert result.stderr.strip()
+
+
+def test_main_prints_executable_when_accepted(monkeypatch, capsys, tmp_path):
+    exe = str(tmp_path / "bin" / "python3.11")
+    monkeypatch.setattr(verify, "sys", _fake_sys((3, 11), exe, NORMAL_PREFIX, NORMAL_PREFIX))
+    verify.main()
+    captured = capsys.readouterr()
+    assert captured.out.strip() == os.path.abspath(exe)
+    assert captured.err == ""
+
+
+def test_main_rejects_venv_on_conda_base(monkeypatch, capsys, tmp_path):
+    conda_base = tmp_path / "base"
+    (conda_base / "conda-meta").mkdir(parents=True)
+    venv_prefix = str(tmp_path / "venv")
+    fake = _fake_sys((3, 11), venv_prefix + "/bin/python", venv_prefix, str(conda_base))
+    monkeypatch.setattr(verify, "sys", fake)
+    with pytest.raises(SystemExit) as exc_info:
+        verify.main()
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert captured.out == ""
+    assert "Conda" in captured.err
+
+
+def test_main_rejects_wrong_version(monkeypatch, capsys):
+    monkeypatch.setattr(verify, "sys", _fake_sys((3, 12), NORMAL_EXE, NORMAL_PREFIX, NORMAL_PREFIX))
+    with pytest.raises(SystemExit) as exc_info:
+        verify.main()
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert captured.out == ""
+    assert "found 3.12" in captured.err
