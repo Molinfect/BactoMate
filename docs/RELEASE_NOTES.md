@@ -4,6 +4,33 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.5 (2026-10-20)
+
+### Downloads
+
+- **macOS DMG is back on the release page:** the DMG is now LZMA-compressed and leaves build-only files (TensorFlow/torch C++ headers, package test folders, `cmake`) out of the app, bringing it from 2.4 GB to about 1 GiB — under GitHub's 2 GiB limit, which caused v2.9.4 to ship without a DMG. A release now fails instead of publishing without the DMG.
+- **Windows zip launcher:** fix "Failed to configure bundled virtual environment" on first launch, caused by a path-quoting bug in `BactoMate.bat` (not by Python or the extract location). Windows install guide now leads with the ready-to-run zip.
+
+### Install from source
+
+- **macOS installer fails fast with a clear reason:** requires plain Python 3.11 (python.org or Homebrew) and rejects Conda and other versions before anything is installed; also finds a python.org/Homebrew 3.11 when Conda is first on `PATH`. numpy, scipy and scikit-image install from prebuilt wheels only, so no compiler is needed. Every failure ends with a one-line `REASON:`, and the full transcript is saved to `Logs/install.log`.
+- **Safer macOS reinstall:** your previous `venv` is kept as `venv.previous` until the new one passes the smoke test, with restore instructions if the install fails.
+- **Windows installer:** no longer tries to build `dbscan` from source (which needs Microsoft C++ Build Tools); it stops with a pointer to the troubleshooting section.
+- **Lab users:** release notes, README and a new `INSTALL.txt` point to the DMG / Windows zip; GitHub's "Source code" zip is for developers. BactoMate now requires Python 3.11.
+
+### Segmentation and Analysis
+
+- **Omnipose preview:** pin `ncolor<2` so fresh installs can import `unique_nonzero`; the preview no longer tells you to reinstall cellpose-omni for unrelated import errors.
+- **Foci pairing:** pairs DIA inputs and names with a channel token before `_fi_foci` (e.g. `…_GFP_fi_foci`), while replicate IDs still prevent cross-well mismatches.
+
+### Other
+
+- macOS release builds write correct Finder version tags.
+- Paper raw data is published on a separate `paper-data` branch (see `docs/PAPER_DATA.md`) and is not included in releases.
+- New README banner.
+
+---
+
 ## v2.9.4 (2026-08-11)
 
 ### Segmentation and Filtering
