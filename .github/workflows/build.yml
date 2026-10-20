@@ -6,8 +6,22 @@ on:
     branches: [main, dev]
     tags:
       - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - 'img/**'
+      - 'LICENSE'
+      - 'Logs/**'
+      - 'README.md'
+      - '**/README.md'
   pull_request:
     branches: [main, dev]
+    paths-ignore:
+      - 'docs/**'
+      - 'img/**'
+      - 'LICENSE'
+      - 'Logs/**'
+      - 'README.md'
+      - '**/README.md'
 
 jobs:
   smoke-macos:

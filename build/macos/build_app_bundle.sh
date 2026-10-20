@@ -105,6 +105,7 @@ rsync -a \
     --exclude "build/BactoMate.icns" \
     --exclude "Logs/" \
     --exclude "docs/internal/" \
+    --exclude "paper_data/" \
     --exclude "venv/" \
     "$PROJECT_ROOT/" "$RESOURCES_DIR/"
 
@@ -112,7 +113,20 @@ mkdir -p "$RESOURCES_DIR/Logs"
 touch "$RESOURCES_DIR/Logs/.gitkeep"
 
 echo "Copying virtual environment..."
-rsync -a "$VENV_DIR/" "$RESOURCES_DIR/venv/"
+# Leave out build-time and test-only files so the DMG stays under GitHub's 2 GiB asset limit.
+# mahotas imports its tests package at load time, so it keeps it.
+SITE_PACKAGES_GLOB="/lib/python*/site-packages"
+rsync -a \
+    --include "$SITE_PACKAGES_GLOB/mahotas/tests/" \
+    --exclude "$SITE_PACKAGES_GLOB/**/tests/" \
+    --exclude "$SITE_PACKAGES_GLOB/tensorflow/include/" \
+    --exclude "$SITE_PACKAGES_GLOB/torch/include/" \
+    --exclude "$SITE_PACKAGES_GLOB/cmake/" \
+    --exclude "/bin/cmake" \
+    --exclude "/bin/ccmake" \
+    --exclude "/bin/cpack" \
+    --exclude "/bin/ctest" \
+    "$VENV_DIR/" "$RESOURCES_DIR/venv/"
 
 FRAMEWORK_ROOT=""
 if [[ "$PY_BASE_PREFIX" == *"/Python.framework/Versions/"* ]]; then

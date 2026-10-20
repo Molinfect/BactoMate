@@ -127,7 +127,7 @@ Both scripts create `venv/`, install requirements, run `pip install -e .`, apply
 
 ### Installation Details
 
-- **Python Version**: 3.11+
+- **Python Version**: 3.11 (64-bit on Windows)
 - **GUI Framework**: PyQt6
 - **Virtual Environment**: `venv/`
 - **Package name**: `bactomate` (`pip install -e .`, CLI: `bactomate`)

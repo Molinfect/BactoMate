@@ -155,11 +155,16 @@ def main() -> int:
     _write_bundle_launcher(dist)
     shutil.copy2(root / "setup" / "windows" / "launch_bundle.bat", dist / "launch_windows.bat")
 
-    bundle_py = dist / "venv" / "Scripts" / "python.exe"
     print("Verifying bundle (--version) ...")
-    subprocess.run([str(bundle_py), str(dist / "main.py"), "--version"], cwd=dist, check=True)
+    subprocess.run(
+        ["cmd", "/d", "/c", "BactoMate.bat", "--version"],
+        cwd=dist, input="\n", text=True, check=True,
+    )
     print("Verifying bundle (--smoke-test) ...")
-    subprocess.run([str(bundle_py), str(dist / "main.py"), "--smoke-test"], cwd=dist, check=True)
+    subprocess.run(
+        ["cmd", "/d", "/c", "launch_windows.bat", "--smoke-test"],
+        cwd=dist, input="\n", text=True, check=True,
+    )
 
     print()
     print(f"Created: {dist}")

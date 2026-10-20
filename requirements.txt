@@ -18,6 +18,11 @@
 dbscan==0.0.10; sys_platform == "win32"
 omnipose>=1.0.6,<3.0.0
 cellpose-omni>=0.6.0,<1.0.0
+# omnipose 1.1.4 does `from ncolor import unique_nonzero` (omnipose/misc.py).
+# ncolor 2.x removed that name. omnipose only declares ncolor>=1.4.3, so a
+# fresh install resolves ncolor 2.3.0 and preview dies with ImportError.
+# Keep 1.x until omnipose supports ncolor 2. Last 1.x release is 1.5.3.
+ncolor>=1.4.3,<2
 
 # Cellpose-SAM (Omnipose tab → model "Cellpose-SAM")
 cellpose>=2.0.0

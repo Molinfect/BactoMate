@@ -27,9 +27,12 @@ bactomate_apply_finder_tag() {
         echo "Warning: cannot tag missing path: $target" >&2
         return 0
     fi
-    local plist_tmp
-    plist_tmp="$(mktemp "${TMPDIR:-/tmp}/bactomate_tag.XXXXXX.plist")"
-    cat > "$plist_tmp" <<PLIST
+    # Binary plists contain NUL bytes. Do NOT pass them through $(...) — bash
+    # truncates at the first NUL and leaves a corrupt Finder tag xattr.
+    local xml_tmp bin_tmp hex
+    xml_tmp="$(mktemp "${TMPDIR:-/tmp}/bactomate_tag.XXXXXX.plist")"
+    bin_tmp="$(mktemp "${TMPDIR:-/tmp}/bactomate_tag.XXXXXX.bin")"
+    cat > "$xml_tmp" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -41,12 +44,18 @@ bactomate_apply_finder_tag() {
 </array>
 </plist>
 PLIST
-    if xattr -wx com.apple.metadata:_kMDItemUserTags "$(plutil -convert binary1 -o - "$plist_tmp")" "$target" 2>/dev/null; then
+    if ! plutil -convert binary1 -o "$bin_tmp" "$xml_tmp" 2>/dev/null; then
+        echo "Warning: could not convert Finder tag plist for $target" >&2
+        rm -f "$xml_tmp" "$bin_tmp"
+        return 0
+    fi
+    hex="$(xxd -p -c 256 "$bin_tmp" | tr -d '\n')"
+    if [[ -n "$hex" ]] && xattr -wx com.apple.metadata:_kMDItemUserTags "$hex" "$target" 2>/dev/null; then
         echo "Finder tag: $(basename "$target") → ${tag}"
     else
         echo "Warning: could not set Finder tag on $target" >&2
     fi
-    rm -f "$plist_tmp"
+    rm -f "$xml_tmp" "$bin_tmp"
 }
 
 bactomate_tag_release_artifacts() {
@@ -56,6 +65,7 @@ bactomate_tag_release_artifacts() {
     tag="$(bactomate_read_release_tag "$project_root")" || return 1
     local path
     for path in "$@"; do
+        [[ -n "$path" ]] || continue
         bactomate_apply_finder_tag "$path" "$tag"
     done
 }

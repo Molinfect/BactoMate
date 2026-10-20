@@ -9,6 +9,48 @@ from pathlib import Path
 from typing import Any
 
 
+def format_omnipose_preview_import_error(error_msg: str) -> str:
+    """Dialog body for ImportError while opening Omnipose/Cellpose preview.
+
+    A missing package still points at ``pip install cellpose-omni``. An import
+    of a name that the installed module no longer exports is a version mismatch
+    (for example ncolor 2.x vs omnipose's ``unique_nonzero`` import).
+    """
+    if "torch.testing" in error_msg:
+        return (
+            "Preview requires torch.testing module.\n\n"
+            "This is a known issue in some environments.\n"
+            "The preview feature may not work in the packaged application.\n\n"
+            "Try running from source: python main.py"
+        )
+    if "No package metadata was found for imageio" in error_msg:
+        return (
+            "This app build is missing imageio package metadata.\n\n"
+            f"Details: {error_msg}\n\n"
+            "Reinstall BactoMate or ensure imageio is installed with metadata: pip install imageio."
+        )
+    if "cannot import name" in error_msg:
+        if "unique_nonzero" in error_msg and "ncolor" in error_msg:
+            detail = (
+                "omnipose imports unique_nonzero from ncolor. ncolor 2.x no longer "
+                "provides that name, and omnipose 1.1.4 only requires ncolor>=1.4.3, "
+                "so a fresh install can resolve ncolor 2.\n\n"
+                'Fix in the BactoMate venv: pip install "ncolor>=1.4.3,<2"'
+            )
+        else:
+            detail = (
+                "A required package is installed, but this version does not export "
+                "a name the preview expects.\n\n"
+                "Reinstall pinned dependencies: pip install -r requirements.txt"
+            )
+        return f"Incompatible dependency version:\n\n{error_msg}\n\n{detail}"
+    return (
+        "Preview requires additional libraries:\n\n"
+        f"{error_msg}\n\n"
+        "Install with: pip install cellpose-omni"
+    )
+
+
 def inspect_omnipose_checkpoint(pth_path: str | Path) -> dict[str, Any]:
     """
     Load a .pth checkpoint and return top-level keys and any stored nchan/nclasses/diam_mean.

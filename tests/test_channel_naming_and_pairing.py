@@ -88,6 +88,30 @@ def test_role_tagged_replicate_does_not_lcp_cross_pair():
     assert foci_pairs_with_input("ssb_cl1_001_phase", "ssb_cl1_001_foci_GFP")
 
 
+def test_dia_pairs_fi_foci_with_channel_before_role_marker():
+    """Channel token before ``_fi_foci`` (non-canonical export) still pairs via shared prefix."""
+    dia = "EM19893_t=120_+Ara_001_DIA"
+    assert foci_pairs_with_input(dia, "EM19893_t=120_+Ara_001_fi_foci")
+    assert foci_pairs_with_input(dia, "EM19893_t=120_+Ara_001_GFP_fi_foci")
+    assert foci_pairs_with_input(dia, "EM19893_t=120_+Ara_001_fi_foci_GFP")
+    assert foci_pairs_with_input("EM19893_t=120_+Ara_001_phase", "EM19893_t=120_+Ara_001_GFP_fi_foci")
+
+
+def test_discover_foci_finds_dia_siblings_including_gfp_fi_foci(tmp_path: Path) -> None:
+    tif_dir = tmp_path / "Tif_files"
+    tif_dir.mkdir()
+    stem = "EM19893_t=120_+Ara_001"
+    (tif_dir / f"{stem}_DIA.tif").write_bytes(b"")
+    (tif_dir / f"{stem}_fi_foci.tif").write_bytes(b"")
+    (tif_dir / f"{stem}_GFP_fi_foci.tif").write_bytes(b"")
+    (tif_dir / f"{stem}_fi_foci_GFP.tif").write_bytes(b"")
+    found = discover_foci_source_tiffs(f"{stem}_DIA", tif_dir)
+    names = {p.name for p in found}
+    assert f"{stem}_fi_foci.tif" in names
+    assert f"{stem}_GFP_fi_foci.tif" in names
+    assert f"{stem}_fi_foci_GFP.tif" in names
+
+
 def test_discover_foci_finds_legacy_dia_sibling(tmp_path: Path) -> None:
     tif_dir = tmp_path / "Tif_files"
     tif_dir.mkdir()

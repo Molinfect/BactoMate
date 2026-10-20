@@ -23,12 +23,14 @@ To learn more, check out the [paper](https://www.biorxiv.org/content/10.64898/20
 
 Hallenga, L., Fornoff, S., Pesch, M., Kohlheyer, D., Ahmada, S., Hör, J., Erhardt, M., Popp, P. F. (2026). BactoMate: an integrated platform for reproducible bacterial microscopy analysis. <em>bioRxiv</em>.
 
+Paper raw microscopy data: [`paper-data` branch](https://github.com/Molinfect/BactoMate/tree/paper-data) ([docs/PAPER_DATA.md](docs/PAPER_DATA.md)).
+
 
 ## Installation
 
 **Prefer a ready-made app?** Download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from the [latest GitHub Release](https://github.com/Molinfect/BactoMate/releases/latest) — no Python or Terminal needed.
 
-**Install from source:** Clone this repository, or download and extract its ZIP archive, then follow the instructions for your operating system below. No build step is required.
+**Install from source:** Clone this repository, or download and extract its ZIP archive, then follow the instructions for your operating system below. No build step is required. The GitHub **Source code (zip)** on a release is the same repository archive; for lab use, prefer the release DMG or Windows zip — see [INSTALL.txt](INSTALL.txt).
 
 ## macOS — install and launch
 
@@ -81,6 +83,7 @@ For complete Windows troubleshooting, see **[docs/INSTALL_AND_LAUNCH_windows.md]
 | Document | Description |
 |----------|-------------|
 | [setup/README.md](setup/README.md) | Install and launch scripts (start here) |
+| [scripts/pre_push_check.sh](scripts/pre_push_check.sh) | Local smoke test + pytest before push (optional) |
 | [docs/README.md](docs/README.md) | Full user guide, CLI, and workflows |
 | [bactomate/scripts/README.md](bactomate/scripts/README.md) | Script reference (GUI subprocesses, CLI tools, diagnostics) |
 | [docs/BACTOMATE_USER_MANUAL.md](docs/BACTOMATE_USER_MANUAL.md) | Tab-by-tab reference |
@@ -95,6 +98,7 @@ For complete Windows troubleshooting, see **[docs/INSTALL_AND_LAUNCH_windows.md]
 | macOS Qt / PyQt6 errors | Re-run `./setup/macos/install.sh` or `./setup/macos/repair_pyqt6.sh` |
 | Windows DLL / torch errors | Install VC++ Redistributable x64, use Python 3.11 64-bit, recreate `venv` |
 | ILP tracking says `No module named 'motile'` or `NodeSelection` | Re-run `pip install -r requirements.txt` in the BactoMate `venv` |
+| Preview says `cannot import name 'unique_nonzero' from 'ncolor'` | In the BactoMate `venv`: `pip install "ncolor>=1.4.3,<2"` (ncolor 2.x dropped that name; omnipose 1.1.4 still imports it) |
 | Cellpose segmentation errors | `python setup/apply_all_patches.py` (with venv active) |
 | GPU is optional | CPU works; CUDA PyTorch is offered during install |
 
