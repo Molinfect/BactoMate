@@ -30,9 +30,9 @@ If you strip and commit on `dev`, internal docs are gone from `dev` too.
    ```bash
    git checkout dev
    git pull origin dev
-   pytest tests/ -q
-   python main.py --smoke-test
+   ./scripts/pre_push_check.sh
    ```
+   (`SKIP=1` skips the script; CI still runs on code pushes. Docs-only pushes skip CI via `paths-ignore` in `build.yml`.)
 
 2. **Bump version** (example `2.8.4` → `2.8.5`):
    - `bactomate/__init__.py` → `__version__`
@@ -107,6 +107,8 @@ Replace `2.8.5` and edit the commit message.
 # --- on dev ---
 git checkout dev && git pull origin dev
 pytest tests/ -q && python main.py --smoke-test
+# or:
+./scripts/pre_push_check.sh
 # (bump version + RELEASE_NOTES, then:)
 git add -A && git commit -m "Release v2.8.5: <summary>" && git push origin dev
 

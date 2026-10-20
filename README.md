@@ -83,6 +83,7 @@ For complete Windows troubleshooting, see **[docs/INSTALL_AND_LAUNCH_windows.md]
 | Document | Description |
 |----------|-------------|
 | [setup/README.md](setup/README.md) | Install and launch scripts (start here) |
+| [scripts/pre_push_check.sh](scripts/pre_push_check.sh) | Local smoke test + pytest before push (optional) |
 | [docs/README.md](docs/README.md) | Full user guide, CLI, and workflows |
 | [bactomate/scripts/README.md](bactomate/scripts/README.md) | Script reference (GUI subprocesses, CLI tools, diagnostics) |
 | [docs/BACTOMATE_USER_MANUAL.md](docs/BACTOMATE_USER_MANUAL.md) | Tab-by-tab reference |
