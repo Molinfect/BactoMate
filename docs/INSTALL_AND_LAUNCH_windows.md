@@ -162,6 +162,16 @@ Re-apply patches:
 venv\Scripts\python.exe setup\apply_all_patches.py
 ```
 
+### Preview: `cannot import name 'unique_nonzero' from 'ncolor'`
+
+omnipose 1.1.4 imports `unique_nonzero` from `ncolor` and only requires `ncolor>=1.4.3`. ncolor 2.x removed that name, so a fresh install can pull ncolor 2.3.0 and Segmentation preview fails even though `cellpose-omni` is installed. `pip install cellpose-omni` does not fix it.
+
+`requirements.txt` pins `ncolor>=1.4.3,<2`. Repair an existing venv with:
+
+```bat
+venv\Scripts\python.exe -m pip install "ncolor>=1.4.3,<2"
+```
+
 ### Spotiflow foci: `cannot import name 'Imports' from 'wandb.proto...'`
 
 Spotiflow loads `wandb` at import time. An older `wandb` with a newer `protobuf` (often after unrelated `pip install -U` on the lab PC) breaks Analyze Masks → Spotiflow with no peaks and a log line like:

@@ -25,7 +25,7 @@ from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.layout_helpers import ResponsivePanel, build_preview_settings_scroll, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET, UI_THEME
 from bactomate.gui.mask_utils import OMNIPOSE_MASKS_SUBDIR, OMNIPOSE_MASKS_TILED_SUBDIR, ensure_omnipose_masks_has_images, ensure_training_images_nchan, get_training_pairs, infer_training_filters, prepare_omnipose_masks_from_pairs, tile_training_data
-from bactomate.gui.omnipose_utils import eval_uses_affinity_segmentation, omnipose_eval_first_mask, inspect_omnipose_checkpoint, is_affinity_builtin_model, load_bact_phase_affinity_model, load_cellpose_segmentation_model, prepare_user_pretrained_loader_path
+from bactomate.gui.omnipose_utils import eval_uses_affinity_segmentation, format_omnipose_preview_import_error, omnipose_eval_first_mask, inspect_omnipose_checkpoint, is_affinity_builtin_model, load_bact_phase_affinity_model, load_cellpose_segmentation_model, prepare_user_pretrained_loader_path
 from bactomate.gui.utils import safe_imread
 from bactomate.gui.widgets import ClickableTooltip, ProgressCancelButton, TooltipClickFilter, DragDropGroupBox, PathDropWidget, create_info_icon, show_confirm_dialog, show_file_selection_dialog, show_linked_mask_selection_dialog, show_message_dialog, style_dialog_button_box
 from bactomate.gui.workers import WorkerThread
@@ -5166,13 +5166,7 @@ class OmniposeSegTab(QWidget):
             except Exception:
                 pass
             self._set_segmentation_buttons_busy(False)
-            error_msg = str(e)
-            if 'torch.testing' in error_msg:
-                show_message_dialog(self, 'Preview Unavailable', 'Preview requires torch.testing module.\n\nThis is a known issue in some environments.\nThe preview feature may not work in the packaged application.\n\nTry running from source: python main.py', kind='warning')
-            elif 'No package metadata was found for imageio' in error_msg:
-                show_message_dialog(self, 'Preview Unavailable', f'This app build is missing imageio package metadata.\n\nDetails: {error_msg}\n\nReinstall BactoMate or ensure imageio is installed with metadata: pip install imageio.', kind='warning')
-            else:
-                show_message_dialog(self, 'Preview Unavailable', f'Preview requires additional libraries:\n\n{error_msg}\n\nInstall with: pip install cellpose-omni', kind='warning')
+            show_message_dialog(self, 'Preview Unavailable', format_omnipose_preview_import_error(str(e)), kind='warning')
         except Exception as e:
             try:
                 loading_progress.close()
