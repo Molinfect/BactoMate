@@ -131,7 +131,7 @@ git checkout dev
 
 Pushing tag `v*` runs `.github/workflows/release.yml`:
 
-- **macOS:** `BactoMate.dmg` (may be skipped if &gt; 2 GiB)
+- **macOS:** `BactoMate.dmg` (LZMA-compressed; the release fails instead of publishing if it exceeds 2 GiB)
 - **Windows:** `BactoMate-win64.zip`
 
 Bundles use `build/public_packaging.py` — no `docs/internal/`, empty `Logs/`.

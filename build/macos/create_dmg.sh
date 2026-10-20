@@ -85,7 +85,8 @@ fi
 echo "Creating disk image..."
 # Remove existing DMG so hdiutil create doesn't prompt
 rm -f "$DMG_PATH"
-hdiutil create -volname "$DMG_NAME" -srcfolder "$DMG_LAYOUT" -ov -format UDZO "$DMG_PATH"
+# ULMO (LZMA, macOS 10.15+) is ~20% smaller than UDZO; needed to stay under GitHub's 2 GiB asset limit.
+hdiutil create -volname "$DMG_NAME" -srcfolder "$DMG_LAYOUT" -ov -format ULMO "$DMG_PATH"
 
 if declare -F bactomate_tag_release_artifacts >/dev/null; then
     bactomate_tag_release_artifacts "$PROJECT_ROOT" "$DMG_PATH" "$APP_DIR"

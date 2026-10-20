@@ -80,8 +80,8 @@ jobs:
           SIZE=$(stat -f%z "$DMG")
           echo "macOS DMG: $SIZE bytes"
           if [ "$SIZE" -ge "${GITHUB_ASSET_MAX_BYTES}" ]; then
-            echo "::warning::Skipping DMG upload — exceeds GitHub's 2 GiB per-file limit."
-            exit 0
+            echo "::error::macOS DMG exceeds GitHub's 2 GiB asset limit."
+            exit 1
           fi
           gh release upload "${{ github.ref_name }}" "$DMG" --clobber
 
