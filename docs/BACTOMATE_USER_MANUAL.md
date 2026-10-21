@@ -530,6 +530,8 @@ The analysis Excel can contain up to **three sheets**:
 ### 5.7 Buttons and actions
 
 - **Preview Filter Effects:** Tooltip: “Preview how current filter parameters would affect the selected mask file”. Opens a preview (e.g. first frame or first file) with accepted/rejected cells shown. Disabled until a mask file or folder is selected.
+
+  **Apply current filters** uses the frame, View, cell settings, and foci-channel settings submitted with that Apply. Later edits take effect on the next Apply. If another Apply is requested while work is running, only the newest queued request runs after the current worker stops. **Cancel** discards current and queued work; a later Apply can be requested again. Closing or replacing the preview discards obsolete results. Previewing does not rewrite existing mask TIFFs or foci CSVs.
 - **Analyze Masks:** Runs full analysis with current morphological and size filters; writes Excel, optional filter visualization TIFF, optional combined summary. Disabled until path is set. Progress in main window log.
 - **Export last result to CSV:** Tooltip: “Export the most recent analysis Excel (Summary or Detailed sheet) to a CSV file.” Exports the last generated analysis Excel to CSV (user chooses path). Useful for downstream scripts or plotting.
 

@@ -243,26 +243,8 @@ def sync_filter_settings_from_preview_dialog(tab: Any) -> bool:
 
 def wait_for_filter_preview_apply_idle(dlg: Any, *, timeout_ms: int = 3_600_000) -> bool:
     """Block until preview Apply worker (and any queued re-apply) finishes."""
-    import time
-
-    from PyQt6.QtWidgets import QApplication
-
-    deadline = time.monotonic() + max(0.0, int(timeout_ms)) / 1000.0
-    while time.monotonic() < deadline:
-        thread = getattr(dlg, "_preview_thread", None)
-        running = thread is not None and thread.isRunning()
-        pending = bool(getattr(dlg, "_pending_apply", False))
-        busy = False
-        try:
-            busy = bool(dlg.state().extra.get("filter_apply_busy"))
-        except Exception:
-            pass
-        if not running and not pending and not busy:
-            return True
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents()
-    return False
+    lifecycle = getattr(dlg, "_filter_apply", None)
+    return lifecycle is not None and lifecycle.wait_until_idle(timeout_ms=timeout_ms)
 
 
 def request_filter_preview_apply(

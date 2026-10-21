@@ -325,19 +325,6 @@ class FilteringTab(AnalyzeMasksBase):
         dlg = getattr(self, '_filter_preview_dialog', None)
         if dlg is None:
             return
-        try:
-            dlg._preview_request_id = int(getattr(dlg, '_preview_request_id', 0)) + 1
-            dlg._close_pending = True
-        except Exception:
-            pass
-        try:
-            dlg.close()
-        except Exception:
-            pass
-        try:
-            self._filter_preview_dialog = None
-        except Exception:
-            pass
         self._open_filter_preview_for_mask(mask_path)
 
     def _open_filter_preview_for_mask(self, mask_path: Path) -> None:
@@ -349,10 +336,6 @@ class FilteringTab(AnalyzeMasksBase):
         if not mask_path.is_file():
             show_message_dialog(self, 'Not Found', f'Mask file not found:\n{mask_path}', kind='warning')
             return
-        try:
-            self._filter_preview_mask_path = mask_path
-        except Exception:
-            pass
         btn = getattr(self, 'preview_action_btn', None)
         prev_label = btn.text() if btn is not None else None
         if btn is not None:
