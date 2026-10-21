@@ -33,9 +33,13 @@ if not errorlevel 1 (
     exit /b 1
 )
 
+:: Read the release version without requiring a working Python installation.
+set "BACTOMATE_VERSION=unknown"
+for /f "tokens=2 delims== " %%V in ('findstr /b /c:"__version__ = " "%ROOT%\bactomate\__init__.py" 2^>nul') do set "BACTOMATE_VERSION=%%~V"
+
 if not exist "%ROOT%\Logs" mkdir "%ROOT%\Logs" 2>nul
 set "INSTALL_LOG=%ROOT%\Logs\install_last.log"
-echo ========== BactoMate install %DATE% %TIME% ========== > "%INSTALL_LOG%"
+echo ========== BactoMate %BACTOMATE_VERSION% Windows source installer %DATE% %TIME% ========== > "%INSTALL_LOG%"
 echo ROOT=%ROOT%>> "%INSTALL_LOG%"
 
 :: ZIP downloads are often marked "blocked" outside Desktop; unblock scripts before pip/venv.
@@ -61,7 +65,7 @@ set "PYTHONPATH="
 set "PYTHONNOUSERSITE=1"
 
 echo.
-echo ========== BactoMate Windows Install ==========
+echo ========== BactoMate %BACTOMATE_VERSION% Windows source installer ==========
 echo Project root: %ROOT%
 echo.
 
