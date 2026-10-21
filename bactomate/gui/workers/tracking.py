@@ -1561,80 +1561,9 @@ class TrackingWorker(QThread):
         pixel_size_um: float,
         time_per_frame_min: float,
     ):
-        import pandas as pd
+        from bactomate.gui.tracking_filters import compute_track_metrics
 
-        cols = [
-            "track_id",
-            "trajectory_length",
-            "duration_frames",
-            "gap_frames",
-            "duration_min",
-            "first_frame",
-            "last_frame",
-            "displacement_px",
-            "displacement_um",
-            "path_length_px",
-            "path_length_um",
-            "mean_speed_px_frame",
-            "mean_speed_um_s",
-            "straight_line_speed_px_frame",
-            "straight_line_speed_um_s",
-            "straightness",
-        ]
-        if tracks_df is None or len(tracks_df) == 0 or "track_id" not in tracks_df.columns or "frame" not in tracks_df.columns:
-            return pd.DataFrame(columns=cols)
-        need_xy = "y" in tracks_df.columns and "x" in tracks_df.columns
-        rows = []
-        for tid, g in tracks_df.groupby("track_id"):
-            g = g.sort_values("frame")
-            n = len(g)
-            first_frame = int(g["frame"].iloc[0])
-            last_frame = int(g["frame"].iloc[-1])
-            duration = max(1, int(last_frame - first_frame + 1))
-            displacement_px = 0.0
-            path_length_px = 0.0
-            if need_xy and n >= 2:
-                ys = g["y"].values
-                xs = g["x"].values
-                displacement_px = float(np.hypot(ys[-1] - ys[0], xs[-1] - xs[0]))
-                path_length_px = float(np.sum(np.hypot(np.diff(ys), np.diff(xs))))
-            displacement_um = displacement_px * pixel_size_um if pixel_size_um > 0 else displacement_px
-            path_length_um = path_length_px * pixel_size_um if pixel_size_um > 0 else path_length_px
-            straightness = float(displacement_px / path_length_px) if path_length_px > 0 else 0.0
-            mean_speed_px_frame = path_length_px / duration if duration > 0 else 0.0
-            duration_sec = duration * time_per_frame_min * 60.0 if time_per_frame_min > 0 else 0.0
-            if pixel_size_um > 0 and duration_sec > 0:
-                mean_speed_um_s = path_length_um / duration_sec
-            else:
-                mean_speed_um_s = mean_speed_px_frame
-            duration_min = duration * time_per_frame_min if time_per_frame_min > 0 else 0.0
-            straight_line_speed_px_frame = displacement_px / duration if duration > 0 else 0.0
-            if duration_sec > 0 and pixel_size_um > 0:
-                straight_line_speed_um_s = displacement_um / duration_sec
-            else:
-                straight_line_speed_um_s = straight_line_speed_px_frame
-            gap_frames = max(0, int(duration) - int(n))
-            rows.append(
-                {
-                    "track_id": int(tid),
-                    "trajectory_length": int(n),
-                    "duration_frames": int(duration),
-                    "gap_frames": int(gap_frames),
-                    "duration_min": float(duration_min),
-                    "first_frame": int(first_frame),
-                    "last_frame": int(last_frame),
-                    "displacement_px": float(displacement_px),
-                    "displacement_um": float(displacement_um),
-                    "path_length_px": float(path_length_px),
-                    "path_length_um": float(path_length_um),
-                    "mean_speed_px_frame": float(mean_speed_px_frame),
-                    "mean_speed_um_s": float(mean_speed_um_s),
-                    "straight_line_speed_px_frame": float(straight_line_speed_px_frame),
-                    "straight_line_speed_um_s": float(straight_line_speed_um_s),
-                    "straightness": float(straightness),
-                }
-            )
-        return pd.DataFrame(rows, columns=cols)
+        return compute_track_metrics(tracks_df, pixel_size_um, time_per_frame_min)
 
     def _build_track_information_table(self, tracks_df, metrics_df):
         import pandas as pd
@@ -1699,17 +1628,18 @@ class TrackingWorker(QThread):
         out["duration_min"] = np.round(metrics_df["duration_min"], 4)
         out["first_frame"] = metrics_df["first_frame"].astype(int)
         out["last_frame"] = metrics_df["last_frame"].astype(int)
-        out["displacement_px"] = np.round(metrics_df["displacement_px"], 4)
-        out["displacement_um"] = np.round(metrics_df["displacement_um"], 4)
-        out["path_length_px"] = np.round(metrics_df["path_length_px"], 4)
-        out["path_length_um"] = np.round(metrics_df["path_length_um"], 4)
-        out["mean_speed_px_frame"] = np.round(metrics_df["mean_speed_px_frame"], 6)
-        out["mean_speed_um_s"] = np.round(metrics_df["mean_speed_um_s"], 6)
+        # Report filters must compare calculation precision, as preview filters do.
+        out["displacement_px"] = metrics_df["displacement_px"]
+        out["displacement_um"] = metrics_df["displacement_um"]
+        out["path_length_px"] = metrics_df["path_length_px"]
+        out["path_length_um"] = metrics_df["path_length_um"]
+        out["mean_speed_px_frame"] = metrics_df["mean_speed_px_frame"]
+        out["mean_speed_um_s"] = metrics_df["mean_speed_um_s"]
         out["mean_speed_um_min"] = np.round(metrics_df["mean_speed_um_s"] * 60.0, 6)
         out["straight_line_speed_px_frame"] = np.round(metrics_df["straight_line_speed_px_frame"], 6)
         out["straight_line_speed_um_s"] = np.round(metrics_df["straight_line_speed_um_s"], 6)
         out["straight_line_speed_um_min"] = np.round(metrics_df["straight_line_speed_um_s"] * 60.0, 6)
-        out["straightness"] = np.round(metrics_df["straightness"], 6)
+        out["straightness"] = metrics_df["straightness"]
         return out[cols]
 
     def _track_area_table(self, tracks_df, masks_tracked, merged_data=None):
@@ -2275,6 +2205,7 @@ class TrackingWorker(QThread):
             val = run_metadata.get(key)
             if val is not None and str(val) != "":
                 rows.append((key, str(val)))
+        rows.append(("track_speed_time_basis", "elapsed_frame_intervals"))
         rows.append(("pixel_size_um_worker", str(float(getattr(self, "_cal_ps", 0.0) or 0.0))))
         rows.append(("time_per_frame_min_worker", str(float(getattr(self, "_cal_tp", 0.0) or 0.0))))
         fp = run_metadata.get("filter_params") or {}
@@ -2403,6 +2334,7 @@ class TrackingWorker(QThread):
         meta = {
             "schema_version": schema_version,
             "output_profile": self.output_profile,
+            "track_speed_time_basis": "elapsed_frame_intervals",
             "pixel_size_um": float(getattr(self, "_cal_ps", 0.0) or 0.0),
             "time_per_frame_min": float(getattr(self, "_cal_tp", 0.0) or 0.0),
             "tables": written,

@@ -59,7 +59,7 @@ _FILTER_TIP_GAPS = 'Gaps (frames)\nMissing frames inside the track span: duratio
 _FILTER_TIP_STITCH = 'Stitch tracks\nPost-Trackastra merge: if track A ends and track B starts within Max gap frames (missing frames) and within Max jump distance, remap B → A.\n\nMax gap and Max jump only apply when Stitch tracks is checked — they are not the Gaps filter above.\n\nDefault off. Conservative starts: max gap 2, max jump 2 px (raise if cells drift farther across a hole; use µm when Pixel size is set). Divisions: each end/start is used at most once (nearest only).'
 _FILTER_TIP_DISPLACEMENT = 'Displacement\nStraight-line distance from the first to the last position along the track.\n\nUnits: µm if Pixel (µm/px) is set; otherwise pixels.\n\nExample: a cell drifts 15 µm from birth to exit → displacement ≈ 15 µm.\n\nA cell jittering in place has low displacement even if it moved a lot along its path (see Path length).'
 _FILTER_TIP_PATH_LENGTH = 'Path length\nTotal distance travelled: sum of step lengths between consecutive positions.\n\nAlways ≥ displacement. Equal only for a perfectly straight path.\n\nExample A — wiggling in place: displacement ≈ 1 µm, path length ≈ 25 µm.\nExample B — straight swim: displacement ≈ 20 µm, path length ≈ 21 µm.\n\nFilter out “stuck” cells with low displacement but high path length, or fast swimmers with both high.'
-_FILTER_TIP_MEAN_SPEED = 'Mean speed\nAverage speed along the track: path_length ÷ elapsed time.\n\nUnits: µm/s when both pixel size and Time / frame are set; otherwise px/frame.\n\nExample: path length 30 µm over 20 frames at 3 s/frame (60 s total) → mean speed ≈ 30 / 60 = 0.5 µm/s.\n\nRequires calibration for physical speed; set Time / frame to 0 to use px/frame only.'
+_FILTER_TIP_MEAN_SPEED = 'Mean speed\nAverage speed along the track: path_length ÷ elapsed time.\n\nUnits: µm/s when both pixel size and Time / frame are set; otherwise px/frame.\n\nExample: path length 30 µm across 21 detections at 3 s/frame (20 elapsed intervals = 60 s) → mean speed = 0.5 µm/s.\n\nRequires calibration for physical speed; set Time / frame to 0 to use px/frame only.'
 _FILTER_TIP_STRAIGHTNESS = 'Min straightness\nHow straight the path is: displacement ÷ path_length (0–1).\n\n1.0 = perfectly straight; lower = more wandering or circling.\n\nExample: displacement 20 µm, path length 20 µm → straightness = 1.0.\nExample: displacement 2 µm, path length 40 µm → straightness = 0.05 (mostly jitter).\n\nUse a minimum (e.g. 0.3) to drop tracks that barely progress, or a high minimum to keep only directed motion.'
 
 
@@ -1666,48 +1666,8 @@ class TrackingTab(QWidget):
 
     @staticmethod
     def _compute_track_metrics(tracks_df: pd.DataFrame, pixel_size_um: float, time_per_frame_min: float) -> pd.DataFrame:
-        """Compute per-track metrics. Requires columns: track_id, frame, y, x.
-        Returns a DataFrame with one row per track_id and columns:
-        track_id, trajectory_length, duration_frames, gap_frames, duration_min, first_frame, last_frame,
-        displacement_px, displacement_um, path_length_px, path_length_um,
-        mean_speed_px_frame, mean_speed_um_s, straight_line_speed_px_frame, straight_line_speed_um_s, straightness."""
-        if tracks_df.empty or 'track_id' not in tracks_df.columns or 'frame' not in tracks_df.columns:
-            return _pd().DataFrame()
-        need_xy = 'y' in tracks_df.columns and 'x' in tracks_df.columns
-        rows = []
-        for (tid, g) in tracks_df.groupby('track_id'):
-            g = g.sort_values('frame')
-            n = len(g)
-            first_frame = int(g['frame'].iloc[0])
-            last_frame = int(g['frame'].iloc[-1])
-            duration = max(1, int(last_frame - first_frame + 1))
-            elapsed_intervals = max(1, int(last_frame - first_frame))
-            displacement_px = 0.0
-            path_length_px = 0.0
-            if need_xy and n >= 2:
-                ys = g['y'].values
-                xs = g['x'].values
-                displacement_px = float(np.hypot(ys[-1] - ys[0], xs[-1] - xs[0]))
-                path_length_px = float(np.sum(np.hypot(np.diff(ys), np.diff(xs))))
-            displacement_um = displacement_px * pixel_size_um if pixel_size_um > 0 else displacement_px
-            path_length_um = path_length_px * pixel_size_um if pixel_size_um > 0 else path_length_px
-            path_safe = path_length_px if path_length_px > 0 else 1.0
-            straightness = float(displacement_px / path_safe) if path_safe > 0 else 0.0
-            mean_speed_px_frame = path_length_px / elapsed_intervals if elapsed_intervals > 0 else 0.0
-            duration_sec = elapsed_intervals * time_per_frame_min * 60.0 if time_per_frame_min > 0 else 0.0
-            if pixel_size_um > 0 and duration_sec > 0:
-                mean_speed_um_s = path_length_um / duration_sec
-            else:
-                mean_speed_um_s = mean_speed_px_frame
-            duration_min = duration * time_per_frame_min if time_per_frame_min > 0 else 0.0
-            straight_line_speed_px_frame = displacement_px / elapsed_intervals if elapsed_intervals > 0 else 0.0
-            if duration_sec > 0 and pixel_size_um > 0:
-                straight_line_speed_um_s = displacement_um / duration_sec
-            else:
-                straight_line_speed_um_s = straight_line_speed_px_frame
-            gap_frames = max(0, int(duration) - int(n))
-            rows.append({'track_id': tid, 'trajectory_length': n, 'duration_frames': duration, 'gap_frames': gap_frames, 'duration_min': duration_min, 'first_frame': first_frame, 'last_frame': last_frame, 'displacement_px': displacement_px, 'displacement_um': displacement_um, 'path_length_px': path_length_px, 'path_length_um': path_length_um, 'mean_speed_px_frame': mean_speed_px_frame, 'mean_speed_um_s': mean_speed_um_s, 'straight_line_speed_px_frame': straight_line_speed_px_frame, 'straight_line_speed_um_s': straight_line_speed_um_s, 'straightness': straightness})
-        return _pd().DataFrame(rows)
+        from bactomate.gui.tracking_filters import compute_track_metrics
+        return compute_track_metrics(tracks_df, pixel_size_um, time_per_frame_min)
 
     @staticmethod
     def _format_track_hover_tooltip(
