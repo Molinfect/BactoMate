@@ -616,55 +616,9 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception as e:
             show_message_dialog(tab, 'Load Error', f'Could not load mask:\n{e}', kind='warning')
             return
-    seg_dir = mask_path.parent
-    if not str(seg_dir.name).startswith('_segmentation'):
-        cand = mask_path.parent / '_segmentation'
-        if cand.exists() and cand.is_dir():
-            seg_dir = cand
     num_frames = int(masks.shape[0])
-
-    def _list_background_paths() -> list[Path]:
-        """
-        Prefer original FI/foci stacks that correspond to this mask (often produced by File Conversion),
-        falling back to TIFFs in the segmentation folder if needed.
-        """
-        from bactomate.gui.filter_preview_utils import file_identity_key
-        out: list[Path] = []
-        seen: set[str] = set()
-
-        def _append(fp: Path) -> None:
-            if not fp.is_file() or fp.suffix.lower() not in ('.tif', '.tiff'):
-                return
-            key = file_identity_key(fp)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(fp)
-        try:
-            cand = tab._preview_fi_path_candidates(mask_path)
-        except Exception:
-            cand = []
-        for fp in cand or []:
-            _append(Path(fp))
-        if not out:
-            folder = seg_dir
-            for pat in ('*.tif', '*.tiff'):
-                for fp in folder.glob(pat):
-                    name = fp.name.lower()
-                    if '_analysis' in name or '_filter_visualization' in name:
-                        continue
-                    if name.endswith(('_masks.tif', '_masks.tiff', '_mask_filtered.tif', '_mask_filtered.tiff')):
-                        continue
-                    if '_masks' in name or '_mask_filtered' in name:
-                        continue
-                    _append(fp)
-        out.sort(key=lambda x: x.name.lower())
-        return out
-    from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, default_background_index, enrich_background_paths_for_mask, filter_paths_for_mask, preview_view_label
-    bg_paths = collect_background_paths_for_mask(tab, mask_path)
-    if not bg_paths:
-        bg_paths = filter_paths_for_mask(tab, mask_path, _list_background_paths())
-    bg_paths = enrich_background_paths_for_mask(tab, mask_path, bg_paths)
+    from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, default_background_index, preview_view_label
+    bg_paths = collect_background_paths_for_mask(mask_path)
     from bactomate.gui.filter_preview_utils import short_foci_stack_label
     foci_sources = [Path(fp) for fp in bg_paths if '_foci' in fp.name.lower() or 'fi_foci' in fp.name.lower()]
     has_foci_image_files = len(foci_sources) > 0

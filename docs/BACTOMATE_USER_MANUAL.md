@@ -711,6 +711,7 @@ This section walks through **one concrete workflow**: an ND2 file with one phase
 - **Masks:** `*_masks.tif`.
 - **FI (match by name):** In the mask folder’s parent: `{stem}_fi.tif` or `{stem}_fi_Channel.tif`, or base stem if no exact match (e.g. `EM13748_AnTC_003_fi_GFP.tif` for mask stem `EM13748_AnTC_003_Phase60X`).
 - **Phase (non-FI):** `{stem}.tif` or `{base}.tif` in the same parent folder.
+- **Pairing:** Segmentation, Analyze, and Filtering preview keep acquisition/replicate and `_fN` frame suffixes isolated, including legacy `DIA`, `Phase60X`, double underscores, and channel-before-`_fi_foci` names. Filtered masks also search their sample folder. Analyze FI prefers an explicit FI TIFF over a foci TIFF for the same channel and adds foci-only channels; Filtering preview still offers both images. Reanalysis can change FI measurements if the explicit FI and foci TIFFs contain different pixel values; existing results are not changed on load. Discovery only reads directory entries and does not rewrite existing TIFFs or analysis files.
 
 ---
 

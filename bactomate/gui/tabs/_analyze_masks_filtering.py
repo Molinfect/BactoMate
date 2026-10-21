@@ -408,11 +408,9 @@ class FilteringTab(AnalyzeMasksBase):
             show_message_dialog(self, 'Load Error', 'Could not load mask (empty result).', kind='warning')
             return
         foci_preload: dict = {}
-        from bactomate.gui.filter_preview_utils import filter_paths_for_mask
         foci_paths: list[Path] = []
         try:
-            raw_foci = [Path(p) for p in self._resolve_foci_paths_for_mask(mask_path)]
-            foci_paths = filter_paths_for_mask(self, mask_path, raw_foci)
+            foci_paths = self._resolve_foci_paths_for_mask(mask_path)
         except Exception:
             foci_paths = []
         if foci_paths:

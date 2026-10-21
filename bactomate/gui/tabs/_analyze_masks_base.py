@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import traceback
 from pathlib import Path
 from typing import Any, Optional
@@ -806,150 +805,10 @@ class AnalyzeMasksBase(QWidget):
         return discover_mask_tiffs_for_workspace(Path(path_text))
 
     # ---- Name matching + discovery helpers ---------------------------
-    @staticmethod
-    def _looks_non_channel_token(token: str) -> bool:
-        t = (token or "").strip().lower()
-        if not t:
-            return True
-        if t in {"fi", "foci", "mask", "masks", "phase", "bf", "dic", "seg", "segmentation"}:
-            return True
-        if t.startswith("t=") or t.startswith("z="):
-            return True
-        if t.endswith("x") and t[:-1].isdigit():
-            return True
-        return False
-
-    def _candidate_match_stems(self, stem: str) -> list[str]:
-        out: list[str] = []
-
-        def _add(s: str) -> None:
-            s = (s or "").strip("_")
-            if s and s not in out:
-                out.append(s)
-
-        _add(stem)
-        # Common pipeline suffixes that shouldn't participate in matching other artifacts.
-        # Example dataset:
-        #   mask:  G183A-004_Phase60x_mask_filtered.tif
-        #   foci:  G183A-004_foci_dsRed.tif
-        # so we must consider the shorter "G183A-004" stem as a match candidate.
-        low = stem.lower()
-        if low.endswith("_mask_filtered"):
-            _add(stem[: -len("_mask_filtered")])
-        if low.endswith("_mask"):
-            _add(stem[: -len("_mask")])
-        if "_phase" in low:
-            try:
-                i = low.index("_phase")
-                _add(stem[:i])
-            except Exception:
-                pass
-        if "_" in stem:
-            _add(stem.rsplit("_", 1)[0])
-        if "__" in stem:
-            s2 = stem.split("__", 1)[0]
-            _add(s2)
-            if "_" in s2:
-                _add(s2.rsplit("_", 1)[0])
-        try:
-            from bactomate.gui.artifact_paths import sample_identity_stem
-
-            _add(sample_identity_stem(stem))
-        except Exception:
-            pass
-        return out
-
-    def _matches_fi_name(self, name: str, stem: str) -> bool:
-        if name == f"{stem}_fi" or name.startswith(f"{stem}_fi_"):
-            return True
-        if name.startswith(f"{stem}_") and name.endswith("_fi"):
-            return True
-        # FI channels often share foci-style names, e.g. sample_fi_foci_GFP.tif
-        nl, sl = name.lower(), stem.lower()
-        if nl.startswith(sl):
-            if len(nl) == len(sl):
-                return nl in (f"{sl}_fi", f"{sl}_fi_foci")
-            if nl[len(sl)] != "_":
-                return False
-            rest = nl[len(sl) :].lstrip("_")
-            if rest.startswith("fi_foci") or (rest.startswith("fi") and "_foci" in rest):
-                return True
-        return False
-
-    def _matches_foci_name(self, name: str, stem: str) -> bool:
-        """Match ``{sample}_foci_*``, ``{sample}__fi_foci_*`` (file conversion), etc."""
-        nl, sl = name.lower(), stem.lower()
-        if not nl.startswith(sl):
-            return False
-        if len(nl) == len(sl):
-            return nl in (f"{sl}_foci", f"{sl}_fi_foci")
-        boundary = nl[len(sl)]
-        if boundary not in ("_",):
-            return False
-        rest = nl[len(sl) :].lstrip("_")
-        if not rest:
-            return False
-        if rest.startswith("foci"):
-            return True
-        if rest.startswith("fi") and "_foci" in rest:
-            return True
-        return "_foci" in rest
-
     def _extract_channel_tag_for_mask_stem(self, file_stem: str, mask_stem: str) -> str | None:
-        for s in self._candidate_match_stems(mask_stem):
-            if file_stem in (f"{s}_fi", f"{s}_foci", f"{s}_fi_foci", f"{s}_foci_fi"):
-                return None
-            if file_stem.startswith(f"{s}_fi_"):
-                rem = file_stem[len(s) + 4 :].strip("_")
-                if not rem or rem == "foci":
-                    return None
-                if rem.startswith("foci_"):
-                    rem = rem[len("foci_") :].strip("_")
-                if rem.endswith("_foci"):
-                    rem = rem[: -len("_foci")].strip("_")
-                return rem or None
-            if file_stem.startswith(f"{s}_foci_"):
-                rem = file_stem[len(s) + 6 :].strip("_")
-                if rem.lower().startswith("overlay_"):
-                    rem = rem[8:].strip("_")
-                return rem or None
-            # File conversion: sample__fi_foci_GFP.tif (double underscore after sample id)
-            ls, ss = file_stem.lower(), s.lower()
-            if ls.startswith(ss):
-                rem2 = file_stem[len(s) :].lstrip("_")
-                if rem2.lower().startswith("foci_"):
-                    tag = rem2[5:].strip("_")
-                    if tag.lower().startswith("overlay_"):
-                        tag = tag[8:].strip("_")
-                    return tag or None
-                m = re.match(r"^(\d+_)?foci_(?P<ch>.+)$", rem2, flags=re.IGNORECASE)
-                if m:
-                    return (m.group("ch") or "").strip("_") or None
-                if rem2.lower().startswith("fi_foci_"):
-                    tag = rem2[8:].strip("_")
-                    return tag or None
-                m = re.match(r"^(\d+_)?fi_foci_(?P<ch>.+)$", rem2, flags=re.IGNORECASE)
-                if m:
-                    return (m.group("ch") or "").strip("_") or None
-            if file_stem.startswith(f"{s}_") and file_stem.endswith("_foci"):
-                rem = file_stem[len(s) + 1 : -len("_foci")].strip("_")
-                return rem or None
-            if file_stem.startswith(f"{s}_") and file_stem.endswith("_fi"):
-                rem = file_stem[len(s) + 1 : -len("_fi")].strip("_")
-                return rem or None
-        if file_stem.endswith("_foci"):
-            prefix = file_stem[: -len("_foci")].strip("_")
-            if "_" in prefix:
-                token = prefix.rsplit("_", 1)[-1].strip("_")
-                if token and not self._looks_non_channel_token(token):
-                    return token
-        return None
+        from bactomate.gui.artifact_paths import extract_channel_tag_for_mask_stem
 
-    def _filter_artifact_paths_for_mask(self, mask_path: Path, paths: list[Path]) -> list[Path]:
-        """Drop sibling replicates (e.g. cl1__ vs cl1_001_) that share a shortened match stem."""
-        from bactomate.gui.filter_preview_utils import filter_paths_for_mask
-
-        return filter_paths_for_mask(self, mask_path, paths)
+        return extract_channel_tag_for_mask_stem(file_stem, mask_stem)
 
     def _filtering_tab(self) -> Any | None:
         """Segmentation host tab that owns Filtering settings (if this widget is under it)."""
@@ -979,123 +838,19 @@ class AnalyzeMasksBase(QWidget):
         return dict(default_foci_channel_settings())
 
     def _resolve_fi_paths_for_mask(self, mask_path: Path) -> list[Path]:
-        from bactomate.gui.analysis_paths import artifact_search_dirs_for_mask
+        from bactomate.gui.artifact_paths import resolve_fi_paths_for_mask
 
-        stem = mask_path.stem.replace("_masks", "").replace("_mask_filtered", "")
-        stems = self._candidate_match_stems(stem)
-
-        def search_in(directory: Path) -> list[Path]:
-            out: list[Path] = []
-            if not directory.exists() or not directory.is_dir():
-                return out
-            for f in directory.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                    continue
-                low = f.name.lower()
-                if any((token in low for token in ("_masks", "_mask_filtered", "_overlay", "_analysis", "_filter_visualization"))):
-                    continue
-                if any(self._matches_fi_name(f.stem, s) for s in stems):
-                    out.append(f)
-            return out
-
-        found: list[Path] = []
-        seen_paths: set[str] = set()
-        for d in artifact_search_dirs_for_mask(mask_path):
-            for p in search_in(d):
-                try:
-                    key = str(p.resolve())
-                except Exception:
-                    key = str(p)
-                if key in seen_paths:
-                    continue
-                seen_paths.add(key)
-                found.append(p)
-        return self._filter_artifact_paths_for_mask(mask_path, found)
+        return resolve_fi_paths_for_mask(mask_path)
 
     def _resolve_fi_inputs_for_mask(self, mask_path: Path) -> list[Path]:
-        """FI stacks for Analyze FI: *_fi* names plus foci TIFFs for any missing channel."""
-        from bactomate.gui.analysis_paths import merge_fi_input_paths, stem_from_mask_path
+        from bactomate.gui.artifact_paths import resolve_fi_inputs_for_mask
 
-        mask_path = Path(mask_path)
-        mask_stem = stem_from_mask_path(mask_path)
-
-        def _channel_tag(p: Path) -> str:
-            try:
-                return str(self._extract_channel_tag_for_mask_stem(p.stem, mask_stem) or "")
-            except Exception:
-                return ""
-
-        return merge_fi_input_paths(
-            mask_path=mask_path,
-            explicit_fi=list(self._resolve_fi_paths_for_mask(mask_path) or []),
-            foci_stacks=list(self._resolve_foci_paths_for_mask(mask_path) or []),
-            channel_tag_for_path=_channel_tag,
-            filter_paths=self._filter_artifact_paths_for_mask,
-        )
+        return resolve_fi_inputs_for_mask(mask_path)
 
     def _resolve_foci_paths_for_mask(self, mask_path: Path) -> list[Path]:
-        from bactomate.gui.analysis_paths import artifact_search_dirs_for_mask, stem_from_mask_path
-        from bactomate.gui.artifact_paths import discover_foci_source_tiffs
+        from bactomate.gui.artifact_paths import resolve_foci_paths_for_mask
 
-        unique_dirs = artifact_search_dirs_for_mask(mask_path)
-        stem = stem_from_mask_path(mask_path)
-        stems = self._candidate_match_stems(stem)
-
-        def search_in(directory: Path) -> list[Path]:
-            out: list[Path] = []
-            if not directory.exists() or not directory.is_dir():
-                return out
-            for f in directory.iterdir():
-                if not f.is_file() or f.suffix.lower() not in (".tif", ".tiff"):
-                    continue
-                if any(self._matches_foci_name(f.stem, s) for s in stems):
-                    out.append(f)
-            return out
-
-        found: list[Path] = []
-        seen_paths: set[str] = set()
-        for d in unique_dirs:
-            for p in search_in(d):
-                try:
-                    key = str(p.resolve())
-                except Exception:
-                    key = str(p)
-                if key in seen_paths:
-                    continue
-                seen_paths.add(key)
-                found.append(p)
-            for s in stems:
-                for p in discover_foci_source_tiffs(s, d):
-                    try:
-                        key = str(p.resolve())
-                    except Exception:
-                        key = str(p)
-                    if key in seen_paths:
-                        continue
-                    seen_paths.add(key)
-                    found.append(p)
-        return self._filter_artifact_paths_for_mask(mask_path, found)
-
-    def _preview_fi_path_candidates(self, mask_path: Path) -> list[Path]:
-        """Preview helper: includes both FI and foci stacks (for background/points selection)."""
-        candidates: list[Path] = []
-        try:
-            candidates.extend(self._resolve_fi_paths_for_mask(mask_path))
-        except Exception:
-            pass
-        try:
-            candidates.extend(self._resolve_foci_paths_for_mask(mask_path))
-        except Exception:
-            pass
-        # De-dupe
-        out: list[Path] = []
-        seen: set[str] = set()
-        for p in candidates:
-            k = str(p.resolve())
-            if k not in seen:
-                seen.add(k)
-                out.append(p)
-        return out
+        return resolve_foci_paths_for_mask(mask_path)
 
     def _foci_path_for_fi_path(self, mask_path: Path, fi_path: Path, foci_paths: list[Path]) -> Path | None:
         if not foci_paths:
