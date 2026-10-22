@@ -453,7 +453,7 @@ def bootstrap_cellpose_omni_for_bactomate() -> None:
 
 
 # Bumped when affinity load logic changes (shown in debug logs).
-BACTOMATE_AFFINITY_LOADER_ID = "seg3-materialized-v2"
+BACTOMATE_AFFINITY_LOADER_ID = "seg3-materialized-v3"
 
 
 def materialize_bact_phase_affinity_checkpoint(source: str | Path) -> Path:
@@ -513,21 +513,20 @@ def load_bact_phase_affinity_model(*, gpu: bool, checkpoint_path: str | Path):
         _check(model)
         return model
     except Exception:
-        pass
-
-    # Fallback: do not pass a path into __init__ (avoids filename-based omni=True).
-    model = CellposeModel(
-        gpu=gpu,
-        pretrained_model=False,
-        omni=False,
-        nchan=1,
-        nclasses=2,
-        diam_mean=30.0,
-    )
-    model.pretrained_model = [safe_str]
-    model.net.load_model(safe_str, cpu=not gpu)
-    _check(model)
-    return model
+        # Keep the initial error in the exception chain if the fallback also fails.
+        model = CellposeModel(
+            gpu=gpu,
+            pretrained_model=False,
+            omni=False,
+            nchan=1,
+            nclasses=2,
+            diam_mean=30.0,
+        )
+        model.pretrained_model = [safe_str]
+        net = getattr(model.net, "module", model.net)
+        net.load_model(safe_str, cpu=not gpu)
+        _check(model)
+        return model
 
 
 def load_cellpose_segmentation_model(

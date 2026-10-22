@@ -363,13 +363,14 @@ def process_frames_with_omnipose(frame_paths, model_type='cyto2_omni', pretraine
             pass  # If torch not available or other error, continue without optimizations
         
         # Verify architecture is correct (for C2_BD models: nchan=2, nclasses=4); skip for user models
-        if not pretrained_model and hasattr(model.cp, 'nchan') and hasattr(model.cp, 'nclasses'):
+        segmentation_model = getattr(model, 'cp', model)
+        if not pretrained_model and hasattr(segmentation_model, 'nchan') and hasattr(segmentation_model, 'nclasses'):
             expected_nchan = 2 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 1
             expected_nclasses = 4 if model_type in ['bact_phase_omni', 'cyto2_omni', 'bact_fluor_omni'] else 3
-            if model.cp.nchan != expected_nchan or model.cp.nclasses != expected_nclasses:
+            if segmentation_model.nchan != expected_nchan or segmentation_model.nclasses != expected_nclasses:
                 print(f"WARNING: Architecture mismatch detected!")
                 print(f"  Expected: nchan={expected_nchan}, nclasses={expected_nclasses}")
-                print(f"  Got: nchan={model.cp.nchan}, nclasses={model.cp.nclasses}")
+                print(f"  Got: nchan={segmentation_model.nchan}, nclasses={segmentation_model.nclasses}")
                 print(f"  This may cause errors. Trying to fix...")
                 # Try to fix by recreating with correct parameters
                 raise RuntimeError("Architecture mismatch - need to recreate model")
