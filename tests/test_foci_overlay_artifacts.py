@@ -3,7 +3,30 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 import tifffile
+
+
+@pytest.mark.parametrize(('threshold', 'neighbor_intensity'), [(0.0, 0.01), (0.8999, 89.995)])
+def test_overlay_preserves_zero_and_decimal_blob_thresholds(tmp_path, threshold, neighbor_intensity):
+    from bactomate.gui.foci_overlay_artifacts import FociOverlayStyle, write_foci_overlay_tif
+
+    foci = np.zeros((9, 9), dtype=np.float32)
+    foci[4, 4] = 100.0
+    foci[4, 5] = neighbor_intensity
+    foci_path = tmp_path / 'sample_foci.tif'
+    tifffile.imwrite(foci_path, foci)
+    output_path = tmp_path / 'overlay.tif'
+    style = FociOverlayStyle()
+    assert write_foci_overlay_tif(
+        foci_image_path=foci_path,
+        output_path=output_path,
+        rows=[{'y': 4, 'x': 4, 'intensity': 100.0}],
+        style=style,
+        blob_settings={'foci_blob_threshold_frac': threshold, 'foci_blob_max_radius': 1},
+    )
+    overlay = tifffile.imread(output_path)
+    assert tuple(overlay[0, 4, 6]) == style.outline_rgb
 
 
 def test_overlay_paths_from_csv_names() -> None:

@@ -314,7 +314,7 @@ def exclusive_focus_blob_masks(
     if raw.ndim != 2 or raw.size == 0:
         return []
     try:
-        frac = float(np.clip(float(threshold_frac), 0.05, 1.0))
+        frac = float(np.clip(float(threshold_frac), 0.0, 1.0))
     except (TypeError, ValueError):
         frac = 0.8
     peaks_yx = _peak_yx_intensity(peaks, raw)
@@ -1427,7 +1427,7 @@ def refine_spotiflow_peaks(
         threshold_frac = 0.8
     if not np.isfinite(threshold_frac):
         threshold_frac = 0.8
-    threshold_frac = float(np.clip(threshold_frac, 0.05, 1.0))
+    threshold_frac = float(np.clip(threshold_frac, 0.0, 1.0))
 
     # Pre-filter by bounds / exclude_outside / min intensity before exclusive growth
     # so dropped peaks do not steal pixels from kept neighbors.

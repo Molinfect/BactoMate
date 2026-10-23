@@ -14,7 +14,7 @@ from bactomate.gui.utils import safe_imread
 from bactomate.gui.layout_helpers import PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT, build_settings_card, build_preview_settings_scroll, checkbox_with_control, flex_control, setting_cell, setting_field, style_module_primary_button
 from bactomate.gui.widgets import create_info_icon, show_message_dialog
 from bactomate.gui.styles import filter_preview_card_stylesheet, preview_table_stylesheet
-from bactomate.gui.foci_filter_pipeline import FOCI_BLOB_SIZE_PRESETS, FociPassFailCache, accepted_cell_labels_cache_key, accepted_cell_labels_for_foci, sync_foci_peaks_with_accepted_cells, compute_foci_pass_fail_for_frame, draw_foci_blob_contours_on_rgb, filter_foci_csv_rows, fit_foci_table_columns, foci_blob_max_radius, foci_blob_threshold_frac, foci_pass_fail_cache_key, format_foci_cell_id_display, populate_foci_preview_table, apply_foci_table_header_sort
+from bactomate.gui.foci_filter_pipeline import FociPassFailCache, accepted_cell_labels_cache_key, accepted_cell_labels_for_foci, sync_foci_peaks_with_accepted_cells, compute_foci_pass_fail_for_frame, draw_foci_blob_contours_on_rgb, filter_foci_csv_rows, fit_foci_table_columns, foci_blob_max_radius, foci_blob_threshold_frac, foci_pass_fail_cache_key, format_foci_cell_id_display, populate_foci_preview_table, apply_foci_table_header_sort
 from bactomate.gui.foci_overlay_draw import (
     FOCI_BLOB_OUTLINE_RGB,
     FOCI_FAIL_OUTLINE_RGB,
@@ -755,15 +755,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     w_foci_excl_outside_touch.setToolTip('Peak center is in background but within a few pixels of a cell boundary.')
     w_show_foci_table = QCheckBox('Show foci table')
     w_show_foci_table.setChecked(False)
-    w_blob_size = QComboBox()
-    blob_frac0 = foci_blob_threshold_frac(fs_foci0)
-    blob_sel = 0
-    for (i, (lbl, frac)) in enumerate(FOCI_BLOB_SIZE_PRESETS):
-        w_blob_size.addItem(lbl, float(frac))
-        if abs(float(frac) - blob_frac0) < 1e-06:
-            blob_sel = i
-    w_blob_size.setCurrentIndex(blob_sel)
-    flex_control(w_blob_size, 72, max_width=140)
+    w_blob_size = _mk_spin(decimals=2, mn=0.0, mx=100.0, step=0.01, value=foci_blob_threshold_frac(fs_foci0) * 100.0, width=104)
+    w_blob_size.setSuffix('%')
     w_blob_radius = QSpinBox()
     w_blob_radius.setRange(1, 50)
     w_blob_radius.setValue(int(fs_foci0.get('foci_blob_max_radius', 5) or 5))
@@ -2858,7 +2851,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         def _ui_to_settings() -> None:
             if not hasattr(tab, 'set_filter_settings'):
                 return
-            for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_prob_thr, w_minint, w_ratio, w_minarea):
+            for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_size):
                 try:
                     w.interpretText()
                 except Exception:
@@ -2872,7 +2865,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     return None
             tab.set_filter_settings({'pixel_size': float(w_pixel.value()), 'min_aspect_ratio': float(w_min_ar.value()), 'max_aspect_ratio': float(w_max_ar.value()), 'min_eccentricity': float(w_min_ecc.value()), 'min_solidity': float(w_min_sol.value()), 'min_area_um2': _opt0(w_min_area), 'max_area_um2': _opt0(w_max_area), 'min_width_um': _opt0(w_min_w), 'max_width_um': _opt0(w_max_w), 'min_length_um': _opt0(w_min_len), 'max_length_um': _opt0(w_max_len), 'exclude_border': bool(w_excl_border.isChecked()), 'focus_filter_enabled': bool(w_focus_en.isChecked()), 'focus_min_fraction_of_median': float(w_focus_frac.value()), 'focus_modality': str(w_focus_mod.currentData() or 'phase')})
             ch_key = _active_foci_channel_key()
-            ch_payload = {'foci_prob_enabled': bool(w_prob_en.isChecked()), 'foci_prob_thresh': float(w_prob_thr.value()), 'foci_min_int_enabled': bool(w_minint_en.isChecked()), 'foci_min_int': float(w_minint.value()), 'foci_per_cell_ratio_enabled': bool(w_ratio_en.isChecked()), 'foci_per_cell_ratio': float(w_ratio.value()), 'foci_exclude_outside_clear': bool(w_foci_excl_outside_clear.isChecked()), 'foci_exclude_outside_touching': bool(w_foci_excl_outside_touch.isChecked()), 'foci_exclude_outside_cells': bool(w_foci_excl_outside_clear.isChecked() and w_foci_excl_outside_touch.isChecked()), 'foci_blob_threshold_frac': float(w_blob_size.currentData() or 0.9), 'foci_blob_max_radius': int(w_blob_radius.value()), 'foci_min_area_px_enabled': bool(w_minarea_en.isChecked()), 'foci_min_area_px': int(w_minarea.value())}
+            ch_payload = {'foci_prob_enabled': bool(w_prob_en.isChecked()), 'foci_prob_thresh': float(w_prob_thr.value()), 'foci_min_int_enabled': bool(w_minint_en.isChecked()), 'foci_min_int': float(w_minint.value()), 'foci_per_cell_ratio_enabled': bool(w_ratio_en.isChecked()), 'foci_per_cell_ratio': float(w_ratio.value()), 'foci_exclude_outside_clear': bool(w_foci_excl_outside_clear.isChecked()), 'foci_exclude_outside_touching': bool(w_foci_excl_outside_touch.isChecked()), 'foci_exclude_outside_cells': bool(w_foci_excl_outside_clear.isChecked() and w_foci_excl_outside_touch.isChecked()), 'foci_blob_threshold_frac': w_blob_size.value() / 100.0, 'foci_blob_max_radius': int(w_blob_radius.value()), 'foci_min_area_px_enabled': bool(w_minarea_en.isChecked()), 'foci_min_area_px': int(w_minarea.value())}
             if hasattr(tab, 'set_foci_channel_settings'):
                 tab.set_foci_channel_settings(ch_key, ch_payload)
             else:
@@ -2934,13 +2927,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 w_foci_excl_outside_touch.setChecked(bool(fs_ch.get('foci_exclude_outside_touching', _leg)))
                 w_minarea_en.setChecked(bool(fs_ch.get('foci_min_area_px_enabled', False)))
                 w_minarea.setValue(max(1, int(fs_ch.get('foci_min_area_px', 1) or 1)))
-                blob_frac = foci_blob_threshold_frac(fs_ch)
-                blob_sel = 0
-                for (i, (_lbl, frac)) in enumerate(FOCI_BLOB_SIZE_PRESETS):
-                    if abs(float(frac) - blob_frac) < 1e-06:
-                        blob_sel = i
-                        break
-                w_blob_size.setCurrentIndex(blob_sel)
+                w_blob_size.setValue(foci_blob_threshold_frac(fs_ch) * 100.0)
                 w_blob_radius.setValue(int(fs_ch.get('foci_blob_max_radius', 5) or 5))
             finally:
                 for w in (w_pixel, w_min_ar, w_max_ar, w_min_ecc, w_min_sol, w_min_area, w_max_area, w_min_w, w_max_w, w_min_len, w_max_len, w_focus_frac, w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_radius):
@@ -3027,7 +3014,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg._pf_settings_to_ui = _settings_to_ui
             dlg._pf_spinboxes = {'pixel_size': w_pixel, 'min_aspect_ratio': w_min_ar, 'max_aspect_ratio': w_max_ar, 'min_eccentricity': w_min_ecc, 'min_solidity': w_min_sol, 'min_area_um2': w_min_area, 'max_area_um2': w_max_area, 'min_width_um': w_min_w, 'max_width_um': w_max_w, 'min_length_um': w_min_len, 'max_length_um': w_max_len, 'focus_min_fraction_of_median': w_focus_frac, 'foci_prob_thresh': w_prob_thr, 'foci_min_int': w_minint, 'foci_per_cell_ratio': w_ratio, 'foci_min_area_px': w_minarea}
             dlg._pf_checkboxes = {'exclude_border': w_excl_border, 'focus_filter_enabled': w_focus_en, 'foci_prob_enabled': w_prob_en, 'foci_min_int_enabled': w_minint_en, 'foci_per_cell_ratio_enabled': w_ratio_en, 'foci_exclude_outside_clear': w_foci_excl_outside_clear, 'foci_exclude_outside_touching': w_foci_excl_outside_touch, 'foci_min_area_px_enabled': w_minarea_en}
-            dlg._pf_blob_combo = w_blob_size
+            dlg._pf_blob_size = w_blob_size
             dlg._pf_focus_modality = w_focus_mod
             dlg._pf_blob_radius = w_blob_radius
             dlg._pf_show_foci_table = w_show_foci_table

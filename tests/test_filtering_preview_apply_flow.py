@@ -222,6 +222,36 @@ def _shutdown(tab, parent):
     QCoreApplication.processEvents()
 
 
+def test_foci_size_accepts_decimal_percentages_and_restores_settings(tmp_path):
+    from PyQt6.QtWidgets import QDoubleSpinBox
+    from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
+
+    foci_path = tmp_path / 'sample_foci_GFP.tif'
+    tifffile.imwrite(foci_path, np.zeros((256, 256), dtype=np.uint16))
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        spin = dlg._pf_blob_size
+        channel = foci_channel_key_for_path(foci_path)
+        assert isinstance(spin, QDoubleSpinBox)
+        assert (spin.minimum(), spin.maximum(), spin.decimals()) == (0.0, 100.0, 2)
+        assert spin.suffix() == '%'
+        assert spin.value() == 99.0
+        assert tab.get_filter_settings()['foci_blob_threshold_frac'] == 0.99
+        for percent in (0.0, 0.01, 89.99, 100.0, 90.0):
+            spin.lineEdit().setText(spin.locale().toString(percent, 'f', 2) + '%')
+            dlg._pf_ui_to_settings()
+            assert tab.get_foci_channel_settings(channel)['foci_blob_threshold_frac'] == pytest.approx(percent / 100.0)
+            spin.setValue(50.0)
+            dlg._pf_settings_to_ui()
+            assert spin.value() == percent
+        tab.reset_filter_settings_defaults()
+        dlg._pf_settings_to_ui()
+        assert spin.value() == 99.0
+    finally:
+        _shutdown(tab, parent)
+
+
 @pytest.fixture
 def held_preview_workers(monkeypatch):
     """Hold real calculations so superseded results arrive after the next action."""
