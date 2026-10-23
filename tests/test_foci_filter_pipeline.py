@@ -20,6 +20,7 @@ from bactomate.gui.foci_filter_pipeline import (
     _foci_table_cell_id,
     compute_foci_pass_fail_for_frame,
     filter_foci_csv_rows,
+    foci_blob_threshold_frac,
     foci_filter_failure_reasons,
     measure_foci_rows_metrics,
     refine_foci_rows_with_blob,
@@ -39,6 +40,32 @@ def _qapp_module():
         return
     app = QApplication.instance() or QApplication(sys.argv)
     yield app
+
+
+@pytest.mark.parametrize('value', [None, '', 'invalid', float('nan'), float('inf')])
+def test_foci_blob_threshold_invalid_values_use_default(value):
+    assert foci_blob_threshold_frac({'foci_blob_threshold_frac': value}) == 0.99
+
+
+@pytest.mark.parametrize(
+    ('settings', 'expected_area'),
+    [
+        ({}, 2),
+        ({'foci_blob_threshold_frac': 0.0}, 9),
+        ({'foci_blob_threshold_frac': 0.0001}, 5),
+        ({'foci_blob_threshold_frac': 0.8999}, 3),
+        ({'foci_blob_threshold_frac': 0.9}, 2),
+        ({'foci_blob_threshold_frac': 0.99}, 2),
+        ({'foci_blob_threshold_frac': 1.0}, 1),
+    ],
+)
+def test_foci_blob_threshold_range_and_precision(settings, expected_area):
+    foci = np.array([[0.0, 0.01, 0.0], [89.98, 100.0, 89.995], [0.0, 99.0, 0.0]])
+    rows = [{'y': 1, 'x': 1, 'intensity': 100.0}]
+    refined = refine_foci_rows_with_blob(rows, foci, settings=settings)
+    measured = measure_foci_rows_metrics(rows, foci, settings=settings)
+    assert refined[0]['area_px'] == expected_area
+    assert measured[(1, 1)]['area_px'] == expected_area
 
 
 def test_filter_foci_csv_rows_probability_and_intensity():

@@ -160,7 +160,7 @@ def default_foci_channel_settings() -> dict[str, Any]:
         "foci_exclude_outside_cells": False,
         "foci_exclude_outside_clear": False,
         "foci_exclude_outside_touching": False,
-        "foci_blob_threshold_frac": 0.9,
+        "foci_blob_threshold_frac": 0.99,
         "foci_blob_max_radius": 5,
         "foci_min_area_px_enabled": False,
         "foci_min_area_px": 1,
