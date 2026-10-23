@@ -499,11 +499,11 @@ class SegmentationTab(QWidget):
         prev = getattr(self.filtering_tab, "_filter_preview_dialog", None)
         if prev is not None:
             try:
-                prev.close()
-                prev.deleteLater()
+                prev._filter_apply.retire(self.filtering_tab)
             except Exception:
                 pass
             self.filtering_tab._filter_preview_dialog = None
+            self.filtering_tab._filter_preview_mask_path = None
         surf = self._preview_surface
         if surf is not None:
             try:

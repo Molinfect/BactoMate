@@ -3,10 +3,11 @@ import csv
 from pathlib import Path
 from typing import Any, Callable, Optional
 import numpy as np
-from PyQt6.QtCore import QEvent, QObject, Qt, QThread, QTimer
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QSpinBox, QTableWidget, QVBoxLayout, QWidget
 from bactomate.gui.analyze_masks_preview_worker import AnalyzeMasksPreviewWorker
 from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog, _qt_alive
+from bactomate.gui.filter_preview_apply import FilterPreviewApplyLifecycle
 from bactomate.gui.image_utils import scale_for_preview, to_qpixmap
 from bactomate.gui.log_config import write_gui_log_line
 from bactomate.gui.utils import safe_imread
@@ -23,7 +24,7 @@ from bactomate.gui.foci_overlay_draw import (
     draw_peak_rings_on_rgb,
 )
 from bactomate.gui.filter_preview_utils import cell_filter_settings_signature, foci_channel_key_for_path, foci_channel_settings_signature, resolve_foci_settings_for_source, seed_foci_channel_settings, evaluate_cell_filter_details, build_cell_hover_data
-from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, WorkerGuard, RenderResult
+from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, RenderResult
 from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
 _FOCI_PASS_RGB = (255, 165, 0)
 _FOCI_BLOB_OUTLINE_RGB = FOCI_BLOB_OUTLINE_RGB
@@ -532,35 +533,6 @@ def _peaks_from_csv_rows(rows: list[dict]) -> list[dict]:
             continue
     return out
 
-def _safe_release_preview_worker(owner, attr: str='_preview_worker', wait_ms: int=10000) -> None:
-    w = getattr(owner, attr, None)
-    thread = getattr(owner, '_preview_thread', None)
-    try:
-        if thread is not None and thread.isRunning():
-            thread.quit()
-            if not thread.wait(wait_ms):
-                return
-    except Exception:
-        return
-    try:
-        if w is not None:
-            w.deleteLater()
-    except Exception:
-        pass
-    try:
-        if thread is not None:
-            thread.deleteLater()
-    except Exception:
-        pass
-    try:
-        setattr(owner, attr, None)
-    except Exception:
-        pass
-    try:
-        owner._preview_thread = None
-    except Exception:
-        pass
-
 def _segmentation_tab_host(tab) -> Optional[object]:
     host = tab
     while host is not None:
@@ -616,55 +588,9 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         except Exception as e:
             show_message_dialog(tab, 'Load Error', f'Could not load mask:\n{e}', kind='warning')
             return
-    seg_dir = mask_path.parent
-    if not str(seg_dir.name).startswith('_segmentation'):
-        cand = mask_path.parent / '_segmentation'
-        if cand.exists() and cand.is_dir():
-            seg_dir = cand
     num_frames = int(masks.shape[0])
-
-    def _list_background_paths() -> list[Path]:
-        """
-        Prefer original FI/foci stacks that correspond to this mask (often produced by File Conversion),
-        falling back to TIFFs in the segmentation folder if needed.
-        """
-        from bactomate.gui.filter_preview_utils import file_identity_key
-        out: list[Path] = []
-        seen: set[str] = set()
-
-        def _append(fp: Path) -> None:
-            if not fp.is_file() or fp.suffix.lower() not in ('.tif', '.tiff'):
-                return
-            key = file_identity_key(fp)
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(fp)
-        try:
-            cand = tab._preview_fi_path_candidates(mask_path)
-        except Exception:
-            cand = []
-        for fp in cand or []:
-            _append(Path(fp))
-        if not out:
-            folder = seg_dir
-            for pat in ('*.tif', '*.tiff'):
-                for fp in folder.glob(pat):
-                    name = fp.name.lower()
-                    if '_analysis' in name or '_filter_visualization' in name:
-                        continue
-                    if name.endswith(('_masks.tif', '_masks.tiff', '_mask_filtered.tif', '_mask_filtered.tiff')):
-                        continue
-                    if '_masks' in name or '_mask_filtered' in name:
-                        continue
-                    _append(fp)
-        out.sort(key=lambda x: x.name.lower())
-        return out
-    from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, default_background_index, enrich_background_paths_for_mask, filter_paths_for_mask, preview_view_label
-    bg_paths = collect_background_paths_for_mask(tab, mask_path)
-    if not bg_paths:
-        bg_paths = filter_paths_for_mask(tab, mask_path, _list_background_paths())
-    bg_paths = enrich_background_paths_for_mask(tab, mask_path, bg_paths)
+    from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, default_background_index, preview_view_label
+    bg_paths = collect_background_paths_for_mask(mask_path)
     from bactomate.gui.filter_preview_utils import short_foci_stack_label
     foci_sources = [Path(fp) for fp in bg_paths if '_foci' in fp.name.lower() or 'fi_foci' in fp.name.lower()]
     has_foci_image_files = len(foci_sources) > 0
@@ -1177,11 +1103,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             pass
         return {}
 
-    def _foci_channel_sigs_for_sources() -> dict[str, str]:
+    def _foci_channel_sigs_for_sources(settings: dict[str, Any]) -> dict[str, str]:
         sigs: dict[str, str] = {}
         for fp in foci_sources:
             ch_key = foci_channel_key_for_path(fp)
-            sigs[ch_key] = foci_channel_settings_signature(_foci_channel_settings_for_key(ch_key))
+            sigs[ch_key] = foci_channel_settings_signature(resolve_foci_settings_for_source(settings, fp))
         return sigs
 
     def _plan_incremental_apply(frame_idx: int, fs: dict[str, Any]) -> dict[str, Any]:
@@ -1200,7 +1126,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         channels_to_score: list[str] = []
         for fp in foci_sources:
             ch_key = foci_channel_key_for_path(fp)
-            ch_only = _foci_channel_settings_for_key(ch_key)
+            ch_only = resolve_foci_settings_for_source(fs, fp)
             ch_sig = foci_channel_settings_signature(ch_only)
             must_rescore = not reuse_cells
             if reuse_cells:
@@ -1219,7 +1145,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 if not ch_rows or ch_plane is None:
                     prefilled[ch_key] = {'pass_peaks': [], 'fail_peaks': []}
                     continue
-                jobs.append({'channel_key': ch_key, 'frame_rows': [dict(r) for r in ch_rows], 'foci_plane': np.asarray(ch_plane).copy(), 'settings': dict(_foci_settings_for_source(fp))})
+                jobs.append({'channel_key': ch_key, 'frame_rows': [dict(r) for r in ch_rows], 'foci_plane': np.asarray(ch_plane).copy(), 'settings': dict(ch_only)})
         return {'reuse_cells': reuse_cells, 'cell_sig': cell_sig, 'cell_changed': cell_changed, 'prefilled': prefilled, 'jobs': jobs, 'channels_to_score': channels_to_score}
 
     def _invalidate_foci_pass_fail_cache(frame_idx: int, channel_keys: Optional[set[str]]=None) -> None:
@@ -1248,10 +1174,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             payload = foci_channels_last.get(ch_key)
             if payload is None:
                 continue
-            ch_sig = foci_channel_settings_signature(_foci_channel_settings_for_key(ch_key))
+            ch_sig = foci_channel_settings_signature(resolve_foci_settings_for_source(request_settings, fp))
             cache[int(frame_idx), str(mpk_pf or ''), ch_sig, acc_key, ch_key] = (list(payload.get('pass_peaks') or []), list(payload.get('fail_peaks') or []))
 
-    def _commit_filter_apply_result(*, frame_idx: int, accepted: set[int], rejected: set[int], n_obj: Optional[int], foci_channels_last: dict[str, dict[str, list]], request_settings_sig: str, cell_settings_sig: str, foci_channel_sigs: dict[str, str], request_source_key: tuple, foci_txt: str='') -> None:
+    def _commit_filter_apply_result(*, frame_idx: int, accepted: set[int], rejected: set[int], n_obj: Optional[int], foci_channels_last: dict[str, dict[str, list]], request_settings: dict[str, Any], request_settings_sig: str, cell_settings_sig: str, foci_channel_sigs: dict[str, str], request_source_key: tuple, foci_txt: str='') -> None:
         source_key = tuple(request_source_key)
         active_ch = _active_foci_channel_key()
         pass_peaks = list(foci_channels_last.get(active_ch, {}).get('pass_peaks') or [])
@@ -1260,7 +1186,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         frame_rows = _rows_for_frame(_load_rows_for_source(foci_src), int(frame_idx))
         raw_n = len(frame_rows)
         mask_arr = np.asarray(_preview_mask_stack()[int(frame_idx)], dtype=np.int32)
-        filter_settings = dict(tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {})
+        filter_settings = dict(request_settings)
         # Cell focus scoring must use Phase/BF — never the currently viewed foci channel.
         phase_for_cells = _phase_plane_for_focus(int(frame_idx))
         view_bg = _get_bg_frame(int(frame_idx), source_key)
@@ -1272,7 +1198,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             phase_plane=phase_for_cells,
         )
         dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': mask_arr, 'accepted': accepted, 'rejected': rejected, 'cell_details': cell_details, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': view_bg, 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}'}
-        _store_foci_pass_fail_cache(int(frame_idx), foci_channels_last, accepted=accepted, request_settings=dict(tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}))
+        _store_foci_pass_fail_cache(int(frame_idx), foci_channels_last, accepted=accepted, request_settings=filter_settings)
         _clear_preview_layer_caches(dlg)
         try:
             _update_foci_table_live()
@@ -1837,49 +1763,21 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         from bactomate.gui.filter_preview_utils import format_incremental_apply_plan
         return {'channels': list(incremental_plan.get('jobs') or []), 'prefilled_channels': dict(incremental_plan.get('prefilled') or {}), 'reuse_cell_filter': reuse_cell_filter, 'active_channel_key': _active_foci_channel_key(), 'frame_rows': [dict(r) for r in frame_rows_apply], 'foci_plane': foci_plane_work, 'settings': dict(request_settings), 'cell_settings_sig': incremental_plan.get('cell_sig'), 'apply_plan_summary': format_incremental_apply_plan(incremental_plan), 'cell_changed': bool(incremental_plan.get('cell_changed', True))}
 
-    def _start_worker(frame_idx: int, *, settings_snapshot: Optional[dict]=None, settings_sig: Optional[str]=None, source_key=None, foci_apply_bundle: Optional[dict]=None) -> None:
+    def _start_apply(rid: int, frame_idx: int, settings_snapshot: dict, settings_sig: str, source_key: tuple) -> None:
         if frame_idx < 0 or frame_idx >= num_frames:
             return
-        if settings_snapshot is None:
-            try:
-                settings_snapshot = tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}
-            except Exception:
-                settings_snapshot = {}
-        settings_snapshot = dict(settings_snapshot or {})
-        if settings_sig is None:
-            settings_sig = _settings_signature_for(settings_snapshot)
-        source_key = tuple(source_key if source_key is not None else _selected_source())
-        try:
-            prev_prog = getattr(dlg, '_progress_dialog', None)
-            if prev_prog is not None:
-                try:
-                    prev_prog.canceled.disconnect()
-                except Exception:
-                    pass
-                prev_prog.close()
-                dlg._progress_dialog = None
-        except Exception:
-            pass
-        existing_thread = getattr(dlg, '_preview_thread', None)
-        if existing_thread is not None and existing_thread.isRunning():
-            try:
-                dlg._preview_request_id += 1
-                dlg._pending_apply = True
-                dlg._pending_apply_frame_idx = int(frame_idx)
-                dlg._pending_apply_settings = dict(settings_snapshot)
-                dlg._pending_apply_settings_sig = str(settings_sig)
-                dlg._pending_apply_source_key = tuple(source_key)
-            except Exception:
-                pass
-            try:
-                dlg.set_primary_action(None, label='Queued…', enabled=False, visible=False)
-                reapply_btn.setEnabled(False)
-                reapply_btn.setText('Queued…')
-            except Exception:
-                pass
+        plan = _plan_incremental_apply(frame_idx, settings_snapshot)
+        if plan.get('reuse_cells') and not plan.get('jobs'):
+            last = getattr(dlg, '_last_preview', None) or {}
+            from bactomate.gui.filter_preview_utils import format_incremental_apply_plan
+            prog = FilterApplyProgressDialog(dlg)
+            prog.set_pump_events(False)
+            prog.set_progress(100, 'Complete', format_incremental_apply_plan(plan))
+            prog.show()
+            _commit_filter_apply_result(frame_idx=frame_idx, accepted=set(last.get('accepted') or []), rejected=set(last.get('rejected') or []), n_obj=last.get('n_obj'), foci_channels_last=dict(plan.get('prefilled') or {}), request_settings=settings_snapshot, request_settings_sig=settings_sig, cell_settings_sig=str(plan.get('cell_sig') or ''), foci_channel_sigs=_foci_channel_sigs_for_sources(settings_snapshot), request_source_key=source_key)
+            prog.finish_and_close(250)
             return
-        dlg._preview_request_id += 1
-        rid = int(dlg._preview_request_id)
+        foci_apply_bundle = _build_foci_apply_bundle(frame_idx, settings_snapshot, incremental_plan=plan, request_source_key=source_key)
         _stack = getattr(dlg, '_preview_masks', masks)
         mask_2d = np.asarray(_stack[frame_idx], dtype=np.int32)
         request_settings = dict(settings_snapshot)
@@ -1899,13 +1797,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         raw_rows_all = _load_rows_for_source(foci_src)
         frame_rows_apply = _rows_for_frame(raw_rows_all, int(frame_idx))
         display_params['raw_foci_rows'] = frame_rows_apply
-        foci_plane_apply = _get_foci_plane(int(frame_idx), foci_src)
-        foci_plane_work = np.asarray(foci_plane_apply).copy() if foci_plane_apply is not None else None
-        if foci_apply_bundle is None:
-            plan = _plan_incremental_apply(frame_idx, request_settings)
-            foci_apply_bundle = _build_foci_apply_bundle(frame_idx, request_settings, incremental_plan=plan, request_source_key=request_source_key)
-        else:
-            plan = _plan_incremental_apply(frame_idx, request_settings)
         try:
             fs = request_settings
             display_params['filter_peaks'] = {'prob_thresh': float(fs.get('foci_prob_thresh', 0.5)) if bool(fs.get('foci_prob_enabled', False)) else None, 'min_peak_raw': float(fs.get('foci_min_int', 0.0)) if bool(fs.get('foci_min_int_enabled', False)) else None, 'per_cell_ratio': float(fs.get('foci_per_cell_ratio', 2.0)) if bool(fs.get('foci_per_cell_ratio_enabled', False)) else None}
@@ -1914,141 +1805,12 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         request_foci_apply_bundle = dict(foci_apply_bundle or {})
         plan_line = str(request_foci_apply_bundle.get('apply_plan_summary') or '').strip()
         try:
-            dlg._filter_apply_plan_line = plan_line
             dlg.set_extra('filter_cell_recomputing', bool(request_foci_apply_bundle.get('cell_changed', plan.get('cell_changed', True))))
         except Exception:
             pass
-        prog = FilterApplyProgressDialog(dlg)
-        # Async worker already delivers progress via the Qt event loop; nested
-        # processEvents here raced with result_ready/close (CI access violation).
-        prog.set_pump_events(False)
-        prog.set_progress(0, 'Applying filters', plan_line or 'Starting…')
-        prog.show()
-        try:
-            dlg._progress_dialog = prog
-        except Exception:
-            pass
-        worker = AnalyzeMasksPreviewWorker(rid, frame_idx, mask_2d, params, fi_image=None, display_params=display_params, skip_vis=True, latest_request_id=lambda : int(getattr(dlg, '_preview_request_id', rid)), foci_apply=request_foci_apply_bundle)
-        thread = QThread(dlg)
-        thread.setObjectName('AnalyzeMasksPreviewWorkerThread')
-        worker.moveToThread(thread)
-        dlg._preview_worker = worker
-        dlg._preview_thread = thread
-
-        def on_progress(pct: int, step: str, detail: str='') -> None:
-            try:
-                if getattr(dlg, '_progress_dialog', None) is not prog:
-                    return
-            except Exception:
-                return
-            try:
-                from bactomate.gui.filter_apply_progress import _qt_alive
-
-                if not _qt_alive(prog) or bool(getattr(prog, '_closing', False)):
-                    return
-            except Exception:
-                return
-            try:
-                base = str(getattr(dlg, '_filter_apply_plan_line', '') or '').strip()
-                sub = str(detail or '').strip()
-                combined = '\n'.join((p for p in (base, sub) if p))
-                prog.set_progress(int(pct), str(step), combined)
-            except Exception:
-                pass
-        worker.progress.connect(on_progress, Qt.ConnectionType.QueuedConnection)
-
-        def _set_primary_idle() -> None:
-            try:
-                dlg.set_primary_action(apply_current, label='Apply current filters', enabled=True, visible=False)
-                reapply_btn.setEnabled(True)
-                reapply_btn.setText('Apply current filters')
-            except Exception:
-                pass
-
-        def _cancel_current() -> None:
-            try:
-                dlg.set_extra('filter_apply_busy', False)
-            except Exception:
-                pass
-            try:
-                dlg._preview_request_id += 1
-            except Exception:
-                pass
-            try:
-                t0 = getattr(dlg, '_preview_thread', None)
-                if t0 is not None:
-                    t0.requestInterruption()
-                    t0.quit()
-            except Exception:
-                pass
-            try:
-                dlg.set_primary_action(None, label='Cancelling…', enabled=False, visible=False)
-                reapply_btn.setEnabled(False)
-            except Exception:
-                pass
-            try:
-                prog.set_progress(0, 'Cancelling', 'Stopping current apply…')
-            except Exception:
-                pass
-        try:
-            reapply_btn.setEnabled(False)
-            dlg.set_primary_action(apply_current, label='Apply current filters', enabled=False, visible=False)
-            dlg.set_extra('filter_apply_busy', True)
-        except Exception:
-            pass
-        try:
-            prog.canceled.connect(_cancel_current)
-        except Exception:
-            pass
-
-        def _safely_dismiss_progress() -> None:
-            """Dismiss the progress dialog without treating completion as cancel."""
-            try:
-                worker.progress.disconnect(on_progress)
-            except Exception:
-                pass
-            try:
-                prog.canceled.disconnect(_cancel_current)
-            except Exception:
-                pass
-            try:
-                if getattr(dlg, '_progress_dialog', None) is prog:
-                    dlg._progress_dialog = None
-            except Exception:
-                pass
-            try:
-                from bactomate.gui.filter_apply_progress import _qt_alive
-
-                if not _qt_alive(prog):
-                    return
-            except Exception:
-                return
-            try:
-                prog._closing = True
-                prog.set_progress(100, 'Step 4/4 · Complete', '')
-            except Exception:
-                pass
-            try:
-                prog.close()
-                prog.deleteLater()
-            except Exception:
-                pass
+        worker = AnalyzeMasksPreviewWorker(rid, frame_idx, mask_2d, params, fi_image=None, display_params=display_params, skip_vis=True, latest_request_id=lambda: dlg._filter_apply.generation, foci_apply=request_foci_apply_bundle)
 
         def on_result_ready(rid_out, fid, acc_list, rej_list, _all_list, n_obj, err, vis, _peaks, _n_foci_total, _n_foci_drawn, _raw_median_fi, _min_rel, _mode_txt, pass_peaks_out, fail_peaks_out, foci_channels_out):
-            _safely_dismiss_progress()
-            try:
-                if int(rid_out) != int(getattr(dlg, '_preview_request_id', rid_out)):
-                    return
-            except Exception:
-                pass
-            if getattr(dlg, '_close_pending', False):
-                return
-            try:
-                dlg.set_extra('filter_apply_busy', False)
-                dlg.set_extra('filter_cell_recomputing', False)
-                dlg._filter_apply_plan_line = ''
-            except Exception:
-                pass
             if err:
                 try:
                     write_gui_log_line('Preview', f'Filter preview worker error: {str(err)[:200]}')
@@ -2066,10 +1828,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             except Exception:
                 foci_txt = ''
             source_key = tuple(request_source_key)
-            frame_rows = list(frame_rows_apply)
-            foci_plane = foci_plane_work
-            pass_peaks = list(pass_peaks_out or [])
-            fail_peaks = list(fail_peaks_out or [])
             foci_channels_last: dict[str, dict[str, list]] = {}
             if isinstance(foci_channels_out, dict):
                 for (ch_key, payload) in foci_channels_out.items():
@@ -2077,70 +1835,9 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                         continue
                     foci_channels_last[str(ch_key)] = {'pass_peaks': list(payload.get('pass_peaks') or []), 'fail_peaks': list(payload.get('fail_peaks') or [])}
             cell_sig = str(request_foci_apply_bundle.get('cell_settings_sig') or cell_filter_settings_signature(dict(request_settings or {})))
-            _commit_filter_apply_result(frame_idx=int(fid), accepted=accepted, rejected=rejected, n_obj=int(n_obj) if n_obj is not None else None, foci_channels_last=foci_channels_last, request_settings_sig=request_settings_sig, cell_settings_sig=cell_sig, foci_channel_sigs=_foci_channel_sigs_for_sources(), request_source_key=source_key, foci_txt=foci_txt)
+            _commit_filter_apply_result(frame_idx=int(fid), accepted=accepted, rejected=rejected, n_obj=int(n_obj) if n_obj is not None else None, foci_channels_last=foci_channels_last, request_settings=request_settings, request_settings_sig=request_settings_sig, cell_settings_sig=cell_sig, foci_channel_sigs=_foci_channel_sigs_for_sources(request_settings), request_source_key=source_key, foci_txt=foci_txt)
 
-        def on_thread_finished() -> None:
-            if not _qt_alive(dlg):
-                return
-            thread_ref = getattr(dlg, '_preview_thread', None)
-            try:
-                if thread_ref is not None:
-                    thread_ref.finished.disconnect(on_thread_finished)
-            except Exception:
-                pass
-            try:
-                if getattr(dlg, '_progress_dialog', None) is prog:
-                    _safely_dismiss_progress()
-                elif getattr(dlg, '_progress_dialog', None) is not None:
-                    stale = dlg._progress_dialog
-                    try:
-                        stale.canceled.disconnect()
-                    except Exception:
-                        pass
-                    try:
-                        stale._closing = True
-                        stale.close()
-                        stale.deleteLater()
-                    except Exception:
-                        pass
-                    dlg._progress_dialog = None
-            except Exception:
-                pass
-            if not _qt_alive(dlg):
-                return
-            _safe_release_preview_worker(dlg)
-            if not _qt_alive(dlg):
-                return
-            _set_primary_idle()
-            try:
-                dlg._preview_worker_slot = None
-                dlg._preview_worker_done_slot = None
-            except Exception:
-                pass
-            if getattr(dlg, '_close_pending', False):
-                try:
-                    dlg.close()
-                except Exception:
-                    pass
-                return
-            try:
-                if bool(getattr(dlg, '_pending_apply', False)):
-                    dlg._pending_apply = False
-                    fi2 = int(getattr(dlg, '_pending_apply_frame_idx', 0) or 0)
-                    fs2 = dict(getattr(dlg, '_pending_apply_settings', {}) or {})
-                    sig2 = str(getattr(dlg, '_pending_apply_settings_sig', '') or _settings_signature_for(fs2))
-                    src2 = tuple(getattr(dlg, '_pending_apply_source_key', _selected_source()))
-                    _start_worker(fi2, settings_snapshot=fs2, settings_sig=sig2, source_key=src2)
-                    return
-            except Exception:
-                pass
-        dlg._preview_worker_slot = on_result_ready
-        dlg._preview_worker_done_slot = on_thread_finished
-        worker.result_ready.connect(on_result_ready, Qt.ConnectionType.QueuedConnection)
-        worker.result_ready.connect(thread.quit)
-        thread.started.connect(worker.run)
-        thread.finished.connect(on_thread_finished)
-        thread.start()
+        dlg._filter_apply.run_worker(worker, on_result_ready, plan_line)
 
     def _foci_pass_fail_cached(frame_idx: int, source_key: tuple, fs: dict, *, mask_2d: np.ndarray, foci_plane: Optional[np.ndarray], frame_rows: list[dict], accepted_cell_labels: Optional[set[int]]=None) -> tuple[list[dict], list[dict]]:
         cache = getattr(dlg, '_foci_pass_fail_cache', None)
@@ -2376,37 +2073,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg.set_source_key(src)
         except Exception:
             pass
-        if plan.get('reuse_cells') and (not plan.get('jobs')):
-            last = getattr(dlg, '_last_preview', None) or {}
-            accepted = set((int(x) for x in last.get('accepted') or []))
-            rejected = set((int(x) for x in last.get('rejected') or []))
-            n_obj = last.get('n_obj')
-            from bactomate.gui.filter_preview_utils import format_incremental_apply_plan
-            try:
-                dlg._preview_request_id = int(getattr(dlg, '_preview_request_id', 0) or 0) + 1
-            except Exception:
-                pass
-            prog = FilterApplyProgressDialog(dlg)
-            prog.set_pump_events(False)
-            prog.set_progress(100, 'Complete', format_incremental_apply_plan(plan))
-            prog.show()
-            try:
-                dlg._progress_dialog = prog
-            except Exception:
-                pass
-            _commit_filter_apply_result(frame_idx=idx, accepted=accepted, rejected=rejected, n_obj=n_obj, foci_channels_last=dict(plan.get('prefilled') or {}), request_settings_sig=sig, cell_settings_sig=str(plan.get('cell_sig') or ''), foci_channel_sigs=_foci_channel_sigs_for_sources(), request_source_key=src)
-            try:
-                dlg.set_extra('filter_cell_recomputing', False)
-            except Exception:
-                pass
-            try:
-                dlg._progress_dialog = None
-            except Exception:
-                pass
-            prog.finish_and_close(250)
-            return
-        bundle = _build_foci_apply_bundle(idx, dict(fs), incremental_plan=plan, request_source_key=src)
-        _start_worker(idx, settings_snapshot=dict(fs), settings_sig=sig, source_key=src, foci_apply_bundle=bundle)
+        dlg._filter_apply.request(idx, fs, sig, src)
 
     def _preview_mask_stack() -> np.ndarray:
         stack = getattr(dlg, '_preview_masks', None)
@@ -2812,86 +2479,15 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         base = with_cells if show_cells else no_cells
         return _finalize_overlay(_composite_cached_foci(base))
 
-    def _disconnect_worker_finished() -> None:
-        w = getattr(dlg, '_preview_worker', None)
-        thread = getattr(dlg, '_preview_thread', None)
-        s = getattr(dlg, '_preview_worker_slot', None)
-        if w is not None and s is not None:
-            try:
-                w.result_ready.disconnect(s)
-            except Exception:
-                pass
-            try:
-                if thread is not None:
-                    w.result_ready.disconnect(thread.quit)
-            except Exception:
-                pass
-        ds = getattr(dlg, '_preview_worker_done_slot', None)
-        if thread is not None and ds is not None:
-            try:
-                thread.finished.disconnect(ds)
-            except Exception:
-                pass
-        _safe_release_preview_worker(dlg)
-
-    def _is_running() -> bool:
-        thread = getattr(dlg, '_preview_thread', None)
-        return bool(thread is not None and thread.isRunning())
-
-    def _wait(ms: int) -> bool:
-        thread = getattr(dlg, '_preview_thread', None)
-        if thread is None:
-            return True
-        try:
-            return bool(thread.wait(int(ms)))
-        except Exception:
-            return True
-
-    def _on_close_defer() -> None:
-        write_gui_log_line('Preview', 'Filter preview: worker running; deferring close until finished.')
-        dlg._close_pending = True
-
-    def _request_stop() -> None:
-        try:
-            dlg._preview_request_id += 1
-        except Exception:
-            pass
-        thread = getattr(dlg, '_preview_thread', None)
-        if thread is not None:
-            try:
-                thread.requestInterruption()
-                thread.quit()
-            except Exception:
-                pass
-        try:
-            if getattr(dlg, '_progress_dialog', None) is not None:
-                stale = dlg._progress_dialog
-                try:
-                    stale.canceled.disconnect()
-                except Exception:
-                    pass
-                try:
-                    stale._closing = True
-                    stale.close()
-                    stale.deleteLater()
-                except Exception:
-                    pass
-                dlg._progress_dialog = None
-        except Exception:
-            pass
-        _on_close_defer()
-
-    def _disconnect_and_restore() -> None:
-        _disconnect_worker_finished()
     mount = getattr(tab, '_module_preview_mount', None)
     embed = mount is not None
     preview_surface = getattr(tab, '_preview_surface', None)
     seg_tab = _segmentation_tab_host(tab)
     if embed and seg_tab is not None:
         try:
+            seg_tab._dismiss_embedded_previews()
             if preview_surface is not None:
                 preview_surface.set_preview_context('filtering')
-            seg_tab._dismiss_embedded_previews()
             QTimer.singleShot(0, seg_tab.refresh_filtering_candidate_list)
         except Exception:
             pass
@@ -2899,11 +2495,15 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         dlg_parent = mount if embed else tab.window() if hasattr(tab, 'window') and callable(tab.window) else tab
         if embed and preview_surface is not None:
             preview_surface.set_toolbar_widget(None)
-        dlg = PreviewDialogBase(dlg_parent, title=f'Filter Effects Preview — {mask_path.name}', header_controls=nav_ctrl, navigation_controls=None, top_controls=settings_scroll, lut_expanded=False, primary_action_label='Apply current filters', primary_action_callback=apply_current, render_callback=_render, worker_guard=WorkerGuard(is_running=_is_running, wait=_wait, request_stop=_request_stop, disconnect=_disconnect_and_restore, on_close_while_running='defer_hide', warning_title='Filtering in progress', warning_text='Please wait for filtering to finish before closing the preview.'), minimum_size=(200, 200) if embed else (1140, 760), embedded=embed, show_close_button=not embed, hide_title_and_builtin_info=embed)
+        dlg = PreviewDialogBase(dlg_parent, title=f'Filter Effects Preview — {mask_path.name}', header_controls=nav_ctrl, navigation_controls=None, top_controls=settings_scroll, lut_expanded=False, primary_action_label='Apply current filters', primary_action_callback=apply_current, render_callback=_render, minimum_size=(200, 200) if embed else (1140, 760), embedded=embed, show_close_button=not embed, hide_title_and_builtin_info=embed)
         dlg.set_primary_action(apply_current, label='Apply current filters', visible=False)
         reapply_btn.clicked.connect(apply_current)
         try:
+            prev = getattr(tab, '_filter_preview_dialog', None)
             tab._filter_preview_dialog = dlg
+            tab._filter_preview_mask_path = mask_path
+            if prev is not None and prev is not dlg:
+                prev._filter_apply.retire(tab)
         except Exception:
             pass
         try:
@@ -2914,8 +2514,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     at._update_fi_contour_preview_button_state()
         except Exception:
             pass
-        dlg._close_pending = False
-        dlg._preview_request_id = 0
+        dlg._filter_apply = FilterPreviewApplyLifecycle(dlg, reapply_btn, apply_current, _start_apply)
         dlg._pixel_size_locked_from_metadata = False
 
         class _FilterPreviewResizeFilter(QObject):
@@ -3419,6 +3018,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             except Exception:
                 pass
             try:
+                if getattr(tab, '_filter_preview_dialog', None) is not dlg:
+                    return
                 tab._filter_preview_dialog = None
                 tab._filter_preview_mask_path = None
             except Exception:
@@ -3432,13 +3033,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                     pass
         if embed:
             dlg.finished.connect(_on_embedded_filter_preview_closed)
-            prev = getattr(tab, '_filter_preview_dialog', None)
-            if prev is not None and prev is not dlg:
-                try:
-                    prev.close()
-                    prev.deleteLater()
-                except Exception:
-                    pass
             tab._filter_preview_dialog = dlg
             from bactomate.gui.module_shell import mount_embedded_preview
             mount_embedded_preview(mount, dlg, preview_surface=preview_surface)
@@ -3448,5 +3042,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg.raise_()
             dlg.activateWindow()
     except Exception as e:
-        _disconnect_and_restore()
+        if dlg is not None and hasattr(dlg, '_filter_apply'):
+            dlg._worker_guard.disconnect()
         show_message_dialog(tab, 'Preview Error', f'Could not open filtering preview:\n{e}', kind='warning')

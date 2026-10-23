@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-from bactomate.gui.analysis_paths import base_dir_for_mask, stem_from_mask_path
+from bactomate.gui.analysis_paths import artifact_search_dirs_for_mask, base_dir_for_mask, stem_from_mask_path
 
 # Segmentation / filtering foci CSV layout under each `_segmentation_*` (or mask parent) folder.
 FOCI_DETECTION_DIRNAME = "foci_detection"
@@ -239,44 +239,30 @@ def sample_identity_stem(stem: str) -> str:
 
 
 def foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
-    """
-    True when ``foci_stem`` is a foci stack for the same acquisition as ``input_stem``.
+    """Pair foci by acquisition identity, including legacy free-form phase names."""
+    return "_foci" in (foci_stem or "").lower() and _channel_pairs_with_input(input_stem, foci_stem)
 
-    1. **Role-marker identity** — ``sample_identity_stem`` equal on both sides.
-    2. **Legacy LCP** — when the input has *no* role marker (e.g. ``EM20285_003_DIA``),
-       pair if the foci role-stripped ID equals the longest common underscore prefix and
-       the foci file matches that prefix as a foci sibling.
-    """
+
+def _channel_pairs_with_input(input_stem: str, channel_stem: str) -> bool:
     inp = (input_stem or "").strip()
-    foc = (foci_stem or "").strip()
-    if not inp or not foc:
+    candidate = (channel_stem or "").strip()
+    if not inp or not candidate:
         return False
-    if "_foci" not in foc.lower():
-        return False
-    # Pure foci-as-input: require exact identity match (no LCP bleed).
+    inp = re.sub(r"_(mask_filtered|masks|mask)$", "", inp, flags=re.IGNORECASE)
+    # Pure foci-as-input keeps exact identity (no legacy prefix fallback).
     if "_foci" in inp.lower() and "_fi_foci" not in inp.lower():
-        return sample_identity_stem(inp).casefold() == sample_identity_stem(foc).casefold()
-
+        return sample_identity_stem(inp).casefold() == sample_identity_stem(candidate).casefold()
     inp_id = sample_identity_stem(inp)
-    foc_id = sample_identity_stem(foc)
-    if inp_id and foc_id and foci_acquisition_ids_align(inp_id, foc_id):
+    candidate_id = sample_identity_stem(candidate)
+    if foci_acquisition_ids_align(inp_id, candidate_id):
         return True
-
-    # Free-form phase names (DIA, Phase60X, …): LCP when input lacks role tags.
     if stem_has_role_marker(inp):
         return False
-    if not foc_id:
+    lcp = longest_common_underscore_prefix(inp, candidate)
+    if not lcp or not foci_acquisition_ids_align(lcp, candidate_id):
         return False
-    lcp = longest_common_underscore_prefix(inp, foc)
-    if not lcp or not foci_acquisition_ids_align(lcp, foc_id):
-        return False
-    if not foci_tiff_stem_matches_prefix(foc, lcp):
-        return False
-    il = inp.casefold()
-    pl = lcp.casefold()
-    if il == pl:
-        return True
-    return il.startswith(pl + "_")
+    # Only a final legacy channel name may follow the acquisition, never another replicate/frame.
+    return "_" not in inp[len(lcp) :].strip("_")
 
 
 def dedupe_mask_paths_prefer_filtered(paths: Sequence[Path]) -> list[Path]:
@@ -744,111 +730,246 @@ def foci_tiff_stem_matches_prefix(fstem: str, prefix: str) -> bool:
     return "_foci" in fl
 
 
-def discover_foci_source_tiffs(input_stem: str, *search_dirs: Path) -> list[Path]:
-    """
-    Find ``*_foci*.tif`` stacks for a segmentation or mask stem.
+def _looks_non_channel_token(token: str) -> bool:
+    t = (token or "").strip().lower()
+    if not t:
+        return True
+    if t in {"fi", "foci", "mask", "masks", "phase", "bf", "dic", "seg", "segmentation"}:
+        return True
+    if t.startswith("t=") or t.startswith("z="):
+        return True
+    if t.endswith("x") and t[:-1].isdigit():
+        return True
+    return False
 
-    Mirrors Omnipose folder-mode discovery: prefix globs plus progressively shorter
-    underscore-trimmed stems so ``sample_Phase.tif`` / ``sample_Phase_masks.tif`` can
-    locate ``sample_foci_GFP.tif`` from file conversion.
-    """
-    stem = (input_stem or "").strip()
-    if not stem:
-        return []
-    candidates: list[Path] = []
 
-    def _glob_at(folder: Path, prefix: str) -> None:
-        if not folder.is_dir():
-            return
-        for pat in (
-            f"{prefix}_foci.tif",
-            f"{prefix}_foci.tiff",
-            f"{prefix}_foci_*.tif",
-            f"{prefix}_foci_*.tiff",
-            f"{prefix}_fi_foci.tif",
-            f"{prefix}_fi_foci.tiff",
-            f"{prefix}_fi_foci_*.tif",
-            f"{prefix}_fi_foci_*.tiff",
-            f"{prefix}__fi_foci.tif",
-            f"{prefix}__fi_foci.tiff",
-            f"{prefix}__fi_foci_*.tif",
-            f"{prefix}__fi_foci_*.tiff",
-            f"{prefix}*_foci*.tif",
-            f"{prefix}*_foci*.tiff",
-        ):
-            candidates.extend(folder.glob(pat))
+def _candidate_match_stems(stem: str) -> list[str]:
+    out: list[str] = []
 
-    dirs = [Path(d) for d in search_dirs if Path(d).exists()]
-    for folder in dirs:
-        _glob_at(folder, stem)
-        parts = stem.split("_")
-        for i in range(len(parts) - 1, 0, -1):
-            prefix = "_".join(parts[:i])
-            if prefix:
-                _glob_at(folder, prefix)
+    def _add(s: str) -> None:
+        s = (s or "").strip("_")
+        if s and s not in out:
+            out.append(s)
 
-    uniq: list[Path] = []
-    seen: set[str] = set()
-    for c in sorted(candidates, key=lambda x: x.name.lower()):
-        if "_foci" not in c.name.lower():
-            continue
+    _add(stem)
+    # Common pipeline suffixes that shouldn't participate in matching other artifacts.
+    # Example dataset:
+    #   mask:  G183A-004_Phase60x_mask_filtered.tif
+    #   foci:  G183A-004_foci_dsRed.tif
+    # so we must consider the shorter "G183A-004" stem as a match candidate.
+    low = stem.lower()
+    if low.endswith("_mask_filtered"):
+        _add(stem[: -len("_mask_filtered")])
+    if low.endswith("_mask"):
+        _add(stem[: -len("_mask")])
+    if "_phase" in low:
         try:
-            rp = str(c.resolve())
+            i = low.index("_phase")
+            _add(stem[:i])
         except Exception:
-            rp = str(c)
-        if rp in seen:
-            continue
-        seen.add(rp)
-        uniq.append(c)
+            pass
+    if "_" in stem:
+        _add(stem.rsplit("_", 1)[0])
+    if "__" in stem:
+        s2 = stem.split("__", 1)[0]
+        _add(s2)
+        if "_" in s2:
+            _add(s2.rsplit("_", 1)[0])
+    _add(sample_identity_stem(stem))
+    return out
 
-    stem_variants: list[str] = [stem]
-    parts3 = stem.split("_")
-    for i in range(len(parts3) - 1, 0, -1):
-        pfx = "_".join(parts3[:i])
-        if pfx:
-            stem_variants.append(pfx)
-    seen_names = {x.name.lower() for x in uniq}
-    for folder in dirs:
+
+def _matches_fi_name(name: str, stem: str) -> bool:
+    nl, sl = name.lower(), stem.lower()
+    if not nl.startswith(sl + "_"):
+        return False
+    rest = nl[len(sl) :].lstrip("_")
+    return rest == "fi" or rest.startswith("fi_") or rest.endswith("_fi") or "_fi_foci" in rest
+
+
+def extract_channel_tag_for_mask_stem(file_stem: str, mask_stem: str) -> str | None:
+    for s in _candidate_match_stems(mask_stem):
+        if file_stem in (f"{s}_fi", f"{s}_foci", f"{s}_fi_foci", f"{s}_foci_fi"):
+            return None
+        if file_stem.startswith(f"{s}_fi_"):
+            rem = file_stem[len(s) + 4 :].strip("_")
+            if not rem or rem == "foci":
+                return None
+            if rem.startswith("foci_"):
+                rem = rem[len("foci_") :].strip("_")
+            if rem.endswith("_foci"):
+                rem = rem[: -len("_foci")].strip("_")
+            return rem or None
+        if file_stem.startswith(f"{s}_foci_"):
+            rem = file_stem[len(s) + 6 :].strip("_")
+            if rem.lower().startswith("overlay_"):
+                rem = rem[8:].strip("_")
+            return rem or None
+        # File conversion: sample__fi_foci_GFP.tif (double underscore after sample id)
+        ls, ss = file_stem.lower(), s.lower()
+        if ls.startswith(ss):
+            rem2 = file_stem[len(s) :].lstrip("_")
+            if rem2.lower().startswith("foci_"):
+                tag = rem2[5:].strip("_")
+                if tag.lower().startswith("overlay_"):
+                    tag = tag[8:].strip("_")
+                return tag or None
+            m = re.match(r"^(\d+_)?foci_(?P<ch>.+)$", rem2, flags=re.IGNORECASE)
+            if m:
+                return (m.group("ch") or "").strip("_") or None
+            if rem2.lower().startswith("fi_foci_"):
+                tag = rem2[8:].strip("_")
+                return tag or None
+            m = re.match(r"^(\d+_)?fi_foci_(?P<ch>.+)$", rem2, flags=re.IGNORECASE)
+            if m:
+                return (m.group("ch") or "").strip("_") or None
+        if file_stem.startswith(f"{s}_") and file_stem.endswith("_foci"):
+            rem = file_stem[len(s) + 1 : -len("_foci")].strip("_")
+            return rem or None
+        if file_stem.startswith(f"{s}_") and file_stem.endswith("_fi"):
+            rem = file_stem[len(s) + 1 : -len("_fi")].strip("_")
+            return rem or None
+    if file_stem.endswith("_foci"):
+        prefix = file_stem[: -len("_foci")].strip("_")
+        if "_" in prefix:
+            token = prefix.rsplit("_", 1)[-1].strip("_")
+            if token and not _looks_non_channel_token(token):
+                return token
+    return None
+
+
+def mask_stem_from_path(mask_path: Path) -> str:
+    stem = Path(mask_path).stem
+    low = stem.lower()
+    for suffix in ("_masks", "_mask_filtered"):
+        if low.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
+
+
+def file_identity_key(path: Path) -> str:
+    """Dedupe key for the same on-disk file (handles .tif vs .TIF on case-insensitive volumes)."""
+    p = Path(path)
+    try:
+        st = p.resolve().stat()
+        return f"{int(st.st_dev)}:{int(st.st_ino)}"
+    except OSError:
+        pass
+    try:
+        return str(p.resolve()).casefold()
+    except OSError:
+        return str(p).casefold()
+
+
+def path_matches_mask_sample(mask_path: Path, file_path: Path) -> bool:
+    """Whether a companion TIFF belongs to this mask's sample and replicate."""
+    if not file_path.is_file() or not _channel_pairs_with_input(mask_stem_from_path(mask_path), file_path.stem):
+        return False
+    fs = file_path.stem
+    ms = mask_stem_from_path(mask_path)
+    if "_foci" in fs.lower():
+        return foci_pairs_with_input(ms, fs)
+    for stem in _candidate_match_stems(ms):
+        if fs.lower() == stem.lower():
+            return True
+        if _matches_fi_name(fs, stem) or extract_channel_tag_for_mask_stem(fs, stem):
+            return True
+    return False
+
+
+def filter_paths_for_mask(mask_path: Path, paths: list[Path]) -> list[Path]:
+    """Keep matching companions, sorted and de-duplicated by on-disk file identity."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    for raw in paths:
+        p = Path(raw)
+        key = file_identity_key(p)
+        if key not in seen and path_matches_mask_sample(mask_path, p):
+            seen.add(key)
+            out.append(p)
+    return sorted(out, key=lambda p: p.name.lower())
+
+
+def _companion_tiffs(*search_dirs: Path) -> list[Path]:
+    out: list[Path] = []
+    seen: set[str] = set()
+    for folder in search_dirs:
         try:
-            folder_entries = sorted(folder.iterdir(), key=lambda x: x.name.lower())
+            entries = sorted(Path(folder).iterdir(), key=lambda p: p.name.lower())
         except OSError:
-            folder_entries = []
-        for fp in folder_entries:
-            if not fp.is_file():
+            continue
+        for p in entries:
+            if not p.is_file() or p.suffix.lower() not in (".tif", ".tiff"):
                 continue
-            low = fp.name.lower()
-            if not (low.endswith(".tif") or low.endswith(".tiff")):
+            stem = p.stem.lower()
+            # Acquisition names may contain these words; only generated roles are excluded.
+            if stem.endswith((
+                "_masks", "_mask_filtered", "_masks_tracked", "_overlay", "_overlay_tracked",
+                "_analysis", "_analysis_visualization", "_filter_visualization", "_trajectories",
+            )) or re.search(r"_foci_overlay(?:_|$)", stem):
                 continue
-            if "_foci" not in low:
-                continue
-            fstem = fp.stem
-            hit = False
-            for pfx in stem_variants:
-                if foci_tiff_stem_matches_prefix(fstem, pfx):
-                    hit = True
-                    break
-            if not hit:
-                continue
-            try:
-                rp = str(fp.resolve())
-            except Exception:
-                rp = str(fp)
-            if rp in seen:
-                continue
-            if fp.name.lower() in seen_names:
-                continue
-            seen.add(rp)
-            seen_names.add(fp.name.lower())
-            uniq.append(fp)
+            key = str(p.resolve())
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+    return sorted(out, key=lambda p: p.name.lower())
 
-    inp_key = stem_pairing_prefix(stem)
-    paired = [x for x in uniq if foci_pairs_with_input(stem, x.stem)]
-    # Prefer strict pairs; if none matched but identity keys equal after strip, keep those.
-    if not paired:
-        paired = [x for x in uniq if stem_pairing_prefix(x.stem).casefold() == inp_key.casefold()]
-    uniq = paired
-    uniq.sort(key=lambda x: x.name.lower())
-    return uniq
+
+def discover_foci_source_tiffs(input_stem: str, *search_dirs: Path) -> list[Path]:
+    """Foci stacks for one acquisition, including legacy DIA and conversion names."""
+    return [p for p in _companion_tiffs(*search_dirs) if foci_pairs_with_input(input_stem, p.stem)]
+
+
+def discover_foci_companions(input_image_path: Path) -> list[Path]:
+    """Segmentation companions next to an input, excluding the input itself."""
+    p = Path(input_image_path)
+    input_key = file_identity_key(p)
+    return [
+        fp for fp in discover_foci_source_tiffs(p.stem, p.parent)
+        if file_identity_key(fp) != input_key
+    ]
+
+
+def resolve_foci_paths_for_mask(mask_path: Path) -> list[Path]:
+    return discover_foci_source_tiffs(
+        mask_stem_from_path(mask_path), *artifact_search_dirs_for_mask(mask_path)
+    )
+
+
+def resolve_fi_paths_for_mask(mask_path: Path) -> list[Path]:
+    stems = _candidate_match_stems(mask_stem_from_path(mask_path))
+    return filter_paths_for_mask(mask_path, [
+        p for p in _companion_tiffs(*artifact_search_dirs_for_mask(mask_path))
+        if any(_matches_fi_name(p.stem, stem) for stem in stems)
+    ])
+
+
+def collect_background_paths_for_mask(mask_path: Path) -> list[Path]:
+    """Preview companions, including base-stem phase images and legacy child folders."""
+    mask_path = Path(mask_path)
+    out = filter_paths_for_mask(mask_path, _companion_tiffs(*artifact_search_dirs_for_mask(mask_path)))
+    if not out and not mask_path.parent.name.startswith("_segmentation"):
+        out = filter_paths_for_mask(mask_path, _companion_tiffs(mask_path.parent / "_segmentation"))
+    return out
+
+
+def resolve_fi_inputs_for_mask(mask_path: Path) -> list[Path]:
+    """Analyze FI inputs: prefer explicit FI, adding foci-only channels once."""
+    explicit = [p for p in resolve_fi_paths_for_mask(mask_path) if "_foci" not in p.stem.lower()]
+    mask_stem = mask_stem_from_path(mask_path)
+
+    def channel_key(p: Path) -> str:
+        # Normalize comparison keys only; keep historical output channel labels unchanged.
+        stem = re.sub(r"_+", "_", p.stem.casefold()).removesuffix("_foci")
+        mask = re.sub(r"_+", "_", mask_stem.casefold())
+        return extract_channel_tag_for_mask_stem(stem, mask) or ""
+
+    covered = {channel_key(p) for p in explicit} - {""}
+    out = explicit + [
+        p for p in resolve_foci_paths_for_mask(mask_path)
+        if not channel_key(p) or channel_key(p) not in covered
+    ]
+    return filter_paths_for_mask(mask_path, out)
 
 
 def infer_pipeline_dir_from_mask(mask_path: Path) -> Path:

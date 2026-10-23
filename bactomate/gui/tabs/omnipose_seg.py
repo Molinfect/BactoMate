@@ -1665,121 +1665,9 @@ class OmniposeSegTab(QWidget):
         return True
 
     def _find_foci_sources_for_input(self, input_image_path: Path) -> list[Path]:
-        """Best-effort discovery of ``*_foci*.tif`` usable for ``input_image_path``.
+        from bactomate.gui.artifact_paths import discover_foci_companions
 
-        Supports two sibling naming conventions that ship with BactoMate:
-
-        1. **Legacy / stem-anchored.** A foci TIFF sits directly next to the
-           input with a name like ``{stem}_foci.tif``, ``{stem}_foci_*.tif``,
-           or ``{stem}*_foci.tif``. Handled by the full-stem glob pass.
-
-        2. **File-conversion output**
-           (:mod:`bactomate.scripts.convert_nd2_to_tif`). The ND2 converter
-           emits each channel as
-           ``{nd2_stem}[_f<N>][_fi][_foci]_{channel_name}.tif`` — the ``_fi``
-           / ``_foci`` tags are inserted *before* the channel-name suffix, on
-           the ND2 stem. So for ``sample.nd2`` with channels
-           ``Phase`` / ``GFP`` (foci) / ``mScarlet`` (fi+foci) you get::
-
-               sample_Phase.tif           # segmentation input
-               sample_foci_GFP.tif        # foci sibling
-               sample_fi_foci_mScarlet.tif
-
-           The segmentation input's stem ``sample_Phase`` does *not* prefix
-           the foci file, so the legacy glob alone (``sample_Phase_foci*.tif``)
-           misses ``sample_foci_GFP.tif``. The input and foci sibling share
-           the longest common ``_``-delimited prefix — the ND2 stem
-           ``sample`` (plus any ``_f<N>`` single-frame suffix). We therefore
-           retry the same globs at progressively shorter underscore-trimmed
-           prefixes so ``sample_Phase.tif`` finds ``sample_foci_GFP.tif`` and
-           ``sample_fi_foci_mScarlet.tif``.
-
-        The returned list is de-duplicated by resolved path and sorted
-        case-insensitively by filename. Files without ``_foci`` in the final
-        name are filtered out defensively so the prefix-retry cannot bleed
-        non-foci siblings (e.g. ``sample_fi_mScarlet.tif``) into the result.
-        """
-        p = Path(input_image_path)
-        folder = p.parent
-        stem = p.stem
-        candidates: list[Path] = []
-
-        def _glob_at(prefix: str) -> None:
-            for pat in (f'{prefix}_foci.tif', f'{prefix}_foci.tiff', f'{prefix}_foci_*.tif', f'{prefix}_foci_*.tiff', f'{prefix}_fi_foci.tif', f'{prefix}_fi_foci.tiff', f'{prefix}_fi_foci_*.tif', f'{prefix}_fi_foci_*.tiff', f'{prefix}*_foci.tif', f'{prefix}*_foci.tiff'):
-                candidates.extend(folder.glob(pat))
-        _glob_at(stem)
-        parts = stem.split('_')
-        for i in range(len(parts) - 1, 0, -1):
-            prefix = '_'.join(parts[:i])
-            if not prefix:
-                continue
-            _glob_at(prefix)
-        uniq: list[Path] = []
-        seen: set[str] = set()
-        for c in sorted(candidates, key=lambda x: x.name.lower()):
-            if '_foci' not in c.name.lower():
-                continue
-            try:
-                rp = str(c.resolve())
-            except Exception:
-                rp = str(c)
-            if rp in seen:
-                continue
-            seen.add(rp)
-            uniq.append(c)
-        stem_variants: list[str] = [stem]
-        parts3 = stem.split('_')
-        for i in range(len(parts3) - 1, 0, -1):
-            pfx = '_'.join(parts3[:i])
-            if pfx:
-                stem_variants.append(pfx)
-        seen_names = {x.name.lower() for x in uniq}
-        try:
-            folder_entries = sorted(folder.iterdir(), key=lambda x: x.name.lower())
-        except OSError:
-            folder_entries = []
-        for fp in folder_entries:
-            if not fp.is_file():
-                continue
-            low = fp.name.lower()
-            if not (low.endswith('.tif') or low.endswith('.tiff')):
-                continue
-            if '_foci' not in low:
-                continue
-            fstem = fp.stem
-            hit = False
-            for pfx in stem_variants:
-                pl = pfx.lower()
-                if fstem.lower() == pl:
-                    continue
-                if fstem.lower().startswith(pl + '_'):
-                    hit = True
-                    break
-            if not hit:
-                continue
-            try:
-                rp = str(fp.resolve())
-            except Exception:
-                rp = str(fp)
-            if rp in seen:
-                continue
-            if fp.name.lower() in seen_names:
-                continue
-            seen.add(rp)
-            seen_names.add(fp.name.lower())
-            uniq.append(fp)
-        uniq.sort(key=lambda x: x.name.lower())
-        try:
-            paired = [x for x in uniq if OmniposeSegTab._foci_pairs_with_input(stem, x.stem)]
-            uniq = paired
-        except Exception:
-            pass
-        try:
-            inp_res = str(p.resolve())
-            uniq = [x for x in uniq if str(x.resolve()) != inp_res]
-        except OSError:
-            uniq = [x for x in uniq if str(x) != str(p)]
-        return uniq
+        return discover_foci_companions(input_image_path)
 
     def _companions_for_segmentation_input(self, input_image_path: Path) -> dict[str, list]:
         """Linked TIFFs shown before folder-mode segmentation when Detect foci is enabled."""
@@ -1796,29 +1684,6 @@ class OmniposeSegTab(QWidget):
             'foci': [],
             'fi': companion_rows,
         }
-
-    @staticmethod
-    def _foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
-        """Delegate to shared role-marker + legacy LCP pairing."""
-        from bactomate.gui.artifact_paths import foci_pairs_with_input
-
-        return foci_pairs_with_input(input_stem, foci_stem)
-
-    @staticmethod
-    def _stem_pairing_prefix(stem: str) -> str:
-        """Acquisition key shared by phase / FI+foci exports (underscore-delimited stems)."""
-        try:
-            from bactomate.gui.artifact_paths import sample_identity_stem
-            return sample_identity_stem(stem)
-        except Exception:
-            low = stem.lower()
-            for marker in ('_fi_foci', '_phase', '_foci'):
-                idx = low.find(marker)
-                if idx >= 0:
-                    return stem[:idx].rstrip('_')
-            if '__' in stem:
-                return stem.split('__', 1)[0].rstrip('_')
-            return stem
 
     @staticmethod
     def _is_segmentation_input_file(path: Path) -> bool:

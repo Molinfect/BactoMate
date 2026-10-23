@@ -79,10 +79,9 @@ def _pick_mask_for_contour_preview(analyze_tab: Any) -> Path | None:
 
 def discover_background_paths_for_mask(tab: Any, mask_path: Path) -> list[Path]:
     """Segmentation input (phase), FI, and foci stacks — same discovery as filter preview."""
-    from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, enrich_background_paths_for_mask, file_identity_key
+    from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, file_identity_key
     mask_path = Path(mask_path)
-    paths = collect_background_paths_for_mask(tab, mask_path)
-    paths = enrich_background_paths_for_mask(tab, mask_path, paths)
+    paths = collect_background_paths_for_mask(mask_path)
     phase_first: list[Path] = []
     rest: list[Path] = []
     phase_keys: set[str] = set()

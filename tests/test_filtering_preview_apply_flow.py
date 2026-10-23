@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -83,6 +84,28 @@ def _build_tab(tmp_dir: Path):
     return tab, parent
 
 
+def _build_hosted_tab(tmp_dir: Path):
+    from PyQt6.QtWidgets import QHBoxLayout
+    from bactomate.gui.module_shell import PreviewSurface
+    from bactomate.gui.tabs.analyze_masks import AnalyzeTab, FilteringTab
+    from bactomate.gui.tabs.segmentation import SegmentationTab
+    from bactomate.gui.tabs.unet_seg import UNetSegmentTab
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import _segmentation_tab_host
+
+    parent = QWidget()
+    tab = FilteringTab(parent)
+    host = SegmentationTab(parent, filtering_tab=tab, analyze_tab=AnalyzeTab(parent), unet_tab=UNetSegmentTab(parent))
+    surface = PreviewSurface(parent)
+    layout = QHBoxLayout(parent)
+    layout.addWidget(host)
+    layout.addWidget(surface)
+    host.attach_module_preview_mount(surface.mount_widget())
+    tab.file_path.setText(str(tmp_dir))
+    parent.show()
+    assert _segmentation_tab_host(tab) is host
+    return tab, parent, host, surface
+
+
 def _write_mask_tif(tmp_dir: Path) -> Path:
     seg_dir = tmp_dir / "_segmentation"
     seg_dir.mkdir(parents=True, exist_ok=True)
@@ -119,11 +142,7 @@ def _wait_for_filter_apply(dlg, timeout_s: float = 20.0) -> bool:
 
 
 def _preview_thread_idle(dlg) -> bool:
-    thread = getattr(dlg, "_preview_thread", None)
-    try:
-        return thread is None or not thread.isRunning()
-    except Exception:
-        return True
+    return dlg._filter_apply.idle
 
 
 def _filter_apply_busy(dlg) -> bool:
@@ -137,14 +156,13 @@ def _wait_for_apply_generation(dlg, *, rid_before: int, timeout_s: float = 20.0)
     """Wait until a new apply finished after ``rid_before`` (not just a stale cache hit)."""
 
     def _done() -> bool:
-        rid = int(getattr(dlg, "_preview_request_id", 0) or 0)
+        rid = dlg._filter_apply.generation
         last = getattr(dlg, "_last_preview", None) or {}
         return (
             rid > int(rid_before)
             and "mask_2d" in last
             and _preview_thread_idle(dlg)
             and not _filter_apply_busy(dlg)
-            and not bool(getattr(dlg, "_pending_apply", False))
         )
 
     return _wait_until(_done, timeout_s=timeout_s)
@@ -187,7 +205,6 @@ def _shutdown(tab, parent):
             except Exception:
                 pass
             try:
-                dlg._close_pending = True
                 dlg.close()
             except Exception:
                 pass
@@ -203,6 +220,346 @@ def _shutdown(tab, parent):
     except Exception:
         pass
     QCoreApplication.processEvents()
+
+
+@pytest.fixture
+def held_preview_workers(monkeypatch):
+    """Hold real calculations so superseded results arrive after the next action."""
+    from bactomate.gui.tabs import _analyze_masks_preview_filtering as preview
+
+    workers = []
+    real_worker = preview.AnalyzeMasksPreviewWorker
+
+    class HeldWorker(real_worker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.started = threading.Event()
+            self.proceed = threading.Event()
+            workers.append(self)
+
+        def run(self):
+            self.started.set()
+            self.proceed.wait(10)
+            # Deliberately deliver obsolete results; lifecycle must reject them
+            # even when cooperative worker cancellation misses its last check.
+            self._latest_request_id = None
+            super().run()
+
+    monkeypatch.setattr(preview, 'AnalyzeMasksPreviewWorker', HeldWorker)
+    yield workers
+    for worker in workers:
+        worker.proceed.set()
+
+
+def test_rapid_applies_keep_only_latest_snapshot(tmp_path, held_preview_workers):
+    _write_phase_tif(tmp_path, pixel_size_um=0.108)
+    foci_path = tmp_path / 'sample_foci_GFP.tif'
+    tifffile.imwrite(foci_path, np.ones((1, 256, 256), dtype=np.uint16))
+    tab, parent, dlg = _open_preview(tmp_path)
+    workers = held_preview_workers
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        foci_source = ('file', list(dlg._bg_paths).index(foci_path))
+        for min_ar in (2.0, 3.0, 5.0):
+            dlg._pf_spinboxes['min_aspect_ratio'].setValue(min_ar)
+            dlg._pf_apply_current(source_key=foci_source if min_ar == 5.0 else None)
+        # A later unsubmitted edit must not change the queued Apply snapshot.
+        dlg._pf_spinboxes['min_aspect_ratio'].setValue(1.0)
+        workers[0].proceed.set()
+        assert _wait_until(lambda: len(workers) == 2 and workers[1].started.is_set())
+        assert not dlg._last_preview, 'Obsolete initial result must not be committed'
+        assert workers[1]._params['min_aspect_ratio'] == 5.0
+        workers[1].proceed.set()
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        assert len(workers) == 2
+        assert {3, 4}.issubset(dlg._last_preview['rejected'])
+        assert dlg._last_preview['source_key'] == foci_source
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        _shutdown(tab, parent)
+
+
+def test_cancel_drops_already_queued_apply(tmp_path, held_preview_workers):
+    tab, parent, dlg = _open_preview(tmp_path)
+    workers = held_preview_workers
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        dlg._pf_spinboxes['min_aspect_ratio'].setValue(5.0)
+        dlg._pf_apply_current()
+        dlg._progress_dialog.canceled.emit()
+        workers[0].proceed.set()
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        assert len(workers) == 1
+        assert not dlg._last_preview
+        assert not _filter_apply_busy(dlg)
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        _shutdown(tab, parent)
+
+
+def test_queued_apply_keeps_foci_settings_snapshot(tmp_path, held_preview_workers):
+    from bactomate.gui.filter_preview_utils import foci_channel_settings_signature
+
+    mask_path = _write_mask_tif(tmp_path)
+    foci = np.ones((1, 256, 256), dtype=np.uint16)
+    foci[0, 33, 40] = 1000
+    tifffile.imwrite(tmp_path / 'sample_foci_GFP.tif', foci)
+    (mask_path.parent / 'sample_foci_GFP.csv').write_text(
+        'frame,y,x,intensity,probability,cell_id\n0,33,40,1000,0.6,1\n'
+    )
+    tab, parent, dlg = _open_preview(tmp_path)
+    workers = held_preview_workers
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        dlg._pf_checkboxes['foci_prob_enabled'].setChecked(True)
+        dlg._pf_spinboxes['foci_prob_thresh'].setValue(0.9)
+        dlg._pf_apply_current()
+        # Model later channel edits/synchronization without another Apply.
+        tab.set_foci_channel_settings('GFP', {'foci_prob_thresh': 0.1})
+        workers[0].proceed.set()
+        assert _wait_until(lambda: len(workers) == 2 and workers[1].started.is_set())
+        settings = workers[1]._foci_apply['channels'][0]['settings']
+        assert settings['foci_prob_thresh'] == 0.9
+        workers[1].proceed.set()
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        channel = dlg._last_preview['foci_channels']['GFP']
+        assert not channel['pass_peaks']
+        assert len(channel['fail_peaks']) == 1
+        assert dlg._last_preview['foci_channel_sigs']['GFP'] == foci_channel_settings_signature(settings)
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        _shutdown(tab, parent)
+
+
+def test_failed_apply_start_returns_to_idle():
+    from PyQt6.QtWidgets import QPushButton
+    from bactomate.gui.filter_preview_apply import FilterPreviewApplyLifecycle
+    from bactomate.gui.preview.preview_window import PreviewDialogBase
+
+    dlg = PreviewDialogBase(title='Apply failure')
+    button = QPushButton()
+
+    def fail_to_start(*_args):
+        raise RuntimeError('Synthetic preview preparation failure')
+
+    lifecycle = FilterPreviewApplyLifecycle(dlg, button, lambda: None, fail_to_start)
+    try:
+        lifecycle.request(0, {}, 'settings', ('none', -1))
+        assert lifecycle.idle
+        assert not _filter_apply_busy(dlg)
+        assert button.isEnabled()
+    finally:
+        dlg.close()
+        dlg.deleteLater()
+
+
+def test_cancel_then_apply_waits_for_teardown(tmp_path, held_preview_workers):
+    from bactomate.gui.filter_preview_utils import wait_for_filter_preview_apply_idle
+
+    tab, parent, dlg = _open_preview(tmp_path)
+    workers = held_preview_workers
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        dlg._progress_dialog.canceled.emit()
+        assert not wait_for_filter_preview_apply_idle(dlg, timeout_ms=0)
+        dlg._pf_spinboxes['min_aspect_ratio'].setValue(5.0)
+        dlg._pf_apply_current()
+        workers[0].proceed.set()
+        assert _wait_until(lambda: len(workers) == 2 and workers[1].started.is_set())
+        assert not dlg._last_preview
+        workers[1].proceed.set()
+        assert wait_for_filter_preview_apply_idle(dlg, timeout_ms=20000)
+        assert {3, 4}.issubset(dlg._last_preview['rejected'])
+        assert not _filter_apply_busy(dlg)
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        _shutdown(tab, parent)
+
+
+def test_close_discards_stale_result_and_queued_apply(tmp_path, held_preview_workers):
+    tab, parent, dlg = _open_preview(tmp_path)
+    workers = held_preview_workers
+    closed = []
+    dlg.finished.connect(closed.append)
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        dlg._pf_spinboxes['min_aspect_ratio'].setValue(5.0)
+        dlg._pf_apply_current()
+        dlg.close()
+        assert not dlg.isVisible()
+        assert not closed, 'Close must wait for the worker teardown'
+        workers[0].proceed.set()
+        assert _wait_until(lambda: bool(closed) and dlg._filter_apply.idle)
+        assert not dlg._last_preview
+        assert len(workers) == 1, 'Closing must drop queued Apply'
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        _shutdown(tab, parent)
+
+
+@pytest.mark.parametrize('via_reload', [True, False])
+def test_mask_switch_keeps_replacement_when_old_result_arrives(tmp_path, held_preview_workers, monkeypatch, via_reload):
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    replacement_path = mask_path.with_name('replacement_masks.tif')
+    replacement = _make_mixed_mask()
+    replacement[replacement > 0] += 100
+    tifffile.imwrite(replacement_path, replacement)
+    tab, parent, host, surface = _build_hosted_tab(tmp_path)
+    show_filter_preview(tab, str(mask_path))
+    old = tab._filter_preview_dialog
+    closed = []
+    old.finished.connect(closed.append)
+
+    def open_selected(path):
+        tab._filter_preview_mask_path = Path(path)
+        show_filter_preview(tab, str(path))
+
+    monkeypatch.setattr(tab, '_open_filter_preview_for_mask', open_selected)
+    workers = held_preview_workers
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        if via_reload:
+            tab.reload_filter_preview_for_path(replacement_path)
+        else:
+            open_selected(replacement_path)
+        new = tab._filter_preview_dialog
+        assert new is not old
+        assert _wait_until(lambda: len(workers) == 2 and workers[1].started.is_set())
+        workers[0].proceed.set()
+        assert _wait_until(lambda: bool(closed))
+        assert not old._last_preview
+        assert tab._filter_preview_dialog is new
+        assert tab._filter_preview_mask_path == replacement_path
+        assert new.isVisible()
+        assert surface._preview_context == 'filtering'
+        assert surface.mount_widget().layout().itemAt(0).widget() is new
+        workers[1].proceed.set()
+        assert _wait_until(lambda: new._filter_apply.idle)
+        assert set(new._last_preview['accepted']) | set(new._last_preview['rejected']) == {101, 102, 103, 104}
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        _shutdown(tab, parent)
+
+
+@pytest.mark.parametrize('dismissal', ['_dismiss_filtering_embedded_preview', '_dismiss_embedded_previews', 'backend'])
+@pytest.mark.parametrize('idle', [False, True])
+def test_real_host_dismissal_retires_filter_preview(tmp_path, held_preview_workers, dismissal, idle):
+    from PyQt6 import sip
+    from PyQt6.QtCore import QEvent
+    from bactomate.gui.module_shell import mount_embedded_preview
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    tab, parent, host, surface = _build_hosted_tab(tmp_path)
+    show_filter_preview(tab, str(mask_path))
+    dlg = tab._filter_preview_dialog
+    lifecycle = dlg._filter_apply
+    workers = held_preview_workers
+    closed = []
+    dlg.finished.connect(closed.append)
+    try:
+        assert _wait_until(lambda: len(workers) == 1 and workers[0].started.is_set())
+        if idle:
+            workers[0].proceed.set()
+            assert _wait_until(lambda: lifecycle.idle)
+        else:
+            dlg._pf_spinboxes['min_aspect_ratio'].setValue(5.0)
+            dlg._pf_apply_current()
+        if dismissal == 'backend':
+            host.backend_combo.setCurrentIndex(1)
+        else:
+            getattr(host, dismissal)()
+        assert tab._filter_preview_dialog is None
+        assert tab._filter_preview_mask_path is None
+        assert dlg.parent() is tab, 'The host must remove a retired preview from the mount'
+        assert not dlg.isVisible()
+        if not idle:
+            assert not closed
+            assert dlg._preview_thread.isRunning()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            assert not sip.isdeleted(dlg), 'A running preview must survive deferred deletions'
+        # A subsequent backend/analysis display must survive the old worker's finish.
+        replacement = QWidget()
+        mount_embedded_preview(surface.mount_widget(), replacement, preview_surface=surface)
+        workers[0].proceed.set()
+        assert _wait_until(lambda: bool(closed) and lifecycle.idle)
+        assert len(workers) == 1, 'Host dismissal must discard queued Apply'
+        if not idle:
+            assert not dlg._last_preview
+        assert surface.mount_widget().layout().itemAt(0).widget() is replacement
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert sip.isdeleted(dlg), 'Retired previews must be deleted after teardown'
+    finally:
+        for worker in workers:
+            worker.proceed.set()
+        if not sip.isdeleted(dlg):
+            dlg._worker_guard.request_stop()
+            dlg._worker_guard.wait(10000)
+            dlg._worker_guard.disconnect()
+        _shutdown(tab, parent)
+
+
+def test_preview_reads_legacy_tiff_and_foci_csv_without_rewriting(tmp_path):
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    mask = _make_mixed_mask()
+    mask[mask > 0] *= 17
+    tifffile.imwrite(mask_path, mask)
+    foci_path = tmp_path / 'sample_foci_GFP.tif'
+    foci = np.ones_like(mask, dtype=np.uint16)
+    foci[0, 33, 40] = 1000
+    tifffile.imwrite(foci_path, foci)
+    # Legacy flat CSV location and zero-based frame, with original cell labels.
+    csv_path = mask_path.parent / 'sample_foci_GFP.csv'
+    csv_path.write_text('frame,y,x,intensity,probability,cell_id\n0,33,40,1000,0.9,17\n1,33,40,2000,0.9,34\n')
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (mask_path, foci_path, csv_path)}
+    tab, parent = _build_tab(tmp_path)
+    show_filter_preview(tab, str(mask_path))
+    dlg = tab._filter_preview_dialog
+    try:
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        assert set(dlg._last_preview['accepted']) | set(dlg._last_preview['rejected']) == {17, 34, 51, 68}
+        channels = dlg._last_preview['foci_channels']
+        peaks = [p for c in channels.values() for p in c['pass_peaks'] + c['fail_peaks']]
+        assert len(peaks) == 1
+        assert int(peaks[0]['cell_id']) == 17
+        assert int(peaks[0]['frame']) == 0
+        assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before} == before
+    finally:
+        _shutdown(tab, parent)
+
+
+def test_failed_mask_replacement_keeps_current_preview(tmp_path, monkeypatch):
+    from bactomate.gui.tabs import _analyze_masks_filtering as filtering
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    tab, parent, host, surface = _build_hosted_tab(tmp_path)
+    show_filter_preview(tab, str(mask_path))
+    dlg = tab._filter_preview_dialog
+    invalid_mask = tmp_path / 'invalid_masks.tif'
+    invalid_mask.write_bytes(b'Not a TIFF')
+    errors = []
+    monkeypatch.setattr(filtering, 'show_message_dialog', lambda *args, **kwargs: errors.append(args[1]))
+    try:
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        current_path = tab._filter_preview_mask_path
+        tab.reload_filter_preview_for_path(invalid_mask)
+        assert errors == ['Load Error']
+        assert tab._filter_preview_dialog is dlg
+        assert tab._filter_preview_mask_path == current_path
+        assert dlg.isVisible()
+    finally:
+        _shutdown(tab, parent)
 
 
 def test_preview_open_refresh_renders_baseline_pixmap():
@@ -352,7 +709,7 @@ def test_preview_image_switch_keeps_pixel_size_and_reapplies_last_settings():
             QCoreApplication.processEvents()
             apply_current = getattr(dlg, "_pf_apply_current", None)
             assert apply_current is not None
-            rid_before_tune = int(getattr(dlg, "_preview_request_id", 0) or 0)
+            rid_before_tune = dlg._filter_apply.generation
             apply_current()
             ok = _wait_for_apply_generation(dlg, rid_before=rid_before_tune, timeout_s=20.0)
             assert ok
@@ -411,36 +768,14 @@ def test_progress_dialog_close_does_not_bump_request_id():
             ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
             assert ok, "Opening the preview should auto-apply current filters once"
 
-            rid_changes: list[tuple[int, int]] = []
-            real_setattr = type(dlg).__setattr__
-
-            def traced_setattr(self, name, value):
-                if name == "_preview_request_id":
-                    old = getattr(self, "_preview_request_id", None)
-                    if value != old:
-                        rid_changes.append((int(old or 0), int(value)))
-                real_setattr(self, name, value)
-
-            type(dlg).__setattr__ = traced_setattr
-            try:
-                spinboxes = getattr(dlg, "_pf_spinboxes", None)
-                assert spinboxes is not None and "min_aspect_ratio" in spinboxes
-                spinboxes["min_aspect_ratio"].setValue(6.0)
-                QCoreApplication.processEvents()
-                apply_current()
-                ok = _wait_for_filter_apply(dlg, timeout_s=20.0)
-                assert ok, "Worker result should reach _last_preview"
-
-                # Exactly one rid bump expected from this manual apply.
-                start_rid = int(getattr(dlg, "_preview_request_id", 0)) - 1
-                assert rid_changes == [(start_rid, start_rid + 1)], (
-                    f"Expected a single rid increment from _start_worker; "
-                    f"got {rid_changes}. An extra increment indicates the "
-                    f"progress-dialog 'canceled' signal is still firing during "
-                    f"programmatic dismissal."
-                )
-            finally:
-                type(dlg).__setattr__ = real_setattr
+            generation = dlg._filter_apply.generation
+            dlg._pf_spinboxes["min_aspect_ratio"].setValue(6.0)
+            QCoreApplication.processEvents()
+            apply_current()
+            assert _wait_for_apply_generation(dlg, rid_before=generation)
+            assert dlg._filter_apply.generation == generation + 1, (
+                "Programmatic progress dismissal must not cancel a completed Apply"
+            )
         finally:
             _shutdown(tab, parent)
 

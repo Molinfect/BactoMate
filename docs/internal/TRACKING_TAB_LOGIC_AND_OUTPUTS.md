@@ -122,6 +122,31 @@ Calibration (pixel size, time per frame) is read from original/mask TIFF and pro
 - `track_cells`: normalized mapping (`track_id`, `cell_id`).
 - `track_area`: per `(track_id, frame)` area and source (`analysis:*` preferred, fallback `mask_px`).
 
+### Metric calculation and historical results
+
+Preview, canonical reports and legacy filtered export use the shared calculation in
+`bactomate.gui.tracking_filters.compute_track_metrics` on native-pixel track coordinates.
+`trajectory_length` counts detections; `duration_frames` remains the inclusive span
+`last_frame - first_frame + 1`, and `gap_frames` is that span minus detections (at least zero).
+`duration_min` retains the inclusive span multiplied by minutes per frame.
+
+Mean and straight-line speed use **elapsed intervals**, `last_frame - first_frame`,
+including any gaps, rather than inclusive duration. Single-detection tracks have zero speed.
+Physical speed uses pixel size and minutes per frame converted to seconds; without both
+positive calibrations, speed retains the existing px/frame fallback. For example, points
+at frames 0, 1, 2 and x = 0, 10, 20 px at 0.325 µm/px and 1 s/frame have duration 3 frames,
+elapsed time 2 s, and mean speed **3.25 µm/s** in every recomputation path.
+
+This corrects worker reports/canonical tables that previously divided by inclusive duration
+(2.166667 µm/s in that example). Explicit recalculation can therefore change speed filters
+and `Pass` decisions. Reports now retain full precision for filterable metric values so
+threshold decisions match preview before legacy export presentation rounding.
+New reports (`Run info`) and canonical `metadata.json` record
+`track_speed_time_basis: elapsed_frame_intervals`; no schema, sheet, column, ID, frame-base
+or output-path changes are required. Existing CSV/XLSX/Parquet/JSON/TIFF files are read as
+stored and are never migrated on load. Stored historical speeds remain unchanged unless
+the user explicitly reruns tracking or exports recalculated metrics.
+
 ---
 
 ## 4. Canonical lineage semantics (`tables/`, lineage runs)

@@ -5,8 +5,13 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-# SSB-style replicate ids: cl1__ vs cl1_001_ must not be mixed for one mask.
-_REPLICATE_TOKEN = re.compile(r"(cl\d+)((?:__)|(?:_\d+_))", re.IGNORECASE)
+from bactomate.gui.analysis_paths import artifact_search_dirs_for_mask
+from bactomate.gui.artifact_paths import (
+    collect_background_paths_for_mask,
+    file_identity_key,
+    mask_stem_from_path,
+    path_matches_mask_sample,
+)
 
 
 def preview_view_label(path: Path) -> str:
@@ -46,73 +51,6 @@ def _is_preview_background_tiff(path: Path) -> bool:
     ):
         return False
     return True
-
-
-def discover_channel_stacks_near_mask(mask_path: Path) -> list[Path]:
-    """FI / foci TIFFs in sample or segmentation folders (before replicate filtering)."""
-    out: list[Path] = []
-    seen: set[str] = set()
-    for folder in _search_dirs_for_mask(mask_path):
-        if not folder.is_dir():
-            continue
-        for pat in (
-            "*fi_foci*.tif",
-            "*fi_foci*.tiff",
-            "*_foci_*.tif",
-            "*_foci_*.tiff",
-            "*_FI_*.tif",
-            "*_FI_*.tiff",
-        ):
-            for p in folder.glob(pat):
-                if not _is_preview_background_tiff(p):
-                    continue
-                key = file_identity_key(p)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(p)
-    return out
-
-
-def enrich_background_paths_for_mask(
-    tab: Any, mask_path: Path, paths: list[Path]
-) -> list[Path]:
-    """Merge phase, FI, and foci stacks so the View dropdown lists every previewable channel."""
-    merged: list[Path] = [Path(p) for p in paths if _is_preview_background_tiff(Path(p))]
-    seen: set[str] = {file_identity_key(p) for p in merged}
-
-    def _stage(p: Path) -> None:
-        p = Path(p)
-        if not p.is_file() or not _is_preview_background_tiff(p):
-            return
-        key = file_identity_key(p)
-        if key in seen:
-            return
-        seen.add(key)
-        merged.append(p)
-
-    for p in phase_stack_candidates_for_mask(mask_path):
-        _stage(p)
-
-    for p in discover_channel_stacks_near_mask(mask_path):
-        _stage(p)
-
-    for resolver_name in (
-        "_resolve_foci_paths_for_mask",
-        "_resolve_fi_paths_for_mask",
-        "_preview_fi_path_candidates",
-    ):
-        resolver = getattr(tab, resolver_name, None)
-        if not callable(resolver):
-            continue
-        try:
-            cands = resolver(mask_path)
-        except Exception:
-            cands = []
-        for p in cands or []:
-            _stage(Path(p))
-
-    return filter_paths_for_mask(tab, mask_path, merged)
 
 
 CELL_FILTER_SETTING_KEYS: tuple[str, ...] = (
@@ -305,26 +243,8 @@ def sync_filter_settings_from_preview_dialog(tab: Any) -> bool:
 
 def wait_for_filter_preview_apply_idle(dlg: Any, *, timeout_ms: int = 3_600_000) -> bool:
     """Block until preview Apply worker (and any queued re-apply) finishes."""
-    import time
-
-    from PyQt6.QtWidgets import QApplication
-
-    deadline = time.monotonic() + max(0.0, int(timeout_ms)) / 1000.0
-    while time.monotonic() < deadline:
-        thread = getattr(dlg, "_preview_thread", None)
-        running = thread is not None and thread.isRunning()
-        pending = bool(getattr(dlg, "_pending_apply", False))
-        busy = False
-        try:
-            busy = bool(dlg.state().extra.get("filter_apply_busy"))
-        except Exception:
-            pass
-        if not running and not pending and not busy:
-            return True
-        app = QApplication.instance()
-        if app is not None:
-            app.processEvents()
-    return False
+    lifecycle = getattr(dlg, "_filter_apply", None)
+    return lifecycle is not None and lifecycle.wait_until_idle(timeout_ms=timeout_ms)
 
 
 def request_filter_preview_apply(
@@ -390,103 +310,6 @@ def short_foci_stack_label(path: Path) -> str:
     return stem
 
 
-def mask_stem_from_path(mask_path: Path) -> str:
-    stem = Path(mask_path).stem
-    low = stem.lower()
-    for suffix in ("_masks", "_mask_filtered"):
-        if low.endswith(suffix):
-            return stem[: -len(suffix)]
-    return stem
-
-
-def replicate_token(stem: str) -> str:
-    """Return normalized replicate delimiter after clN (``__`` or ``_001_``)."""
-    s = (stem or "").lower()
-    m = _REPLICATE_TOKEN.search(s)
-    if m:
-        return m.group(2)
-    if re.search(r"cl\d+__", s):
-        return "__"
-    m3 = re.search(r"cl\d+(_\d+_)", s)
-    if m3:
-        return m3.group(1)
-    return ""
-
-
-def same_replicate(mask_path: Path, file_path: Path) -> bool:
-    """True when mask and file belong to the same sample replicate, not a sibling clone."""
-    mt = replicate_token(mask_stem_from_path(mask_path))
-    ft = replicate_token(file_path.stem)
-    if mt and ft:
-        return mt == ft
-    try:
-        from bactomate.gui.artifact_paths import foci_pairs_with_input, sample_identity_stem
-
-        ms = mask_stem_from_path(mask_path)
-        fs = file_path.stem
-        if sample_identity_stem(ms).lower() == sample_identity_stem(fs).lower():
-            return True
-        # Legacy free-form phase names (e.g. *_DIA) ↔ *_foci_* siblings.
-        if "_foci" in fs.lower() and foci_pairs_with_input(ms, fs):
-            return True
-        if "_foci" in ms.lower() and foci_pairs_with_input(fs, ms):
-            return True
-    except Exception:
-        pass
-    # No replicate token — require shared prefix up to channel suffix.
-    ms = mask_stem_from_path(mask_path).lower()
-    fs = file_path.stem.lower()
-    if fs == ms:
-        return True
-    if fs.startswith(ms + "_") or fs.startswith(ms + "__"):
-        return True
-    if ms.startswith(fs + "_") or ms.startswith(fs + "__"):
-        return True
-    return False
-
-
-def file_identity_key(path: Path) -> str:
-    """Dedupe key for the same on-disk file (handles .tif vs .TIF on case-insensitive volumes)."""
-    p = Path(path)
-    try:
-        st = p.resolve().stat()
-        return f"{int(st.st_dev)}:{int(st.st_ino)}"
-    except OSError:
-        pass
-    try:
-        return str(p.resolve()).casefold()
-    except OSError:
-        return str(p).casefold()
-
-
-def _search_dirs_for_mask(mask_path: Path) -> list[Path]:
-    """Sample / segmentation folders to look for paired phase and channel stacks."""
-    parent = Path(mask_path).parent
-    dirs: list[Path] = []
-    try:
-        from bactomate.gui.analysis_paths import base_dir_for_mask
-
-        sample_dir = base_dir_for_mask(mask_path)
-        if sample_dir.is_dir():
-            dirs.append(sample_dir)
-    except Exception:
-        pass
-    if parent.name.startswith("_segmentation"):
-        dirs.extend([parent.parent, parent])
-    else:
-        dirs.append(parent)
-        if parent.parent != parent:
-            dirs.append(parent.parent)
-    out: list[Path] = []
-    seen: set[str] = set()
-    for d in dirs:
-        key = str(d)
-        if key not in seen:
-            seen.add(key)
-            out.append(d)
-    return out
-
-
 def phase_stack_candidates_for_mask(mask_path: Path) -> list[Path]:
     """
     Phase (or DIC) stack paired with this mask: ``{mask_stem}.tif`` next to the mask.
@@ -497,7 +320,7 @@ def phase_stack_candidates_for_mask(mask_path: Path) -> list[Path]:
     ms = mask_stem_from_path(mask_path)
     out: list[Path] = []
     seen: set[str] = set()
-    for folder in _search_dirs_for_mask(mask_path):
+    for folder in artifact_search_dirs_for_mask(mask_path):
         if not folder.is_dir():
             continue
         for ext in (".tif", ".tiff"):
@@ -512,88 +335,6 @@ def phase_stack_candidates_for_mask(mask_path: Path) -> list[Path]:
     return out
 
 
-def collect_background_paths_for_mask(tab: Any, mask_path: Path) -> list[Path]:
-    """Phase + FI/foci stacks for this mask only (same replicate, not sibling clones)."""
-    seen: set[str] = set()
-    raw: list[Path] = []
-
-    def _add(p: Path) -> None:
-        if not p.is_file() or not _is_preview_background_tiff(p):
-            return
-        key = file_identity_key(p)
-        if key in seen:
-            return
-        seen.add(key)
-        raw.append(p)
-
-    for p in phase_stack_candidates_for_mask(mask_path):
-        _add(p)
-    try:
-        for p in tab._preview_fi_path_candidates(mask_path):
-            _add(Path(p))
-    except Exception:
-        pass
-    return filter_paths_for_mask(tab, mask_path, raw)
-
-
-def _same_acquisition_as_mask(tab: Any, mask_path: Path, file_path: Path) -> bool:
-    """True when ``file_path`` belongs to the same sample/replicate as ``mask_path``."""
-    _ = tab  # kept for API compatibility with older call sites
-    return same_replicate(mask_path, file_path)
-
-
-def path_matches_mask_sample(tab: Any, mask_path: Path, file_path: Path) -> bool:
-    """Whether a TIFF belongs to this mask's sample (phase, FI, or foci channel)."""
-    if not file_path.is_file():
-        return False
-    if not _same_acquisition_as_mask(tab, mask_path, file_path):
-        return False
-    fs = file_path.stem
-    ms = mask_stem_from_path(mask_path)
-    try:
-        from bactomate.gui.artifact_paths import foci_pairs_with_input
-
-        if "_foci" in fs.lower() and foci_pairs_with_input(ms, fs):
-            return True
-    except Exception:
-        pass
-    stems: list[str] = [ms]
-    try:
-        for s in tab._candidate_match_stems(ms):
-            if s and s not in stems:
-                stems.append(s)
-    except Exception:
-        pass
-    for stem in stems:
-        if fs.lower() == stem.lower():
-            return True
-        try:
-            if tab._matches_foci_name(fs, stem) or tab._matches_fi_name(fs, stem):
-                return True
-            tag = tab._extract_channel_tag_for_mask_stem(fs, stem)
-            if tag:
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def filter_paths_for_mask(tab: Any, mask_path: Path, paths: list[Path]) -> list[Path]:
-    """Keep only stacks that match the selected mask file (not sibling replicates in folder)."""
-    out: list[Path] = []
-    seen: set[str] = set()
-    for p in paths:
-        key = file_identity_key(Path(p))
-        if key in seen:
-            continue
-        if not path_matches_mask_sample(tab, mask_path, Path(p)):
-            continue
-        seen.add(key)
-        out.append(Path(p))
-    out.sort(key=lambda x: x.name.lower())
-    return out
-
-
 def default_phase_path_for_mask(
     tab: Any, mask_path: Path, bg_paths: list[Path]
 ) -> Optional[Path]:
@@ -605,7 +346,7 @@ def default_phase_path_for_mask(
     for p in bg_paths:
         if "_foci" in p.name.lower():
             continue
-        if path_matches_mask_sample(tab, mask_path, p):
+        if path_matches_mask_sample(mask_path, p):
             return p
     return None
 
