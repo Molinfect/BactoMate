@@ -442,7 +442,7 @@ class FilteringTab(AnalyzeMasksBase):
         fs = getattr(self, '_filter_settings', None)
         if not isinstance(fs, dict):
             fs = self._default_filter_settings()
-            self._filter_settings = dict(fs)
+            self._filter_settings = fs
         for (k, v) in self._default_filter_settings().items():
             if k not in fs:
                 fs[k] = v
@@ -477,25 +477,29 @@ class FilteringTab(AnalyzeMasksBase):
         if isinstance(data.get('foci_channels'), dict):
             fs['foci_channels'] = dict(data['foci_channels'])
 
-    def get_foci_channel_settings(self, channel_key: str) -> dict[str, Any]:
-        from bactomate.gui.filter_preview_utils import default_foci_channel_settings, ensure_foci_channels_map
+    def get_foci_channel_settings(self, channel_key: str, foci_source: Optional[Path]=None) -> dict[str, Any]:
+        """Return a copy of the channel's settings; never creates or shadows an entry on read."""
+        from bactomate.gui.filter_preview_utils import default_foci_channel_settings, ensure_foci_channels_map, foci_channel_entry_for_path, normalize_foci_channel_key
         fs = self._ensure_filter_settings()
         channels = ensure_foci_channels_map(fs)
-        key = str(channel_key or '_default').strip() or '_default'
-        ch = channels.get(key)
+        key = normalize_foci_channel_key(channel_key) or '_default'
+        ch = None
+        if foci_source is not None:
+            (_k, ch) = foci_channel_entry_for_path(channels, Path(foci_source))
         if not isinstance(ch, dict):
-            ch = dict(default_foci_channel_settings())
-            channels[key] = ch
-        return dict(ch)
+            ch = channels.get(key)
+        return {**default_foci_channel_settings(), **(ch if isinstance(ch, dict) else {})}
 
-    def set_foci_channel_settings(self, channel_key: str, data: dict[str, Any]) -> None:
-        from bactomate.gui.filter_preview_utils import FOCI_CHANNEL_SETTING_KEYS, default_foci_channel_settings, ensure_foci_channels_map
+    def set_foci_channel_settings(self, channel_key: str, data: dict[str, Any], foci_source: Optional[Path]=None) -> None:
+        from bactomate.gui.filter_preview_utils import FOCI_CHANNEL_SETTING_KEYS, default_foci_channel_settings, ensure_foci_channels_map, migrate_foci_channel_entry, normalize_foci_channel_key
         fs = self._ensure_filter_settings()
         channels = ensure_foci_channels_map(fs)
-        key = str(channel_key or '_default').strip() or '_default'
-        ch = channels.setdefault(key, dict(default_foci_channel_settings()))
+        key = normalize_foci_channel_key(channel_key) or '_default'
+        if foci_source is not None:
+            key = migrate_foci_channel_entry(channels, Path(foci_source))
         if not isinstance(data, dict):
             return
+        ch = channels.setdefault(key, dict(default_foci_channel_settings()))
         for k in FOCI_CHANNEL_SETTING_KEYS:
             if k in data:
                 ch[k] = data.get(k)

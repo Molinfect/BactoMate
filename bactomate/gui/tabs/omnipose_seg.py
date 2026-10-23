@@ -54,6 +54,7 @@ MASK_DISTANCE_OMNI_MAX = 1.0
 MASK_CELLPROB_SAM_MIN = -6.0
 MASK_CELLPROB_SAM_MAX = 6.0
 SPOTIFLOW_DETECTION_DEFAULTS: dict[str, Any] = {'model_name': 'general', 'model_path': '', 'use_optimized_threshold': True, 'prob_thresh': None, 'min_distance': 1, 'subpix': True, 'normalize': True, 'perc_low': 1.0, 'perc_high': 99.8, 'bg_subtract_radius': 0, 'blur_sigma': 0.0, 'auto_tiling': True, 'n_tiles_y': 1, 'n_tiles_x': 1, 'verbose': False, 'raise_on_error': False}
+SPOTIFLOW_CHANNEL_KEYS = ('normalize', 'perc_low', 'perc_high', 'use_optimized_threshold', 'prob_thresh', 'min_distance')
 
 class _OmniposeTrainWorker(QThread):
     """Runs Omnipose training subprocess in background so the GUI stays responsive."""
@@ -1973,7 +1974,8 @@ class OmniposeSegTab(QWidget):
         custom = getattr(self, '_spotiflow_detection_params', None)
         if isinstance(custom, dict):
             merged.update(custom)
-        key = str(channel_key or '').strip()
+        from bactomate.gui.filter_preview_utils import normalize_foci_channel_key
+        key = normalize_foci_channel_key(channel_key)
         if key:
             chmap = getattr(self, '_spotiflow_channel_params', None)
             if isinstance(chmap, dict):
@@ -1983,28 +1985,45 @@ class OmniposeSegTab(QWidget):
         return merged
 
     def _ensure_spotiflow_channel_entries(self, foci_paths: list[Path]) -> None:
-        """Create per-channel Spotiflow entries for each foci stack (copy global defaults for new tags)."""
-        template = self._get_spotiflow_detection_params()
+        """Create empty per-channel override entries for each foci stack.
+
+        An empty entry means "inherit defaults + global params"; only values the user
+        edits for a channel are stored (see ``_save_spotiflow_widgets_to_channel``).
+        """
         chmap = getattr(self, '_spotiflow_channel_params', None)
         if not isinstance(chmap, dict):
             self._spotiflow_channel_params = {}
             chmap = self._spotiflow_channel_params
-        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
         for fp in foci_paths:
-            tag = foci_channel_key_for_path(Path(fp))
+            tag = self._spotiflow_channel_key_for_path(Path(fp))
             if tag not in chmap:
-                chmap[tag] = dict(template)
+                chmap[tag] = {}
+
+    def _spotiflow_channel_key_for_path(self, foci_path: Path) -> str:
+        """Canonical per-channel key for a foci stack; migrates a legacy-key entry (old sessions) once."""
+        from bactomate.gui.filter_preview_utils import migrate_foci_channel_entry
+        chmap = getattr(self, '_spotiflow_channel_params', None)
+        if not isinstance(chmap, dict):
+            self._spotiflow_channel_params = {}
+            chmap = self._spotiflow_channel_params
+        return migrate_foci_channel_entry(chmap, Path(foci_path))
 
     def _spotiflow_channel_key_for_preview_index(self, preview_dialog: Any, source_index: int) -> str:
-        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
         paths = getattr(preview_dialog, '_foci_source_paths', None) or []
         si = int(source_index)
         if 0 <= si < len(paths):
-            return foci_channel_key_for_path(Path(paths[si]))
+            return self._spotiflow_channel_key_for_path(Path(paths[si]))
         return '_default'
 
+    @staticmethod
+    def _strip_to_channel_overrides(entry: Any) -> dict[str, Any]:
+        """Keep only per-channel UI keys (drops model/subpix/other global-only keys from legacy snapshots)."""
+        if not isinstance(entry, dict):
+            return {}
+        return {k: v for (k, v) in entry.items() if k in SPOTIFLOW_CHANNEL_KEYS}
+
     def _spotiflow_slice_from_preview_widgets(self, dlg: QWidget) -> dict[str, Any]:
-        out: dict[str, Any] = {'subpix': True}
+        out: dict[str, Any] = {}
         try:
             if getattr(dlg, '_sf_normalize_cb', None) is not None:
                 out['normalize'] = bool(dlg._sf_normalize_cb.isChecked())
@@ -2110,14 +2129,16 @@ class OmniposeSegTab(QWidget):
         return '_default'
 
     def _save_spotiflow_widgets_to_channel(self, dlg: QWidget, channel_key: str) -> None:
-        key = str(channel_key or '').strip() or '_default'
+        from bactomate.gui.filter_preview_utils import normalize_foci_channel_key
+        key = normalize_foci_channel_key(channel_key) or '_default'
         slice_dict = self._spotiflow_slice_from_preview_widgets(dlg)
-        base = self._get_spotiflow_detection_params()
-        merged = {**base, **slice_dict}
         if not isinstance(getattr(self, '_spotiflow_channel_params', None), dict):
             self._spotiflow_channel_params = {}
-        self._spotiflow_channel_params[key] = dict(merged)
-        self._spotiflow_detection_params.update(slice_dict)
+        # Per-channel overrides only; the global template is never mutated by a channel edit.
+        # Store only values that differ from the effective global; keys equal to global stay inherited.
+        global_params = self._get_spotiflow_detection_params()
+        overrides = {k: v for (k, v) in self._strip_to_channel_overrides(slice_dict).items() if k not in global_params or global_params[k] != v}
+        self._spotiflow_channel_params[key] = overrides
 
     def _load_spotiflow_widgets_for_channel(self, dlg: QWidget, channel_key: str) -> None:
         sf = self._get_spotiflow_detection_params(channel_key=channel_key)
@@ -2321,7 +2342,10 @@ class OmniposeSegTab(QWidget):
             self._segment_filename_filter = str(data['segment_filename_filter']).strip() or ''
         raw_ch = (data or {}).get('spotiflow_channels')
         if isinstance(raw_ch, dict) and raw_ch:
-            self._spotiflow_channel_params = {str(k): dict(v) for (k, v) in raw_ch.items() if isinstance(v, dict)}
+            # Legacy sessions stored full snapshots per channel; keep only per-channel keys.
+            # Keys are casefolded; legacy per-sample/truncated keys migrate lazily per foci path.
+            from bactomate.gui.filter_preview_utils import normalize_foci_channel_map
+            self._spotiflow_channel_params = normalize_foci_channel_map({str(k): self._strip_to_channel_overrides(v) for (k, v) in raw_ch.items() if isinstance(v, dict)})
         if any((isinstance(k, str) and k.startswith('spotiflow_') for k in (data or {}).keys())):
             merged_sf = dict(SPOTIFLOW_DETECTION_DEFAULTS)
             for (k, v) in (data or {}).items():
@@ -2329,7 +2353,7 @@ class OmniposeSegTab(QWidget):
                     merged_sf[k[len('spotiflow_'):]] = v
             self._spotiflow_detection_params = merged_sf
             if not self._spotiflow_channel_params:
-                self._spotiflow_channel_params = {'_default': dict(merged_sf)}
+                self._spotiflow_channel_params = {}
         if 'foci_csv_min_probability' in data:
             try:
                 self._foci_csv_min_probability = float(data['foci_csv_min_probability'] or 0.0)
@@ -2912,6 +2936,24 @@ class OmniposeSegTab(QWidget):
                 preview_dialog._foci_worker = None
                 preview_dialog._foci_worker_slot = None
 
+            def _csv_minp_note() -> str:
+                m = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+                return f' (raw CSV min probability {m:g} applied)' if m > 0 else ''
+
+            def _foci_status(text: str) -> None:
+                """Show foci feedback in the Spotiflow section (visible in embedded mode) and the toolbar label."""
+                lbl = getattr(preview_dialog, '_sf_foci_status_label', None)
+                if lbl is not None:
+                    try:
+                        lbl.setText(text)
+                        lbl.setVisible(bool(text))
+                    except Exception:
+                        pass
+                try:
+                    status_label.setText(text)
+                except Exception:
+                    pass
+
             def _finalize_foci_peaks_status(src_idx: int, frame_idx: int, *, spotiflow_available: bool, status_parts: list[str]) -> None:
                 sf_cur = self._get_spotiflow_detection_params(channel_key=self._spotiflow_channel_key_for_preview_index(preview_dialog, src_idx))
                 ch_key = self._spotiflow_channel_key_for_preview_index(preview_dialog, src_idx)
@@ -2920,23 +2962,14 @@ class OmniposeSegTab(QWidget):
                 cache = getattr(preview_dialog, '_foci_peaks_cache', None) or {}
                 preview_dialog._foci_peaks_for_current = list(cache.get(cur_key) or [])
                 if not spotiflow_available:
-                    try:
-                        status_label.setText(
-                            'Foci: Spotiflow unavailable — check logs '
-                            '(often wandb/protobuf mismatch on Windows). No peaks drawn.'
-                        )
-                    except Exception:
-                        pass
+                    _foci_status(
+                        'Foci: Spotiflow unavailable — check logs '
+                        '(often wandb/protobuf mismatch on Windows). No peaks drawn.'
+                    )
                 elif status_parts:
-                    try:
-                        status_label.setText('Foci — ' + ', '.join(status_parts))
-                    except Exception:
-                        pass
+                    _foci_status('Foci — ' + ', '.join(status_parts) + _csv_minp_note())
                 else:
-                    try:
-                        status_label.setText(f'Foci: {len(preview_dialog._foci_peaks_for_current)} peak(s) on current frame.')
-                    except Exception:
-                        pass
+                    _foci_status(f'Foci: {len(preview_dialog._foci_peaks_for_current)} peak(s) on current frame.' + _csv_minp_note())
                 refresh_image_display()
 
             def _compute_foci_peaks_for_current(frame_idx: int, *, allow_detect: bool=True, force_recalc: bool=False, background: bool=False) -> None:
@@ -2967,11 +3000,7 @@ class OmniposeSegTab(QWidget):
                 combo = getattr(preview_dialog, '_sf_channel_combo', None) or getattr(preview_dialog, '_foci_source_combo', None)
                 sources = getattr(preview_dialog, '_foci_sources', None) or []
 
-                def _set_status(text: str) -> None:
-                    try:
-                        status_label.setText(text)
-                    except Exception:
-                        pass
+                _set_status = _foci_status
 
                 def _clear_peaks() -> None:
                     preview_dialog._foci_peaks_for_current = []
@@ -3094,8 +3123,11 @@ class OmniposeSegTab(QWidget):
                     cur_key = _cache_key(src_idx, sf_cur)
                     cached_now = list(cache.get(cur_key) or [])
                     preview_dialog._foci_peaks_for_current = cached_now
-                    act_lbl = self._active_spotiflow_channel_key(preview_dialog)
-                    _set_status(f'Spotiflow settings saved for “{act_lbl}”. Rings for that channel are hidden until Re-detect; other channels unchanged.')
+                    act_lbl = short_foci_stack_label(Path(paths[src_idx])) if 0 <= src_idx < len(paths) else self._active_spotiflow_channel_key(preview_dialog)
+                    if cur_key in cache:
+                        _set_status(f'Foci “{act_lbl}”: {len(cached_now)} peak(s) on current frame.' + _csv_minp_note())
+                    else:
+                        _set_status(f'Spotiflow settings for “{act_lbl}” changed. Rings hidden until Re-detect; other channels unchanged.')
                     refresh_image_display()
                     return
                 _finalize_foci_peaks_status(src_idx, frame_idx, spotiflow_available=spotiflow_available, status_parts=status_parts)
@@ -3106,7 +3138,7 @@ class OmniposeSegTab(QWidget):
             status_label = QLabel('Ready')
             status_label.setStyleSheet('color: #7F8C8D; font-size: 9pt; font-style: italic;')
             if embed_seg:
-                status_label.hide()
+                status_label.hide()  # foci feedback is shown in preview_dialog._sf_foci_status_label instead
 
             def find_model_file(model_type, model_index=0, use_torch=True):
                 """
@@ -4261,7 +4293,7 @@ class OmniposeSegTab(QWidget):
                 from bactomate.gui.filter_preview_utils import foci_channel_key_for_path, short_foci_stack_label
                 self._ensure_spotiflow_channel_entries([Path(p) for p in foci_sources])
                 sf_channel_lbl = _spot_param_label('Foci channel')
-                sf_channel_lbl.setToolTip('Spotiflow settings on this row apply to this foci stack only. Switch channel to tune each reporter separately.')
+                sf_channel_lbl.setToolTip('Normalize, percentiles, threshold and min distance on this row apply to the selected foci stack only (per-channel overrides). Model and other options are shared.\nSwitch channel to tune each reporter separately.')
                 sf_channel_combo = QComboBox(preview_dialog)
                 sf_channel_combo.setMinimumContentsLength(12)
                 sf_channel_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
@@ -4329,13 +4361,17 @@ class OmniposeSegTab(QWidget):
                 sf_phigh.setToolTip('Upper percentile for Spotiflow normalization (used only when Normalize is on).')
                 sf_params_row.addWidget(sf_phigh)
                 sf_params_row.addWidget(_spot_col_sep())
+                def _csv_tip() -> str:
+                    m = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+                    return f'\nNote: a session raw-CSV minimum probability of {m:g} is also applied.' if m > 0 else ''
                 sf_use_opt = QCheckBox('Optimized threshold')
                 sf_use_opt.setChecked(bool(p_sf.get('use_optimized_threshold', True)))
-                sf_use_opt.setToolTip('When on, Spotiflow uses its optimized threshold; probability threshold is ignored.')
+                sf_use_opt.setToolTip('Per-channel detection threshold mode. When on, Spotiflow uses its model-optimized threshold and Prob thr is ignored.\nPeaks below the detection threshold are never written to the raw foci CSV; the Filtering stage probability filter can only remove more peaks later.' + _csv_tip())
                 sf_use_opt.setStyleSheet(_sf_cb_style)
                 sf_params_row.addWidget(sf_use_opt)
                 sf_params_row.addWidget(_spot_param_label('Prob thr'))
                 sf_prob = QDoubleSpinBox()
+                sf_prob.setToolTip('Per-channel Spotiflow detection threshold (used when Optimized threshold is off).\nPeaks below it are never written to the raw foci CSV; the Filtering stage probability filter can only remove more peaks later.' + _csv_tip())
                 sf_prob.setRange(0.0, 1.0)
                 sf_prob.setDecimals(2)
                 sf_prob.setSingleStep(0.05)
@@ -4364,6 +4400,12 @@ class OmniposeSegTab(QWidget):
                 _sf_hint.setStyleSheet(f"QLabel {{ color: {UI_THEME['muted_text']}; font-size: 9pt; padding: 0 2px 4px 2px; }}")
                 nav_layout.addWidget(_sf_hint)
                 nav_layout.addLayout(sf_params_row)
+                _sf_foci_status = QLabel('')
+                _sf_foci_status.setWordWrap(True)
+                _sf_foci_status.setStyleSheet(f"QLabel {{ color: {UI_THEME['muted_text']}; font-size: 9pt; font-style: italic; padding: 0 2px 2px 2px; }}")
+                _sf_foci_status.hide()
+                nav_layout.addWidget(_sf_foci_status)
+                preview_dialog._sf_foci_status_label = _sf_foci_status
                 _foci_sf_row = (sf_channel_lbl, sf_channel_combo, sf_norm_cb, sf_plow, sf_phigh, sf_use_opt, sf_prob, sf_min_dist)
                 for _w in _foci_sf_row:
                     try:
@@ -5614,16 +5656,16 @@ class OmniposeSegTab(QWidget):
                         from bactomate.gui.artifact_paths import infer_pipeline_dir_from_mask, foci_csv_path
                         mask_guess = output_dir / f'{Path(tiff_file).stem}_masks.tif'
                         pipeline_dir = infer_pipeline_dir_from_mask(mask_guess)
-                        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
+                        from bactomate.gui.filter_preview_utils import short_foci_stack_label
                         for src in sources:
                             try:
                                 stack = safe_imread(str(src))
                             except Exception:
                                 continue
                             csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
-                            ch_key = foci_channel_key_for_path(src)
+                            ch_key = self._spotiflow_channel_key_for_path(src)
                             sf_ch = self._get_spotiflow_detection_params(channel_key=ch_key)
-                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {ch_key}]\n')
+                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {short_foci_stack_label(src)}]\n')
                             (ok_foci, reason) = self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None, spotiflow_params=sf_ch)
                             if not ok_foci:
                                 self.parent_window.log_output(f'[Foci] Detection failed for {src.name}: {reason}. CSV not written.\n')
@@ -5764,16 +5806,16 @@ class OmniposeSegTab(QWidget):
                         from bactomate.gui.artifact_paths import infer_pipeline_dir_from_mask, foci_csv_path
                         mask_guess = out_dir / f'{in_path.stem}_masks.tif'
                         pipeline_dir = infer_pipeline_dir_from_mask(mask_guess)
-                        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
+                        from bactomate.gui.filter_preview_utils import short_foci_stack_label
                         for src in sources:
                             try:
                                 stack = safe_imread(str(src))
                             except Exception:
                                 continue
                             csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
-                            ch_key = foci_channel_key_for_path(src)
+                            ch_key = self._spotiflow_channel_key_for_path(src)
                             sf_ch = self._get_spotiflow_detection_params(channel_key=ch_key)
-                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {ch_key}]\n')
+                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {short_foci_stack_label(src)}]\n')
                             (ok_foci, reason) = self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None, spotiflow_params=sf_ch)
                             if not ok_foci:
                                 self.parent_window.log_output(f'[Foci] Detection failed for {src.name}: {reason}. CSV not written.\n')

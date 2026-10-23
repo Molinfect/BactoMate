@@ -9,6 +9,8 @@ from bactomate.gui.analysis_paths import artifact_search_dirs_for_mask
 from bactomate.gui.artifact_paths import (
     collect_background_paths_for_mask,
     file_identity_key,
+    foci_channel_key_from_path,
+    foci_channel_tag_from_path,
     mask_stem_from_path,
     path_matches_mask_sample,
 )
@@ -166,7 +168,79 @@ def default_foci_channel_settings() -> dict[str, Any]:
 
 
 def foci_channel_key_for_path(foci_source: Path) -> str:
-    return short_foci_stack_label(Path(foci_source))
+    """Canonical, sample-independent, case-insensitive foci settings key (see ``foci_channel_tag_from_path``)."""
+    return foci_channel_key_from_path(Path(foci_source))
+
+
+def normalize_foci_channel_key(key: Any) -> str:
+    return str(key or "").strip().casefold()
+
+
+def normalize_foci_channel_map(channels: dict[str, Any]) -> dict[str, Any]:
+    """Casefold channel keys (session files may hold ``GFP`` and ``gfp``).
+
+    Collisions resolve deterministically: the key already normalized wins, else the first in sorted order.
+    """
+    groups: dict[str, list[str]] = {}
+    for k in channels:
+        groups.setdefault(normalize_foci_channel_key(k), []).append(k)
+    out: dict[str, Any] = {}
+    for nk, ks in groups.items():
+        if len(ks) == 1:
+            out[nk] = channels[ks[0]]
+            continue
+        exact = [k for k in ks if str(k).strip() == nk]
+        winner = exact[0] if exact else sorted(ks, key=str)[0]
+        out[nk] = channels[winner]
+        try:
+            if any(channels[k] != channels[winner] for k in ks):
+                from bactomate.logging_config import get_logger
+                get_logger().warning("Foci channel keys %s collide after casefold; using %r", sorted(map(str, ks)), winner)
+        except Exception:
+            pass
+    return out
+
+
+def _legacy_short_foci_stack_label(path: Path) -> str:
+    """Pre-canonical settings key (kept only to migrate old session files)."""
+    stem = Path(path).stem
+    for pat in (r"_fi_foci_(?P<ch>.+)$", r"_foci_(?P<ch>.+)$", r"_fi_(?P<ch>.+)$"):
+        m = re.search(pat, stem, flags=re.IGNORECASE)
+        if m:
+            ch = (m.group("ch") or "").strip("_")
+            if ch:
+                return ch
+    if len(stem) > 28:
+        return stem[:25] + "…"
+    return stem
+
+
+def legacy_foci_channel_keys_for_path(foci_source: Path) -> list[str]:
+    """Normalized keys older BactoMate versions stored for this stack (excluding the canonical key)."""
+    canonical = foci_channel_key_for_path(foci_source)
+    legacy = normalize_foci_channel_key(_legacy_short_foci_stack_label(Path(foci_source)))
+    return [legacy] if legacy and legacy != canonical else []
+
+
+def foci_channel_entry_for_path(
+    channels: dict[str, Any], foci_source: Path
+) -> tuple[str, Optional[dict[str, Any]]]:
+    """Canonical key + its entry, falling back to a legacy key's entry (no mutation)."""
+    key = foci_channel_key_for_path(foci_source)
+    index = {normalize_foci_channel_key(k): k for k in channels}
+    for cand in [key, *legacy_foci_channel_keys_for_path(foci_source)]:
+        orig = index.get(cand)
+        if orig is not None and isinstance(channels.get(orig), dict):
+            return key, channels[orig]
+    return key, None
+
+
+def migrate_foci_channel_entry(channels: dict[str, Any], foci_source: Path) -> str:
+    """Return the canonical key; copy a legacy-key entry under it when only the legacy one exists."""
+    key, entry = foci_channel_entry_for_path(channels, foci_source)
+    if entry is not None and not isinstance(channels.get(key), dict):
+        channels[key] = dict(entry)
+    return key
 
 
 def legacy_foci_settings_slice(settings: dict[str, Any]) -> dict[str, Any]:
@@ -180,7 +254,7 @@ def legacy_foci_settings_slice(settings: dict[str, Any]) -> dict[str, Any]:
 def ensure_foci_channels_map(settings: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Ensure ``settings['foci_channels']`` exists; migrate flat legacy foci_* keys once."""
     raw = settings.get("foci_channels")
-    channels: dict[str, dict[str, Any]] = dict(raw) if isinstance(raw, dict) else {}
+    channels: dict[str, dict[str, Any]] = normalize_foci_channel_map(raw) if isinstance(raw, dict) else {}
     legacy = legacy_foci_settings_slice(settings)
     if not channels:
         seed = {**default_foci_channel_settings(), **legacy}
@@ -200,7 +274,7 @@ def seed_foci_channel_settings(settings: dict[str, Any], foci_sources: list[Path
     legacy = legacy_foci_settings_slice(settings)
     template = {**default_foci_channel_settings(), **legacy}
     for fp in foci_sources:
-        key = foci_channel_key_for_path(fp)
+        key = migrate_foci_channel_entry(channels, fp)
         if key not in channels:
             channels[key] = dict(template)
 
@@ -214,7 +288,7 @@ def resolve_foci_settings_for_source(
     if foci_source is None:
         ch = channels.get("_default") or default_foci_channel_settings()
     else:
-        key = foci_channel_key_for_path(foci_source)
+        key = migrate_foci_channel_entry(channels, foci_source)
         ch = channels.get(key)
         if not isinstance(ch, dict):
             template = channels.get("_default") or default_foci_channel_settings()
@@ -297,17 +371,11 @@ def request_filter_preview_apply(
 
 
 def short_foci_stack_label(path: Path) -> str:
-    """Short channel label for UI (e.g. ``GFP`` from ``sample_fi_foci_GFP.tif``)."""
-    stem = Path(path).stem
-    for pat in (r"_fi_foci_(?P<ch>.+)$", r"_foci_(?P<ch>.+)$", r"_fi_(?P<ch>.+)$"):
-        m = re.search(pat, stem, flags=re.IGNORECASE)
-        if m:
-            ch = (m.group("ch") or "").strip("_")
-            if ch:
-                return ch
-    if len(stem) > 28:
-        return stem[:25] + "…"
-    return stem
+    """Short channel label for UI (e.g. ``GFP`` from ``sample_fi_foci_GFP.tif``); display only, never a key."""
+    tag = foci_channel_tag_from_path(Path(path))
+    if len(tag) > 28:
+        return tag[:25] + "…"
+    return tag
 
 
 def phase_stack_candidates_for_mask(mask_path: Path) -> list[Path]:

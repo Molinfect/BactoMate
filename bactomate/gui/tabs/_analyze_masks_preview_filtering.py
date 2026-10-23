@@ -11,7 +11,7 @@ from bactomate.gui.filter_preview_apply import FilterPreviewApplyLifecycle
 from bactomate.gui.image_utils import scale_for_preview, to_qpixmap
 from bactomate.gui.log_config import write_gui_log_line
 from bactomate.gui.utils import safe_imread
-from bactomate.gui.layout_helpers import PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT, build_settings_card, build_preview_settings_scroll, checkbox_with_control, flex_control, setting_cell, setting_field, style_module_primary_button
+from bactomate.gui.layout_helpers import PREVIEW_SETTINGS_SCROLL_MIN_HEIGHT, build_settings_card, build_preview_settings_scroll, checkbox_with_control, flex_control, setting_cell, setting_field, style_module_primary_button, style_preview_nav_combo
 from bactomate.gui.widgets import create_info_icon, show_message_dialog
 from bactomate.gui.styles import filter_preview_card_stylesheet, preview_table_stylesheet
 from bactomate.gui.foci_filter_pipeline import FOCI_BLOB_SIZE_PRESETS, FociPassFailCache, accepted_cell_labels_cache_key, accepted_cell_labels_for_foci, sync_foci_peaks_with_accepted_cells, compute_foci_pass_fail_for_frame, draw_foci_blob_contours_on_rgb, filter_foci_csv_rows, fit_foci_table_columns, foci_blob_max_radius, foci_blob_threshold_frac, foci_pass_fail_cache_key, format_foci_cell_id_display, populate_foci_preview_table, apply_foci_table_header_sort
@@ -23,7 +23,7 @@ from bactomate.gui.foci_overlay_draw import (
     draw_peak_pixels_on_rgb,
     draw_peak_rings_on_rgb,
 )
-from bactomate.gui.filter_preview_utils import cell_filter_settings_signature, foci_channel_key_for_path, foci_channel_settings_signature, resolve_foci_settings_for_source, seed_foci_channel_settings, evaluate_cell_filter_details, build_cell_hover_data
+from bactomate.gui.filter_preview_utils import cell_filter_settings_signature, foci_channel_key_for_path, foci_channel_settings_signature, resolve_foci_settings_for_source, seed_foci_channel_settings, evaluate_cell_filter_details, build_cell_hover_data, short_foci_stack_label
 from bactomate.gui.preview.preview_window import CollapsibleSection, PreviewDialogBase, RenderResult
 from bactomate.modules.tiff_metadata import resolve_calibration_for_mask
 _FOCI_PASS_RGB = (255, 165, 0)
@@ -188,14 +188,16 @@ def collect_visible_foci_peaks_for_hover(*, overlay_sources: list[Path], channel
         if not channel_visible(si, fp):
             continue
         ch_key = foci_channel_key_for_path(fp)
+        # Tooltip label: readable tag (original case); ch_key is the casefolded settings key.
+        ch_label = short_foci_stack_label(fp)
         (ch_pass, ch_fail) = channel_peaks(ch_key, fp)
         for peak in ch_pass or []:
             row = dict(peak)
-            row['_foci_channel'] = ch_key
+            row['_foci_channel'] = ch_label
             hover_pass.append(row)
         for peak in ch_fail or []:
             row = dict(peak)
-            row['_foci_channel'] = ch_key
+            row['_foci_channel'] = ch_label
             hover_fail.append(row)
     return (hover_pass, hover_fail)
 
@@ -591,7 +593,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     num_frames = int(masks.shape[0])
     from bactomate.gui.filter_preview_utils import collect_background_paths_for_mask, default_background_index, preview_view_label
     bg_paths = collect_background_paths_for_mask(mask_path)
-    from bactomate.gui.filter_preview_utils import short_foci_stack_label
     foci_sources = [Path(fp) for fp in bg_paths if '_foci' in fp.name.lower() or 'fi_foci' in fp.name.lower()]
     has_foci_image_files = len(foci_sources) > 0
     try:
@@ -599,7 +600,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             tab.ensure_foci_channel_settings_for_sources(foci_sources)
         else:
             fs_seed = tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}
-            seed_foci_channel_settings(dict(fs_seed), foci_sources)
+            seed_foci_channel_settings(fs_seed, foci_sources)
             if hasattr(tab, 'set_filter_settings'):
                 tab.set_filter_settings(fs_seed)
     except Exception:
@@ -701,7 +702,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     def _cell_spin_field(label: str, spin: QDoubleSpinBox):
         return setting_field(label, spin, min_width=_CELL_SPIN_W, max_width=_CELL_SPIN_W)
     cell_group = build_settings_card(
-        'Cell filtering',
+        '',
         object_name='FilterCellGroup',
         parent=settings_host,
         min_cell_width=220,
@@ -728,7 +729,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     )
     cell_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
     w_prob_en = QCheckBox('Probability ≥')
-    w_prob_en.setToolTip('Minimum Spotiflow probability.')
+    w_prob_en.setToolTip('Minimum Spotiflow probability. This filter can only remove peaks already written by Spotiflow detection; peaks below the Segmentation-stage detection threshold never reach the CSV, so lowering this value cannot bring them back.')
     w_prob_en.setChecked(bool(fs_foci0.get('foci_prob_enabled', False)))
     w_prob_thr = _mk_spin(decimals=3, mn=0.0, mx=1.0, step=0.05, value=float(fs_foci0.get('foci_prob_thresh', 0.5) or 0.5))
     w_minint_en = QCheckBox('Min intensity ≥')
@@ -772,18 +773,50 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     _foci_radius_info = 'Maximum search radius limits how far from each peak the focus region can grow.\n\nGrowth is computed only within ±N pixels around the peak (square window). Bright pixels beyond this distance are ignored even if they would otherwise pass the foci size threshold.\n\nIncrease for large or diffuse foci; decrease to keep measurements local to the peak.'
     w_blob_size.setToolTip(_foci_size_info)
     w_blob_radius.setToolTip(_foci_radius_info)
-    foci_channel_badge = QLabel('')
-    foci_channel_badge.setObjectName('FociChannelBadge')
-    foci_channel_badge.setStyleSheet('#FociChannelBadge { color: #8fbfff; background-color: #202733; border: 1px solid #303844; border-radius: 6px; padding: 4px 8px; font-weight: 600;}')
-    foci_channel_badge.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    foci_channel_badge.setVisible(False)
-    foci_group = build_settings_card('Foci filtering', object_name='FilterFociGroup', parent=settings_host, min_cell_width=160, label_min_width=84, control_max_width=104, max_columns=5, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterFociGroup'), fields=[setting_cell(foci_channel_badge), setting_cell(checkbox_with_control(w_prob_en, w_prob_thr, parent=settings_host)), setting_cell(checkbox_with_control(w_minint_en, w_minint, parent=settings_host)), setting_cell(w_foci_excl_outside_clear), setting_cell(w_foci_excl_outside_touch), setting_field('Foci size', w_blob_size, min_width=72, max_width=112), setting_cell(checkbox_with_control(w_minarea_en, w_minarea, parent=settings_host)), setting_cell(checkbox_with_control(w_ratio_en, w_ratio, parent=settings_host)), setting_cell(w_show_foci_table), setting_field('Max radius (px)', w_blob_radius, min_width=52, max_width=76)])
+    foci_channel_combo = QComboBox()
+    foci_channel_combo.setObjectName('FociChannelCombo')
+    foci_channel_combo.setToolTip('Foci channel edited by the settings below. Independent of the View background.')
+    style_preview_nav_combo(foci_channel_combo)
+    foci_channel_combo.setMinimumWidth(110)
+    foci_copy_all_btn = QPushButton('Copy to all channels')
+    foci_copy_all_btn.setObjectName('FociCopyToAllButton')
+    foci_copy_all_btn.setToolTip("Copy this channel's foci filter settings to every other foci channel of this sample.")
+    foci_copy_all_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    foci_copy_all_btn.setVisible(len(foci_sources) > 1)
+    foci_channel_row = QWidget(settings_host)
+    _fcr_lay = QHBoxLayout(foci_channel_row)
+    _fcr_lay.setContentsMargins(0, 0, 0, 0)
+    _fcr_lay.setSpacing(8)
+    _fcr_lay.addWidget(QLabel('Foci channel'))
+    _fcr_lay.addWidget(foci_channel_combo)
+    _fcr_lay.addWidget(foci_copy_all_btn)
+    _fcr_lay.addStretch(1)
+    for _fp in foci_sources:
+        foci_channel_combo.addItem(short_foci_stack_label(_fp), foci_channel_key_for_path(_fp))
+        foci_channel_combo.setItemData(foci_channel_combo.count() - 1, str(_fp), Qt.ItemDataRole.ToolTipRole)
+    foci_channel_row.setVisible(len(foci_sources) > 1)
+    foci_group = build_settings_card('', object_name='FilterFociGroup', parent=settings_host, min_cell_width=160, label_min_width=84, control_max_width=104, max_columns=5, h_spacing=18, stylesheet=filter_preview_card_stylesheet('FilterFociGroup'), fields=([setting_cell(foci_channel_row)] if len(foci_sources) > 1 else []) + [setting_cell(checkbox_with_control(w_prob_en, w_prob_thr, parent=settings_host)), setting_cell(checkbox_with_control(w_minint_en, w_minint, parent=settings_host)), setting_cell(w_foci_excl_outside_clear), setting_cell(w_foci_excl_outside_touch), setting_field('Foci size', w_blob_size, min_width=72, max_width=112), setting_cell(checkbox_with_control(w_minarea_en, w_minarea, parent=settings_host)), setting_cell(checkbox_with_control(w_ratio_en, w_ratio, parent=settings_host)), setting_cell(w_show_foci_table), setting_field('Max radius (px)', w_blob_radius, min_width=52, max_width=76)])
     foci_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-    settings_outer.addWidget(cell_group)
+    # Collapsible cards so the foci card stays reachable when both are shown; state persists on the tab.
+    _card_expanded = getattr(tab, '_filter_preview_card_expanded', None)
+    if not isinstance(_card_expanded, dict):
+        _card_expanded = {}
+        try:
+            tab._filter_preview_card_expanded = _card_expanded
+        except Exception:
+            pass
+    cell_section = CollapsibleSection('Cell filtering', cell_group, parent=settings_host, expanded=bool(_card_expanded.get('cell', True)), compact=True)
+    foci_section = CollapsibleSection('Foci filtering', foci_group, parent=settings_host, expanded=bool(_card_expanded.get('foci', True)), compact=True)
+    for (_card_key, _section) in (('cell', cell_section), ('foci', foci_section)):
+        try:
+            _section.toggled.connect(lambda expanded, k=_card_key: (_card_expanded.__setitem__(k, bool(expanded)), _sync_filter_settings_panel_height()))
+        except Exception:
+            pass
+    settings_outer.addWidget(cell_section)
     if has_foci_image_files:
-        settings_outer.addWidget(foci_group)
+        settings_outer.addWidget(foci_section)
     else:
-        foci_group.setVisible(False)
+        foci_section.setVisible(False)
     foci_table_host = QWidget()
     foci_table_lay = QVBoxLayout(foci_table_host)
     foci_table_lay.setContentsMargins(0, 0, 0, 0)
@@ -1073,19 +1106,15 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         return 0
 
     def _active_foci_channel_index() -> int:
+        """Channel edited by the foci widgets: the explicit Foci channel combo (not the View)."""
         if not foci_sources:
             return 0
-        view_p = _selected_image_path()
-        if _view_path_is_foci(view_p):
-            return _foci_index_for_path(view_p)
-        return 0
+        idx = int(foci_channel_combo.currentIndex())
+        return max(0, min(idx, len(foci_sources) - 1))
 
     def _active_foci_channel_key() -> str:
         if not foci_sources:
             return '_default'
-        view_p = _selected_image_path()
-        if _view_path_is_foci(view_p):
-            return foci_channel_key_for_path(view_p)
         return foci_channel_key_for_path(foci_sources[_active_foci_channel_index()])
 
     def _foci_channel_settings_for_key(ch_key: str) -> dict[str, Any]:
@@ -1145,7 +1174,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 if not ch_rows or ch_plane is None:
                     prefilled[ch_key] = {'pass_peaks': [], 'fail_peaks': []}
                     continue
-                jobs.append({'channel_key': ch_key, 'frame_rows': [dict(r) for r in ch_rows], 'foci_plane': np.asarray(ch_plane).copy(), 'settings': dict(ch_only)})
+                jobs.append({'channel_key': ch_key, 'channel_label': short_foci_stack_label(fp), 'frame_rows': [dict(r) for r in ch_rows], 'foci_plane': np.asarray(ch_plane).copy(), 'settings': dict(ch_only)})
         return {'reuse_cells': reuse_cells, 'cell_sig': cell_sig, 'cell_changed': cell_changed, 'prefilled': prefilled, 'jobs': jobs, 'channels_to_score': channels_to_score}
 
     def _invalidate_foci_pass_fail_cache(frame_idx: int, channel_keys: Optional[set[str]]=None) -> None:
@@ -1179,10 +1208,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
 
     def _commit_filter_apply_result(*, frame_idx: int, accepted: set[int], rejected: set[int], n_obj: Optional[int], foci_channels_last: dict[str, dict[str, list]], request_settings: dict[str, Any], request_settings_sig: str, cell_settings_sig: str, foci_channel_sigs: dict[str, str], request_source_key: tuple, foci_txt: str='') -> None:
         source_key = tuple(request_source_key)
-        active_ch = _active_foci_channel_key()
-        pass_peaks = list(foci_channels_last.get(active_ch, {}).get('pass_peaks') or [])
-        fail_peaks = list(foci_channels_last.get(active_ch, {}).get('fail_peaks') or [])
         foci_src = _foci_source_for_source_key(source_key)
+        # Drawn/counted peaks follow the View's foci channel; the combo only selects which channel widgets edit.
+        display_ch = foci_channel_key_for_path(foci_src) if foci_src is not None else _active_foci_channel_key()
+        pass_peaks = list(foci_channels_last.get(display_ch, {}).get('pass_peaks') or [])
+        fail_peaks = list(foci_channels_last.get(display_ch, {}).get('fail_peaks') or [])
         frame_rows = _rows_for_frame(_load_rows_for_source(foci_src), int(frame_idx))
         raw_n = len(frame_rows)
         mask_arr = np.asarray(_preview_mask_stack()[int(frame_idx)], dtype=np.int32)
@@ -1322,17 +1352,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         view_p = _selected_image_path()
         is_foci_view = _view_path_is_foci(view_p)
         try:
-            cell_group.setVisible(not is_foci_view)
-            foci_group.setVisible(bool(is_foci_view and has_foci_image_files))
-            if has_foci_image_files:
-                ch_key = _active_foci_channel_key()
-                foci_group.setTitle('Foci filtering')
-                if ch_key and ch_key != '_default':
-                    foci_channel_badge.setText(f'Channel: {ch_key}')
-                    foci_channel_badge.setVisible(True)
-                else:
-                    foci_channel_badge.setText('')
-                    foci_channel_badge.setVisible(False)
+            cell_section.setVisible(True)
+            foci_section.setVisible(bool(has_foci_image_files))
         except Exception:
             pass
         _sync_filter_settings_panel_height()
@@ -2693,6 +2714,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             # Hidden combo mirror: swap View background only (no Apply).
             try:
                 _ui_to_settings()
+                _sync_foci_combo_to_view()
+                _settings_to_ui()
             except Exception:
                 pass
             src = _selected_source()
@@ -2702,7 +2725,10 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         def _on_nav_changed(st: PreviewNavState, reason: str) -> None:
             if reason == 'source':
                 try:
+                    # Nav state already points at the new source: _ui_to_settings writes to the remembered (old) channel key, then widgets reload for the new one.
                     _ui_to_settings()
+                    _sync_foci_combo_to_view()
+                    _settings_to_ui()
                 except Exception:
                     pass
             try:
@@ -2823,6 +2849,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 pass
         QTimer.singleShot(0, _deferred_initial_refresh)
 
+        _foci_widgets_key = {'key': None}
+
         def _ui_to_settings() -> None:
             if not hasattr(tab, 'set_filter_settings'):
                 return
@@ -2839,16 +2867,79 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 except Exception:
                     return None
             tab.set_filter_settings({'pixel_size': float(w_pixel.value()), 'min_aspect_ratio': float(w_min_ar.value()), 'max_aspect_ratio': float(w_max_ar.value()), 'min_eccentricity': float(w_min_ecc.value()), 'min_solidity': float(w_min_sol.value()), 'min_area_um2': _opt0(w_min_area), 'max_area_um2': _opt0(w_max_area), 'min_width_um': _opt0(w_min_w), 'max_width_um': _opt0(w_max_w), 'min_length_um': _opt0(w_min_len), 'max_length_um': _opt0(w_max_len), 'exclude_border': bool(w_excl_border.isChecked()), 'focus_filter_enabled': bool(w_focus_en.isChecked()), 'focus_min_fraction_of_median': float(w_focus_frac.value()), 'focus_modality': str(w_focus_mod.currentData() or 'phase')})
-            ch_key = _active_foci_channel_key()
-            ch_payload = {'foci_prob_enabled': bool(w_prob_en.isChecked()), 'foci_prob_thresh': float(w_prob_thr.value()), 'foci_min_int_enabled': bool(w_minint_en.isChecked()), 'foci_min_int': float(w_minint.value()), 'foci_per_cell_ratio_enabled': bool(w_ratio_en.isChecked()), 'foci_per_cell_ratio': float(w_ratio.value()), 'foci_exclude_outside_clear': bool(w_foci_excl_outside_clear.isChecked()), 'foci_exclude_outside_touching': bool(w_foci_excl_outside_touch.isChecked()), 'foci_exclude_outside_cells': bool(w_foci_excl_outside_clear.isChecked() and w_foci_excl_outside_touch.isChecked()), 'foci_blob_threshold_frac': float(w_blob_size.currentData() or 0.9), 'foci_blob_max_radius': int(w_blob_radius.value()), 'foci_min_area_px_enabled': bool(w_minarea_en.isChecked()), 'foci_min_area_px': int(w_minarea.value())}
+            ch_key = _foci_widgets_key['key'] or _active_foci_channel_key()
+            ch_payload = _foci_widget_payload()
             if hasattr(tab, 'set_foci_channel_settings'):
                 tab.set_foci_channel_settings(ch_key, ch_payload)
             else:
                 tab.set_filter_settings(ch_payload)
+            _refresh_foci_channel_labels()
+
+        def _foci_widget_payload() -> dict[str, Any]:
+            return {'foci_prob_enabled': bool(w_prob_en.isChecked()), 'foci_prob_thresh': float(w_prob_thr.value()), 'foci_min_int_enabled': bool(w_minint_en.isChecked()), 'foci_min_int': float(w_minint.value()), 'foci_per_cell_ratio_enabled': bool(w_ratio_en.isChecked()), 'foci_per_cell_ratio': float(w_ratio.value()), 'foci_exclude_outside_clear': bool(w_foci_excl_outside_clear.isChecked()), 'foci_exclude_outside_touching': bool(w_foci_excl_outside_touch.isChecked()), 'foci_exclude_outside_cells': bool(w_foci_excl_outside_clear.isChecked() and w_foci_excl_outside_touch.isChecked()), 'foci_blob_threshold_frac': float(w_blob_size.currentData() or 0.9), 'foci_blob_max_radius': int(w_blob_radius.value()), 'foci_min_area_px_enabled': bool(w_minarea_en.isChecked()), 'foci_min_area_px': int(w_minarea.value())}
+
+        def _foci_channel_is_customized(key: str, payload: dict[str, Any]) -> bool:
+            from bactomate.gui.filter_preview_utils import FOCI_CHANNEL_SETTING_KEYS, default_foci_channel_settings
+            tmpl = default_foci_channel_settings()
+            for k in FOCI_CHANNEL_SETTING_KEYS:
+                if k not in tmpl or k not in payload:
+                    continue
+                try:
+                    a, b = payload[k], tmpl[k]
+                    if isinstance(b, bool) or isinstance(a, bool):
+                        if bool(a) != bool(b):
+                            return True
+                    elif abs(float(a) - float(b)) > 1e-9:
+                        return True
+                except Exception:
+                    if payload[k] != tmpl[k]:
+                        return True
+            return False
+
+        def _refresh_foci_channel_labels() -> None:
+            """Mark channels whose settings differ from the default template with a trailing bullet."""
+            try:
+                active = _foci_widgets_key['key']
+                foci_channel_combo.blockSignals(True)
+                for i, fp in enumerate(foci_sources):
+                    key = foci_channel_key_for_path(fp)
+                    if key == active:
+                        payload = _foci_widget_payload()
+                    else:
+                        payload = _foci_channel_settings_for_key(key)
+                    custom = _foci_channel_is_customized(key, payload)
+                    base = short_foci_stack_label(fp)
+                    foci_channel_combo.setItemText(i, base + (' \u2022' if custom else ''))
+                    tip = str(fp) + ('\nCustomized: these foci filter settings differ from the default template.' if custom else '')
+                    foci_channel_combo.setItemData(i, tip, Qt.ItemDataRole.ToolTipRole)
+            except Exception:
+                pass
+            finally:
+                try:
+                    foci_channel_combo.blockSignals(False)
+                except Exception:
+                    pass
+
+        def _sync_foci_combo_to_view() -> None:
+            """One-way convenience: viewing a foci channel selects it in the Foci channel combo (Phase leaves it alone)."""
+            try:
+                view_p = _selected_image_path()
+                if not _view_path_is_foci(view_p):
+                    return
+                idx = _foci_index_for_path(view_p)
+                if idx != foci_channel_combo.currentIndex():
+                    foci_channel_combo.blockSignals(True)
+                    try:
+                        foci_channel_combo.setCurrentIndex(idx)
+                    finally:
+                        foci_channel_combo.blockSignals(False)
+            except Exception:
+                pass
 
         def _settings_to_ui() -> None:
             fs = tab.get_filter_settings() if hasattr(tab, 'get_filter_settings') else {}
             ch_key = _active_foci_channel_key()
+            _foci_widgets_key['key'] = ch_key
             try:
                 if hasattr(tab, 'get_foci_channel_settings'):
                     fs_ch = tab.get_foci_channel_settings(ch_key)
@@ -2929,6 +3020,38 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                         cb.blockSignals(False)
                     except Exception:
                         pass
+        def _on_foci_channel_combo_changed(*_) -> None:
+            # Save widgets to the old channel, load the new one. No Apply (same as View switches).
+            try:
+                _ui_to_settings()
+                _settings_to_ui()
+                _refresh_foci_channel_labels()
+                _clear_preview_base_caches(dlg)
+                _refresh_foci_overlay_only()
+                if bool(w_show_foci_table.isChecked()):
+                    _schedule_foci_table_refresh()
+            except Exception:
+                pass
+        foci_channel_combo.currentIndexChanged.connect(_on_foci_channel_combo_changed)
+
+        def _on_foci_copy_to_all() -> None:
+            try:
+                _ui_to_settings()
+                payload = _foci_widget_payload()
+                src_key = _foci_widgets_key['key'] or _active_foci_channel_key()
+                for fp in foci_sources:
+                    key = foci_channel_key_for_path(fp)
+                    if key != src_key:
+                        tab.set_foci_channel_settings(key, dict(payload))
+                _refresh_foci_channel_labels()
+            except Exception:
+                pass
+        foci_copy_all_btn.clicked.connect(_on_foci_copy_to_all)
+        for _w in (w_prob_thr, w_minint, w_ratio, w_minarea, w_blob_radius):
+            _w.valueChanged.connect(lambda *_: _refresh_foci_channel_labels())
+        for _w in (w_prob_en, w_minint_en, w_ratio_en, w_foci_excl_outside_clear, w_foci_excl_outside_touch, w_minarea_en):
+            _w.toggled.connect(lambda *_: _refresh_foci_channel_labels())
+        w_blob_size.currentIndexChanged.connect(lambda *_: _refresh_foci_channel_labels())
         from bactomate.gui.layout_helpers import wire_spin_activates_checkbox
         wire_spin_activates_checkbox(w_prob_thr, w_prob_en)
         wire_spin_activates_checkbox(w_minint, w_minint_en)
@@ -2987,7 +3110,9 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             foci_table_section.toggled.connect(_on_foci_table_section_fit)
         except Exception:
             pass
+        _sync_foci_combo_to_view()
         _settings_to_ui()
+        _refresh_foci_channel_labels()
         _sync_preview_pixel_size_from_metadata(_selected_image_path())
         try:
             dlg._pf_apply_current = apply_current
@@ -2996,6 +3121,12 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             dlg._pf_spinboxes = {'pixel_size': w_pixel, 'min_aspect_ratio': w_min_ar, 'max_aspect_ratio': w_max_ar, 'min_eccentricity': w_min_ecc, 'min_solidity': w_min_sol, 'min_area_um2': w_min_area, 'max_area_um2': w_max_area, 'min_width_um': w_min_w, 'max_width_um': w_max_w, 'min_length_um': w_min_len, 'max_length_um': w_max_len, 'focus_min_fraction_of_median': w_focus_frac, 'foci_prob_thresh': w_prob_thr, 'foci_min_int': w_minint, 'foci_per_cell_ratio': w_ratio, 'foci_min_area_px': w_minarea}
             dlg._pf_checkboxes = {'exclude_border': w_excl_border, 'focus_filter_enabled': w_focus_en, 'foci_prob_enabled': w_prob_en, 'foci_min_int_enabled': w_minint_en, 'foci_per_cell_ratio_enabled': w_ratio_en, 'foci_exclude_outside_clear': w_foci_excl_outside_clear, 'foci_exclude_outside_touching': w_foci_excl_outside_touch, 'foci_min_area_px_enabled': w_minarea_en}
             dlg._pf_blob_combo = w_blob_size
+            dlg._pf_foci_channel_combo = foci_channel_combo
+            dlg._pf_foci_copy_all_btn = foci_copy_all_btn
+            dlg._pf_cell_group = cell_group
+            dlg._pf_foci_group = foci_group
+            dlg._pf_cell_section = cell_section
+            dlg._pf_foci_section = foci_section
             dlg._pf_focus_modality = w_focus_mod
             dlg._pf_blob_radius = w_blob_radius
             dlg._pf_show_foci_table = w_show_foci_table

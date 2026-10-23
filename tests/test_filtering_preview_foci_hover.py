@@ -60,12 +60,13 @@ def test_tooltip_cell_id_outside_shows_em_dash() -> None:
 
 def test_collect_visible_foci_peaks_includes_all_channels() -> None:
     sources = [Path("a_foci_GFP.tif"), Path("b_foci_dsRed.tif")]
+    # Keyed by canonical (casefolded) settings keys; peaks are tagged with readable labels.
     ch_map = {
-        "GFP": {
+        "gfp": {
             "pass_peaks": [{"y": 1, "x": 2}],
             "fail_peaks": [{"y": 3, "x": 4}],
         },
-        "dsRed": {
+        "dsred": {
             "pass_peaks": [{"y": 5, "x": 6}],
             "fail_peaks": [{"y": 7, "x": 8}],
         },

@@ -743,6 +743,59 @@ def _looks_non_channel_token(token: str) -> bool:
     return False
 
 
+# Settings key for foci stacks whose name carries no channel token (``sample_foci.tif``).
+FOCI_CHANNEL_FALLBACK_TAG = "foci"
+
+
+def _channel_tag_or_fallback(token: str, *, explicit: bool) -> str:
+    """``explicit``: token follows ``_foci_`` (digits allowed); else a heuristic suffix token."""
+    t = (token or "").strip("_- .")
+    if t.lower().startswith("overlay_"):
+        t = t[len("overlay_") :].strip("_- .")
+    if not t or _looks_non_channel_token(t) or (not explicit and t.isdigit()):
+        return FOCI_CHANNEL_FALLBACK_TAG
+    return t
+
+
+def foci_channel_tag_from_path(foci_source_path: Path) -> str:
+    """
+    Readable, sample-independent channel tag of a foci (or FI) stack; original case, never truncated.
+
+    Rules (first match wins, separators matched case-insensitively):
+      ``<sample>_fi_foci_<ch>`` / ``<sample>_foci_<ch>`` -> ``<ch>`` (``overlay_`` stripped)
+      ``<sample>[-_ .]<ch>_fi_foci`` / ``<sample>[-_ .]<ch>_foci`` -> ``<ch>``
+      bare ``<sample>_foci`` (no channel token: single-token prefix, replicate number,
+      or role word like ``fi``/``phase``) -> :data:`FOCI_CHANNEL_FALLBACK_TAG`
+      ``<sample>_fi_<ch>`` (FI stacks) -> ``<ch>``
+      anything else -> full stem.
+
+    Limitation: ``<sample>_<word>_foci`` cannot tell a channel from a sample word, so the
+    last token is used (same heuristic as :func:`extract_channel_tag_for_mask_stem`).
+    """
+    stem = Path(foci_source_path).stem.strip()
+    for pat in (r"_fi_foci_(?P<ch>.+)$", r"_foci_(?P<ch>.+)$"):
+        m = re.search(pat, stem, flags=re.IGNORECASE)
+        if m:
+            return _channel_tag_or_fallback(m.group("ch"), explicit=True)
+    m = re.match(r"^(?P<prefix>.+?)(?:_fi)?_foci$", stem, flags=re.IGNORECASE)
+    if m:
+        tokens = [t for t in re.split(r"[-_ .]+", m.group("prefix")) if t]
+        if len(tokens) < 2:
+            return FOCI_CHANNEL_FALLBACK_TAG
+        return _channel_tag_or_fallback(tokens[-1], explicit=False)
+    m = re.search(r"_fi_(?P<ch>.+)$", stem, flags=re.IGNORECASE)
+    if m:
+        ch = m.group("ch").strip("_")
+        if ch:
+            return ch
+    return stem
+
+
+def foci_channel_key_from_path(foci_source_path: Path) -> str:
+    """Canonical settings key for a foci stack: :func:`foci_channel_tag_from_path`, casefolded."""
+    return foci_channel_tag_from_path(foci_source_path).casefold()
+
+
 def _candidate_match_stems(stem: str) -> list[str]:
     out: list[str] = []
 

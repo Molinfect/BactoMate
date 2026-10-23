@@ -324,10 +324,10 @@ def test_queued_apply_keeps_foci_settings_snapshot(tmp_path, held_preview_worker
         assert settings['foci_prob_thresh'] == 0.9
         workers[1].proceed.set()
         assert _wait_until(lambda: dlg._filter_apply.idle)
-        channel = dlg._last_preview['foci_channels']['GFP']
+        channel = dlg._last_preview['foci_channels']['gfp']
         assert not channel['pass_peaks']
         assert len(channel['fail_peaks']) == 1
-        assert dlg._last_preview['foci_channel_sigs']['GFP'] == foci_channel_settings_signature(settings)
+        assert dlg._last_preview['foci_channel_sigs']['gfp'] == foci_channel_settings_signature(settings)
     finally:
         for worker in workers:
             worker.proceed.set()
@@ -904,3 +904,204 @@ def test_view_foci_not_painted_as_phase_when_dialog_state_desynced() -> None:
             )
         finally:
             _shutdown(tab, parent)
+
+
+def test_foci_channel_settings_do_not_bleed_between_views(tmp_path):
+    from bactomate.gui.filter_preview_utils import sync_filter_settings_from_preview_dialog
+
+    mask_path = _write_mask_tif(tmp_path)
+    for name in ('GFP', 'mCherry'):
+        foci = np.ones((1, 256, 256), dtype=np.uint16)
+        tifffile.imwrite(tmp_path / f'sample_foci_{name}.tif', foci)
+        (mask_path.parent / f'sample_foci_{name}.csv').write_text(
+            'frame,y,x,intensity,probability,cell_id\n0,33,40,1000,0.6,1\n'
+        )
+    _write_phase_tif(tmp_path, pixel_size_um=0.1)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        nav = dlg._nav_ctrl
+        combo = nav._image_combo
+
+        def _labels():
+            return [str(combo.itemText(i)) for i in range(combo.count())]
+
+        def _go(token):
+            idx = next(i for i, t in enumerate(_labels()) if token.lower() in t.lower())
+            combo.setCurrentIndex(idx)
+            nav._commit_combo()
+            QCoreApplication.processEvents()
+
+        spin = dlg._pf_spinboxes['foci_prob_thresh']
+        stored = lambda ch: float(tab.get_foci_channel_settings(ch)['foci_prob_thresh'])
+        _go('GFP')
+        spin.setValue(0.9)
+        _go('mCherry')
+        assert abs(stored('GFP') - 0.9) < 1e-6
+        assert stored('mCherry') != 0.9
+        assert abs(spin.value() - stored('mCherry')) < 1e-6
+        spin.setValue(0.2)
+        _go('GFP')
+        assert abs(spin.value() - 0.9) < 1e-6
+        assert abs(stored('GFP') - 0.9) < 1e-6
+        assert abs(stored('mCherry') - 0.2) < 1e-6
+        _go('mCherry')
+        assert abs(spin.value() - 0.2) < 1e-6
+        # Apply/sync while viewing Phase must not overwrite another channel.
+        _go('sample.tif')
+        dlg._pf_apply_current()
+        sync_filter_settings_from_preview_dialog(tab)
+        assert abs(stored('GFP') - 0.9) < 1e-6
+        assert abs(stored('mCherry') - 0.2) < 1e-6
+    finally:
+        _shutdown(tab, parent)
+
+
+def _two_channel_setup(tmp_path):
+    mask_path = _write_mask_tif(tmp_path)
+    for name in ('GFP', 'mCherry'):
+        tifffile.imwrite(tmp_path / f'sample_foci_{name}.tif', np.ones((1, 256, 256), dtype=np.uint16))
+        (mask_path.parent / f'sample_foci_{name}.csv').write_text(
+            'frame,y,x,intensity,probability,cell_id\n0,33,40,1000,0.6,1\n'
+        )
+    _write_phase_tif(tmp_path, pixel_size_um=0.1)
+
+
+def _view_go(dlg, token):
+    nav = dlg._nav_ctrl
+    combo = nav._image_combo
+    idx = next(i for i in range(combo.count()) if token.lower() in str(combo.itemText(i)).lower())
+    combo.setCurrentIndex(idx)
+    nav._commit_combo()
+    QCoreApplication.processEvents()
+
+
+def _chan_go(dlg, token):
+    cc = dlg._pf_foci_channel_combo
+    idx = next(i for i in range(cc.count()) if token.lower() in cc.itemText(i).lower())
+    cc.setCurrentIndex(idx)
+    QCoreApplication.processEvents()
+
+
+def test_foci_channel_combo_switch_keeps_values_and_cell_settings(tmp_path):
+    _two_channel_setup(tmp_path)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        cc = dlg._pf_foci_channel_combo
+        assert cc.count() == 2
+        assert dlg._pf_foci_copy_all_btn.isEnabled() and not dlg._pf_foci_copy_all_btn.isHidden()
+        spin = dlg._pf_spinboxes['foci_prob_thresh']
+        stored = lambda ch: float(tab.get_foci_channel_settings(ch)['foci_prob_thresh'])
+        cell_before = tab.get_filter_settings()['min_aspect_ratio']
+        _chan_go(dlg, 'GFP')
+        spin.setValue(0.9)
+        _chan_go(dlg, 'mCherry')
+        assert abs(stored('gfp') - 0.9) < 1e-6
+        assert abs(spin.value() - stored('mcherry')) < 1e-6 and abs(spin.value() - 0.9) > 1e-6
+        spin.setValue(0.2)
+        _chan_go(dlg, 'GFP')
+        assert abs(spin.value() - 0.9) < 1e-6
+        assert abs(stored('mcherry') - 0.2) < 1e-6
+        assert tab.get_filter_settings()['min_aspect_ratio'] == cell_before
+        # customized marker on both channels
+        assert all(cc.itemText(i).endswith('\u2022') for i in range(2))
+        spin.setValue(0.5)
+        dlg._pf_checkboxes['foci_prob_enabled'].setChecked(False)
+        _chan_go(dlg, 'mCherry')
+        assert not cc.itemText(0).endswith('\u2022')
+        assert 'Customized' in str(cc.itemData(1, __import__('PyQt6.QtCore', fromlist=['Qt']).Qt.ItemDataRole.ToolTipRole))
+        # cell card stays visible in foci view
+        _view_go(dlg, 'GFP')
+        assert not dlg._pf_cell_group.isHidden()
+        assert not dlg._pf_foci_group.isHidden()
+    finally:
+        _shutdown(tab, parent)
+
+
+def test_view_syncs_channel_combo_and_phase_edits_target_combo(tmp_path):
+    _two_channel_setup(tmp_path)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        cc = dlg._pf_foci_channel_combo
+        spin = dlg._pf_spinboxes['foci_prob_thresh']
+        stored = lambda ch: float(tab.get_foci_channel_settings(ch)['foci_prob_thresh'])
+        _view_go(dlg, 'mCherry')
+        assert 'mcherry' in cc.currentText().lower()
+        _view_go(dlg, 'GFP')
+        assert 'gfp' in cc.currentText().lower()
+        _view_go(dlg, 'sample.tif')
+        assert 'gfp' in cc.currentText().lower()  # Phase does not change the combo
+        spin.setValue(0.77)
+        dlg._pf_ui_to_settings()
+        assert abs(stored('gfp') - 0.77) < 1e-6
+        assert abs(stored('mcherry') - 0.77) > 1e-6
+    finally:
+        _shutdown(tab, parent)
+
+
+def test_foci_copy_to_all_channels(tmp_path):
+    _two_channel_setup(tmp_path)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        spin = dlg._pf_spinboxes['foci_prob_thresh']
+        _chan_go(dlg, 'GFP')
+        spin.setValue(0.83)
+        dlg._pf_foci_copy_all_btn.click()
+        QCoreApplication.processEvents()
+        assert abs(float(tab.get_foci_channel_settings('mcherry')['foci_prob_thresh']) - 0.83) < 1e-6
+        _chan_go(dlg, 'mCherry')
+        assert abs(spin.value() - 0.83) < 1e-6
+    finally:
+        _shutdown(tab, parent)
+
+
+
+
+def test_apply_last_peaks_follow_view_channel_not_combo(tmp_path):
+    mask_path = _write_mask_tif(tmp_path)
+    rows = {
+        'GFP': '0,33,40,1000,0.6,1\n',
+        'mCherry': '0,33,40,1000,0.6,1\n0,34,41,900,0.6,1\n0,35,42,800,0.6,1\n',
+    }
+    for name, body in rows.items():
+        tifffile.imwrite(tmp_path / f'sample_foci_{name}.tif', np.ones((1, 256, 256), dtype=np.uint16))
+        (mask_path.parent / f'sample_foci_{name}.csv').write_text(
+            'frame,y,x,intensity,probability,cell_id\n' + body
+        )
+    _write_phase_tif(tmp_path, pixel_size_um=0.1)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        _wait_for_filter_apply(dlg, timeout_s=20.0)
+        _view_go(dlg, 'GFP')
+        _chan_go(dlg, 'mCherry')
+        rid = int(getattr(dlg, '_preview_request_id', 0))
+        dlg._pf_apply_current()
+        assert _wait_for_apply_generation(dlg, rid_before=rid)
+        last = dict(dlg._last_preview)
+        chans = last['foci_channels']
+        assert len(chans['gfp']['pass_peaks']) + len(chans['gfp']['fail_peaks']) == 1
+        assert len(chans['mcherry']['pass_peaks']) + len(chans['mcherry']['fail_peaks']) == 3
+        assert len(last['frame_rows']) == 1
+        assert len(last['pass_peaks']) + len(last['fail_peaks']) == 1
+        assert last['pass_peaks'] == chans['gfp']['pass_peaks']
+        assert last['fail_peaks'] == chans['gfp']['fail_peaks']
+    finally:
+        _shutdown(tab, parent)
+
+
+def test_filter_cards_are_collapsible_and_state_persists(tmp_path):
+    _two_channel_setup(tmp_path)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        cell_sec, foci_sec = dlg._pf_cell_section, dlg._pf_foci_section
+        assert cell_sec.is_expanded() and foci_sec.is_expanded()
+        cell_sec.set_expanded(False)
+        QCoreApplication.processEvents()
+        assert dlg._pf_cell_group.isHidden()
+        assert not dlg._pf_foci_group.isHidden()
+        # View switches must not re-expand or hide the cards.
+        _view_go(dlg, 'mCherry')
+        assert not cell_sec.is_expanded() and not cell_sec.isHidden()
+        assert foci_sec.is_expanded()
+    finally:
+        _shutdown(tab, parent)
+    assert tab._filter_preview_card_expanded == {'cell': False}
