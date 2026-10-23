@@ -21,6 +21,7 @@ from bactomate.gui.log_config import get_logger, append_omnipose_debug
 from bactomate.gui.paths import get_omnipose_user_models_dir, get_python_executable_for_subprocess
 from bactomate.gui.patches import _patch_omnipose_get_masks
 from bactomate.gui.preferences import LAST_DIR_SEGMENTATION
+from bactomate.gui.qt_thread_utils import retire_qthread, start_owned_qthread
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.layout_helpers import ResponsivePanel, build_preview_settings_scroll, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET, UI_THEME
@@ -510,22 +511,8 @@ class OmniposeSegTab(QWidget):
             worker = getattr(pd, '_seg_worker', None)
             if worker is not None:
                 slot = getattr(pd, '_seg_worker_slot', None)
-                if slot is not None:
-                    try:
-                        worker.finished.disconnect(slot)
-                    except Exception:
-                        pass
                 try:
-                    if worker.isRunning():
-                        worker.requestInterruption()
-                        worker.quit()
-                        if not worker.wait(120000):
-                            worker.terminate()
-                            worker.wait(5000)
-                except Exception:
-                    pass
-                try:
-                    worker.deleteLater()
+                    retire_qthread(worker, result_signal=worker.result_ready, slot=slot)
                 except Exception:
                     pass
                 try:
@@ -536,22 +523,8 @@ class OmniposeSegTab(QWidget):
             foci_worker = getattr(pd, '_foci_worker', None)
             if foci_worker is not None:
                 foci_slot = getattr(pd, '_foci_worker_slot', None)
-                if foci_slot is not None:
-                    try:
-                        foci_worker.finished.disconnect(foci_slot)
-                    except Exception:
-                        pass
                 try:
-                    if foci_worker.isRunning():
-                        foci_worker.requestInterruption()
-                        foci_worker.quit()
-                        if not foci_worker.wait(120000):
-                            foci_worker.terminate()
-                            foci_worker.wait(5000)
-                except Exception:
-                    pass
-                try:
-                    foci_worker.deleteLater()
+                    retire_qthread(foci_worker, result_signal=foci_worker.result_ready, slot=foci_slot)
                 except Exception:
                     pass
                 try:
@@ -2938,7 +2911,7 @@ class OmniposeSegTab(QWidget):
 
             class FociPeaksPreviewWorker(QThread):
                 """Spotiflow foci peak detection off the GUI thread (preview only)."""
-                finished = pyqtSignal(int, object, bool, object)
+                result_ready = pyqtSignal(int, object, bool, object)
 
                 def __init__(self, request_id: int, tab: 'OmniposeSegTab', jobs: list[dict[str, Any]], parent=None):
                     super().__init__(parent)
@@ -2953,7 +2926,7 @@ class OmniposeSegTab(QWidget):
                     status_parts: list[str] = []
                     for job in self._jobs:
                         if self.isInterruptionRequested():
-                            self.finished.emit(self._request_id, cache_updates, False, status_parts)
+                            self.result_ready.emit(self._request_id, cache_updates, False, status_parts)
                             return
                         (peaks_raw, avail) = self._tab._spotiflow_detect_peaks_on_plane(job['plane'], job['sf'])
                         if not avail or peaks_raw is None:
@@ -2963,25 +2936,14 @@ class OmniposeSegTab(QWidget):
                         cache_updates[job['key']] = peaks
                         if job.get('status_label'):
                             status_parts.append(f"{job['status_label']}: {len(peaks)}")
-                    self.finished.emit(self._request_id, cache_updates, spotiflow_available, status_parts)
+                    self.result_ready.emit(self._request_id, cache_updates, spotiflow_available, status_parts)
 
             def _stop_foci_peaks_worker() -> None:
                 worker = getattr(preview_dialog, '_foci_worker', None)
                 slot = getattr(preview_dialog, '_foci_worker_slot', None)
-                if worker is not None and slot is not None:
-                    try:
-                        worker.finished.disconnect(slot)
-                    except Exception:
-                        pass
                 if worker is not None:
                     try:
-                        if worker.isRunning():
-                            worker.requestInterruption()
-                            worker.quit()
-                    except Exception:
-                        pass
-                    try:
-                        worker.deleteLater()
+                        retire_qthread(worker, result_signal=worker.result_ready, slot=slot)
                     except Exception:
                         pass
                 preview_dialog._foci_worker = None
@@ -3133,13 +3095,12 @@ class OmniposeSegTab(QWidget):
                         except Exception:
                             full_status = list(status_parts or [])
                         _finalize_foci_peaks_status(src_idx, frame_idx, spotiflow_available=bool(spotiflow_ok), status_parts=full_status or list(status_parts or []))
-                        preview_dialog._foci_worker = None
-                        preview_dialog._foci_worker_slot = None
-                    worker = FociPeaksPreviewWorker(request_id, self, pending_jobs, parent=preview_dialog)
+                        _stop_foci_peaks_worker()
+                    worker = FociPeaksPreviewWorker(request_id, self, pending_jobs)
                     preview_dialog._foci_worker_slot = _on_foci_worker_finished
-                    worker.finished.connect(_on_foci_worker_finished)
+                    worker.result_ready.connect(_on_foci_worker_finished)
                     preview_dialog._foci_worker = worker
-                    worker.start()
+                    start_owned_qthread(worker)
                     return
                 spotiflow_available = True
                 status_parts: list[str] = []
@@ -3523,17 +3484,12 @@ class OmniposeSegTab(QWidget):
                     return True
 
             def _seg_disconnect() -> None:
-                """Detach and schedule deletion of the preview segmentation QThread (PyQt-safe)."""
+                """Detach the preview segmentation QThread; it is deleted once it actually exits."""
                 w = getattr(preview_dialog, '_seg_worker', None)
                 s = getattr(preview_dialog, '_seg_worker_slot', None)
-                if w is not None and s is not None:
-                    try:
-                        w.finished.disconnect(s)
-                    except Exception:
-                        pass
                 if w is not None:
                     try:
-                        w.deleteLater()
+                        retire_qthread(w, result_signal=w.result_ready, slot=s)
                     except Exception:
                         pass
                 try:
@@ -3663,7 +3619,7 @@ class OmniposeSegTab(QWidget):
                 return np.stack([arr, arr, arr], axis=-1)
 
             class OmniposePreviewWorker(QThread):
-                finished = pyqtSignal(int, int, tuple, object, str)
+                result_ready = pyqtSignal(int, int, tuple, object, str)
 
                 def __init__(self, request_id, frame_idx, cache_key, model, seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=False, affinity_seg=False, parent=None):
                     super().__init__(parent)
@@ -3719,7 +3675,7 @@ class OmniposeSegTab(QWidget):
                 def run(self):
                     (mask, error_str) = (None, '')
                     if self.isInterruptionRequested():
-                        self.finished.emit(self._request_id, self._frame_idx, self._cache_key, None, 'cancelled')
+                        self.result_ready.emit(self._request_id, self._frame_idx, self._cache_key, None, 'cancelled')
                         return
                     try:
                         if self._is_cellpose_sam:
@@ -3767,7 +3723,7 @@ class OmniposeSegTab(QWidget):
                         except Exception:
                             pass
                         error_str = str(e)
-                    self.finished.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
+                    self.result_ready.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
 
             def run_segmentation(frame_idx, use_cache=True, *, source_key=('input', 0), frame_override=None, preserve_user_lut=True):
                 """Run segmentation on a specific frame with caching and background threading"""
@@ -3895,13 +3851,8 @@ class OmniposeSegTab(QWidget):
                         pass
                     finally:
                         if worker is not None:
-                            if slot is not None:
-                                try:
-                                    worker.finished.disconnect(slot)
-                                except Exception:
-                                    pass
                             try:
-                                worker.deleteLater()
+                                retire_qthread(worker, result_signal=worker.result_ready, slot=slot)
                             except Exception:
                                 pass
                         try:
@@ -3911,11 +3862,11 @@ class OmniposeSegTab(QWidget):
                             pass
                 is_cellpose_sam = params.get('model_type') == CELLPOSE_SAM_MODEL
                 affinity_seg = eval_uses_affinity_segmentation(model_type=params.get('model_type'), pretrained_path=params.get('pretrained_model'))
-                worker = OmniposePreviewWorker(preview_dialog._seg_request_id, frame_idx, cache_key, preview_dialog.model, seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=is_cellpose_sam, affinity_seg=affinity_seg, parent=preview_dialog)
+                worker = OmniposePreviewWorker(preview_dialog._seg_request_id, frame_idx, cache_key, preview_dialog.model, seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=is_cellpose_sam, affinity_seg=affinity_seg)
                 preview_dialog._seg_worker_slot = _on_seg_worker_finished
-                worker.finished.connect(_on_seg_worker_finished)
+                worker.result_ready.connect(_on_seg_worker_finished)
                 preview_dialog._seg_worker = worker
-                worker.start()
+                start_owned_qthread(worker)
                 return (None, None)
 
             def _apply_mask_to_ui(frame_idx, mask, *, preserve_user_lut=True):

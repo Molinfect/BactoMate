@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QWidget
 from bactomate.gui.folder_preview.constants import FOLDER_PREVIEW_MAX_FILES, cap_folder_preview_paths
 from bactomate.gui.folder_preview.fingerprint import settings_fingerprint
 from bactomate.gui.folder_preview.grid_widget import FolderPreviewGrid
+from bactomate.gui.qt_thread_utils import retire_qthread
 from bactomate.gui.folder_preview.workers import FolderPreviewQueueWorker, TileComputeFn, rgb_to_qpixmap
 from bactomate.gui.module_shell import PreviewSurface, mount_embedded_preview
 from bactomate.gui.preview.preview_window import WorkerGuard
@@ -90,7 +91,9 @@ class FolderPreviewController(QObject):
         except Exception:
             pass
         try:
-            w.wait(3000)
+            if not w.wait(3000):
+                # Never let the controller's deletion destroy a still-running QThread.
+                retire_qthread(w)
         except Exception:
             pass
         self._worker = None
