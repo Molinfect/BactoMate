@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 
 def test_write_run_info_sheet_is_first(tmp_path: Path) -> None:
@@ -173,6 +174,55 @@ def test_refresh_workbook_channel_intensities_keeps_existing_columns_when_no_upd
 
     written = pd.read_excel(analysis_path, sheet_name="Per-Cell Data")
     assert list(written.columns) == ["Frame", "Cell_ID", "Area (µm²)"]
+
+
+@pytest.mark.parametrize("source", ["foci", "foci_empty_artifacts", "foci_csv", "fi"])
+def test_refresh_workbook_channel_intensities_measures_whole_cells(tmp_path: Path, source: str) -> None:
+    import numpy as np
+    import tifffile
+
+    from bactomate.gui.analysis_workbook import FociChannelArtifact, refresh_workbook_channel_intensities
+
+    mask_path = tmp_path / "sample_masks.tif"
+    channel_path = tmp_path / f"sample_{'fi' if source == 'fi' else 'foci'}_GFP.tif"
+    masks = np.zeros((2, 4, 4), dtype=np.uint16)
+    masks[:, 0, :2] = 1
+    masks[:, 1, :2] = 2
+    channel = np.full_like(masks, 500)
+    channel[:, :2, :2] = [[[2, 6], [6, 10]], [[10, 14], [14, 18]]]
+    tifffile.imwrite(mask_path, masks, photometric="minisblack")
+    tifffile.imwrite(channel_path, channel, photometric="minisblack")
+    analysis_path = tmp_path / "sample_analysis.xlsx"
+    pd.DataFrame({"Frame": [1, 1, 2, 2], "Cell_ID": [1, 2, 1, 2]}).to_excel(
+        analysis_path, sheet_name="Per-Cell Data", index=False
+    )
+
+    class _Tab:
+        def _resolve_fi_paths_for_mask(self, _mask_path):
+            return [channel_path] if source == "fi" else []
+
+        def _resolve_foci_paths_for_mask(self, _mask_path):
+            return [] if source == "fi" else [channel_path]
+
+        def _extract_channel_tag_for_mask_stem(self, _file_stem, _mask_stem):
+            return "GFP"
+
+    artifacts = [] if source == "foci_empty_artifacts" else None
+    if source == "foci_csv":
+        csv_path = tmp_path / "sample_foci_GFP.csv"
+        csv_path.write_text("frame,y,x,intensity\n0,0,0,999\n", encoding="utf-8")
+        artifacts = [FociChannelArtifact("GFP", channel_path, csv_path, "foci_detection")]
+
+    per_cell, logs, columns = refresh_workbook_channel_intensities(
+        _Tab(), mask_path, analysis_path, artifacts=artifacts
+    )
+
+    column = "Mean FI Intensity (whole cell) [GFP]"
+    assert columns == [column]
+    assert per_cell[column].tolist() == [4.0, 8.0, 12.0, 16.0]
+    assert not any("failed" in log.lower() for log in logs)
+    written = pd.read_excel(analysis_path, sheet_name="Per-Cell Data")
+    assert written[column].tolist() == [4.0, 8.0, 12.0, 16.0]
 
 
 def test_integrate_foci_csv_into_workbook_writes_mask_file_and_focus_area(tmp_path: Path) -> None:

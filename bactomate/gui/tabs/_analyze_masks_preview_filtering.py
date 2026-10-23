@@ -552,7 +552,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
 
     In the Segmentation module shell, embeds in the right-hand preview pane (no popup).
     This preview is intentionally filtering-only (no re-detection):
-    - foci markers come from existing foci CSVs (if present)
+    - foci markers come from raw CSVs or cached segmentation preview detections
     - current filter settings are applied automatically when the preview opens
     """
     raw = (path_text or '').strip()
@@ -817,6 +817,11 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
         settings_outer.addWidget(foci_section)
     else:
         foci_section.setVisible(False)
+    foci_source_hint = QLabel('')
+    foci_source_hint.setObjectName('FilterFociSourceHint')
+    foci_source_hint.setWordWrap(True)
+    foci_source_hint.setVisible(False)
+    settings_outer.addWidget(foci_source_hint)
     foci_table_host = QWidget()
     foci_table_lay = QVBoxLayout(foci_table_host)
     foci_table_lay.setContentsMargins(0, 0, 0, 0)
@@ -1416,17 +1421,6 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     from bactomate.gui.artifact_paths import infer_pipeline_dir_from_mask, resolve_filtered_foci_csv, resolve_segmentation_foci_csv
     _pipeline_dir = infer_pipeline_dir_from_mask(mask_path)
 
-    def _csv_path_for_foci_source(src: Optional[Path]) -> Optional[Path]:
-        if src is None:
-            return None
-        try:
-            filtered = resolve_filtered_foci_csv(_pipeline_dir, mask_path=mask_path, foci_source_path=src)
-            if filtered is not None and filtered.is_file():
-                return filtered
-            return resolve_segmentation_foci_csv(_pipeline_dir, mask_path=mask_path, foci_source_path=src)
-        except Exception:
-            return None
-
     def _rows_cache_key(p: Optional[Path]) -> str:
         if p is None:
             return '__none__'
@@ -1434,6 +1428,29 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             return str(p.resolve())
         except Exception:
             return str(p)
+
+    preview_foci_frames: dict[str, dict[int, list[dict]]] = {}
+    seg_host = _segmentation_tab_host(tab)
+    if seg_host is not None:
+        owner = seg_host._active_segmentation_path_owner()
+        preview_rows = getattr(owner, 'preview_foci_rows_for_filtering', None)
+        if callable(preview_rows):
+            for src in foci_sources:
+                if resolve_segmentation_foci_csv(_pipeline_dir, mask_path=mask_path, foci_source_path=src) is None:
+                    frames = preview_rows(src, mask_shape=tuple(masks.shape[-2:]))
+                    if frames is not None:
+                        preview_foci_frames[_rows_cache_key(src)] = frames
+
+    def _csv_path_for_foci_source(src: Optional[Path]) -> Optional[Path]:
+        if src is None:
+            return None
+        try:
+            raw_csv = resolve_segmentation_foci_csv(_pipeline_dir, mask_path=mask_path, foci_source_path=src)
+            if raw_csv is not None:
+                return raw_csv
+            return resolve_filtered_foci_csv(_pipeline_dir, mask_path=mask_path, foci_source_path=src)
+        except Exception:
+            return None
 
     def _load_rows_for_source(src: Optional[Path]) -> list[dict]:
         key = _rows_cache_key(src)
@@ -1450,10 +1467,14 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                         rows.append(r)
             except Exception:
                 rows = []
+        if key in preview_foci_frames:
+            frames = preview_foci_frames[key]
+            rows = [row for row in rows if _row_frame_idx(row) not in frames]
+            rows.extend(dict(row) for frame_rows in frames.values() for row in frame_rows)
         if isinstance(cache, dict):
             cache[key] = list(rows)
         return rows
-    foci_overlay_sources: list[Path] = [Path(fp) for fp in foci_sources if _csv_path_for_foci_source(fp) is not None]
+    foci_overlay_sources: list[Path] = [Path(fp) for fp in foci_sources if _csv_path_for_foci_source(fp) is not None or _rows_cache_key(fp) in preview_foci_frames]
     foci_overlay_available = len(foci_overlay_sources) > 0
     _foci_ch_overlay_labels: tuple[str, ...] = ()
     if foci_overlay_available:
@@ -1464,16 +1485,14 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
     except Exception:
         pass
 
+    def _row_frame_idx(row: dict) -> int:
+        try:
+            return int(float(row.get('frame', 0) or 0))
+        except (ValueError, TypeError, OverflowError):
+            return 0
+
     def _rows_for_frame(rows: list[dict], frame_idx: int) -> list[dict]:
-        out: list[dict] = []
-        for r in rows or []:
-            try:
-                fr = int(float(r.get('frame', 0) or 0)) if 'frame' in r else 0
-            except Exception:
-                fr = 0
-            if fr == int(frame_idx):
-                out.append(r)
-        return out
+        return [row for row in rows or [] if _row_frame_idx(row) == int(frame_idx)]
 
     def _apply_lut_to_bg(bg_2d: Optional[np.ndarray], vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
         return stretch_plane_to_uint8(bg_2d, vmin, vmax, fallback_shape=tuple(masks.shape[1:3]))
@@ -1845,7 +1864,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             foci_txt = ''
             try:
                 if int(_n_foci_total) > 0:
-                    foci_txt = f'  |  Foci CSV: {int(_n_foci_total)} raw → {int(_n_foci_drawn)} pass'
+                    foci_txt = f'  |  Foci: {int(_n_foci_total)} raw → {int(_n_foci_drawn)} pass'
             except Exception:
                 foci_txt = ''
             source_key = tuple(request_source_key)
@@ -2185,6 +2204,19 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
                 info_text = f'{info_text}  |  Foci(frame): {raw_n} detected (apply filters for pass/fail)'.strip()
         if cell_filter_applied and accepted_for_foci_gating and (pass_peaks or fail_peaks):
             (pass_peaks, fail_peaks) = sync_foci_peaks_with_accepted_cells(pass_peaks, fail_peaks, mask_2d=mask_2d, accepted_cell_labels=accepted_for_foci_gating, settings=dict(foci_fs or {}))
+        preview_frames = preview_foci_frames.get(_rows_cache_key(foci_src))
+        source_hint = ''
+        if preview_frames is not None:
+            if int(state.frame_idx) in preview_frames:
+                source_hint = 'Foci from segmentation preview (visited frames only). Run segmentation with Detect foci to save all frames.'
+            elif _csv_path_for_foci_source(foci_src) is not None:
+                source_hint = 'Foci from saved filtered CSV.'
+            else:
+                source_hint = 'No preview detection for this frame. Run segmentation with Detect foci to save all frames.'
+        if foci_source_hint.text() != source_hint:
+            foci_source_hint.setText(source_hint)
+            foci_source_hint.setVisible(bool(source_hint))
+            _sync_filter_settings_panel_height()
         if show_foci and (pass_peaks or fail_peaks):
             preview_total = len(pass_peaks) + len(fail_peaks)
             # Keep status informative; do not truncate the drawn set (see _foci_preview_draw_cap).

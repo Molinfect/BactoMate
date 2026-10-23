@@ -643,21 +643,17 @@ def refresh_workbook_channel_intensities(
             logs.append(f"[Analyze] FI whole-cell refresh failed for {fi_path.name}: {exc}\n")
 
     # Foci stacks (whole-cell mean on foci channel — not just peak means)
-    foci_artifacts = list(artifacts or [])
-    if not foci_artifacts and hasattr(tab, "_resolve_foci_paths_for_mask"):
+    foci_channels = [(art.channel_label, Path(art.foci_stack)) for art in artifacts or []]
+    if not foci_channels and hasattr(tab, "_resolve_foci_paths_for_mask"):
+        used_labels: set[str] = set()
         try:
             for src in tab._resolve_foci_paths_for_mask(mask_path) or []:
-                foci_artifacts.append(
-                    FociChannelArtifact(
-                        channel_label=Path(src).stem,
-                        foci_stack=Path(src),
-                        csv_path=Path(src),
-                    )
+                foci_channels.append(
+                    (_channel_label_for_source(tab, mask_path, src, used_labels), Path(src))
                 )
         except Exception:
             pass
-    for art in foci_artifacts:
-        stack_path = Path(art.foci_stack)
+    for channel_label, stack_path in foci_channels:
         if not stack_path.is_file():
             continue
         try:
@@ -667,7 +663,7 @@ def refresh_workbook_channel_intensities(
                 channel_stack=stack,
                 frame_shift=frame_shift,
             )
-            col = _whole_cell_intensity_column_name(art.channel_label)
+            col = _whole_cell_intensity_column_name(channel_label)
             per_cell = apply_whole_cell_intensity_columns(per_cell, column_name=col, lookup=lookup)
             columns_added.append(col)
             updated = True

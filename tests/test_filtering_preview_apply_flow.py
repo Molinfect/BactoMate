@@ -538,6 +538,188 @@ def test_preview_reads_legacy_tiff_and_foci_csv_without_rewriting(tmp_path):
         _shutdown(tab, parent)
 
 
+@pytest.mark.parametrize('raw_available', [False, True])
+def test_preview_refilters_raw_foci_and_keeps_filtered_only_fallback(tmp_path, raw_available, monkeypatch):
+    from bactomate.gui.artifact_paths import filtered_foci_csv_path, raw_foci_csv_path
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    foci_path = tmp_path / 'sample_foci_GFP.tif'
+    foci = np.ones((1, 256, 256), dtype=np.uint16)
+    foci[0, 33, 40] = foci[0, 33, 50] = 1000
+    tifffile.imwrite(foci_path, foci)
+    header = 'frame,y,x,intensity,probability,cell_id\n'
+    filtered = filtered_foci_csv_path(mask_path.parent, mask_path=mask_path, foci_source_path=foci_path)
+    filtered.parent.mkdir(parents=True, exist_ok=True)
+    filtered.write_text(header + '0,33,40,1000,0.95,1\n')
+    if raw_available:
+        raw = raw_foci_csv_path(mask_path.parent, mask_path=mask_path, foci_source_path=foci_path)
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(header + '0,33,40,1000,0.95,1\n0,33,50,1000,0.6,1\n')
+    before = filtered.read_bytes()
+    if raw_available:
+        tab, parent, host, surface = _build_hosted_tab(tmp_path)
+        pd = _prime_segmentation_foci_preview(host.omnipose_tab, [foci_path], monkeypatch)
+        host.omnipose_tab._on_embedded_segmentation_preview_closed()
+    else:
+        tab, parent = _build_tab(tmp_path)
+        pd = None
+    tab.get_filter_settings()
+    tab.set_filter_settings({'max_aspect_ratio': 20.0})
+    tab.set_foci_channel_settings('GFP', {'foci_prob_enabled': True, 'foci_prob_thresh': 0.9})
+    show_filter_preview(tab, str(mask_path))
+    dlg = tab._filter_preview_dialog
+    try:
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        channel = dlg._last_preview['foci_channels']['gfp']
+        assert len(channel['pass_peaks']) == 1, (channel, dlg._last_preview['accepted'])
+        assert len(channel['fail_peaks']) == int(raw_available)
+        dlg._pf_spinboxes['foci_prob_thresh'].setValue(0.5)
+        rid = dlg._filter_apply.generation
+        dlg._pf_apply_current()
+        assert _wait_for_apply_generation(dlg, rid_before=rid)
+        channel = dlg._last_preview['foci_channels']['gfp']
+        assert len(channel['pass_peaks']) == (2 if raw_available else 1)
+        assert not channel['fail_peaks']
+        assert filtered.read_bytes() == before
+    finally:
+        if pd is not None:
+            pd.deleteLater()
+        _shutdown(tab, parent)
+
+
+def _prime_segmentation_foci_preview(owner, foci_paths, monkeypatch):
+    from bactomate.gui.preview.preview_window import PreviewDialogBase
+
+    pd = PreviewDialogBase(title='Segmentation Preview', embedded=True)
+    pd._foci_source_paths = list(foci_paths)
+    pd._foci_sources = [tifffile.imread(path) for path in foci_paths]
+    pd._foci_source_signatures = {
+        str(path.resolve()): (path.stat().st_mtime_ns, path.stat().st_size)
+        for path in foci_paths
+    }
+    pd._foci_peaks_cache = {}
+    owner._ensure_spotiflow_channel_entries(foci_paths)
+
+    def detect(plane, settings):
+        y, x = np.unravel_index(np.argmax(plane), plane.shape)
+        return [{'y': float(y), 'x': float(x), 'intensity': float(plane[y, x]), 'probability': 0.6}], True
+
+    monkeypatch.setattr(owner, '_spotiflow_detect_peaks_on_plane', detect)
+    for si, path in enumerate(foci_paths):
+        channel = owner._spotiflow_channel_key_for_preview_index(pd, si)
+        sf = owner._get_spotiflow_detection_params(channel_key=channel)
+        peaks, available = owner._spotiflow_detect_peaks_on_plane(pd._foci_sources[si][0], sf)
+        assert available
+        key = owner._foci_peak_cache_key(si, 0, channel, sf, 0.0)
+        pd._foci_peaks_cache[key] = peaks
+        # Frame 1 was visited and detection found no peaks.
+        pd._foci_peaks_cache[owner._foci_peak_cache_key(si, 1, channel, sf, 0.0)] = []
+    owner._embedded_segmentation_preview = pd
+    return pd
+
+
+@pytest.mark.parametrize('stale', [None, 'settings', 'pending_settings', 'invalidated', 'source'])
+def test_preview_uses_closed_segmentation_detections_without_rerunning(tmp_path, monkeypatch, stale):
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    mask = np.repeat(_make_mixed_mask(), 3, axis=0)
+    tifffile.imwrite(mask_path, mask)
+    foci_paths = [tmp_path / f'sample_foci_{channel}.tif' for channel in ('GFP', 'dsRed')]
+    for path in foci_paths:
+        foci = np.ones((3, 256, 256), dtype=np.uint16)
+        foci[0, 33, 40] = 1000
+        tifffile.imwrite(path, foci)
+    tab, parent, host, surface = _build_hosted_tab(tmp_path)
+    owner = host.omnipose_tab
+    pd = _prime_segmentation_foci_preview(owner, foci_paths, monkeypatch)
+    if stale == 'pending_settings':
+        from PyQt6.QtWidgets import QSpinBox
+        pd._sf_min_distance = QSpinBox(pd)
+        pd._sf_min_distance.setValue(7)
+    elif stale == 'invalidated':
+        owner._invalidate_foci_peak_cache_for_source(pd, 0)
+    owner._on_embedded_segmentation_preview_closed()
+    assert owner._embedded_segmentation_preview is None
+    if stale == 'settings':
+        owner._spotiflow_channel_params['gfp']['min_distance'] = 7
+    elif stale == 'source':
+        tifffile.imwrite(foci_paths[0], np.full((3, 256, 256), 123, dtype=np.uint16))
+    monkeypatch.setattr(owner, '_spotiflow_detect_peaks_on_plane', lambda *_: pytest.fail('must not detect'))
+    for path in foci_paths:
+        tab.set_foci_channel_settings(path.stem.split('_foci_')[1], {'foci_prob_enabled': True, 'foci_prob_thresh': 0.9})
+    show_filter_preview(tab, str(mask_path))
+    dlg = tab._filter_preview_dialog
+    try:
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        channels = dlg._last_preview['foci_channels']
+        assert not channels['dsred']['pass_peaks']
+        assert len(channels['dsred']['fail_peaks']) == 1
+        assert len(channels['gfp']['fail_peaks']) == (1 if stale is None else 0)
+        assert int(channels['dsred']['fail_peaks'][0]['frame']) == 0
+        assert not list(tmp_path.rglob('*.csv'))
+    finally:
+        pd.deleteLater()
+        _shutdown(tab, parent)
+
+
+def test_preview_handoff_pairs_channels_frames_and_filtered_fallback(tmp_path, monkeypatch):
+    from bactomate.gui.artifact_paths import filtered_foci_csv_path
+    from bactomate.gui.preview.navigation_controls import PreviewNavState
+    from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
+
+    mask_path = _write_mask_tif(tmp_path)
+    tifffile.imwrite(mask_path, np.repeat(_make_mixed_mask(), 3, axis=0))
+    paths = [tmp_path / name for name in ('other_foci_GFP.tif', 'sample_foci_dsRed.tif', 'sample_foci_GFP.tif')]
+    for path, x in zip(paths, (80, 50, 40)):
+        foci = np.ones((3, 256, 256), dtype=np.uint16)
+        foci[0, 33, x] = 1000
+        tifffile.imwrite(path, foci)
+    filtered = filtered_foci_csv_path(mask_path.parent, mask_path=mask_path, foci_source_path=paths[2])
+    filtered.parent.mkdir(parents=True, exist_ok=True)
+    filtered.write_text('frame,y,x,intensity,probability,cell_id\n' + ''.join(
+        f'{frame},33,90,1000,0.95,1\n' for frame in range(3)
+    ))
+    before = filtered.read_bytes()
+    tab, parent, host, surface = _build_hosted_tab(tmp_path)
+    owner = host.omnipose_tab
+    pd = _prime_segmentation_foci_preview(owner, paths, monkeypatch)
+    monkeypatch.setattr(owner, '_spotiflow_detect_peaks_on_plane', lambda *_: pytest.fail('must not detect'))
+    show_filter_preview(tab, str(mask_path))
+    dlg = tab._filter_preview_dialog
+    try:
+        assert owner._embedded_segmentation_preview is None
+        assert _wait_until(lambda: dlg._filter_apply.idle)
+        channels = dlg._last_preview['foci_channels']
+        def peaks(channel):
+            return channels[channel]['pass_peaks'] + channels[channel]['fail_peaks']
+
+        assert [p['x'] for p in peaks('gfp')] == [40]
+        assert [p['x'] for p in peaks('dsred')] == [50]
+        assert paths[0] not in dlg._bg_paths
+        gfp_index = dlg._bg_paths.index(paths[2])
+        for frame in (1, 2):
+            dlg._nav_ctrl.set_state(PreviewNavState(source_key=('file', gfp_index), frame_idx=frame), emit=True)
+            assert _wait_until(lambda: dlg.state().frame_idx == frame)
+            rid = dlg._filter_apply.generation
+            dlg._pf_apply_current()
+            assert _wait_for_apply_generation(dlg, rid_before=rid)
+            channels = dlg._last_preview['foci_channels']
+            assert [int(p['x']) for p in peaks('gfp')] == ([] if frame == 1 else [90])
+            assert not peaks('dsred')
+            if frame == 2:
+                from PyQt6.QtWidgets import QLabel
+                hint = dlg.findChild(QLabel, 'FilterFociSourceHint')
+                assert 'saved filtered CSV' in hint.text()
+                assert not hint.isHidden()
+        assert filtered.read_bytes() == before
+        assert not owner.preview_foci_rows_for_filtering(paths[2], mask_shape=(8, 8))
+    finally:
+        pd.deleteLater()
+        _shutdown(tab, parent)
+
+
 def test_failed_mask_replacement_keeps_current_preview(tmp_path, monkeypatch):
     from bactomate.gui.tabs import _analyze_masks_filtering as filtering
     from bactomate.gui.tabs._analyze_masks_preview_filtering import show_filter_preview
