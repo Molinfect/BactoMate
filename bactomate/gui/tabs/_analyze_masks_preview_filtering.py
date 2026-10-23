@@ -1227,7 +1227,7 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             rejected=rejected,
             phase_plane=phase_for_cells,
         )
-        dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': mask_arr, 'accepted': accepted, 'rejected': rejected, 'cell_details': cell_details, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': view_bg, 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}'}
+        dlg._last_preview = {'mask_path_key': getattr(dlg, '_preview_mask_path_key', None), 'source_key': source_key, 'frame_idx': int(frame_idx), 'settings_sig': request_settings_sig, 'cell_settings_sig': cell_settings_sig, 'foci_channel_sigs': dict(foci_channel_sigs), 'mask_2d': mask_arr, 'accepted': accepted, 'rejected': rejected, 'cell_details': cell_details, 'n_obj': int(n_obj) if n_obj is not None else None, 'foci_txt': foci_txt, 'pass_peaks': pass_peaks, 'fail_peaks': fail_peaks, 'foci_channels': foci_channels_last, 'bg': view_bg, 'foci_plane': _get_foci_plane(int(frame_idx), foci_src), 'frame_rows': frame_rows, 'info_text': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}  |  Foci(frame): raw {raw_n} / pass {len(pass_peaks)} / fail {len(fail_peaks)}{foci_txt}', 'info_text_cells': f'Accepted: {len(accepted)}  Rejected: {len(rejected)}  Total: {int(n_obj or 0)}{foci_txt}'}
         _store_foci_pass_fail_cache(int(frame_idx), foci_channels_last, accepted=accepted, request_settings=filter_settings)
         _clear_preview_layer_caches(dlg)
         try:
@@ -2118,7 +2118,8 @@ def show_filter_preview(tab, path_text: str, *, masks_preloaded: Optional[np.nda
             mask_2d = np.asarray(last.get('mask_2d'), dtype=np.int32)
             accepted = set(last.get('accepted') or [])
             rejected = set(last.get('rejected') or [])
-            info_text = str(last.get('info_text') or '')
+            # Render appends the per-frame foci counts for the displayed channel; start from the cell-only summary.
+            info_text = str(last.get('info_text_cells') or last.get('info_text') or '')
         else:
             mask_2d = np.asarray(mask_stack[int(state.frame_idx)], dtype=np.int32)
             labels = mask_2d[mask_2d > 0]

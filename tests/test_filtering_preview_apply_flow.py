@@ -1105,3 +1105,22 @@ def test_filter_cards_are_collapsible_and_state_persists(tmp_path):
     finally:
         _shutdown(tab, parent)
     assert tab._filter_preview_card_expanded == {'cell': False}
+
+
+def test_status_line_shows_foci_frame_counts_once(tmp_path):
+    _two_channel_setup(tmp_path)
+    tab, parent, dlg = _open_preview(tmp_path)
+    try:
+        assert _wait_until(lambda: bool(dlg._last_preview) and dlg._filter_apply.idle)
+        for view in ('GFP', 'mCherry', 'sample.tif'):
+            _view_go(dlg, view)
+            dlg.refresh()
+            QCoreApplication.processEvents()
+            text = dlg._info_label.text()
+            assert text.count('Foci(frame)') <= 1, (view, text)
+        _view_go(dlg, 'GFP')
+        dlg.refresh()
+        QCoreApplication.processEvents()
+        assert dlg._info_label.text().count('Foci(frame)') == 1
+    finally:
+        _shutdown(tab, parent)
