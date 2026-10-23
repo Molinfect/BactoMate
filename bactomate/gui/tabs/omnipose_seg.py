@@ -558,6 +558,7 @@ class OmniposeSegTab(QWidget):
                     pd._foci_worker_slot = None
                 except Exception:
                     pass
+            self._snapshot_foci_peaks_for_filtering(pd)
         self._embedded_segmentation_preview = None
         fn = getattr(self, '_seg_preview_detect_conn', None)
         if fn is not None:
@@ -2046,6 +2047,53 @@ class OmniposeSegTab(QWidget):
         except Exception:
             get_logger().debug('partial foci cache invalidate failed', exc_info=True)
 
+    def _snapshot_foci_peaks_for_filtering(self, preview_dialog: Any) -> None:
+        """Retain only current detections when the filtering pane replaces this preview."""
+        self._sync_spotiflow_from_preview_dialog(preview_dialog)
+        paths = getattr(preview_dialog, '_foci_source_paths', None) or []
+        sources = getattr(preview_dialog, '_foci_sources', None) or []
+        cache = getattr(preview_dialog, '_foci_peaks_cache', None) or {}
+        source_signatures = getattr(preview_dialog, '_foci_source_signatures', None) or {}
+        snapshot = {}
+        csv_minp = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+        for si, path in enumerate(paths):
+            path_key = str(Path(path).resolve())
+            if si >= len(sources) or path_key not in source_signatures:
+                continue
+            channel = self._spotiflow_channel_key_for_preview_index(preview_dialog, si)
+            sf = self._get_spotiflow_detection_params(channel_key=channel)
+            signature = self._foci_peak_cache_key(si, 0, channel, sf, csv_minp)
+            frames = {}
+            for key, peaks in cache.items():
+                if isinstance(key, tuple) and len(key) == len(signature) and key == self._foci_peak_cache_key(si, key[1], channel, sf, csv_minp):
+                    frame = int(key[1])
+                    frames[frame] = [dict(peak, frame=frame) for peak in peaks]
+            if frames:
+                snapshot[path_key] = {'source_signature': source_signatures[path_key], 'shape': tuple(sources[si].shape[-2:]), 'signature': signature, 'frames': frames}
+        self._filter_preview_foci_snapshot = snapshot
+
+    def preview_foci_rows_for_filtering(self, source_path: Path, *, mask_shape: tuple[int, int]) -> Optional[dict[int, list[dict]]]:
+        """Return visited frames, including known empty frames, without running detection."""
+        preview_dialog = getattr(self, '_embedded_segmentation_preview', None)
+        if preview_dialog is not None:
+            self._snapshot_foci_peaks_for_filtering(preview_dialog)
+        source_path = Path(source_path)
+        saved = (getattr(self, '_filter_preview_foci_snapshot', None) or {}).get(str(source_path.resolve()))
+        if saved is None or saved['shape'] != tuple(mask_shape):
+            return None
+        try:
+            st = source_path.stat()
+        except OSError:
+            return None
+        if saved['source_signature'] != (st.st_mtime_ns, st.st_size):
+            return None
+        signature = saved['signature']
+        sf = self._get_spotiflow_detection_params(channel_key=signature[2])
+        csv_minp = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+        if signature != self._foci_peak_cache_key(signature[0], 0, signature[2], sf, csv_minp):
+            return None
+        return {frame: [dict(row) for row in rows] for frame, rows in saved['frames'].items()}
+
     def _foci_peak_cache_key(self, source_index: int, frame_idx: int, channel_key: str, sf_local: dict[str, Any], csv_minp: float) -> tuple:
         return (int(source_index), int(frame_idx), str(channel_key), bool(sf_local.get('use_optimized_threshold', True)), float(sf_local.get('prob_thresh') if sf_local.get('prob_thresh') is not None else 0.5), int(sf_local.get('min_distance', 1) or 1), bool(sf_local.get('subpix', True)), bool(sf_local.get('normalize', True)), float(sf_local.get('perc_low', 1.0) or 1.0), float(sf_local.get('perc_high', 99.8) or 99.8), float(csv_minp))
 
@@ -2717,6 +2765,7 @@ class OmniposeSegTab(QWidget):
                     pass
             preview_dialog._foci_sources = []
             preview_dialog._foci_source_paths = []
+            preview_dialog._foci_source_signatures = {}
             preview_dialog._foci_peaks_cache = {}
             preview_dialog._foci_peaks_for_current = []
             preview_dialog._foci_peaks_request_id = 0
@@ -2738,6 +2787,8 @@ class OmniposeSegTab(QWidget):
                             arr = coerce_stack_to_tyx(np.asarray(safe_imread(str(fp))))
                             if arr is None or arr.size == 0:
                                 continue
+                            st = Path(fp).stat()
+                            preview_dialog._foci_source_signatures[str(Path(fp).resolve())] = (st.st_mtime_ns, st.st_size)
                             loaded.append(arr)
                             loaded_paths.append(fp)
                         except Exception:
@@ -4755,6 +4806,8 @@ class OmniposeSegTab(QWidget):
                                             if arr is None or arr.size == 0:
                                                 get_logger().warning('Foci file found but stack empty after load: %s', fp.name)
                                                 continue
+                                            st = Path(fp).stat()
+                                            preview_dialog._foci_source_signatures[str(Path(fp).resolve())] = (st.st_mtime_ns, st.st_size)
                                             loaded.append(arr)
                                             loaded_paths.append(fp)
                                         except Exception:
@@ -4941,7 +4994,6 @@ class OmniposeSegTab(QWidget):
 
             def _on_preview_finished(_result: int=0, pd=preview_dialog) -> None:
                 self._on_embedded_segmentation_preview_closed()
-                self._sync_spotiflow_from_preview_dialog(pd)
             preview_dialog.finished.connect(_on_preview_finished)
             self._restore_seg_tuning_to_left_panel()
             prev_embed = getattr(self, '_embedded_segmentation_preview', None)
