@@ -24,8 +24,9 @@ Windows-specific scripts live in **`setup\windows\`**. See [setup/README.md](../
 
 - **Windows 10 or 11 (64-bit)**
 - **Python 3.11 (64-bit)** from [python.org](https://www.python.org/downloads/) — **not** Conda, **not** Microsoft Store Python
-  - Enable **Add python.exe to PATH** during install
-  - Use the `py` launcher: `py -3.11` (installer verifies this automatically)
+  - Keep **py launcher** ticked during install (default). **Add python.exe to PATH** is not needed.
+  - Anaconda/Conda or a newer Python can stay installed; the installer ignores them and uses `py -3.11`.
+  - If no Python 3.11 is found, the installer offers to install it for your user account via `winget` (Y/N).
 - **Git** (optional) or download the repo as a ZIP from GitHub
 - **Microsoft Visual C++ Redistributable (x64)** — runtime DLLs for PyTorch and scientific wheels  
   [Download from Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
@@ -155,7 +156,7 @@ venv\Scripts\python.exe -m pip install "dbscan==0.0.10" --only-binary dbscan --f
 
 ### Conda / wrong Python version
 
-The installer **rejects** Conda and non-3.11 interpreters. Install plain Python 3.11 from python.org and run `setup\windows\install.bat` again.
+The installer **rejects** Conda and non-3.11 interpreters, but leaves them installed. If no Python 3.11 is found it offers a `winget` install (current user, python.org build). Otherwise install plain Python 3.11 (64-bit) from python.org, keep **py launcher** ticked, and run `setup\windows\install.bat` again.
 
 ### `pip install` resolution errors
 
