@@ -97,7 +97,13 @@ def _run_retire_script(mode: str):
         capture_output=True,
         text=True,
         timeout=60,
-        env={**__import__("os").environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": str(root)},
+        env={
+            **__import__("os").environ,
+            "QT_QPA_PLATFORM": "offscreen",
+            "PYTHONPATH": str(root),
+            # On Windows Qt logs to the debugger, not a piped stderr, unless forced.
+            "QT_FORCE_STDERR_LOGGING": "1",
+        },
     )
 
 
