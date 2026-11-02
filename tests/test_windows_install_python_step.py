@@ -2,7 +2,9 @@
 
 `py` and `winget` are replaced by .cmd shims on a minimal PATH; LOCALAPPDATA and
 ProgramFiles point at empty temp folders, so the runner's own Pythons are invisible.
-BACTOMATE_INSTALL_STEP1_ONLY makes the installer exit right after Step 1.
+BACTOMATE_INSTALL_STEP1_ONLY makes the installer exit right after Step 1, and
+BACTOMATE_INSTALL_LOGGED skips the install_logged.ps1 re-launch, so the batch file runs
+directly and its diagnostics (normally teed into Logs\\install_last.log) land in stdout.
 """
 from __future__ import annotations
 
@@ -72,6 +74,7 @@ class Installer:
             ProgramFiles=str(program_files),
             MOCK_WINGET_LOG=str(self.winget_log),
             BACTOMATE_INSTALL_STEP1_ONLY="1",
+            BACTOMATE_INSTALL_LOGGED="1",
         )
 
     def with_py(self, python_311: Path | None) -> Installer:
@@ -102,10 +105,6 @@ class Installer:
         print(result.output)
         return result
 
-    @property
-    def log(self) -> str:
-        return (self.root / "Logs" / "install_last.log").read_text(errors="replace")
-
 
 @pytest.fixture
 def installer(tmp_path):
@@ -132,7 +131,7 @@ def test_missing_python_without_winget_explains_and_stops(installer):
     assert "py launcher" in result.output
     # The bare "py" call must not leak cmd's "not recognized" error any more.
     assert "not recognized" not in result.output
-    assert "winget: not available" in installer.log
+    assert "winget: not available" in result.output
 
 
 def test_rejected_python_311_does_not_offer_winget(installer, tmp_path):
@@ -156,7 +155,7 @@ def test_declined_winget_install_stops_without_installing(installer):
     assert "Install Python 3.11 now" in result.output
     assert "Python 3.11 (64-bit) was not found on this PC" in result.output
     assert not installer.winget_log.exists()
-    assert "winget: declined by user" in installer.log
+    assert "winget: declined by user" in result.output
 
 
 def test_accepted_winget_install_is_verified_and_used(installer):
@@ -169,4 +168,4 @@ def test_accepted_winget_install_is_verified_and_used(installer):
     assert "--id Python.Python.3.11" in winget_args
     assert "InstallAllUsers=0" in winget_args
     assert "PrependPath=0" in winget_args
-    assert "winget: install exit code 0" in installer.log
+    assert "winget: install exit code 0" in result.output

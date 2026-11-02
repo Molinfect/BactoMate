@@ -2,7 +2,7 @@
 Exit 0 when torch, torchvision, and torchaudio are mutually compatible.
 Exit 1 when a reinstall is needed (mixed CUDA builds, or torchvision ops fail to load).
 
-Used by setup/windows/install.bat step 6 before skipping the CUDA wheel install.
+Used by setup/windows/install.bat before skipping the pinned wheel install.
 """
 from __future__ import annotations
 
@@ -15,12 +15,18 @@ def _cuda_tag(version: str) -> str:
     return "cpu"
 
 
-def bundle_ok() -> bool:
+def bundle_ok(require_cuda: bool = False) -> bool:
     try:
         import torch
         import torchvision
         import torchaudio  # noqa: F401
     except (ImportError, RuntimeError, OSError):
+        return False
+
+    versions = (torch.__version__, torchvision.__version__, torchaudio.__version__)
+    if tuple(v.split("+", 1)[0] for v in versions) != ("2.11.0", "0.26.0", "2.11.0"):
+        return False
+    if require_cuda and (not torch.version.cuda or not torch.cuda.is_available()):
         return False
 
     tags = [
@@ -43,7 +49,7 @@ def bundle_ok() -> bool:
 
 
 def main() -> int:
-    return 0 if bundle_ok() else 1
+    return 0 if bundle_ok(require_cuda="--require-cuda" in sys.argv) else 1
 
 
 if __name__ == "__main__":

@@ -24,7 +24,6 @@ fi
 
 VERIFY_PY="$SCRIPT_DIR/verify_python.py"
 WHEEL_ONLY_ARGS=(--only-binary numpy,scipy,scikit-image)
-WHEEL_REASON="pip could not install a wheel for numpy, scipy, or scikit-image"
 RESTORE_CMD="rm -rf venv && mv venv.previous venv"
 
 REASON=""
@@ -167,13 +166,10 @@ echo "✓ pip pinned"
 echo ""
 echo "Installing requirements from requirements.txt..."
 if [ -f "requirements.txt" ]; then
-    REASON="$WHEEL_REASON"
-    if ! "$VENV_PYTHON" -m pip install "${WHEEL_ONLY_ARGS[@]}" -r requirements.txt; then
+    REASON="pip requirements install failed (see resolver, network, or wheel error above)"
+    if ! "$VENV_PYTHON" -m pip install --use-deprecated=legacy-resolver "${WHEEL_ONLY_ARGS[@]}" -r requirements.txt; then
         echo ""
-        echo "✗ A wheel was required for numpy, scipy, or scikit-image and none could be installed."
-        echo "  Source builds are not attempted (they need a compiler and fail on newer Python)."
-        echo "  Use plain Python 3.11 from https://www.python.org/downloads/ (or: brew install python@3.11),"
-        echo "  or lab users can download BactoMate.dmg from the GitHub release."
+        echo "✗ Requirements installation failed; see pip output above. Source builds are disabled for numpy, scipy, and scikit-image."
         exit 1
     fi
     echo "✓ Requirements installed"
@@ -189,31 +185,13 @@ if [ -f "requirements.txt" ]; then
     fi
     echo "✓ Editable install complete (bactomate CLI available in venv)"
     
-    # Check for NVIDIA GPU and offer CUDA installation
-    if command -v nvidia-smi &> /dev/null; then
-        echo ""
-        echo "NVIDIA GPU detected!"
-        read -p "Would you like to install PyTorch with CUDA support for GPU acceleration? (y/n) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if [ -f "$SCRIPT_DIR/install_cuda_pytorch.sh" ]; then
-                echo "Installing PyTorch with CUDA..."
-                bash "$SCRIPT_DIR/install_cuda_pytorch.sh"
-            else
-                echo "Installing PyTorch with CUDA (default: cu118)..."
-                pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
-                pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-                echo "✓ CUDA-enabled PyTorch installed"
-            fi
-        fi
-    fi
-    
     # Apply all patches automatically (shared script lives in setup/, not setup/macos/)
     echo ""
     echo "Applying compatibility patches..."
     PATCHES_PY="$PROJECT_ROOT/setup/apply_all_patches.py"
+    REASON="compatibility patches failed"
     if [ -f "$PATCHES_PY" ]; then
-        python3 "$PATCHES_PY" || echo "⚠ Warning: Some patches may have failed"
+        "$VENV_PYTHON" "$PATCHES_PY"
     else
         echo "⚠ Warning: apply_all_patches.py not found at $PATCHES_PY"
     fi
@@ -225,21 +203,21 @@ fi
 REASON="PyQt6 or macOS app integration packages could not be installed"
 echo ""
 echo "Verifying PyQt6 installation..."
-python3 -c "import PyQt6; print('✓ PyQt6 imported successfully')" || {
+"$VENV_PYTHON" -c "import PyQt6; print('✓ PyQt6 imported successfully')" || {
     echo "✗ PyQt6 import failed. Installing PyQt6..."
-    pip install "PyQt6>=6.6.0"
-    python3 -c "import PyQt6; print('✓ PyQt6 installed and imported')"
+    "$VENV_PYTHON" -m pip install "PyQt6>=6.6.0"
+    "$VENV_PYTHON" -c "import PyQt6; print('✓ PyQt6 installed and imported')"
 }
 
 # Step 9: macOS Dock/menu-bar integration (AppKit/Foundation via pyobjc)
 if [[ "$(uname -s)" == "Darwin" ]]; then
     echo ""
     echo "Checking for macOS app integration dependencies..."
-    if ! python3 -c "import AppKit, Foundation" 2>/dev/null; then
+    if ! "$VENV_PYTHON" -c "import AppKit, Foundation" 2>/dev/null; then
         echo "Installing pyobjc-framework-Cocoa..."
-        python3 -m pip install "pyobjc-framework-Cocoa"
+        "$VENV_PYTHON" -m pip install "pyobjc-framework-Cocoa"
     fi
-    python3 -c "import AppKit, Foundation; print('✓ AppKit/Foundation available')" || {
+    "$VENV_PYTHON" -c "import AppKit, Foundation; print('✓ AppKit/Foundation available')" || {
         echo "✗ AppKit/Foundation import failed after install."
         exit 1
     }
@@ -248,14 +226,14 @@ fi
 # Step 10: Check for Qt cocoa plugin
 echo ""
 echo "Checking for Qt cocoa plugin..."
-PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
+PYTHON_VERSION=$("$VENV_PYTHON" -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
 PLUGIN_PATH="$PROJECT_ROOT/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins/platforms/libqcocoa.dylib"
 if [ -f "$PLUGIN_PATH" ]; then
     echo "✓ Cocoa plugin found at: $PLUGIN_PATH"
 else
     echo "✗ Cocoa plugin not found. Reinstalling PyQt6..."
-    pip uninstall -y PyQt6 PyQt6-Qt6 PyQt6-sip 2>/dev/null || true
-    pip install --no-cache-dir "PyQt6>=6.6.0"
+    "$VENV_PYTHON" -m pip uninstall -y PyQt6 PyQt6-Qt6 PyQt6-sip 2>/dev/null || true
+    "$VENV_PYTHON" -m pip install --no-cache-dir "PyQt6>=6.6.0"
     if [ -f "$PLUGIN_PATH" ]; then
         echo "✓ Cocoa plugin now found"
     else
@@ -266,8 +244,8 @@ fi
 # Step 11: Test PyQt6
 echo ""
 echo "Testing PyQt6 (this may take a moment)..."
-PYTHON_VERSION=$(python3 -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
-TEST_OUTPUT=$(python3 -c "
+PYTHON_VERSION=$("$VENV_PYTHON" -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "python3.11")
+TEST_OUTPUT=$("$VENV_PYTHON" -c "
 import sys, os
 project_root = '$PROJECT_ROOT'
 os.environ['QT_PLUGIN_PATH'] = project_root + '/venv/lib/${PYTHON_VERSION}/site-packages/PyQt6/Qt6/plugins'
@@ -292,10 +270,10 @@ fi
 
 echo ""
 echo "Running install verification..."
-REASON="smoke test failed (python main.py --smoke-test)"
+REASON="smoke test failed (main.py --smoke-test)"
 source "$PROJECT_ROOT/venv/bin/activate"
-python main.py --version
-python main.py --smoke-test
+"$VENV_PYTHON" main.py --version
+"$VENV_PYTHON" main.py --smoke-test
 echo "✓ Smoke test passed"
 INSTALL_OK=1
 
@@ -319,7 +297,7 @@ echo "=========================================="
 echo "Setup complete!"
 echo "=========================================="
 echo ""
-echo "Verify anytime:  source venv/bin/activate && python main.py --smoke-test"
+echo "Verify anytime:  venv/bin/python main.py --smoke-test"
 echo "Launch GUI:      ./launch_gui.sh   (from project root)"
 echo "Install log:     Logs/install.log"
 echo ""
