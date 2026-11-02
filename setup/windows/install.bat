@@ -71,28 +71,26 @@ echo.
 
 :: Step 1: Python 3.11 x64 (python.org / py launcher only — no generic python fallback)
 echo [Step 1/8] Verifying Python 3.11 ^(64-bit, non-Conda^)...
-set "HOST_PY="
+set "HOST_PY_OUT=%TEMP%\bactomate_host_py_%RANDOM%.txt"
 set "HOST_PY_ERR=%TEMP%\bactomate_host_py_err_%RANDOM%.txt"
-py -3.11 "%WIN_DIR%verify_python.py" > "%TEMP%\bactomate_host_py.txt" 2> "%HOST_PY_ERR%"
-if errorlevel 1 (
-    echo [BREAK] Python 3.11 verification failed.
-    if exist "%HOST_PY_ERR%" type "%HOST_PY_ERR%"
-    echo.
-    echo   Fix: Install Python 3.11 ^(64-bit^) from https://www.python.org/downloads/
-    echo   Tick "Add python.exe to PATH". Do not use Conda or Microsoft Store Python.
-    if exist "%HOST_PY_ERR%" del /q "%HOST_PY_ERR%" >nul 2>&1
-    pause
-    exit /b 1
-)
-if exist "%HOST_PY_ERR%" del /q "%HOST_PY_ERR%" >nul 2>&1
-set "HOST_PY="
-for /f "usebackq delims=" %%I in ("%TEMP%\bactomate_host_py.txt") do set "HOST_PY=%%I"
-del /q "%TEMP%\bactomate_host_py.txt" >nul 2>&1
+call :resolve_host_py
+:: Offer winget only when no Python 3.11 exists at all (not when one was found but rejected).
+if not defined HOST_PY if not defined HOST_PY_REJECTED call :offer_winget_python
+echo HOST_PY=!HOST_PY!>> "%INSTALL_LOG%"
 if not defined HOST_PY (
-    echo [BREAK] Could not read Python 3.11 path from verify script.
+    echo.
+    if defined HOST_PY_REJECTED (
+        echo [BREAK] Python 3.11 was found but cannot be used:
+        if exist "%HOST_PY_ERR%" type "%HOST_PY_ERR%"
+    ) else (
+        echo [BREAK] Python 3.11 ^(64-bit^) was not found on this PC.
+    )
+    call :python_fix_hint
+    del /q "%HOST_PY_OUT%" "%HOST_PY_ERR%" >nul 2>&1
     pause
     exit /b 1
 )
+del /q "%HOST_PY_OUT%" "%HOST_PY_ERR%" >nul 2>&1
 if not exist "!HOST_PY!" (
     echo [BREAK] Could not resolve Python 3.11 executable.
     pause
@@ -310,3 +308,81 @@ echo To build a portable folder for other PCs ^(no separate Python install^):
 echo   build\windows\build_windows_bundle.bat
 echo.
 pause
+exit /b 0
+
+:: ---------------------------------------------------------------------------
+:: Step 1 helpers
+:: ---------------------------------------------------------------------------
+
+:resolve_host_py
+:: Sets HOST_PY to a verified Python 3.11 x64, or HOST_PY_REJECTED=1 if a 3.11 exists but fails checks.
+:: Looks via the py launcher, then the default python.org locations (covers a fresh winget install,
+:: whose py launcher is not yet on this console's PATH). A 3.11 found by py is authoritative.
+set "HOST_PY="
+set "HOST_PY_REJECTED="
+set "PY_CAND="
+type nul > "%HOST_PY_ERR%"
+where py >nul 2>&1
+if not errorlevel 1 for /f "usebackq delims=" %%I in (`py -3.11 -c "import sys; print(sys.executable)" 2^>nul`) do set "PY_CAND=%%I"
+if defined PY_CAND call :try_host_py "!PY_CAND!"
+if not defined PY_CAND call :try_host_py "%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+if not defined PY_CAND if not defined HOST_PY call :try_host_py "%ProgramFiles%\Python311\python.exe"
+if defined HOST_PY set "HOST_PY_REJECTED="
+goto :eof
+
+:try_host_py
+if not exist "%~1" goto :eof
+"%~1" "%WIN_DIR%verify_python.py" > "%HOST_PY_OUT%" 2>> "%HOST_PY_ERR%"
+if errorlevel 1 (
+    set "HOST_PY_REJECTED=1"
+    goto :eof
+)
+for /f "usebackq delims=" %%I in ("%HOST_PY_OUT%") do set "HOST_PY=%%I"
+goto :eof
+
+:offer_winget_python
+echo.
+echo   Python 3.11 ^(64-bit^) was not found. BactoMate's source install needs exactly this version;
+echo   other Python installs ^(Anaconda/Conda, Python 3.12 or newer, Microsoft Store^) cannot be used.
+echo.
+echo   Lab users do not need Python: download BactoMate-win64.zip instead from
+echo     https://github.com/Molinfect/BactoMate/releases/latest
+echo.
+where winget >nul 2>&1
+if errorlevel 1 (
+    echo   winget is not available on this PC, so Python 3.11 cannot be installed automatically.
+    echo winget: not available>> "%INSTALL_LOG%"
+    goto :eof
+)
+echo   The installer can download Python 3.11 ^(64-bit^) from python.org via winget, for your
+echo   user account only. Existing Python installs ^(e.g. Anaconda^) are left as they are.
+choice /c YN /m "  Install Python 3.11 now"
+if errorlevel 2 (
+    echo winget: declined by user>> "%INSTALL_LOG%"
+    goto :eof
+)
+if not errorlevel 1 goto :eof
+echo.
+echo   Installing Python 3.11 via winget ^(this can take a few minutes^)...
+winget install --exact --id Python.Python.3.11 --source winget --architecture x64 --accept-source-agreements --accept-package-agreements --override "/quiet InstallAllUsers=0 Include_launcher=1 InstallLauncherAllUsers=0 PrependPath=0 Include_test=0"
+echo winget: install exit code !ERRORLEVEL!>> "%INSTALL_LOG%"
+:: Trust the re-check, not winget's exit code (it is non-zero for e.g. "already installed").
+call :resolve_host_py
+if defined HOST_PY (
+    echo   Python 3.11 installed.
+) else (
+    echo [WARNING] winget finished, but Python 3.11 still was not found.
+)
+goto :eof
+
+:python_fix_hint
+echo.
+echo   Fix ^(pick one^):
+echo   - Lab users: download BactoMate-win64.zip ^(no Python needed^) from
+echo       https://github.com/Molinfect/BactoMate/releases/latest
+echo   - Source install: install Python 3.11 ^(64-bit^) from python.org, e.g.
+echo       https://www.python.org/downloads/release/python-3119/  ^("Windows installer (64-bit)"^)
+echo     Keep "py launcher" ticked. "Add python.exe to PATH" is not needed, and Anaconda can stay.
+echo     Then run install_windows.bat again.
+echo   Details: docs\INSTALL_AND_LAUNCH_windows.md
+goto :eof

@@ -29,15 +29,14 @@ def main() -> None:
         _fail(
             "Microsoft Store Python is not supported.\n"
             "  Fix: Install Python 3.11 (64-bit) from https://www.python.org/downloads/\n"
-            "  Tick \"Add python.exe to PATH\" and disable the Store alias in"
-            " Settings → Apps → Advanced app settings → App execution aliases."
+            "  Keep \"py launcher\" ticked, then run install_windows.bat again."
         )
 
     if sys.version_info[:2] != (3, 11):
         _fail(
             f"Python 3.11 is required (found {sys.version_info.major}.{sys.version_info.minor}).\n"
             "  Fix: Install Python 3.11 from https://www.python.org/downloads/\n"
-            "  Then run: py -3.11 setup\\windows\\install.bat"
+            "  Then run install_windows.bat again."
         )
 
     bits = struct.calcsize("P") * 8
