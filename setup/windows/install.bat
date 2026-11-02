@@ -97,6 +97,8 @@ if not exist "!HOST_PY!" (
     exit /b 1
 )
 echo   Using host Python: !HOST_PY!
+:: Test hook (tests/test_windows_install_python_step.py): stop after Step 1.
+if defined BACTOMATE_INSTALL_STEP1_ONLY exit /b 0
 echo.
 
 :: Step 2: venv
@@ -364,7 +366,8 @@ if errorlevel 2 (
 if not errorlevel 1 goto :eof
 echo.
 echo   Installing Python 3.11 via winget ^(this can take a few minutes^)...
-winget install --exact --id Python.Python.3.11 --source winget --architecture x64 --accept-source-agreements --accept-package-agreements --override "/quiet InstallAllUsers=0 Include_launcher=1 InstallLauncherAllUsers=0 PrependPath=0 Include_test=0"
+:: "call" also returns from a winget.cmd shim (used by tests).
+call winget install --exact --id Python.Python.3.11 --source winget --architecture x64 --accept-source-agreements --accept-package-agreements --override "/quiet InstallAllUsers=0 Include_launcher=1 InstallLauncherAllUsers=0 PrependPath=0 Include_test=0"
 echo winget: install exit code !ERRORLEVEL!>> "%INSTALL_LOG%"
 :: Trust the re-check, not winget's exit code (it is non-zero for e.g. "already installed").
 call :resolve_host_py
