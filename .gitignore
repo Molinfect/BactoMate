@@ -32,7 +32,6 @@ ENV/
 build/*
 !build/README.md
 !build/public_packaging.py
-!build/strip_dev_tree_for_main.sh
 !build/publish_paper_data_branch.sh
 !build/macos/**
 !build/windows/**
@@ -90,9 +89,15 @@ Logs/*
 *.backup
 nohup.out
 
+# Local manuscript draft; keep confidential material outside the public repository.
+/BactoMate_Mns_NatureMethods_v2.docx
+
 # Paper raw data (local staging only — published via build/publish_paper_data_branch.sh)
 paper_data/
 
 # Compiled files
 *.pyc
 *.pyo
+
+# Agent scratch notes; keep out of the public repository.
+.scratch/

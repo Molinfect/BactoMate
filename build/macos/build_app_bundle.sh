@@ -105,6 +105,7 @@ rsync -a \
     --exclude "build/BactoMate.icns" \
     --exclude "Logs/" \
     --exclude "docs/internal/" \
+    --exclude "/BactoMate_Mns_NatureMethods_v2.docx" \
     --exclude "paper_data/" \
     --exclude "venv/" \
     "$PROJECT_ROOT/" "$RESOURCES_DIR/"

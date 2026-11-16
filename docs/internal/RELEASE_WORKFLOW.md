@@ -16,11 +16,12 @@ git remote -v
 
 | Branch | Purpose |
 |--------|---------|
-| **`dev`** | Day-to-day work. Keeps `docs/internal/`, local logs, draft files. |
-| **`main`** | Public GitHub + release tags. No `docs/internal/`. Empty `Logs/` only. |
+| **`dev`** | Day-to-day development, including publishable developer documentation. |
+| **`main`** | Released code and documentation, with version tags. |
 
-**Rule:** run `./build/strip_dev_tree_for_main.sh` on **`main` after merging `dev`**, not on `dev`.  
-If you strip and commit on `dev`, internal docs are gone from `dev` too.
+Both branches and their history are public. Keep publishable `docs/internal/` files on both branches; the directory name describes its developer audience, not access restrictions. Keep confidential notes, manuscripts, credentials, and sensitive data outside this repository in private storage. Deleting a committed file does not remove it from history.
+
+Release builds exclude developer documentation, the known local manuscript draft, and runtime logs when copying files into bundles. Do not delete these paths from the source tree for releases. GitHub source archives include the tracked source tree, including developer documentation.
 
 ---
 
@@ -52,56 +53,63 @@ If you strip and commit on `dev`, internal docs are gone from `dev` too.
 
 ## Publish to `main`
 
-4. **Merge `dev` into `main`** (internal docs come along temporarily — that is OK):
+4. **Update `main` and merge `dev`, keeping developer documentation:**
    ```bash
    git checkout main
-   git pull origin main
+   git pull --ff-only origin main
+   ```
+
+   **First release after retiring the old cleanup process:** earlier commits deleted `docs/internal/` on `main`. Git may retain those deletions or report modify/delete conflicts. Restore the publishable documentation from `dev` as part of this merge:
+   ```bash
+   git merge --no-commit dev
+   # Documentation conflicts from the old cleanup are expected here.
+   git restore --source=dev --staged --worktree -- docs/internal
+   git status
+   # Resolve any remaining conflicts and review the staged changes before committing.
+   git commit
+   ```
+
+   **Subsequent releases:** merge normally:
+   ```bash
    git merge dev
    ```
 
-5. **Strip developer-only tree on `main` only:**
-   ```bash
-   ./build/strip_dev_tree_for_main.sh
-   git add -A
-   git status   # confirm docs/internal/ deleted, Logs/ only .gitkeep
-   git commit -m "chore: strip internal tree for public main (v2.8.5)"
-   ```
-
-6. **Push `main`:**
+5. **Push `main`:**
    ```bash
    git push origin main
-   ```
-
-7. **Return to `dev`** (unchanged — still has `docs/internal/`):
-   ```bash
-   git checkout dev
    ```
 
 ---
 
 ## Tag and CI release
 
-8. **Tag on `main`** (must be `v*` for `.github/workflows/release.yml`):
+6. **Tag on `main`** (must be `v*` for `.github/workflows/release.yml`):
    ```bash
-   git checkout main
-   git pull origin main
    git tag -a v2.8.5 -m "BactoMate v2.8.5"
    git push origin v2.8.5
    ```
 
-9. **Watch GitHub Actions** → workflow **Create GitHub Release**:
+7. **Watch GitHub Actions** → workflow **Create GitHub Release**:
    - Builds macOS DMG + Windows zip (both exclude `docs/internal/`)
    - Publishes release with assets attached
 
-10. **Smoke-check** the [latest release](https://github.com/Molinfect/BactoMate/releases/latest):
+8. **Smoke-check** the [latest release](https://github.com/Molinfect/BactoMate/releases/latest):
     - Download zip / DMG if attached
     - Or clone `main` at tag from `https://github.com/Molinfect/BactoMate.git` and run install + `--smoke-test`
+
+9. **Sync `dev` with the released `main`** so release merge commits do not accumulate as missing history on `dev`:
+   ```bash
+   git checkout dev
+   git pull --ff-only origin dev
+   git merge main
+   git push origin dev
+   ```
 
 ---
 
 ## Quick command block (copy-paste)
 
-Replace `2.8.5` and edit the commit message.
+Replace `2.8.5` and edit the commit message. For the first release after retiring cleanup commits, use the transition commands in **Publish to `main`** instead of `git merge dev` below.
 
 ```bash
 # --- on dev ---
@@ -112,17 +120,17 @@ pytest tests/ -q && python main.py --smoke-test
 # (bump version + RELEASE_NOTES, then:)
 git add -A && git commit -m "Release v2.8.5: <summary>" && git push origin dev
 
-# --- merge to main, strip, push ---
-git checkout main && git pull origin main && git merge dev
-./build/strip_dev_tree_for_main.sh
-git add -A && git commit -m "chore: strip internal tree for public main (v2.8.5)"
+# --- merge to main and push ---
+git checkout main && git pull --ff-only origin main && git merge dev
 git push origin main
 
 # --- tag (triggers CI) ---
 git tag -a v2.8.5 -m "BactoMate v2.8.5"
 git push origin v2.8.5
 
-git checkout dev
+# --- sync released history back to dev ---
+git checkout dev && git pull --ff-only origin dev && git merge main
+git push origin dev
 ```
 
 ---
@@ -134,7 +142,7 @@ Pushing tag `v*` runs `.github/workflows/release.yml`:
 - **macOS:** `BactoMate.dmg` (LZMA-compressed; the release fails instead of publishing if it exceeds 2 GiB)
 - **Windows:** `BactoMate-win64.zip`
 
-Bundles use `build/public_packaging.py` — no `docs/internal/`, empty `Logs/`.
+Windows bundles use `build/public_packaging.py`; the macOS build applies exclusions through `rsync`. Both omit `docs/internal/` and the known local manuscript draft, and create an empty `Logs/` directory without changing the source checkout.
 
 Local builds (optional): see `build/README.md`.
 
@@ -144,7 +152,7 @@ Local builds (optional): see `build/README.md`.
 
 When you want the agent to run the process:
 
-> Follow `docs/internal/RELEASE_WORKFLOW.md` and prepare release **v2.8.5**: bump version, update RELEASE_NOTES with [your bullets], commit on `dev`, merge to `main`, strip, tag, and push. Do not commit unless I confirm the RELEASE_NOTES text.
+> Follow `docs/internal/RELEASE_WORKFLOW.md` and prepare release **v2.8.5**: bump version, update RELEASE_NOTES with [your bullets], commit on `dev`, merge to `main` keeping developer documentation, tag, push, and sync `main` back into `dev`. Do not commit unless I confirm the RELEASE_NOTES text.
 
 Adjust version and summary each time.
 
@@ -154,7 +162,7 @@ Adjust version and summary each time.
 
 | Issue | Fix |
 |-------|-----|
-| `docs/internal/` missing on `dev` after a bad strip | `git checkout dev -- docs/internal` from an earlier commit, or restore from `main~1` before strip |
+| `docs/internal/` missing or in conflict during the first merge | On `main`, use the transition commands above to restore it from `dev` before committing the merge |
 | Tag pushed but CI failed | Fix on `main`, new tag `v2.8.5.1` or delete tag and re-push (only if release not published) |
 | Version mismatch in GUI | `bactomate/__init__.py` and `pyproject.toml` must match; reinstall editable: `pip install -e .` |
 
@@ -162,5 +170,4 @@ Adjust version and summary each time.
 
 ## Optional later
 
-- CI job on `main` that fails if `docs/internal/` exists
 - `build/bump_version.py` to update all version strings in one step

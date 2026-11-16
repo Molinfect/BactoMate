@@ -20,6 +20,7 @@ Tagged releases (`v*`) build these assets automatically in GitHub Actions and at
 ```
 build/
   README.md           # This file
+  public_packaging.py # Windows bundle exclusion rules
   macos/              # macOS .app and DMG (run on a Mac only)
   windows/            # Windows portable bundle + zip (run on Windows only)
 ```
@@ -76,17 +77,20 @@ Copy the zip to lab machines; launch with `BactoMate.bat` inside the extracted f
 Before uploading a manual release (if not using CI):
 
 1. On `dev`, finish features and tests.
-2. Run `./build/strip_dev_tree_for_main.sh`, commit, and merge into `main` (or run the script on `main` after merge).
+2. Merge `dev` into `main`, keeping publishable developer documentation. For the first release after retiring cleanup commits, follow the transition note in [the release workflow](../docs/internal/RELEASE_WORKFLOW.md#publish-to-main).
 3. Tag on `main` (`v*`).
 4. Build DMG (macOS) and/or Windows zip on the target OS.
 5. Attach `dist/BactoMate.dmg` and `dist/BactoMate-win64.zip` to the GitHub release.
 6. Smoke-test: open the app, run `--version` and `--smoke-test` from the bundle.
+7. Merge the released `main` back into `dev` and push `dev`.
 
 ### dev vs main
 
-- **`dev`** — full tree, including `docs/internal/` (plans, join contracts, pipeline diagrams).
-- **`main`** — public-facing clone; run `build/strip_dev_tree_for_main.sh` so internal docs and draft manuscripts are not published.
+- **`dev`** — active development, including publishable plans, join contracts, and pipeline diagrams under `docs/internal/`.
+- **`main`** — released code and documentation, with release tags. Merge normally; do not delete developer documentation for releases.
 
-Bundles (DMG / zip) always exclude `docs/internal/` and include an empty `Logs/` directory regardless of branch.
+Both branches and their history are public. Keep confidential notes, manuscripts, credentials, and sensitive data outside this repository in private storage. The name `docs/internal/` describes its developer audience, not access restrictions.
 
-Step-by-step release (version bump, merge, strip, tag): **`docs/internal/RELEASE_WORKFLOW.md`** on the `dev` branch.
+Bundles (DMG / zip) exclude `docs/internal/`, the known local manuscript draft, and runtime logs regardless of branch. They include an empty `Logs/` directory. GitHub source archives contain the tracked source tree, including developer documentation.
+
+Step-by-step release (version bump, merge, tag, sync `dev`): [release workflow](../docs/internal/RELEASE_WORKFLOW.md).

@@ -1,9 +1,9 @@
 """
-Shared rules for public distributions (DMG, Windows zip, main-branch source).
+Shared rules for distributable bundles (DMG, Windows zip).
 
-Developer-only paths stay in the git ``dev`` branch under ``docs/internal/``.
-Release bundles and ``strip_dev_tree_for_main.sh`` omit them so end users only
-receive user-facing docs and an empty ``Logs/`` folder.
+Publishable developer documentation stays in Git on both ``dev`` and ``main``.
+Bundles omit it so end users receive user-facing docs and an empty ``Logs/``
+folder. These exclusions do not make files in the public repository private.
 """
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ PUBLIC_SKIP_DIR_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Under docs/, only internal/ is omitted from public trees; user manuals stay.
+# Under docs/, only internal/ is omitted from bundles; user manuals stay.
 PUBLIC_SKIP_DOC_PARTS: tuple[str, ...] = ("docs/internal",)
 
-# Root-level dev artifacts (optional cleanup on main).
+# Root-level local artifacts omitted from bundles.
 PUBLIC_DEV_ROOT_FILES: frozenset[str] = frozenset(
     {
         "BactoMate_Mns_NatureMethods_v2.docx",
