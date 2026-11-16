@@ -88,7 +88,7 @@ venv\Scripts\python.exe main.py --version
 venv\Scripts\python.exe main.py --smoke-test
 ```
 
-You should see `BactoMate 2.9.5` and `Smoke test OK`.
+You should see `BactoMate 2.9.6` and `Smoke test OK`.
 
 ## Logs
 

@@ -4,6 +4,30 @@ Append a new section for each release. Keep entries in release-note style (what 
 
 ---
 
+## v2.9.6 (2026-11-16)
+
+### Install
+
+- **Windows installer without Python 3.11:** instead of failing with "command not found", Step 1 looks for Python 3.11 via `py` and the default python.org locations. If none is found, it explains why Conda, 3.12+ and Microsoft Store Python cannot be used, points lab users to `BactoMate-win64.zip`, and offers a per-user `winget` install of Python 3.11 (no PATH change; existing installs untouched).
+- **Windows paths with spaces, `!` or `)`:** the source installer and the zip launcher now work from folders such as `BactoMate (1)` (e.g. a second download unzipped next to the first).
+- The Windows source installer shows the BactoMate version it is installing.
+
+### Filtering and Foci
+
+- **Foci size is a free percentage:** the 50–90% preset dropdown is replaced by a percent field (default 99%).
+- **Multi-channel foci settings:** per-channel settings no longer leak between channels when switching View. A new **Foci channel** selector chooses which channel you are editing, with **Copy to all channels** and a marker for customized channels. Older sessions are migrated automatically; output CSV names are unchanged.
+- Cell and foci filter cards can be collapsed, and the state is remembered per tab.
+- The filtering preview keeps the foci detected during segmentation, and the status line no longer lists per-frame foci counts twice.
+- Whole-cell foci intensities refresh correctly without leaving stray CSV files.
+
+### Stability
+
+- Fixed crashes ("QThread: Destroyed while thread is still running") when cancelling or closing Omnipose, Spotiflow and U-Net previews.
+- Affinity segmentation falls back from GPU correctly when loading model weights, and batch runs accept directly loaded Cellpose models.
+- Tracking preview and reports use the same elapsed-time track metrics.
+
+---
+
 ## v2.9.5 (2026-10-20)
 
 ### Downloads
