@@ -36,20 +36,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python3 -m venv venv
-          source venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -e .
-          python setup/apply_all_patches.py || true
-
-      - name: Smoke test
-        run: |
-          source venv/bin/activate
-          python main.py --version
-          python main.py --smoke-test
+      - name: Run macOS installer
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: bash setup/macos/setup_fresh_env.sh
 
       - name: Full pytest (headless Qt)
         run: |
@@ -70,27 +60,23 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        shell: cmd
+      - name: Run Windows installer from a browser-renamed path
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          python setup\windows\verify_python.py
-          python -m venv venv
-          venv\Scripts\python.exe -m pip install "pip>=24.2,<26"
-          venv\Scripts\python.exe -m pip install "dbscan==0.0.10" --only-binary dbscan
-          venv\Scripts\python.exe -m pip install --use-deprecated=legacy-resolver -r requirements.txt -c setup\windows\constraints.txt
-          venv\Scripts\python.exe -m pip install -e .
-          venv\Scripts\python.exe setup\apply_all_patches.py
-          venv\Scripts\python.exe setup\windows\ensure_spotiflow_deps.py
-
-      - name: Smoke test
-        shell: cmd
-        run: |
-          venv\Scripts\python.exe main.py --version
-          venv\Scripts\python.exe main.py --smoke-test
+          $target = Join-Path $env:RUNNER_TEMP "BactoMate (1)!"
+          Copy-Item -LiteralPath $env:GITHUB_WORKSPACE -Destination $target -Recurse
+          & "$target\setup\windows\install.bat"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $log = Get-Content -LiteralPath "$target\Logs\install_last.log" -Raw
+          if ($log -notmatch 'Smoke test OK' -or $log -notmatch 'Install complete') { throw 'Install transcript incomplete' }
+          "INSTALL_TEST_ROOT=$target" >> $env:GITHUB_ENV
 
       - name: Full pytest (headless Qt)
         shell: cmd
         run: |
+          cd /d "%INSTALL_TEST_ROOT%"
           venv\Scripts\python.exe -m pip install pytest
           set QT_QPA_PLATFORM=offscreen
           venv\Scripts\python.exe -m pytest tests/ -q --tb=short

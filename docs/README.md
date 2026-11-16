@@ -45,7 +45,7 @@ setup\windows\install.bat
 launch_windows.bat
 ```
 
-Verify: `python main.py --version` (expect `BactoMate 2.9.5`) and `python main.py --smoke-test`.
+Verify: `python main.py --version` (expect `BactoMate 2.9.6`) and `python main.py --smoke-test`.
 
 **Pre-built apps:** download **BactoMate.dmg** (macOS) or **BactoMate-win64.zip** (Windows) from [GitHub Releases](https://github.com/Molinfect/BactoMate/releases/latest) — no `build/` step needed.
 
@@ -153,23 +153,20 @@ The same content as step 1’s text file ships **inside** the DMG so recipients 
 - **`main.py`** — GUI entry point (also `python -m bactomate` via pyproject.toml).
 - **`setup/`** — Install and launch for all users. See [setup/README.md](../setup/README.md).
 - **`build/`** — **Maintainers only** — package `.app`/DMG (macOS) or portable zip (Windows). See [build/README.md](../build/README.md).
-- **`docs/`** — User manual, release notes, and install guides. Maintainer/engineering notes are under **`docs/internal/`** on `dev` only.
+- **`docs/`** — User manual, release notes, and install guides. Publishable maintainer/engineering notes are under **`docs/internal/`**.
 
 ## dev vs main (maintainers)
 
-| Branch | Audience | What stays in the tree |
-|--------|----------|-------------------------|
-| **`dev`** | Active development | Full repo including `docs/internal/`, local logs under `Logs/` (gitignored except `.gitkeep`) |
-| **`main`** | Public GitHub + release tags | User docs only; no `docs/internal/`; empty `Logs/` for fresh clones |
+| Branch | Purpose | What stays in the tree |
+|--------|---------|-------------------------|
+| **`dev`** | Active development | Code and publishable documentation, including `docs/internal/` |
+| **`main`** | Releases and version tags | Released code and publishable documentation, including `docs/internal/` |
 
-**Before merging `dev` → `main`:**
+Both branches and their history are public. `docs/internal/` is developer-facing documentation, not private storage. Keep confidential notes, manuscripts, credentials, and sensitive data outside this repository.
 
-```bash
-./build/strip_dev_tree_for_main.sh
-git add -A && git status   # commit on main or as the release commit
-```
+Merge `dev` into `main` without removing developer documentation; tag the release on `main`, then merge `main` back into `dev`. See the [release workflow](internal/RELEASE_WORKFLOW.md), including the one-time transition from the old cleanup process.
 
-DMG and Windows zip builds already **omit** `docs/internal/` and ship an **empty** `Logs/` folder (see `build/public_packaging.py`).
+DMG and Windows zip builds **omit** `docs/internal/` and the known local manuscript draft, and ship an **empty** `Logs/` folder (see [packaging instructions](../build/README.md)). Runtime logs remain gitignored except for `Logs/.gitkeep`. GitHub source archives include tracked developer documentation.
 
 ## Graphical User Interface
 
@@ -296,7 +293,7 @@ Quick list:
 
 Maintainer packaging scripts: **[build/README.md](../build/README.md)**
 
-**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Developer-only plans and contracts live on the `dev` branch under **`docs/internal/`** (not shipped in releases or on public `main`).
+**Documentation:** Full GUI reference, workflows, training troubleshooting, and example scenarios: **[BactoMate User Manual](BACTOMATE_USER_MANUAL.md)**. What changed in each version: **[Release Notes](RELEASE_NOTES.md)**. Public developer plans and contracts live under **`docs/internal/`** and are omitted from DMG/Windows zip bundles.
 
 ## Release Notes
 

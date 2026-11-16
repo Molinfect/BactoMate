@@ -40,14 +40,12 @@ def test_wait_for_filter_preview_apply_idle_when_not_busy() -> None:
     pytest.importorskip("PyQt6")
     from bactomate.gui.filter_preview_utils import wait_for_filter_preview_apply_idle
 
-    class _State:
-        extra: dict = {}
+    class _Lifecycle:
+        def wait_until_idle(self, *, timeout_ms: int) -> bool:
+            assert timeout_ms == 42
+            return True
 
     class _Dlg:
-        _preview_thread = None
-        _pending_apply = False
+        _filter_apply = _Lifecycle()
 
-        def state(self) -> _State:
-            return _State()
-
-    assert wait_for_filter_preview_apply_idle(_Dlg()) is True
+    assert wait_for_filter_preview_apply_idle(_Dlg(), timeout_ms=42) is True

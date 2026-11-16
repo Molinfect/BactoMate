@@ -183,7 +183,7 @@ def collect_foci_layers_for_input(
     Returns list of ``(peaks, rgb, peak_coord_shape)`` where ``peak_coord_shape`` is the
     foci-plane ``(H, W)`` Spotiflow used (may differ from the phase tile).
     """
-    from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
+    from bactomate.gui.filter_preview_utils import foci_channel_entry_for_path
 
     if not bool(params.get("detect_foci", False)):
         return []
@@ -201,9 +201,9 @@ def collect_foci_layers_for_input(
     for si, fp in enumerate(sources):
         try:
             foci_plane = load_first_plane(Path(fp))
-            tag = foci_channel_key_for_path(Path(fp))
             sf = dict(default_sf)
-            ch = chmap.get(tag) if isinstance(chmap, dict) else None
+            # Canonical key, falling back to a legacy (pre-canonical) session key.
+            _tag, ch = foci_channel_entry_for_path(chmap, Path(fp)) if isinstance(chmap, dict) else ("", None)
             if isinstance(ch, dict):
                 sf.update(ch)
             peaks = detect_foci_peaks_on_plane(foci_plane, sf, spotiflow_model=spotiflow_model)

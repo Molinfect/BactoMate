@@ -7,7 +7,7 @@ cd /d "%ROOT%"
 set "PYEXE=%ROOT%venv\Scripts\python.exe"
 if not exist "%PYEXE%" (
     echo [ERROR] BactoMate venv not found at:
-    echo   %PYEXE%
+    echo   "%PYEXE%"
     echo Run setup\windows\install.bat first.
     pause
     exit /b 1

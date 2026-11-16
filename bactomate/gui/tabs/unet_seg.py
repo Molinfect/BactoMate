@@ -22,6 +22,7 @@ from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET
 from bactomate.gui.paths import get_unet_models_dir
 from bactomate.gui.workers import WorkerThread
 from bactomate.gui.preferences import LAST_DIR_UNET_SEGMENT
+from bactomate.gui.qt_thread_utils import retire_qthread, start_owned_qthread
 from bactomate.gui.mask_utils import UNET_MASKS_TILED_SUBDIR, get_training_pairs, infer_training_filters, prepare_unet_masks_binary, tile_training_data
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.widgets import DragDropGroupBox, PathDropWidget, create_info_icon, show_confirm_dialog, show_message_dialog, style_dialog_button_box
@@ -420,8 +421,8 @@ class UNetSegmentTab(QWidget):
         loop.exec()
         try:
             if self._unet_analyze_worker is not None:
-                self._unet_analyze_worker.wait(30000)
-                self._unet_analyze_worker.deleteLater()
+                # Its custom finished fires inside run(); delete only once the thread has exited.
+                retire_qthread(self._unet_analyze_worker)
         finally:
             self._unet_analyze_worker = None
         if not result_holder[0]:
@@ -702,9 +703,9 @@ class UNetSegmentTab(QWidget):
         def _unet_disconnect() -> None:
             w = getattr(d, '_unet_worker', None)
             s = getattr(d, '_unet_worker_slot', None)
-            if w is not None and s is not None:
+            if w is not None:
                 try:
-                    w.finished.disconnect(s)
+                    retire_qthread(w, result_signal=w.result_ready, slot=s)
                 except Exception:
                     pass
             try:
@@ -728,7 +729,7 @@ class UNetSegmentTab(QWidget):
 
         class UnetPreviewWorker(QThread):
             """Runs predict_one_image in background; emits (request_id, frame_idx, mask, error_str)."""
-            finished = pyqtSignal(int, int, object, str)
+            result_ready = pyqtSignal(int, int, object, str)
 
             def __init__(self, request_id: int, frame_idx: int, model: Any, cfg: Any, image: np.ndarray):
                 super().__init__()
@@ -741,7 +742,7 @@ class UNetSegmentTab(QWidget):
 
             def run(self) -> None:
                 if self.isInterruptionRequested():
-                    self.finished.emit(self._request_id, self._frame_idx, None, 'cancelled')
+                    self.result_ready.emit(self._request_id, self._frame_idx, None, 'cancelled')
                     return
                 (mask, err) = (None, '')
                 try:
@@ -749,7 +750,7 @@ class UNetSegmentTab(QWidget):
                     mask = (mask > 0).astype(np.uint8)
                 except Exception as e:
                     err = str(e)
-                self.finished.emit(self._request_id, self._frame_idx, mask, err)
+                self.result_ready.emit(self._request_id, self._frame_idx, mask, err)
 
         def _apply_mask_to_ui(frame_idx: int, mask: np.ndarray) -> None:
             """Apply segmentation result to cache + refresh preview."""
@@ -794,6 +795,16 @@ class UNetSegmentTab(QWidget):
             d._unet_progress_dialog = progress
 
             def _on_worker_finished(rid: int, fid: int, m: object, err: str) -> None:
+                # Retire first: the thread may still be unwinding, and clearing _unet_worker
+                # lets a queued frame request start a fresh worker below.
+                done = getattr(d, '_unet_worker', None)
+                if done is not None:
+                    try:
+                        retire_qthread(done, result_signal=done.result_ready, slot=getattr(d, '_unet_worker_slot', None))
+                    except Exception:
+                        pass
+                    d._unet_worker = None
+                    d._unet_worker_slot = None
                 try:
                     if getattr(d, '_dialog_closed', False):
                         return
@@ -807,7 +818,6 @@ class UNetSegmentTab(QWidget):
                         except Exception:
                             pass
                         d._unet_progress_dialog = None
-                    d._unet_worker = None
                     if err:
                         title_label.setText(f'Frame {fid + 1} of {num_frames} | Error: {err[:60]} | {d.file_name}\nParameters: model={d.model_name}')
                         if status_label:
@@ -822,9 +832,9 @@ class UNetSegmentTab(QWidget):
                 frame_spin.setEnabled(False)
             worker = UnetPreviewWorker(d._unet_request_id, frame_idx, d.model, d.cfg, images[frame_idx])
             d._unet_worker_slot = _on_worker_finished
-            worker.finished.connect(_on_worker_finished)
+            worker.result_ready.connect(_on_worker_finished)
             d._unet_worker = worker
-            worker.start()
+            start_owned_qthread(worker)
             title_label.setText(f'Frame {frame_idx + 1} of {num_frames} | Segmenting... | Model: {d.model_name} | {d.file_name}\nParameters: model={d.model_name}')
             if status_label:
                 status_label.setText('Segmenting...')

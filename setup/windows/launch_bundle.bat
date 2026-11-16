@@ -7,7 +7,7 @@ cd /d "%ROOT%"
 set "RUNTIME_PY=%ROOT%runtime\Python311\python.exe"
 if not exist "%RUNTIME_PY%" (
     echo [ERROR] Bundled Python runtime not found at:
-    echo   %RUNTIME_PY%
+    echo   "%RUNTIME_PY%"
     pause
     exit /b 1
 )
@@ -23,7 +23,7 @@ if errorlevel 1 (
 set "PYEXE=%ROOT%venv\Scripts\python.exe"
 if not exist "%PYEXE%" (
     echo [ERROR] BactoMate venv not found at:
-    echo   %PYEXE%
+    echo   "%PYEXE%"
     pause
     exit /b 1
 )

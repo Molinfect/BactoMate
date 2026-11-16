@@ -9,61 +9,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bactomate.gui.filter_preview_utils import (
     collect_background_paths_for_mask,
     default_background_index,
-    enrich_background_paths_for_mask,
-    file_identity_key,
-    filter_paths_for_mask,
     format_incremental_apply_plan,
-    mask_stem_from_path,
-    path_matches_mask_sample,
     phase_stack_candidates_for_mask,
     preview_view_label,
-    replicate_token,
-    same_replicate,
     short_foci_stack_label,
 )
 
-
-class _TabStub:
-    def _candidate_match_stems(self, stem: str) -> list[str]:
-        out: list[str] = [stem]
-        low = stem.lower()
-        if "_phase" in low:
-            out.append(stem[: low.index("_phase")])
-        if "_" in stem:
-            out.append(stem.rsplit("_", 1)[0])
-        try:
-            from bactomate.gui.artifact_paths import sample_identity_stem
-
-            sid = sample_identity_stem(stem)
-            if sid and sid not in out:
-                out.append(sid)
-        except Exception:
-            pass
-        return out
-
-    def _matches_fi_name(self, name: str, stem: str) -> bool:
-        nl, sl = name.lower(), stem.lower()
-        if not nl.startswith(sl):
-            return False
-        rest = nl[len(sl) :].lstrip("_")
-        return rest.startswith("fi_foci") or (rest.startswith("fi") and "_foci" in rest)
-
-    def _matches_foci_name(self, name: str, stem: str) -> bool:
-        nl, sl = name.lower(), stem.lower()
-        if not nl.startswith(sl):
-            return False
-        rest = nl[len(sl) :].lstrip("_")
-        return rest.startswith("foci") or (rest.startswith("fi") and "_foci" in rest)
-
-    def _extract_channel_tag_for_mask_stem(self, file_stem: str, mask_stem: str) -> str | None:
-        for s in self._candidate_match_stems(mask_stem):
-            if file_stem.lower().startswith(s.lower() + "_fi_foci_"):
-                return file_stem.split("_fi_foci_", 1)[-1]
-        return None
-
-    def _preview_fi_path_candidates(self, mask_path: Path) -> list[Path]:
-        folder = mask_path.parent
-        return [p for p in folder.glob("*.tif") if "_foci" in p.name.lower()]
+from bactomate.gui.artifact_paths import (
+    file_identity_key, filter_paths_for_mask, mask_stem_from_path,
+    path_matches_mask_sample,
+)
 
 
 def test_short_foci_stack_label_extracts_channel() -> None:
@@ -129,16 +84,15 @@ def test_resolve_foci_settings_per_channel() -> None:
 
 def test_path_matches_foci_when_mask_stem_includes_phase_suffix(tmp_path: Path) -> None:
     """Foci stacks named on the nd2 base stem must match Phase60x masks."""
-    tab = _TabStub()
     mask = tmp_path / "EM15631_sample_Phase60x_masks.tif"
     phase = tmp_path / "EM15631_sample_Phase60x.tif"
     gfp = tmp_path / "EM15631_sample_fi_foci_GFP.tif"
     dsred = tmp_path / "EM15631_sample_fi_foci_dsRed.tif"
     for p in (mask, phase, gfp, dsred):
         p.write_bytes(b"x")
-    assert path_matches_mask_sample(tab, mask, phase)
-    assert path_matches_mask_sample(tab, mask, gfp)
-    assert path_matches_mask_sample(tab, mask, dsred)
+    assert path_matches_mask_sample(mask, phase)
+    assert path_matches_mask_sample(mask, gfp)
+    assert path_matches_mask_sample(mask, dsred)
 
 
 def test_is_cell_mask_tiff_excludes_phase_and_foci(tmp_path: Path) -> None:
@@ -154,37 +108,19 @@ def test_is_cell_mask_tiff_excludes_phase_and_foci(tmp_path: Path) -> None:
     assert not is_cell_mask_tiff(foci)
 
 
-def test_enrich_background_paths_adds_resolved_foci(tmp_path: Path) -> None:
-    tab = _TabStub()
+def test_collect_background_paths_discovers_foci(tmp_path: Path) -> None:
     mask = tmp_path / "ssb-mNG_cl1__Phase60X_masks.tif"
     phase = tmp_path / "ssb-mNG_cl1__Phase60X.tif"
     gfp = tmp_path / "ssb-mNG_cl1__fi_foci_GFP.tif"
     for p in (mask, phase, gfp):
         p.write_bytes(b"x")
-    tab._preview_fi_path_candidates = lambda _m: [gfp]  # type: ignore[method-assign]
-    out = enrich_background_paths_for_mask(tab, mask, [phase])
+    out = collect_background_paths_for_mask(mask)
     names = {p.name for p in out}
     assert "ssb-mNG_cl1__Phase60X.tif" in names
     assert "ssb-mNG_cl1__fi_foci_GFP.tif" in names
 
 
-def test_replicate_token_distinguishes_clones() -> None:
-    assert replicate_token("ssb-mNG_cl1__Phase60X") == "__"
-    assert replicate_token("ssb-mNG_cl1_001_Phase60X") == "_001_"
-    assert replicate_token("ssb-mNG_cl1__fi_foci_GFP") == "__"
-    assert replicate_token("ssb-mNG_cl1_001_fi_foci_GFP") == "_001_"
-
-
-def test_same_replicate_blocks_mixed_clones() -> None:
-    mask_a = Path("ssb-mNG_cl1__Phase60X_masks.tif")
-    foci_a = Path("ssb-mNG_cl1__fi_foci_GFP.tif")
-    foci_b = Path("ssb-mNG_cl1_001_fi_foci_GFP.tif")
-    assert same_replicate(mask_a, foci_a)
-    assert not same_replicate(mask_a, foci_b)
-
-
 def test_filter_paths_for_mask_keeps_matching_foci_only(tmp_path: Path) -> None:
-    tab = _TabStub()
     paths = []
     for name in (
         "ssb-mNG_cl1__Phase60X_masks.tif",
@@ -197,7 +133,7 @@ def test_filter_paths_for_mask_keeps_matching_foci_only(tmp_path: Path) -> None:
         p.write_bytes(b"x")
         paths.append(p)
     mask = tmp_path / "ssb-mNG_cl1__Phase60X_masks.tif"
-    out = filter_paths_for_mask(tab, mask, paths)
+    out = filter_paths_for_mask(mask, paths)
     names = {p.name for p in out}
     assert "ssb-mNG_cl1__Phase60X.tif" in names
     assert "ssb-mNG_cl1__fi_foci_GFP.tif" in names
@@ -206,7 +142,6 @@ def test_filter_paths_for_mask_keeps_matching_foci_only(tmp_path: Path) -> None:
 
 
 def test_default_background_index_prefers_phase_matching_mask(tmp_path: Path) -> None:
-    tab = _TabStub()
     paths = []
     for name in (
         "ssb-mNG_cl1__Phase60X_masks.tif",
@@ -218,7 +153,7 @@ def test_default_background_index_prefers_phase_matching_mask(tmp_path: Path) ->
         p.write_bytes(b"x")
         paths.append(p)
     mask = tmp_path / "ssb-mNG_cl1__Phase60X_masks.tif"
-    idx = default_background_index(tab, mask, paths)
+    idx = default_background_index(None, mask, paths)
     assert paths[idx].name == "ssb-mNG_cl1__Phase60X.tif"
 
 
@@ -246,17 +181,15 @@ def test_phase_stack_dedupes_tif_case_variants(tmp_path: Path) -> None:
 
 
 def test_filter_paths_dedupes_same_path_twice(tmp_path: Path) -> None:
-    tab = _TabStub()
     phase = tmp_path / "ssb-mNG_cl1_001_Phase60X.tif"
     phase.write_bytes(b"x")
     mask = tmp_path / "ssb-mNG_cl1_001_Phase60X_masks.tif"
     mask.write_bytes(b"x")
-    out = filter_paths_for_mask(tab, mask, [phase, phase])
+    out = filter_paths_for_mask(mask, [phase, phase])
     assert len(out) == 1
 
 
 def test_filter_paths_dedupes_tif_spelling_on_case_insensitive_fs(tmp_path: Path) -> None:
-    tab = _TabStub()
     phase = tmp_path / "ssb-mNG_cl1_001_Phase60X.tif"
     phase.write_bytes(b"x")
     mask = tmp_path / "ssb-mNG_cl1_001_Phase60X_masks.tif"
@@ -265,13 +198,12 @@ def test_filter_paths_dedupes_tif_spelling_on_case_insensitive_fs(tmp_path: Path
     if not alias.is_file():
         return
     assert file_identity_key(phase) == file_identity_key(alias)
-    out = filter_paths_for_mask(tab, mask, [phase, alias])
+    out = filter_paths_for_mask(mask, [phase, alias])
     assert len(out) == 1
 
 
 def test_filter_paths_blocks_numbered_foci_for_unnumbered_mcherry_mask(tmp_path: Path) -> None:
     """Unnumbered ``NoPhage_mCherry`` must not pull in ``NoPhage_001/002_foci_GFP`` siblings."""
-    tab = _TabStub()
     names = (
         "EM20142_NoPhage_mCherry_masks.tif",
         "EM20142_NoPhage_mCherry.tif",
@@ -285,7 +217,7 @@ def test_filter_paths_blocks_numbered_foci_for_unnumbered_mcherry_mask(tmp_path:
         p.write_bytes(b"x")
         paths.append(p)
     mask = tmp_path / "EM20142_NoPhage_mCherry_masks.tif"
-    out = filter_paths_for_mask(tab, mask, paths)
+    out = filter_paths_for_mask(mask, paths)
     kept = {p.name for p in out}
     assert "EM20142_NoPhage_mCherry.tif" in kept
     assert "EM20142_NoPhage_foci_GFP.tif" in kept
@@ -294,14 +226,13 @@ def test_filter_paths_blocks_numbered_foci_for_unnumbered_mcherry_mask(tmp_path:
 
 
 def test_collect_background_paths_includes_phase_and_foci(tmp_path: Path) -> None:
-    tab = _TabStub()
     mask = tmp_path / "ssb-mNG_cl1__Phase60X_masks.tif"
     phase = tmp_path / "ssb-mNG_cl1__Phase60X.tif"
     foci = tmp_path / "ssb-mNG_cl1__fi_foci_GFP.tif"
     other = tmp_path / "ssb-mNG_cl1_001_fi_foci_GFP.tif"
     for p in (mask, phase, foci, other):
         p.write_bytes(b"x")
-    out = collect_background_paths_for_mask(tab, mask)
+    out = collect_background_paths_for_mask(mask)
     names = {p.name for p in out}
     assert "ssb-mNG_cl1__Phase60X.tif" in names
     assert "ssb-mNG_cl1__fi_foci_GFP.tif" in names

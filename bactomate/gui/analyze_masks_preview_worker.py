@@ -170,6 +170,8 @@ class AnalyzeMasksPreviewWorker(QObject):
         if len(jobs) > 1:
             acc = {int(lbl) for lbl in accepted_labels if int(lbl) > 0}
             ch_names = [str(j.get("channel_key") or "_default") for j in jobs]
+            # Keys are casefolded settings keys; progress text shows the readable channel tag.
+            ch_labels = {str(j.get("channel_key") or "_default"): str(j.get("channel_label") or j.get("channel_key") or "_default") for j in jobs}
             pending_ch: set[str] = set(ch_names)
             finished_ch: list[str] = []
             par_lock = threading.Lock()
@@ -186,8 +188,8 @@ class AnalyzeMasksPreviewWorker(QObject):
                         pending_ch.discard(just_finished)
                         if just_finished not in finished_ch:
                             finished_ch.append(just_finished)
-                    running = sorted(pending_ch)
-                    done = list(finished_ch)
+                    running = sorted(ch_labels.get(k, k) for k in pending_ch)
+                    done = [ch_labels.get(k, k) for k in finished_ch]
                     n_done = len(done)
                     if running:
                         step = self._step(
@@ -202,7 +204,7 @@ class AnalyzeMasksPreviewWorker(QObject):
                     parts: list[str] = []
                     if just_finished:
                         parts.append(
-                            f"Finished {just_finished}: {pass_n:,} pass, {fail_n:,} fail"
+                            f"Finished {ch_labels.get(just_finished, just_finished)}: {pass_n:,} pass, {fail_n:,} fail"
                         )
                     if running:
                         parts.append(f"Running: {', '.join(running)}")
@@ -277,6 +279,7 @@ class AnalyzeMasksPreviewWorker(QObject):
             if self._superseded():
                 break
             ch_key = str(job.get("channel_key") or "_default")
+            ch_lbl = str(job.get("channel_label") or ch_key)
             rows = list(job.get("frame_rows") or [])
             foci_plane = job.get("foci_plane")
             fs = dict(job.get("settings") or {})
@@ -288,7 +291,7 @@ class AnalyzeMasksPreviewWorker(QObject):
                 out[ch_key] = {"pass_peaks": [], "fail_peaks": []}
                 self._emit_progress(
                     base_pct,
-                    f"Foci · {ch_key}",
+                    f"Foci · {ch_lbl}",
                     f"Channel {ji + 1} of {n_jobs} — no peaks on this frame",
                 )
                 continue
@@ -332,7 +335,7 @@ class AnalyzeMasksPreviewWorker(QObject):
 
             self._emit_progress(
                 base_pct,
-                self._step(3, 4, f"Foci · scoring {ch_key}"),
+                self._step(3, 4, f"Foci · scoring {ch_lbl}"),
                 f"Channel {ji + 1} of {n_jobs} — {n_rows:,} peaks on frame",
             )
             try:
@@ -350,7 +353,7 @@ class AnalyzeMasksPreviewWorker(QObject):
             end_pct = min(self._pct_in_step(3, 1.0), base_pct + span)
             self._emit_progress(
                 end_pct,
-                self._step(3, 4, f"Foci · {ch_key} complete"),
+                self._step(3, 4, f"Foci · {ch_lbl} complete"),
                 f"{len(ch_pass):,} pass, {len(ch_fail):,} fail",
             )
         return out

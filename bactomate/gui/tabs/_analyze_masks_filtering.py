@@ -325,19 +325,6 @@ class FilteringTab(AnalyzeMasksBase):
         dlg = getattr(self, '_filter_preview_dialog', None)
         if dlg is None:
             return
-        try:
-            dlg._preview_request_id = int(getattr(dlg, '_preview_request_id', 0)) + 1
-            dlg._close_pending = True
-        except Exception:
-            pass
-        try:
-            dlg.close()
-        except Exception:
-            pass
-        try:
-            self._filter_preview_dialog = None
-        except Exception:
-            pass
         self._open_filter_preview_for_mask(mask_path)
 
     def _open_filter_preview_for_mask(self, mask_path: Path) -> None:
@@ -349,10 +336,6 @@ class FilteringTab(AnalyzeMasksBase):
         if not mask_path.is_file():
             show_message_dialog(self, 'Not Found', f'Mask file not found:\n{mask_path}', kind='warning')
             return
-        try:
-            self._filter_preview_mask_path = mask_path
-        except Exception:
-            pass
         btn = getattr(self, 'preview_action_btn', None)
         prev_label = btn.text() if btn is not None else None
         if btn is not None:
@@ -408,11 +391,9 @@ class FilteringTab(AnalyzeMasksBase):
             show_message_dialog(self, 'Load Error', 'Could not load mask (empty result).', kind='warning')
             return
         foci_preload: dict = {}
-        from bactomate.gui.filter_preview_utils import filter_paths_for_mask
         foci_paths: list[Path] = []
         try:
-            raw_foci = [Path(p) for p in self._resolve_foci_paths_for_mask(mask_path)]
-            foci_paths = filter_paths_for_mask(self, mask_path, raw_foci)
+            foci_paths = self._resolve_foci_paths_for_mask(mask_path)
         except Exception:
             foci_paths = []
         if foci_paths:
@@ -455,13 +436,13 @@ class FilteringTab(AnalyzeMasksBase):
         return pick_mask_path_for_preview(self, path_text)
 
     def _default_filter_settings(self) -> dict[str, Any]:
-        return {'pixel_size': 0.108, 'min_aspect_ratio': 1.5, 'max_aspect_ratio': 10.0, 'min_eccentricity': 0.5, 'min_solidity': 0.7, 'min_area_um2': None, 'max_area_um2': None, 'min_width_um': None, 'max_width_um': None, 'min_length_um': None, 'max_length_um': None, 'exclude_border': False, 'focus_filter_enabled': False, 'focus_min_fraction_of_median': 0.5, 'focus_modality': 'phase', 'foci_prob_enabled': False, 'foci_prob_thresh': 0.5, 'foci_min_int_enabled': False, 'foci_min_int': 0.0, 'foci_per_cell_ratio_enabled': False, 'foci_per_cell_ratio': 2.0, 'foci_exclude_outside_cells': False, 'foci_exclude_outside_clear': False, 'foci_exclude_outside_touching': False, 'foci_blob_threshold_frac': 0.9, 'foci_blob_max_radius': 5, 'foci_min_area_px_enabled': False, 'foci_min_area_px': 1}
+        return {'pixel_size': 0.108, 'min_aspect_ratio': 1.5, 'max_aspect_ratio': 10.0, 'min_eccentricity': 0.5, 'min_solidity': 0.7, 'min_area_um2': None, 'max_area_um2': None, 'min_width_um': None, 'max_width_um': None, 'min_length_um': None, 'max_length_um': None, 'exclude_border': False, 'focus_filter_enabled': False, 'focus_min_fraction_of_median': 0.5, 'focus_modality': 'phase', 'foci_prob_enabled': False, 'foci_prob_thresh': 0.5, 'foci_min_int_enabled': False, 'foci_min_int': 0.0, 'foci_per_cell_ratio_enabled': False, 'foci_per_cell_ratio': 2.0, 'foci_exclude_outside_cells': False, 'foci_exclude_outside_clear': False, 'foci_exclude_outside_touching': False, 'foci_blob_threshold_frac': 0.99, 'foci_blob_max_radius': 5, 'foci_min_area_px_enabled': False, 'foci_min_area_px': 1}
 
     def _ensure_filter_settings(self) -> dict[str, Any]:
         fs = getattr(self, '_filter_settings', None)
         if not isinstance(fs, dict):
             fs = self._default_filter_settings()
-            self._filter_settings = dict(fs)
+            self._filter_settings = fs
         for (k, v) in self._default_filter_settings().items():
             if k not in fs:
                 fs[k] = v
@@ -496,25 +477,29 @@ class FilteringTab(AnalyzeMasksBase):
         if isinstance(data.get('foci_channels'), dict):
             fs['foci_channels'] = dict(data['foci_channels'])
 
-    def get_foci_channel_settings(self, channel_key: str) -> dict[str, Any]:
-        from bactomate.gui.filter_preview_utils import default_foci_channel_settings, ensure_foci_channels_map
+    def get_foci_channel_settings(self, channel_key: str, foci_source: Optional[Path]=None) -> dict[str, Any]:
+        """Return a copy of the channel's settings; never creates or shadows an entry on read."""
+        from bactomate.gui.filter_preview_utils import default_foci_channel_settings, ensure_foci_channels_map, foci_channel_entry_for_path, normalize_foci_channel_key
         fs = self._ensure_filter_settings()
         channels = ensure_foci_channels_map(fs)
-        key = str(channel_key or '_default').strip() or '_default'
-        ch = channels.get(key)
+        key = normalize_foci_channel_key(channel_key) or '_default'
+        ch = None
+        if foci_source is not None:
+            (_k, ch) = foci_channel_entry_for_path(channels, Path(foci_source))
         if not isinstance(ch, dict):
-            ch = dict(default_foci_channel_settings())
-            channels[key] = ch
-        return dict(ch)
+            ch = channels.get(key)
+        return {**default_foci_channel_settings(), **(ch if isinstance(ch, dict) else {})}
 
-    def set_foci_channel_settings(self, channel_key: str, data: dict[str, Any]) -> None:
-        from bactomate.gui.filter_preview_utils import FOCI_CHANNEL_SETTING_KEYS, default_foci_channel_settings, ensure_foci_channels_map
+    def set_foci_channel_settings(self, channel_key: str, data: dict[str, Any], foci_source: Optional[Path]=None) -> None:
+        from bactomate.gui.filter_preview_utils import FOCI_CHANNEL_SETTING_KEYS, default_foci_channel_settings, ensure_foci_channels_map, migrate_foci_channel_entry, normalize_foci_channel_key
         fs = self._ensure_filter_settings()
         channels = ensure_foci_channels_map(fs)
-        key = str(channel_key or '_default').strip() or '_default'
-        ch = channels.setdefault(key, dict(default_foci_channel_settings()))
+        key = normalize_foci_channel_key(channel_key) or '_default'
+        if foci_source is not None:
+            key = migrate_foci_channel_entry(channels, Path(foci_source))
         if not isinstance(data, dict):
             return
+        ch = channels.setdefault(key, dict(default_foci_channel_settings()))
         for k in FOCI_CHANNEL_SETTING_KEYS:
             if k in data:
                 ch[k] = data.get(k)

@@ -10,14 +10,6 @@ FociProgressCallback = Callable[[int, int, str], None]
 
 import numpy as np
 
-FOCI_BLOB_SIZE_PRESETS: tuple[tuple[str, float], ...] = (
-    ("90%", 0.9),
-    ("80%", 0.8),
-    ("70%", 0.7),
-    ("60%", 0.6),
-    ("50%", 0.5),
-)
-
 FOCI_TABLE_COL_MIN_WIDTH = 24
 FOCI_TABLE_CELL_PADDING_PX = 10
 # Pass column only shows Yes/No — keep narrow so other columns get room.
@@ -36,10 +28,12 @@ from bactomate.gui.filter_preview_utils import (  # noqa: E402 — re-export for
 
 def foci_blob_threshold_frac(settings: dict[str, Any]) -> float:
     try:
-        frac = float(settings.get("foci_blob_threshold_frac", 0.9) or 0.9)
+        frac = float(settings.get("foci_blob_threshold_frac", 0.99))
     except (TypeError, ValueError):
-        frac = 0.9
-    return float(np.clip(frac, 0.05, 1.0))
+        frac = 0.99
+    if not np.isfinite(frac):
+        frac = 0.99
+    return float(np.clip(frac, 0.0, 1.0))
 
 
 def foci_blob_max_radius(settings: dict[str, Any]) -> int:

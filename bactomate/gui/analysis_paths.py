@@ -5,7 +5,6 @@ Used by Analyze Masks and Tracking tabs to avoid duplicate logic (Phase 4).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 ANALYSIS_SUBDIR = "_analysis"
 ANALYSIS_VIS_SUBDIR = "visualizations"
@@ -124,58 +123,3 @@ def resolve_analysis_workbook_for_mask(mask_path: Path) -> Path | None:
         seen.add(key)
         return wb
     return None
-
-
-def merge_fi_input_paths(
-    *,
-    mask_path: Path,
-    explicit_fi: list[Path],
-    foci_stacks: list[Path],
-    channel_tag_for_path: Callable[[Path], str],
-    filter_paths: Callable[[Path, list[Path]], list[Path]] | None = None,
-) -> list[Path]:
-    """
-    Build Analyze FI inputs: named FI TIFFs plus foci stacks for channels not already covered.
-
-    When at least one ``*_fi*`` file exists, older logic returned only those files and skipped
-    other channels (e.g. dsRed FI present but GFP only as ``*_fi_foci_GFP.tif``).
-    """
-    mask_path = Path(mask_path)
-    explicit = [Path(p) for p in (explicit_fi or []) if Path(p).is_file()]
-    foci = [Path(p) for p in (foci_stacks or []) if Path(p).is_file()]
-    if not explicit:
-        out = list(foci)
-    else:
-        covered_tags: set[str] = set()
-        out: list[Path] = []
-        seen: set[str] = set()
-        for p in explicit:
-            try:
-                key = str(p.resolve())
-            except Exception:
-                key = str(p)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(p)
-            tag = str(channel_tag_for_path(p) or "").strip().lower()
-            if tag:
-                covered_tags.add(tag)
-        for p in foci:
-            try:
-                key = str(p.resolve())
-            except Exception:
-                key = str(p)
-            if key in seen:
-                continue
-            tag = str(channel_tag_for_path(p) or "").strip().lower()
-            if tag and tag in covered_tags:
-                continue
-            seen.add(key)
-            out.append(p)
-    if filter_paths is not None:
-        try:
-            return list(filter_paths(mask_path, out))
-        except Exception:
-            pass
-    return out

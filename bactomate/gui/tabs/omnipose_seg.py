@@ -21,6 +21,7 @@ from bactomate.gui.log_config import get_logger, append_omnipose_debug
 from bactomate.gui.paths import get_omnipose_user_models_dir, get_python_executable_for_subprocess
 from bactomate.gui.patches import _patch_omnipose_get_masks
 from bactomate.gui.preferences import LAST_DIR_SEGMENTATION
+from bactomate.gui.qt_thread_utils import retire_qthread, start_owned_qthread
 from bactomate.gui.session_params import apply_to_widgets, get_from_widgets
 from bactomate.gui.layout_helpers import ResponsivePanel, build_preview_settings_scroll, build_settings_card, flex_control, hbox_row_widget, module_path_action_buttons_layout, module_path_action_outer_layout, module_path_drop_row, new_module_path_action_panel, setting_cell, setting_field, stacked_path_block, style_compact_action_button, style_module_combo, style_module_primary_button, style_path_row_browse_button, style_preview_nav_combo, style_preview_nav_spinbox, vbox_from_rows
 from bactomate.gui.styles import FLAT_GROUPBOX_FRAME_STYLESHEET, MODULE_PANEL_COMBO_STYLESHEET, UI_THEME
@@ -54,6 +55,7 @@ MASK_DISTANCE_OMNI_MAX = 1.0
 MASK_CELLPROB_SAM_MIN = -6.0
 MASK_CELLPROB_SAM_MAX = 6.0
 SPOTIFLOW_DETECTION_DEFAULTS: dict[str, Any] = {'model_name': 'general', 'model_path': '', 'use_optimized_threshold': True, 'prob_thresh': None, 'min_distance': 1, 'subpix': True, 'normalize': True, 'perc_low': 1.0, 'perc_high': 99.8, 'bg_subtract_radius': 0, 'blur_sigma': 0.0, 'auto_tiling': True, 'n_tiles_y': 1, 'n_tiles_x': 1, 'verbose': False, 'raise_on_error': False}
+SPOTIFLOW_CHANNEL_KEYS = ('normalize', 'perc_low', 'perc_high', 'use_optimized_threshold', 'prob_thresh', 'min_distance')
 
 class _OmniposeTrainWorker(QThread):
     """Runs Omnipose training subprocess in background so the GUI stays responsive."""
@@ -509,22 +511,8 @@ class OmniposeSegTab(QWidget):
             worker = getattr(pd, '_seg_worker', None)
             if worker is not None:
                 slot = getattr(pd, '_seg_worker_slot', None)
-                if slot is not None:
-                    try:
-                        worker.finished.disconnect(slot)
-                    except Exception:
-                        pass
                 try:
-                    if worker.isRunning():
-                        worker.requestInterruption()
-                        worker.quit()
-                        if not worker.wait(120000):
-                            worker.terminate()
-                            worker.wait(5000)
-                except Exception:
-                    pass
-                try:
-                    worker.deleteLater()
+                    retire_qthread(worker, result_signal=worker.result_ready, slot=slot)
                 except Exception:
                     pass
                 try:
@@ -535,22 +523,8 @@ class OmniposeSegTab(QWidget):
             foci_worker = getattr(pd, '_foci_worker', None)
             if foci_worker is not None:
                 foci_slot = getattr(pd, '_foci_worker_slot', None)
-                if foci_slot is not None:
-                    try:
-                        foci_worker.finished.disconnect(foci_slot)
-                    except Exception:
-                        pass
                 try:
-                    if foci_worker.isRunning():
-                        foci_worker.requestInterruption()
-                        foci_worker.quit()
-                        if not foci_worker.wait(120000):
-                            foci_worker.terminate()
-                            foci_worker.wait(5000)
-                except Exception:
-                    pass
-                try:
-                    foci_worker.deleteLater()
+                    retire_qthread(foci_worker, result_signal=foci_worker.result_ready, slot=foci_slot)
                 except Exception:
                     pass
                 try:
@@ -558,6 +532,7 @@ class OmniposeSegTab(QWidget):
                     pd._foci_worker_slot = None
                 except Exception:
                     pass
+            self._snapshot_foci_peaks_for_filtering(pd)
         self._embedded_segmentation_preview = None
         fn = getattr(self, '_seg_preview_detect_conn', None)
         if fn is not None:
@@ -1665,121 +1640,9 @@ class OmniposeSegTab(QWidget):
         return True
 
     def _find_foci_sources_for_input(self, input_image_path: Path) -> list[Path]:
-        """Best-effort discovery of ``*_foci*.tif`` usable for ``input_image_path``.
+        from bactomate.gui.artifact_paths import discover_foci_companions
 
-        Supports two sibling naming conventions that ship with BactoMate:
-
-        1. **Legacy / stem-anchored.** A foci TIFF sits directly next to the
-           input with a name like ``{stem}_foci.tif``, ``{stem}_foci_*.tif``,
-           or ``{stem}*_foci.tif``. Handled by the full-stem glob pass.
-
-        2. **File-conversion output**
-           (:mod:`bactomate.scripts.convert_nd2_to_tif`). The ND2 converter
-           emits each channel as
-           ``{nd2_stem}[_f<N>][_fi][_foci]_{channel_name}.tif`` — the ``_fi``
-           / ``_foci`` tags are inserted *before* the channel-name suffix, on
-           the ND2 stem. So for ``sample.nd2`` with channels
-           ``Phase`` / ``GFP`` (foci) / ``mScarlet`` (fi+foci) you get::
-
-               sample_Phase.tif           # segmentation input
-               sample_foci_GFP.tif        # foci sibling
-               sample_fi_foci_mScarlet.tif
-
-           The segmentation input's stem ``sample_Phase`` does *not* prefix
-           the foci file, so the legacy glob alone (``sample_Phase_foci*.tif``)
-           misses ``sample_foci_GFP.tif``. The input and foci sibling share
-           the longest common ``_``-delimited prefix — the ND2 stem
-           ``sample`` (plus any ``_f<N>`` single-frame suffix). We therefore
-           retry the same globs at progressively shorter underscore-trimmed
-           prefixes so ``sample_Phase.tif`` finds ``sample_foci_GFP.tif`` and
-           ``sample_fi_foci_mScarlet.tif``.
-
-        The returned list is de-duplicated by resolved path and sorted
-        case-insensitively by filename. Files without ``_foci`` in the final
-        name are filtered out defensively so the prefix-retry cannot bleed
-        non-foci siblings (e.g. ``sample_fi_mScarlet.tif``) into the result.
-        """
-        p = Path(input_image_path)
-        folder = p.parent
-        stem = p.stem
-        candidates: list[Path] = []
-
-        def _glob_at(prefix: str) -> None:
-            for pat in (f'{prefix}_foci.tif', f'{prefix}_foci.tiff', f'{prefix}_foci_*.tif', f'{prefix}_foci_*.tiff', f'{prefix}_fi_foci.tif', f'{prefix}_fi_foci.tiff', f'{prefix}_fi_foci_*.tif', f'{prefix}_fi_foci_*.tiff', f'{prefix}*_foci.tif', f'{prefix}*_foci.tiff'):
-                candidates.extend(folder.glob(pat))
-        _glob_at(stem)
-        parts = stem.split('_')
-        for i in range(len(parts) - 1, 0, -1):
-            prefix = '_'.join(parts[:i])
-            if not prefix:
-                continue
-            _glob_at(prefix)
-        uniq: list[Path] = []
-        seen: set[str] = set()
-        for c in sorted(candidates, key=lambda x: x.name.lower()):
-            if '_foci' not in c.name.lower():
-                continue
-            try:
-                rp = str(c.resolve())
-            except Exception:
-                rp = str(c)
-            if rp in seen:
-                continue
-            seen.add(rp)
-            uniq.append(c)
-        stem_variants: list[str] = [stem]
-        parts3 = stem.split('_')
-        for i in range(len(parts3) - 1, 0, -1):
-            pfx = '_'.join(parts3[:i])
-            if pfx:
-                stem_variants.append(pfx)
-        seen_names = {x.name.lower() for x in uniq}
-        try:
-            folder_entries = sorted(folder.iterdir(), key=lambda x: x.name.lower())
-        except OSError:
-            folder_entries = []
-        for fp in folder_entries:
-            if not fp.is_file():
-                continue
-            low = fp.name.lower()
-            if not (low.endswith('.tif') or low.endswith('.tiff')):
-                continue
-            if '_foci' not in low:
-                continue
-            fstem = fp.stem
-            hit = False
-            for pfx in stem_variants:
-                pl = pfx.lower()
-                if fstem.lower() == pl:
-                    continue
-                if fstem.lower().startswith(pl + '_'):
-                    hit = True
-                    break
-            if not hit:
-                continue
-            try:
-                rp = str(fp.resolve())
-            except Exception:
-                rp = str(fp)
-            if rp in seen:
-                continue
-            if fp.name.lower() in seen_names:
-                continue
-            seen.add(rp)
-            seen_names.add(fp.name.lower())
-            uniq.append(fp)
-        uniq.sort(key=lambda x: x.name.lower())
-        try:
-            paired = [x for x in uniq if OmniposeSegTab._foci_pairs_with_input(stem, x.stem)]
-            uniq = paired
-        except Exception:
-            pass
-        try:
-            inp_res = str(p.resolve())
-            uniq = [x for x in uniq if str(x.resolve()) != inp_res]
-        except OSError:
-            uniq = [x for x in uniq if str(x) != str(p)]
-        return uniq
+        return discover_foci_companions(input_image_path)
 
     def _companions_for_segmentation_input(self, input_image_path: Path) -> dict[str, list]:
         """Linked TIFFs shown before folder-mode segmentation when Detect foci is enabled."""
@@ -1796,29 +1659,6 @@ class OmniposeSegTab(QWidget):
             'foci': [],
             'fi': companion_rows,
         }
-
-    @staticmethod
-    def _foci_pairs_with_input(input_stem: str, foci_stem: str) -> bool:
-        """Delegate to shared role-marker + legacy LCP pairing."""
-        from bactomate.gui.artifact_paths import foci_pairs_with_input
-
-        return foci_pairs_with_input(input_stem, foci_stem)
-
-    @staticmethod
-    def _stem_pairing_prefix(stem: str) -> str:
-        """Acquisition key shared by phase / FI+foci exports (underscore-delimited stems)."""
-        try:
-            from bactomate.gui.artifact_paths import sample_identity_stem
-            return sample_identity_stem(stem)
-        except Exception:
-            low = stem.lower()
-            for marker in ('_fi_foci', '_phase', '_foci'):
-                idx = low.find(marker)
-                if idx >= 0:
-                    return stem[:idx].rstrip('_')
-            if '__' in stem:
-                return stem.split('__', 1)[0].rstrip('_')
-            return stem
 
     @staticmethod
     def _is_segmentation_input_file(path: Path) -> bool:
@@ -2108,7 +1948,8 @@ class OmniposeSegTab(QWidget):
         custom = getattr(self, '_spotiflow_detection_params', None)
         if isinstance(custom, dict):
             merged.update(custom)
-        key = str(channel_key or '').strip()
+        from bactomate.gui.filter_preview_utils import normalize_foci_channel_key
+        key = normalize_foci_channel_key(channel_key)
         if key:
             chmap = getattr(self, '_spotiflow_channel_params', None)
             if isinstance(chmap, dict):
@@ -2118,28 +1959,45 @@ class OmniposeSegTab(QWidget):
         return merged
 
     def _ensure_spotiflow_channel_entries(self, foci_paths: list[Path]) -> None:
-        """Create per-channel Spotiflow entries for each foci stack (copy global defaults for new tags)."""
-        template = self._get_spotiflow_detection_params()
+        """Create empty per-channel override entries for each foci stack.
+
+        An empty entry means "inherit defaults + global params"; only values the user
+        edits for a channel are stored (see ``_save_spotiflow_widgets_to_channel``).
+        """
         chmap = getattr(self, '_spotiflow_channel_params', None)
         if not isinstance(chmap, dict):
             self._spotiflow_channel_params = {}
             chmap = self._spotiflow_channel_params
-        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
         for fp in foci_paths:
-            tag = foci_channel_key_for_path(Path(fp))
+            tag = self._spotiflow_channel_key_for_path(Path(fp))
             if tag not in chmap:
-                chmap[tag] = dict(template)
+                chmap[tag] = {}
+
+    def _spotiflow_channel_key_for_path(self, foci_path: Path) -> str:
+        """Canonical per-channel key for a foci stack; migrates a legacy-key entry (old sessions) once."""
+        from bactomate.gui.filter_preview_utils import migrate_foci_channel_entry
+        chmap = getattr(self, '_spotiflow_channel_params', None)
+        if not isinstance(chmap, dict):
+            self._spotiflow_channel_params = {}
+            chmap = self._spotiflow_channel_params
+        return migrate_foci_channel_entry(chmap, Path(foci_path))
 
     def _spotiflow_channel_key_for_preview_index(self, preview_dialog: Any, source_index: int) -> str:
-        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
         paths = getattr(preview_dialog, '_foci_source_paths', None) or []
         si = int(source_index)
         if 0 <= si < len(paths):
-            return foci_channel_key_for_path(Path(paths[si]))
+            return self._spotiflow_channel_key_for_path(Path(paths[si]))
         return '_default'
 
+    @staticmethod
+    def _strip_to_channel_overrides(entry: Any) -> dict[str, Any]:
+        """Keep only per-channel UI keys (drops model/subpix/other global-only keys from legacy snapshots)."""
+        if not isinstance(entry, dict):
+            return {}
+        return {k: v for (k, v) in entry.items() if k in SPOTIFLOW_CHANNEL_KEYS}
+
     def _spotiflow_slice_from_preview_widgets(self, dlg: QWidget) -> dict[str, Any]:
-        out: dict[str, Any] = {'subpix': True}
+        out: dict[str, Any] = {}
         try:
             if getattr(dlg, '_sf_normalize_cb', None) is not None:
                 out['normalize'] = bool(dlg._sf_normalize_cb.isChecked())
@@ -2180,6 +2038,53 @@ class OmniposeSegTab(QWidget):
                 preview_dialog._foci_peaks_for_current = []
         except Exception:
             get_logger().debug('partial foci cache invalidate failed', exc_info=True)
+
+    def _snapshot_foci_peaks_for_filtering(self, preview_dialog: Any) -> None:
+        """Retain only current detections when the filtering pane replaces this preview."""
+        self._sync_spotiflow_from_preview_dialog(preview_dialog)
+        paths = getattr(preview_dialog, '_foci_source_paths', None) or []
+        sources = getattr(preview_dialog, '_foci_sources', None) or []
+        cache = getattr(preview_dialog, '_foci_peaks_cache', None) or {}
+        source_signatures = getattr(preview_dialog, '_foci_source_signatures', None) or {}
+        snapshot = {}
+        csv_minp = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+        for si, path in enumerate(paths):
+            path_key = str(Path(path).resolve())
+            if si >= len(sources) or path_key not in source_signatures:
+                continue
+            channel = self._spotiflow_channel_key_for_preview_index(preview_dialog, si)
+            sf = self._get_spotiflow_detection_params(channel_key=channel)
+            signature = self._foci_peak_cache_key(si, 0, channel, sf, csv_minp)
+            frames = {}
+            for key, peaks in cache.items():
+                if isinstance(key, tuple) and len(key) == len(signature) and key == self._foci_peak_cache_key(si, key[1], channel, sf, csv_minp):
+                    frame = int(key[1])
+                    frames[frame] = [dict(peak, frame=frame) for peak in peaks]
+            if frames:
+                snapshot[path_key] = {'source_signature': source_signatures[path_key], 'shape': tuple(sources[si].shape[-2:]), 'signature': signature, 'frames': frames}
+        self._filter_preview_foci_snapshot = snapshot
+
+    def preview_foci_rows_for_filtering(self, source_path: Path, *, mask_shape: tuple[int, int]) -> Optional[dict[int, list[dict]]]:
+        """Return visited frames, including known empty frames, without running detection."""
+        preview_dialog = getattr(self, '_embedded_segmentation_preview', None)
+        if preview_dialog is not None:
+            self._snapshot_foci_peaks_for_filtering(preview_dialog)
+        source_path = Path(source_path)
+        saved = (getattr(self, '_filter_preview_foci_snapshot', None) or {}).get(str(source_path.resolve()))
+        if saved is None or saved['shape'] != tuple(mask_shape):
+            return None
+        try:
+            st = source_path.stat()
+        except OSError:
+            return None
+        if saved['source_signature'] != (st.st_mtime_ns, st.st_size):
+            return None
+        signature = saved['signature']
+        sf = self._get_spotiflow_detection_params(channel_key=signature[2])
+        csv_minp = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+        if signature != self._foci_peak_cache_key(signature[0], 0, signature[2], sf, csv_minp):
+            return None
+        return {frame: [dict(row) for row in rows] for frame, rows in saved['frames'].items()}
 
     def _foci_peak_cache_key(self, source_index: int, frame_idx: int, channel_key: str, sf_local: dict[str, Any], csv_minp: float) -> tuple:
         return (int(source_index), int(frame_idx), str(channel_key), bool(sf_local.get('use_optimized_threshold', True)), float(sf_local.get('prob_thresh') if sf_local.get('prob_thresh') is not None else 0.5), int(sf_local.get('min_distance', 1) or 1), bool(sf_local.get('subpix', True)), bool(sf_local.get('normalize', True)), float(sf_local.get('perc_low', 1.0) or 1.0), float(sf_local.get('perc_high', 99.8) or 99.8), float(csv_minp))
@@ -2245,14 +2150,16 @@ class OmniposeSegTab(QWidget):
         return '_default'
 
     def _save_spotiflow_widgets_to_channel(self, dlg: QWidget, channel_key: str) -> None:
-        key = str(channel_key or '').strip() or '_default'
+        from bactomate.gui.filter_preview_utils import normalize_foci_channel_key
+        key = normalize_foci_channel_key(channel_key) or '_default'
         slice_dict = self._spotiflow_slice_from_preview_widgets(dlg)
-        base = self._get_spotiflow_detection_params()
-        merged = {**base, **slice_dict}
         if not isinstance(getattr(self, '_spotiflow_channel_params', None), dict):
             self._spotiflow_channel_params = {}
-        self._spotiflow_channel_params[key] = dict(merged)
-        self._spotiflow_detection_params.update(slice_dict)
+        # Per-channel overrides only; the global template is never mutated by a channel edit.
+        # Store only values that differ from the effective global; keys equal to global stay inherited.
+        global_params = self._get_spotiflow_detection_params()
+        overrides = {k: v for (k, v) in self._strip_to_channel_overrides(slice_dict).items() if k not in global_params or global_params[k] != v}
+        self._spotiflow_channel_params[key] = overrides
 
     def _load_spotiflow_widgets_for_channel(self, dlg: QWidget, channel_key: str) -> None:
         sf = self._get_spotiflow_detection_params(channel_key=channel_key)
@@ -2456,7 +2363,10 @@ class OmniposeSegTab(QWidget):
             self._segment_filename_filter = str(data['segment_filename_filter']).strip() or ''
         raw_ch = (data or {}).get('spotiflow_channels')
         if isinstance(raw_ch, dict) and raw_ch:
-            self._spotiflow_channel_params = {str(k): dict(v) for (k, v) in raw_ch.items() if isinstance(v, dict)}
+            # Legacy sessions stored full snapshots per channel; keep only per-channel keys.
+            # Keys are casefolded; legacy per-sample/truncated keys migrate lazily per foci path.
+            from bactomate.gui.filter_preview_utils import normalize_foci_channel_map
+            self._spotiflow_channel_params = normalize_foci_channel_map({str(k): self._strip_to_channel_overrides(v) for (k, v) in raw_ch.items() if isinstance(v, dict)})
         if any((isinstance(k, str) and k.startswith('spotiflow_') for k in (data or {}).keys())):
             merged_sf = dict(SPOTIFLOW_DETECTION_DEFAULTS)
             for (k, v) in (data or {}).items():
@@ -2464,7 +2374,7 @@ class OmniposeSegTab(QWidget):
                     merged_sf[k[len('spotiflow_'):]] = v
             self._spotiflow_detection_params = merged_sf
             if not self._spotiflow_channel_params:
-                self._spotiflow_channel_params = {'_default': dict(merged_sf)}
+                self._spotiflow_channel_params = {}
         if 'foci_csv_min_probability' in data:
             try:
                 self._foci_csv_min_probability = float(data['foci_csv_min_probability'] or 0.0)
@@ -2852,6 +2762,7 @@ class OmniposeSegTab(QWidget):
                     pass
             preview_dialog._foci_sources = []
             preview_dialog._foci_source_paths = []
+            preview_dialog._foci_source_signatures = {}
             preview_dialog._foci_peaks_cache = {}
             preview_dialog._foci_peaks_for_current = []
             preview_dialog._foci_peaks_request_id = 0
@@ -2873,6 +2784,8 @@ class OmniposeSegTab(QWidget):
                             arr = coerce_stack_to_tyx(np.asarray(safe_imread(str(fp))))
                             if arr is None or arr.size == 0:
                                 continue
+                            st = Path(fp).stat()
+                            preview_dialog._foci_source_signatures[str(Path(fp).resolve())] = (st.st_mtime_ns, st.st_size)
                             loaded.append(arr)
                             loaded_paths.append(fp)
                         except Exception:
@@ -2998,7 +2911,7 @@ class OmniposeSegTab(QWidget):
 
             class FociPeaksPreviewWorker(QThread):
                 """Spotiflow foci peak detection off the GUI thread (preview only)."""
-                finished = pyqtSignal(int, object, bool, object)
+                result_ready = pyqtSignal(int, object, bool, object)
 
                 def __init__(self, request_id: int, tab: 'OmniposeSegTab', jobs: list[dict[str, Any]], parent=None):
                     super().__init__(parent)
@@ -3013,7 +2926,7 @@ class OmniposeSegTab(QWidget):
                     status_parts: list[str] = []
                     for job in self._jobs:
                         if self.isInterruptionRequested():
-                            self.finished.emit(self._request_id, cache_updates, False, status_parts)
+                            self.result_ready.emit(self._request_id, cache_updates, False, status_parts)
                             return
                         (peaks_raw, avail) = self._tab._spotiflow_detect_peaks_on_plane(job['plane'], job['sf'])
                         if not avail or peaks_raw is None:
@@ -3023,29 +2936,36 @@ class OmniposeSegTab(QWidget):
                         cache_updates[job['key']] = peaks
                         if job.get('status_label'):
                             status_parts.append(f"{job['status_label']}: {len(peaks)}")
-                    self.finished.emit(self._request_id, cache_updates, spotiflow_available, status_parts)
+                    self.result_ready.emit(self._request_id, cache_updates, spotiflow_available, status_parts)
 
             def _stop_foci_peaks_worker() -> None:
                 worker = getattr(preview_dialog, '_foci_worker', None)
                 slot = getattr(preview_dialog, '_foci_worker_slot', None)
-                if worker is not None and slot is not None:
-                    try:
-                        worker.finished.disconnect(slot)
-                    except Exception:
-                        pass
                 if worker is not None:
                     try:
-                        if worker.isRunning():
-                            worker.requestInterruption()
-                            worker.quit()
-                    except Exception:
-                        pass
-                    try:
-                        worker.deleteLater()
+                        retire_qthread(worker, result_signal=worker.result_ready, slot=slot)
                     except Exception:
                         pass
                 preview_dialog._foci_worker = None
                 preview_dialog._foci_worker_slot = None
+
+            def _csv_minp_note() -> str:
+                m = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+                return f' (raw CSV min probability {m:g} applied)' if m > 0 else ''
+
+            def _foci_status(text: str) -> None:
+                """Show foci feedback in the Spotiflow section (visible in embedded mode) and the toolbar label."""
+                lbl = getattr(preview_dialog, '_sf_foci_status_label', None)
+                if lbl is not None:
+                    try:
+                        lbl.setText(text)
+                        lbl.setVisible(bool(text))
+                    except Exception:
+                        pass
+                try:
+                    status_label.setText(text)
+                except Exception:
+                    pass
 
             def _finalize_foci_peaks_status(src_idx: int, frame_idx: int, *, spotiflow_available: bool, status_parts: list[str]) -> None:
                 sf_cur = self._get_spotiflow_detection_params(channel_key=self._spotiflow_channel_key_for_preview_index(preview_dialog, src_idx))
@@ -3055,23 +2975,14 @@ class OmniposeSegTab(QWidget):
                 cache = getattr(preview_dialog, '_foci_peaks_cache', None) or {}
                 preview_dialog._foci_peaks_for_current = list(cache.get(cur_key) or [])
                 if not spotiflow_available:
-                    try:
-                        status_label.setText(
-                            'Foci: Spotiflow unavailable — check logs '
-                            '(often wandb/protobuf mismatch on Windows). No peaks drawn.'
-                        )
-                    except Exception:
-                        pass
+                    _foci_status(
+                        'Foci: Spotiflow unavailable — check logs '
+                        '(often wandb/protobuf mismatch on Windows). No peaks drawn.'
+                    )
                 elif status_parts:
-                    try:
-                        status_label.setText('Foci — ' + ', '.join(status_parts))
-                    except Exception:
-                        pass
+                    _foci_status('Foci — ' + ', '.join(status_parts) + _csv_minp_note())
                 else:
-                    try:
-                        status_label.setText(f'Foci: {len(preview_dialog._foci_peaks_for_current)} peak(s) on current frame.')
-                    except Exception:
-                        pass
+                    _foci_status(f'Foci: {len(preview_dialog._foci_peaks_for_current)} peak(s) on current frame.' + _csv_minp_note())
                 refresh_image_display()
 
             def _compute_foci_peaks_for_current(frame_idx: int, *, allow_detect: bool=True, force_recalc: bool=False, background: bool=False) -> None:
@@ -3102,11 +3013,7 @@ class OmniposeSegTab(QWidget):
                 combo = getattr(preview_dialog, '_sf_channel_combo', None) or getattr(preview_dialog, '_foci_source_combo', None)
                 sources = getattr(preview_dialog, '_foci_sources', None) or []
 
-                def _set_status(text: str) -> None:
-                    try:
-                        status_label.setText(text)
-                    except Exception:
-                        pass
+                _set_status = _foci_status
 
                 def _clear_peaks() -> None:
                     preview_dialog._foci_peaks_for_current = []
@@ -3188,13 +3095,12 @@ class OmniposeSegTab(QWidget):
                         except Exception:
                             full_status = list(status_parts or [])
                         _finalize_foci_peaks_status(src_idx, frame_idx, spotiflow_available=bool(spotiflow_ok), status_parts=full_status or list(status_parts or []))
-                        preview_dialog._foci_worker = None
-                        preview_dialog._foci_worker_slot = None
-                    worker = FociPeaksPreviewWorker(request_id, self, pending_jobs, parent=preview_dialog)
+                        _stop_foci_peaks_worker()
+                    worker = FociPeaksPreviewWorker(request_id, self, pending_jobs)
                     preview_dialog._foci_worker_slot = _on_foci_worker_finished
-                    worker.finished.connect(_on_foci_worker_finished)
+                    worker.result_ready.connect(_on_foci_worker_finished)
                     preview_dialog._foci_worker = worker
-                    worker.start()
+                    start_owned_qthread(worker)
                     return
                 spotiflow_available = True
                 status_parts: list[str] = []
@@ -3229,8 +3135,11 @@ class OmniposeSegTab(QWidget):
                     cur_key = _cache_key(src_idx, sf_cur)
                     cached_now = list(cache.get(cur_key) or [])
                     preview_dialog._foci_peaks_for_current = cached_now
-                    act_lbl = self._active_spotiflow_channel_key(preview_dialog)
-                    _set_status(f'Spotiflow settings saved for “{act_lbl}”. Rings for that channel are hidden until Re-detect; other channels unchanged.')
+                    act_lbl = short_foci_stack_label(Path(paths[src_idx])) if 0 <= src_idx < len(paths) else self._active_spotiflow_channel_key(preview_dialog)
+                    if cur_key in cache:
+                        _set_status(f'Foci “{act_lbl}”: {len(cached_now)} peak(s) on current frame.' + _csv_minp_note())
+                    else:
+                        _set_status(f'Spotiflow settings for “{act_lbl}” changed. Rings hidden until Re-detect; other channels unchanged.')
                     refresh_image_display()
                     return
                 _finalize_foci_peaks_status(src_idx, frame_idx, spotiflow_available=spotiflow_available, status_parts=status_parts)
@@ -3241,7 +3150,7 @@ class OmniposeSegTab(QWidget):
             status_label = QLabel('Ready')
             status_label.setStyleSheet('color: #7F8C8D; font-size: 9pt; font-style: italic;')
             if embed_seg:
-                status_label.hide()
+                status_label.hide()  # foci feedback is shown in preview_dialog._sf_foci_status_label instead
 
             def find_model_file(model_type, model_index=0, use_torch=True):
                 """
@@ -3575,17 +3484,12 @@ class OmniposeSegTab(QWidget):
                     return True
 
             def _seg_disconnect() -> None:
-                """Detach and schedule deletion of the preview segmentation QThread (PyQt-safe)."""
+                """Detach the preview segmentation QThread; it is deleted once it actually exits."""
                 w = getattr(preview_dialog, '_seg_worker', None)
                 s = getattr(preview_dialog, '_seg_worker_slot', None)
-                if w is not None and s is not None:
-                    try:
-                        w.finished.disconnect(s)
-                    except Exception:
-                        pass
                 if w is not None:
                     try:
-                        w.deleteLater()
+                        retire_qthread(w, result_signal=w.result_ready, slot=s)
                     except Exception:
                         pass
                 try:
@@ -3715,7 +3619,7 @@ class OmniposeSegTab(QWidget):
                 return np.stack([arr, arr, arr], axis=-1)
 
             class OmniposePreviewWorker(QThread):
-                finished = pyqtSignal(int, int, tuple, object, str)
+                result_ready = pyqtSignal(int, int, tuple, object, str)
 
                 def __init__(self, request_id, frame_idx, cache_key, model, seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=False, affinity_seg=False, parent=None):
                     super().__init__(parent)
@@ -3771,7 +3675,7 @@ class OmniposeSegTab(QWidget):
                 def run(self):
                     (mask, error_str) = (None, '')
                     if self.isInterruptionRequested():
-                        self.finished.emit(self._request_id, self._frame_idx, self._cache_key, None, 'cancelled')
+                        self.result_ready.emit(self._request_id, self._frame_idx, self._cache_key, None, 'cancelled')
                         return
                     try:
                         if self._is_cellpose_sam:
@@ -3819,7 +3723,7 @@ class OmniposeSegTab(QWidget):
                         except Exception:
                             pass
                         error_str = str(e)
-                    self.finished.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
+                    self.result_ready.emit(self._request_id, self._frame_idx, self._cache_key, mask, error_str)
 
             def run_segmentation(frame_idx, use_cache=True, *, source_key=('input', 0), frame_override=None, preserve_user_lut=True):
                 """Run segmentation on a specific frame with caching and background threading"""
@@ -3947,13 +3851,8 @@ class OmniposeSegTab(QWidget):
                         pass
                     finally:
                         if worker is not None:
-                            if slot is not None:
-                                try:
-                                    worker.finished.disconnect(slot)
-                                except Exception:
-                                    pass
                             try:
-                                worker.deleteLater()
+                                retire_qthread(worker, result_signal=worker.result_ready, slot=slot)
                             except Exception:
                                 pass
                         try:
@@ -3963,11 +3862,11 @@ class OmniposeSegTab(QWidget):
                             pass
                 is_cellpose_sam = params.get('model_type') == CELLPOSE_SAM_MODEL
                 affinity_seg = eval_uses_affinity_segmentation(model_type=params.get('model_type'), pretrained_path=params.get('pretrained_model'))
-                worker = OmniposePreviewWorker(preview_dialog._seg_request_id, frame_idx, cache_key, preview_dialog.model, seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=is_cellpose_sam, affinity_seg=affinity_seg, parent=preview_dialog)
+                worker = OmniposePreviewWorker(preview_dialog._seg_request_id, frame_idx, cache_key, preview_dialog.model, seg_frame, diameter_seg, flow_threshold, mask_threshold, cluster, orig_h, orig_w, seg_scale, is_frozen, is_cellpose_sam=is_cellpose_sam, affinity_seg=affinity_seg)
                 preview_dialog._seg_worker_slot = _on_seg_worker_finished
-                worker.finished.connect(_on_seg_worker_finished)
+                worker.result_ready.connect(_on_seg_worker_finished)
                 preview_dialog._seg_worker = worker
-                worker.start()
+                start_owned_qthread(worker)
                 return (None, None)
 
             def _apply_mask_to_ui(frame_idx, mask, *, preserve_user_lut=True):
@@ -4396,7 +4295,7 @@ class OmniposeSegTab(QWidget):
                 from bactomate.gui.filter_preview_utils import foci_channel_key_for_path, short_foci_stack_label
                 self._ensure_spotiflow_channel_entries([Path(p) for p in foci_sources])
                 sf_channel_lbl = _spot_param_label('Foci channel')
-                sf_channel_lbl.setToolTip('Spotiflow settings on this row apply to this foci stack only. Switch channel to tune each reporter separately.')
+                sf_channel_lbl.setToolTip('Normalize, percentiles, threshold and min distance on this row apply to the selected foci stack only (per-channel overrides). Model and other options are shared.\nSwitch channel to tune each reporter separately.')
                 sf_channel_combo = QComboBox(preview_dialog)
                 sf_channel_combo.setMinimumContentsLength(12)
                 sf_channel_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
@@ -4464,13 +4363,17 @@ class OmniposeSegTab(QWidget):
                 sf_phigh.setToolTip('Upper percentile for Spotiflow normalization (used only when Normalize is on).')
                 sf_params_row.addWidget(sf_phigh)
                 sf_params_row.addWidget(_spot_col_sep())
+                def _csv_tip() -> str:
+                    m = float(getattr(self, '_foci_csv_min_probability', 0.0) or 0.0)
+                    return f'\nNote: a session raw-CSV minimum probability of {m:g} is also applied.' if m > 0 else ''
                 sf_use_opt = QCheckBox('Optimized threshold')
                 sf_use_opt.setChecked(bool(p_sf.get('use_optimized_threshold', True)))
-                sf_use_opt.setToolTip('When on, Spotiflow uses its optimized threshold; probability threshold is ignored.')
+                sf_use_opt.setToolTip('Per-channel detection threshold mode. When on, Spotiflow uses its model-optimized threshold and Prob thr is ignored.\nPeaks below the detection threshold are never written to the raw foci CSV; the Filtering stage probability filter can only remove more peaks later.' + _csv_tip())
                 sf_use_opt.setStyleSheet(_sf_cb_style)
                 sf_params_row.addWidget(sf_use_opt)
                 sf_params_row.addWidget(_spot_param_label('Prob thr'))
                 sf_prob = QDoubleSpinBox()
+                sf_prob.setToolTip('Per-channel Spotiflow detection threshold (used when Optimized threshold is off).\nPeaks below it are never written to the raw foci CSV; the Filtering stage probability filter can only remove more peaks later.' + _csv_tip())
                 sf_prob.setRange(0.0, 1.0)
                 sf_prob.setDecimals(2)
                 sf_prob.setSingleStep(0.05)
@@ -4499,6 +4402,12 @@ class OmniposeSegTab(QWidget):
                 _sf_hint.setStyleSheet(f"QLabel {{ color: {UI_THEME['muted_text']}; font-size: 9pt; padding: 0 2px 4px 2px; }}")
                 nav_layout.addWidget(_sf_hint)
                 nav_layout.addLayout(sf_params_row)
+                _sf_foci_status = QLabel('')
+                _sf_foci_status.setWordWrap(True)
+                _sf_foci_status.setStyleSheet(f"QLabel {{ color: {UI_THEME['muted_text']}; font-size: 9pt; font-style: italic; padding: 0 2px 2px 2px; }}")
+                _sf_foci_status.hide()
+                nav_layout.addWidget(_sf_foci_status)
+                preview_dialog._sf_foci_status_label = _sf_foci_status
                 _foci_sf_row = (sf_channel_lbl, sf_channel_combo, sf_norm_cb, sf_plow, sf_phigh, sf_use_opt, sf_prob, sf_min_dist)
                 for _w in _foci_sf_row:
                     try:
@@ -4890,6 +4799,8 @@ class OmniposeSegTab(QWidget):
                                             if arr is None or arr.size == 0:
                                                 get_logger().warning('Foci file found but stack empty after load: %s', fp.name)
                                                 continue
+                                            st = Path(fp).stat()
+                                            preview_dialog._foci_source_signatures[str(Path(fp).resolve())] = (st.st_mtime_ns, st.st_size)
                                             loaded.append(arr)
                                             loaded_paths.append(fp)
                                         except Exception:
@@ -5076,7 +4987,6 @@ class OmniposeSegTab(QWidget):
 
             def _on_preview_finished(_result: int=0, pd=preview_dialog) -> None:
                 self._on_embedded_segmentation_preview_closed()
-                self._sync_spotiflow_from_preview_dialog(pd)
             preview_dialog.finished.connect(_on_preview_finished)
             self._restore_seg_tuning_to_left_panel()
             prev_embed = getattr(self, '_embedded_segmentation_preview', None)
@@ -5749,16 +5659,16 @@ class OmniposeSegTab(QWidget):
                         from bactomate.gui.artifact_paths import infer_pipeline_dir_from_mask, foci_csv_path
                         mask_guess = output_dir / f'{Path(tiff_file).stem}_masks.tif'
                         pipeline_dir = infer_pipeline_dir_from_mask(mask_guess)
-                        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
+                        from bactomate.gui.filter_preview_utils import short_foci_stack_label
                         for src in sources:
                             try:
                                 stack = safe_imread(str(src))
                             except Exception:
                                 continue
                             csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
-                            ch_key = foci_channel_key_for_path(src)
+                            ch_key = self._spotiflow_channel_key_for_path(src)
                             sf_ch = self._get_spotiflow_detection_params(channel_key=ch_key)
-                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {ch_key}]\n')
+                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {short_foci_stack_label(src)}]\n')
                             (ok_foci, reason) = self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None, spotiflow_params=sf_ch)
                             if not ok_foci:
                                 self.parent_window.log_output(f'[Foci] Detection failed for {src.name}: {reason}. CSV not written.\n')
@@ -5899,16 +5809,16 @@ class OmniposeSegTab(QWidget):
                         from bactomate.gui.artifact_paths import infer_pipeline_dir_from_mask, foci_csv_path
                         mask_guess = out_dir / f'{in_path.stem}_masks.tif'
                         pipeline_dir = infer_pipeline_dir_from_mask(mask_guess)
-                        from bactomate.gui.filter_preview_utils import foci_channel_key_for_path
+                        from bactomate.gui.filter_preview_utils import short_foci_stack_label
                         for src in sources:
                             try:
                                 stack = safe_imread(str(src))
                             except Exception:
                                 continue
                             csv_path = foci_csv_path(pipeline_dir, mask_path=mask_guess, foci_source_path=src)
-                            ch_key = foci_channel_key_for_path(src)
+                            ch_key = self._spotiflow_channel_key_for_path(src)
                             sf_ch = self._get_spotiflow_detection_params(channel_key=ch_key)
-                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {ch_key}]\n')
+                            self.parent_window.log_output(f'Detecting foci (CSV): {src.name} → {csv_path.name} [channel {short_foci_stack_label(src)}]\n')
                             (ok_foci, reason) = self._detect_foci_for_stack_and_write_csv(foci_stack=stack, output_csv=csv_path, prob_thresh=None, spotiflow_params=sf_ch)
                             if not ok_foci:
                                 self.parent_window.log_output(f'[Foci] Detection failed for {src.name}: {reason}. CSV not written.\n')

@@ -298,6 +298,7 @@ def write_foci_overlay_tif(
 
     # Optional mask boundaries (frame-aligned best-effort).
     boundaries_by_frame: dict[int, np.ndarray] = {}
+    mask_tyx = None
     if style.draw_boundaries and mask_path is not None:
         try:
             mask_raw = tifffile.imread(str(mask_path))
@@ -341,10 +342,9 @@ def write_foci_overlay_tif(
             mask_2d = np.asarray(mask_tyx[fi], dtype=np.int32)
         bs = dict(blob_settings or {})
         if style.draw_blob_regions and rr:
-            try:
-                frac = float(bs.get("foci_blob_threshold_frac", 0.9) or 0.9)
-            except (TypeError, ValueError):
-                frac = 0.8
+            from bactomate.gui.foci_filter_pipeline import foci_blob_threshold_frac
+
+            frac = foci_blob_threshold_frac(bs)
             try:
                 max_r = int(bs.get("foci_blob_max_radius", 5) or 5)
             except (TypeError, ValueError):
