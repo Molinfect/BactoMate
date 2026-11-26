@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication
 from bactomate.gui.filter_apply_progress import FilterApplyProgressDialog, _qt_alive
 from bactomate.gui.log_config import write_gui_log_line
 from bactomate.gui.preview.preview_window import WorkerGuard
+from bactomate.gui.qt_thread_utils import retire_qthread
 
 
 def _safe_release_preview_worker(owner, attr: str='_preview_worker', wait_ms: int=10000) -> None:
@@ -20,6 +21,16 @@ def _safe_release_preview_worker(owner, attr: str='_preview_worker', wait_ms: in
         if thread is not None and thread.isRunning():
             thread.quit()
             if not thread.wait(wait_ms):
+                # Still busy: detach from the owner (whose deletion would destroy a running
+                # QThread and abort) and delete thread + worker only once it has exited.
+                if w is not None:
+                    try:
+                        thread.finished.connect(w.deleteLater)
+                    except Exception:
+                        pass
+                retire_qthread(thread)
+                setattr(owner, attr, None)
+                owner._preview_thread = None
                 return
     except Exception:
         return
