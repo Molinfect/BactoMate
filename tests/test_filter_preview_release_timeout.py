@@ -35,7 +35,8 @@ def test_release_retires_thread_that_does_not_stop_in_time():
 
     assert owner._preview_worker is None
     assert owner._preview_thread is None
-    assert thread.isInterruptionRequested()
+    # The thread ignores quit(), so it only exits if release requested interruption.
+    # (isInterruptionRequested() itself is cleared once the thread finishes.)
     assert thread.wait(2000)
     for _ in range(20):
         app.processEvents()
