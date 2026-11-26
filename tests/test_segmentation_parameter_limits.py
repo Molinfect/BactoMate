@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_function(path, name, namespace):
     # Isolate inference from optional GUI, GPU and model imports.
-    tree = ast.parse((ROOT / path).read_text())
+    tree = ast.parse((ROOT / path).read_text(encoding='utf-8'))
     node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), 'exec'), namespace)
     return namespace[name]
@@ -48,7 +48,7 @@ def test_gui_controls_and_preview_keep_extended_values(qapp):
     import sys
 
     path = 'bactomate/gui/tabs/omnipose_seg.py'
-    tree = ast.parse((ROOT / path).read_text())
+    tree = ast.parse((ROOT / path).read_text(encoding='utf-8'))
     owner = SimpleNamespace(diameter=QDoubleSpinBox(), flow_threshold=QDoubleSpinBox(),
                             mask_threshold=QDoubleSpinBox())
     # Run the actual range assignments without constructing the full tab.
