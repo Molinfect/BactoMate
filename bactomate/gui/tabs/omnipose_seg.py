@@ -50,10 +50,6 @@ CANONICAL_BACTERIAL_MODEL = 'bact_phase_omni'
 SEGMENTATION_MODEL_DEFAULTS = {'bact_phase_omni': (30.0, 0.4, 0.0), 'bact_fluor_omni': (30.0, 0.4, 0.0), 'bact_phase_affinity': (30.0, 0.4, 0.0), CELLPOSE_SAM_MODEL: (30.0, 0.4, 0.0)}
 SEGMENTATION_DEFAULT_FALLBACK = (30.0, 0.4, 0.0)
 USER_MODEL_DEFAULTS = (30.0, 0.0, 0.0)
-MASK_DISTANCE_OMNI_MIN = -20.0
-MASK_DISTANCE_OMNI_MAX = 1.0
-MASK_CELLPROB_SAM_MIN = -6.0
-MASK_CELLPROB_SAM_MAX = 6.0
 SPOTIFLOW_DETECTION_DEFAULTS: dict[str, Any] = {'model_name': 'general', 'model_path': '', 'use_optimized_threshold': True, 'prob_thresh': None, 'min_distance': 1, 'subpix': True, 'normalize': True, 'perc_low': 1.0, 'perc_high': 99.8, 'bg_subtract_radius': 0, 'blur_sigma': 0.0, 'auto_tiling': True, 'n_tiles_y': 1, 'n_tiles_x': 1, 'verbose': False, 'raise_on_error': False}
 SPOTIFLOW_CHANNEL_KEYS = ('normalize', 'perc_low', 'perc_high', 'use_optimized_threshold', 'prob_thresh', 'min_distance')
 
@@ -1353,9 +1349,9 @@ class OmniposeSegTab(QWidget):
         main_layout.addSpacing(6)
         diameter_row = QHBoxLayout()
         diameter_row.addWidget(QLabel('Diameter:'))
-        diameter_row.addWidget(create_info_icon('Expected cell diameter in pixels. 0 = auto-detect. Specify a value (e.g. 20–50 for bacteria) for more consistent results.', self))
+        diameter_row.addWidget(create_info_icon('Expected cell diameter in pixels; positive values control image rescaling. 0 uses native/default scaling (no automatic size estimation for these models). No fixed upstream maximum; extreme rescaling can fail or exhaust memory.', self))
         self.diameter = QDoubleSpinBox()
-        self.diameter.setRange(0, 1000)
+        self.diameter.setRange(0.0, sys.float_info.max)
         self.diameter.setValue(0)
         self.diameter.setDecimals(1)
         flex_control(self.diameter, 72, combo_style=False)
@@ -1363,9 +1359,9 @@ class OmniposeSegTab(QWidget):
         diameter_row.addStretch(1)
         flow_row = QHBoxLayout()
         flow_row.addWidget(_omnipose_seg_param_qlabel('Flow:'))
-        flow_row.addWidget(create_info_icon('Flow error threshold. Default 0.4. Use 0.0 if you get 0 cells with low mask threshold.', self))
+        flow_row.addWidget(create_info_icon('Maximum accepted flow error (not a probability). Default 0.4; higher values retain more masks, lower positive values reject more. 0 disables flow filtering. No fixed upstream upper limit.', self))
         self.flow_threshold = QDoubleSpinBox()
-        self.flow_threshold.setRange(0.0, 1.0)
+        self.flow_threshold.setRange(0.0, sys.float_info.max)
         self.flow_threshold.setValue(0.4)
         self.flow_threshold.setSingleStep(0.1)
         self.flow_threshold.setDecimals(2)
@@ -1377,7 +1373,8 @@ class OmniposeSegTab(QWidget):
         self.mask_threshold_info = create_info_icon('Threshold for mask generation. Meaning depends on the selected model (see tooltip after choosing a model).', self)
         mask_row.addWidget(self.mask_threshold_info)
         self.mask_threshold = QDoubleSpinBox()
-        self.mask_threshold.setRange(-20.0, 1.0)
+        # Upstream thresholds have no fixed bounds; retain the finite double range.
+        self.mask_threshold.setRange(-sys.float_info.max, sys.float_info.max)
         self.mask_threshold.setValue(0.0)
         self.mask_threshold.setSingleStep(0.5)
         self.mask_threshold.setDecimals(2)
@@ -1899,24 +1896,17 @@ class OmniposeSegTab(QWidget):
         return (None, None)
 
     def _sync_mask_threshold_spinbox_for_model(self) -> None:
-        """Omnipose uses distance-map thresholds (-20..1). Cellpose-SAM uses cellprob_threshold (~-6..6)."""
+        """Update model-specific guidance without clipping valid thresholds."""
         display = self.model_combo.currentText() or ''
         (model_type, _pretrained_path) = self._resolve_model_selection(display)
-        v = float(self.mask_threshold.value())
         if model_type == CELLPOSE_SAM_MODEL:
-            self.mask_threshold.setRange(MASK_CELLPROB_SAM_MIN, MASK_CELLPROB_SAM_MAX)
             self.mask_threshold.setSingleStep(0.1)
-            v = max(MASK_CELLPROB_SAM_MIN, min(MASK_CELLPROB_SAM_MAX, v))
-            self.mask_threshold.setValue(v)
             if getattr(self, 'mask_threshold_info', None) is not None:
-                self.mask_threshold_info.setToolTip("Cellpose-SAM: this value is passed as cellprob_threshold (logit scale, roughly -6 to +6; default 0).\nLower values include more pixels in the dynamics step; higher values are stricter.\nThis is not the same as Omnipose's distance-map threshold.\n\nIf the app crashes when segmenting, try mask 0 and set environment variable OPENBLAS_NUM_THREADS=1 before launching BactoMate (known OpenBLAS/threading issue on some Macs).")
+                self.mask_threshold_info.setToolTip("Cellpose-SAM: this value is passed as cellprob_threshold (logit scale, typically -6 to +6, not hard limits; default 0).\nLower values include more pixels in the dynamics step; higher values are stricter.\nThis is not the same as Omnipose's distance-map threshold.\n\nIf the app crashes when segmenting, try mask 0 and set environment variable OPENBLAS_NUM_THREADS=1 before launching BactoMate (known OpenBLAS/threading issue on some Macs).")
         else:
-            self.mask_threshold.setRange(MASK_DISTANCE_OMNI_MIN, MASK_DISTANCE_OMNI_MAX)
             self.mask_threshold.setSingleStep(0.5)
-            v = max(MASK_DISTANCE_OMNI_MIN, min(MASK_DISTANCE_OMNI_MAX, v))
-            self.mask_threshold.setValue(v)
             if getattr(self, 'mask_threshold_info', None) is not None:
-                self.mask_threshold_info.setToolTip("Omnipose: distance-map threshold (mask_threshold). If 'No cell pixels found', try -1, -5, or -10; also set Flow to 0. User-trained .pth models use the same semantics.")
+                self.mask_threshold_info.setToolTip("Omnipose: distance-map threshold (mask_threshold), default 0; no fixed upstream bounds. Lower values include more pixels; higher values are stricter. If 'No cell pixels found', try -1, -5, or -10; also set Flow to 0. User-trained .pth models use the same semantics.")
 
     def _get_omnipose_segmentation_folder_name(self) -> str:
         """Return the segmentation output folder name from the current model (e.g. _segmentation_bact_phase_omni, _segmentation_cellpose_sam)."""
@@ -5397,15 +5387,11 @@ class OmniposeSegTab(QWidget):
         return (float(diameter), flow)
 
     def _get_effective_mask_threshold(self) -> float:
-        """Return mask/cellprob threshold for model.eval(); clamp SAM to the documented logit range."""
-        display = self.model_combo.currentText() or ''
-        (model_type, _) = self._resolve_model_selection(display)
+        """Return the mask/cellprob threshold unchanged for either backend."""
         try:
             v = float(self.mask_threshold.value())
         except RuntimeError:
             v = 0.0
-        if model_type == CELLPOSE_SAM_MODEL:
-            return max(MASK_CELLPROB_SAM_MIN, min(MASK_CELLPROB_SAM_MAX, v))
         return v
 
     def _open_in_file_manager(self, path: Path) -> None:

@@ -958,9 +958,6 @@ def overlay_masks_on_images(images, masks, output_path, alpha=0.5, colormap='gis
 
 # Cellpose-SAM (official cellpose + cpsam): inference-only path when --model cellpose_sam
 CELLPOSE_SAM_MODEL = "cellpose_sam"
-# cellprob_threshold (logit scale, ~ -6..+6 per Cellpose docs); match GUI clamp in omnipose_seg.py
-_CELLPOSE_SAM_CELLPROB_MIN = -6.0
-_CELLPOSE_SAM_CELLPROB_MAX = 6.0
 
 
 def _to_three_channel(image):
@@ -990,8 +987,9 @@ def process_frames_with_cellpose_sam(
     Run Cellpose-SAM (official cellpose, pretrained_model='cpsam') on a list of frame paths.
     Returns list of mask arrays (same length as frame_paths).
     """
-    cp = float(mask_threshold)
-    cellprob_t = max(_CELLPOSE_SAM_CELLPROB_MIN, min(_CELLPOSE_SAM_CELLPROB_MAX, cp))
+    cellprob_t = float(mask_threshold)
+    if not np.isfinite(cellprob_t):
+        raise ValueError("Mask threshold must be finite")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     try:
